@@ -1238,7 +1238,7 @@ impl Root {
                 };
                 let preview = message.referenced.as_ref().map(|referenced| {
                     div()
-                        .mb(px(2.))
+                        .mb(px(4.))
                         .child(self.reply_preview(referenced))
                         .into_any_element()
                 });
