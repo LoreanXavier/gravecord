@@ -126,6 +126,8 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// Width of a message's content column, set each frame: media never grows past it (`max-width: 100%`).
+    content_width: f32,
     /// The open profile popout.
     profile: Option<profile::Popout>,
     /// The voice call, from joining until leaving.
@@ -183,6 +185,7 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            content_width: 793.,
             profile: None,
             call: None,
             self_mute: false,
@@ -1917,7 +1920,9 @@ impl Root {
                     attachment.width.unwrap_or(1),
                     attachment.height.unwrap_or(1),
                 );
-                let (width, height) = (px(width as f32), px(height as f32));
+                let (width, height) = (width as f32, height as f32);
+                let shown = width.min(self.content_width.max(1.));
+                let (width, height) = (px(shown), px(height * shown / width));
                 let image = self
                     .images
                     .get(&format!("attachment:{}", attachment.id))
@@ -2693,6 +2698,9 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The chat column less the message's 72px gutter and its 24 + 16px right padding.
+        let members = if self.show_members { 264. } else { 0. };
+        self.content_width = f32::from(window.viewport_size().width) - 375. - members - 112.;
         let rows = list(
             self.list.clone(),
             cx.processor(|this, index, _, cx| this.row(index, cx)),
