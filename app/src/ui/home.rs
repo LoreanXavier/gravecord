@@ -17,6 +17,19 @@ impl Root {
                 .requests
                 .send(crate::net::Request::LoadMessages { channel });
         }
+        // The DM welcome shows mutual servers from the other person's profile.
+        let recipient = self
+            .current_dm()
+            .and_then(|dm| self.stores.dm_recipient(dm))
+            .map(|user| user.id);
+        if let Some(user) = recipient {
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key: format!("profile:{user}"),
+                route: format!(
+                    "/users/{user}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
+                ),
+            });
+        }
         self.rebuild_rows();
         self.request_images();
     }

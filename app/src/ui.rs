@@ -29,6 +29,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod badge_paths;
+mod dm;
 mod embed;
 mod files;
 mod home;
@@ -99,9 +100,14 @@ fn icon(name: &str, size: f32, tint: &str) -> impl IntoElement {
 }
 
 enum Row {
+    /// The start of a DM's history.
+    Welcome,
     Divider(String),
     Spacer,
-    Message { index: usize, head: bool },
+    Message {
+        index: usize,
+        head: bool,
+    },
 }
 
 pub struct Root {
@@ -126,6 +132,8 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// Channels whose first message has been loaded: the welcome goes above it.
+    complete_history: HashSet<Id>,
     /// Width of a message's content column, set each frame: media never grows past it (`max-width: 100%`).
     content_width: f32,
     /// The open profile popout.
@@ -185,6 +193,7 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            complete_history: HashSet::new(),
             content_width: 793.,
             profile: None,
             call: None,
@@ -240,6 +249,10 @@ impl Root {
                 }
             }
             Update::Messages { channel, page } => {
+                // A page shorter than asked for reaches the start of the channel.
+                if page.as_array().map_or(0, Vec::len) < crate::net::MESSAGE_PAGE as usize {
+                    self.complete_history.insert(channel);
+                }
                 self.stores.load_messages(channel, &page);
                 self.rebuild_rows();
                 self.request_images();
@@ -516,6 +529,12 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
             .unwrap_or(&empty);
         let mut last_day = None;
+        let complete = self
+            .channel
+            .is_some_and(|channel| self.complete_history.contains(&channel));
+        if complete && self.current_dm().is_some() {
+            self.rows.push(Row::Welcome);
+        }
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -2087,6 +2106,9 @@ impl Root {
         };
         match row {
             Row::Spacer => div().h(px(40.)).into_any_element(),
+            Row::Welcome => self
+                .dm_welcome()
+                .unwrap_or_else(|| div().into_any_element()),
             Row::Divider(date) => div()
                 .pt(px(24.))
                 .pl(px(16.))
@@ -2120,6 +2142,9 @@ impl Root {
                 else {
                     return div().into_any_element();
                 };
+                if dm::is_system(message) {
+                    return self.system_message(message);
+                }
                 // The 17px between groups is outside the hover box, and the box stops 16px short of the edge. Padding,
                 // not margin: gpui lists measure an item without its margins.
                 let id = message.id;

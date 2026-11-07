@@ -95,7 +95,7 @@ pub enum Request {
     },
 }
 
-const MESSAGE_PAGE: u32 = 50;
+pub(crate) const MESSAGE_PAGE: u32 = 50;
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
 const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
 
