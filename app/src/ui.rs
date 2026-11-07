@@ -932,13 +932,13 @@ impl Root {
             )
             .child(self.with_tip(
                 "add-server",
-                Tip::rail(Body::Text("Add a Server".into())),
+                Tip::rail(Body::Heading("Add a Server".into())),
                 tool("add_server", 20.),
                 cx,
             ))
             .child(self.with_tip(
                 "discover",
-                Tip::rail(Body::Text("Discover".into())),
+                Tip::rail(Body::Heading("Discover".into())),
                 tool("discover", 20.),
                 cx,
             ));

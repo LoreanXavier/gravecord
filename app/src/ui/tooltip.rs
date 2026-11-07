@@ -33,6 +33,8 @@ pub(super) enum Side {
 #[derive(Clone)]
 pub(super) enum Body {
     Text(SharedString),
+    /// The rail's text, in the guild tooltip's `body-md/semibold`.
+    Heading(SharedString),
     Guild(Id),
 }
 
@@ -393,6 +395,12 @@ impl Root {
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
                 .text_center()
+                .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
+                .into_any_element(),
+            Body::Heading(text) => frame()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(600.))
                 .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
                 .into_any_element(),
             Body::Guild(id) => {

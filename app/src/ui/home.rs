@@ -1,9 +1,12 @@
 //! Home: the DM sidebar, the friends panel and direct messages. Geometry is from `design/dom/home/friends-darker-cozy.json`.
 
+use super::tooltip::{Body, Tip};
 use super::{Root, avatar_source, color, icon, status_dot, status_label};
 use crate::parity::Parity;
 use dc_state::{Id, PrivateChannel, User};
-use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
+use gpui::{
+    AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px, svg,
+};
 
 impl Root {
     pub(super) fn select_home(&mut self, channel: Option<Id>) {
@@ -20,51 +23,65 @@ impl Root {
 
     pub(super) fn home_tile(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.guild.is_none();
+        // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
+        let group = SharedString::from("home-row");
         div()
             .relative()
             .w(px(72.))
             .h(px(40.))
             .flex()
             .justify_center()
-            .when(selected, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px(0.))
-                        .w(px(4.))
-                        .h(px(40.))
-                        .rounded_r(px(4.))
-                        .bg(color("--text-strong")),
-                )
-            })
+            .group(group.clone())
             .child(
                 div()
-                    .id("home")
-                    .size(px(40.))
-                    .rounded(px(12.))
-                    .bg(if selected {
-                        color("--background-brand")
-                    } else {
-                        color("--background-mod-subtle")
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.select_home(None);
-                        cx.notify();
-                    }))
-                    .child(icon(
-                        "home",
-                        24.,
-                        if selected {
-                            "--white"
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(if selected { 0. } else { 10. }))
+                    .w(px(4.))
+                    .h(px(if selected { 40. } else { 20. }))
+                    .rounded_r(px(4.))
+                    .bg(color("--text-strong"))
+                    .when(!selected, |this| {
+                        this.opacity(0.)
+                            .group_hover(group.clone(), |style| style.opacity(1.))
+                    }),
+            )
+            .child(
+                self.with_tip(
+                    "home",
+                    Tip::rail(Body::Heading("Direct Messages".into())),
+                    div()
+                        .id("home")
+                        .size(px(40.))
+                        .rounded(px(12.))
+                        .bg(if selected {
+                            color("--background-brand")
                         } else {
-                            "--text-default"
-                        },
-                    )),
+                            color("--background-mod-subtle")
+                        })
+                        .group_hover(group.clone(), |style| style.bg(color("--background-brand")))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_home(None);
+                            cx.notify();
+                        }))
+                        .child(
+                            svg()
+                                .path("icons/home.svg")
+                                .size(px(24.))
+                                .flex_none()
+                                .text_color(color(if selected {
+                                    "--white"
+                                } else {
+                                    "--text-default"
+                                }))
+                                .group_hover(group, |style| style.text_color(color("--white"))),
+                        ),
+                    cx,
+                ),
             )
     }
 
