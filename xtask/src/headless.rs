@@ -107,7 +107,7 @@ pub fn spawn(exe: &Path, args: &[String], cwd: &Path) -> Result<u32> {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
     }
-    if read != 0 && code != STILL_ACTIVE as u32 {
+    if read != 0 && code != STILL_ACTIVE as u32 && code != 0 {
         bail!("process exited during startup with code {code:#x}");
     }
     Ok(process.dwProcessId)

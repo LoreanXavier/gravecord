@@ -2,6 +2,7 @@ mod asar;
 mod audit;
 mod client;
 mod headless;
+mod parity;
 mod snapshot;
 
 use anyhow::{Result, bail};
@@ -22,6 +23,7 @@ fn main() -> Result<()> {
         ["snapshot", "pin", rest @ ..] => snapshot::pin(&repo_root(), rest),
         ["client", rest @ ..] => client::run(&repo_root(), rest),
         ["audit"] => audit::run(&repo_root()),
+        ["parity", rest @ ..] => parity::run(&repo_root(), rest),
         ["headless", rest @ ..] => headless::run(&repo_root(), rest),
         [] => bail!("usage: cargo xtask <command>, see the working rules"),
         other => bail!("not implemented yet: {}", other.join(" ")),

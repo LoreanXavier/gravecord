@@ -128,6 +128,12 @@ impl Client {
         })
     }
 
+    /// A public asset: no authorization, so tokens never reach a CDN.
+    pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
+        let response = self.http.get(url).send().await?.error_for_status()?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
     pub async fn get(&self, route: &str) -> Result<Value, Error> {
         self.request(Method::GET, route, None).await
     }

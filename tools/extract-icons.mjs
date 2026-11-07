@@ -23,6 +23,8 @@ const found = JSON.parse(await page.evaluate(`(() => {
     let element = document.elementFromPoint(x, y);
     let svg = null;
     if (element) svg = element.closest('svg') ?? element.querySelector('svg');
+    // Search stacks a hidden clear icon over the magnifier.
+    if (name === 'search') svg = document.querySelector('[class*="icon_v966Ys"]');
     if (!svg) { out[name] = null; continue; }
     const clone = svg.cloneNode(true);
     const r = svg.getBoundingClientRect();

@@ -229,10 +229,10 @@ impl Stores {
                 }
             }
             "MESSAGE_DELETE" => {
-                if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"])) {
-                    if let Some(list) = self.messages.get_mut(&channel) {
-                        list.retain(|known| known.id != message);
-                    }
+                if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
+                    && let Some(list) = self.messages.get_mut(&channel)
+                {
+                    list.retain(|known| known.id != message);
                 }
             }
             _ => {}
