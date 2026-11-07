@@ -5,7 +5,7 @@ use gpui::{
     App, Background, BorderStyle, Bounds, Corners, DispatchPhase, Edges, Element, ElementId, Font,
     GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size, Style, TextAlign,
-    TextRun, Window, fill, point, px, quad, size,
+    TextRun, TransformationMatrix, Window, fill, point, px, quad, size,
 };
 use std::cell::RefCell;
 use std::cmp::{max, min};
@@ -13,6 +13,8 @@ use std::rc::Rc;
 
 #[derive(Clone)]
 pub struct BoxStyle {
+    /// An icon before the text, with the room it takes.
+    pub icon: Option<(SharedString, Pixels, Pixels)>,
     pub padding_x: Pixels,
     pub height: Pixels,
     pub top: Pixels,
@@ -93,6 +95,8 @@ struct Fragment {
     shaped: ShapedLine,
     x: Pixels,
     width: Pixels,
+    /// Where the text starts inside the fragment, after padding and any icon.
+    text_offset: Pixels,
     line: usize,
     piece: usize,
     /// Byte offset of this fragment in the whole text.
@@ -175,9 +179,10 @@ fn place(
     max_width: Option<Pixels>,
     fragment: (ShapedLine, usize, usize),
     padding: Pixels,
+    icon: Pixels,
 ) {
     let (shaped, piece, start) = fragment;
-    let width = shaped.width + padding * 2.;
+    let width = shaped.width + padding * 2. + icon;
     let overflow = max_width.is_some_and(|limit| *x + width > limit);
     if overflow && *x > px(0.) {
         laid.lines += 1;
@@ -187,6 +192,7 @@ fn place(
         shaped,
         x: *x,
         width,
+        text_offset: padding + icon,
         line: laid.lines - 1,
         piece,
         start,
@@ -204,13 +210,25 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
     let mut offset = 0;
     for (index, piece) in pieces.iter().enumerate() {
         let padding = piece.boxed.as_ref().map_or(px(0.), |style| style.padding_x);
+        let icon = piece
+            .boxed
+            .as_ref()
+            .and_then(|style| style.icon.as_ref())
+            .map_or(px(0.), |(_, _, room)| *room);
         // Shaped whole when it fits, which keeps kerning across spaces. Split only to wrap.
         let whole = shape(piece, &piece.text, window);
-        let fits = max_width.is_none_or(|limit| x + whole.width + padding * 2. <= limit);
+        let fits = max_width.is_none_or(|limit| x + whole.width + padding * 2. + icon <= limit);
         if truncate && !fits {
             let limit = max_width.unwrap_or(px(0.));
             let shortened = shorten(piece, &whole, limit - x - padding * 2., window);
-            place(&mut laid, &mut x, None, (shortened, index, offset), padding);
+            place(
+                &mut laid,
+                &mut x,
+                None,
+                (shortened, index, offset),
+                padding,
+                icon,
+            );
             break;
         }
         if fits || piece.boxed.is_some() {
@@ -220,6 +238,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                 max_width,
                 (whole, index, offset),
                 padding,
+                icon,
             );
         } else {
             for (at, word) in words(&piece.text) {
@@ -230,6 +249,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                     max_width,
                     (shaped, index, offset + at),
                     padding,
+                    icon,
                 );
             }
         }
@@ -312,7 +332,7 @@ impl Inline {
             if to <= fragment.start || from >= end {
                 continue;
             }
-            let padding = (fragment.width - fragment.shaped.width) / 2.;
+            let padding = fragment.text_offset;
             let left = caret_x(&fragment.shaped, from.max(fragment.start) - fragment.start);
             let right = caret_x(&fragment.shaped, to.min(end) - fragment.start);
             let origin = point(
@@ -442,6 +462,20 @@ impl Element for Inline {
             let left = bounds.origin.x + fragment.x;
             let (text_origin, text_height): (Point<Pixels>, Pixels) = match &piece.boxed {
                 Some(style) => {
+                    if let Some((path, icon_size, _)) = &style.icon {
+                        let at = point(
+                            left + style.padding_x,
+                            top + style.top + (style.height - *icon_size) / 2.,
+                        );
+                        let _ = window.paint_svg(
+                            Bounds::new(at, size(*icon_size, *icon_size)),
+                            path.clone(),
+                            None,
+                            TransformationMatrix::unit(),
+                            piece.color,
+                            cx,
+                        );
+                    }
                     window.paint_quad(quad(
                         Bounds::new(
                             point(left, top + style.top),
@@ -454,7 +488,7 @@ impl Element for Inline {
                         BorderStyle::Solid,
                     ));
                     (
-                        point(left + style.padding_x, top + style.text_top),
+                        point(left + fragment.text_offset, top + style.text_top),
                         style.text_line_height,
                     )
                 }
@@ -536,8 +570,7 @@ impl Laid {
         for fragment in on_line {
             let end = fragment.start + fragment.shaped.text.len();
             if position.x < fragment.x + fragment.width {
-                let padding = (fragment.width - fragment.shaped.width) / 2.;
-                let inside = (position.x - fragment.x - padding).max(px(0.));
+                let inside = (position.x - fragment.x - fragment.text_offset).max(px(0.));
                 return fragment.start + nearest_caret(&fragment.shaped, inside);
             }
             last = end;

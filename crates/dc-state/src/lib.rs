@@ -100,6 +100,7 @@ pub struct Guild {
     pub owner_id: Option<Id>,
     pub joined_at: String,
     pub channels: Vec<Channel>,
+    pub roles: HashMap<Id, String>,
 }
 
 impl Guild {
@@ -118,6 +119,12 @@ impl Guild {
             owner_id: id(&properties["owner_id"]),
             joined_at: text(&value["joined_at"]).unwrap_or_default(),
             channels: channels.iter().filter_map(Channel::from_value).collect(),
+            roles: value["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|role| Some((id(&role["id"])?, text(&role["name"])?)))
+                .collect(),
         })
     }
 

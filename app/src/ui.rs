@@ -7,7 +7,7 @@ use crate::net::{Request, Update};
 use crate::parity::Parity;
 use chrono::Datelike;
 use dc_markdown::highlight::highlight;
-use dc_markdown::{Block, Span, parse};
+use dc_markdown::{Block, Kind, Span, parse};
 use dc_state::grouping::starts_group;
 use dc_state::member_list::Row as MemberRow;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
@@ -480,7 +480,11 @@ impl Root {
         let text = parse(&referenced.content)
             .into_iter()
             .find_map(|block| match block {
-                Block::Paragraph(spans) | Block::Quote(spans) => Some(spans),
+                Block::Paragraph(spans)
+                | Block::Quote(spans)
+                | Block::Subtext(spans)
+                | Block::Heading { spans, .. }
+                | Block::ListItem { spans, .. } => Some(spans),
                 Block::Code { .. } => None,
             })
             .unwrap_or_default();
@@ -1192,90 +1196,211 @@ impl Root {
             )
     }
 
+    /// What a mention or stamp shows, resolved against the stores.
+    fn span_label(&self, span: &Span) -> String {
+        match &span.kind {
+            Kind::User(id) => {
+                let user = self.stores.users.get(id).or(self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .filter(|user| user.id == *id));
+                format!("@{}", user.map_or("unknown-user", User::display_name))
+            }
+            Kind::Role(id) => {
+                let role = self.current_guild().and_then(|guild| guild.roles.get(id));
+                format!("@{}", role.map_or("deleted-role", String::as_str))
+            }
+            Kind::Channel(id) => self
+                .current_guild()
+                .and_then(|guild| guild.channels.iter().find(|channel| channel.id == *id))
+                .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
+            Kind::Emoji { name, .. } => format!(":{name}:"),
+            Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
+            Kind::Text | Kind::Link(_) | Kind::Everyone => span.text.clone(),
+        }
+    }
+
+    fn piece(&self, span: &Span, base: Hsla, size: f32, weight: f32) -> Piece {
+        let style = span.style;
+        let mention = matches!(
+            span.kind,
+            Kind::User(_) | Kind::Role(_) | Kind::Channel(_) | Kind::Everyone
+        );
+        let mut run_font: Font = font(if style.code { MONO } else { SANS });
+        run_font.features = kerning();
+        run_font.weight = match (style.bold, mention) {
+            (true, _) => FontWeight(700.),
+            (false, true) => FontWeight(500.),
+            (false, false) => FontWeight(weight),
+        };
+        run_font.style = if style.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
+        let tint = match span.kind {
+            Kind::Link(_) => hsla("--text-link"),
+            _ if mention => hsla("--mention-foreground"),
+            // A hidden spoiler paints its text in the box's own color.
+            _ if style.spoiler => hsla("--spoiler-hidden-background"),
+            _ => base,
+        };
+        let boxed = if style.code {
+            Some(inline_code_box())
+        } else if style.spoiler {
+            Some(pill(0., 4., "--spoiler-hidden-background"))
+        } else if matches!(span.kind, Kind::Channel(_)) {
+            let mut channel = pill(2., 3., "--mention-background");
+            channel.icon = Some(("icons/text_channel.svg".into(), px(16.), px(20.)));
+            Some(channel)
+        } else if mention {
+            Some(pill(2., 3., "--mention-background"))
+        } else if matches!(span.kind, Kind::Timestamp { .. }) {
+            Some(pill(2., 3., "--interactive-background-active"))
+        } else {
+            None
+        };
+        Piece {
+            text: self.span_label(span),
+            font: run_font,
+            size: if style.code {
+                px(size * 0.85)
+            } else {
+                px(size)
+            },
+            color: tint,
+            underline: style.underline,
+            strike: style.strike,
+            boxed,
+        }
+    }
+
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
         let pieces = spans
             .iter()
-            .map(|span| {
-                let style = span.style;
-                let mut run_font: Font = font(if style.code { MONO } else { SANS });
-                run_font.features = kerning();
-                run_font.weight = if style.bold {
-                    FontWeight(700.)
-                } else {
-                    FontWeight(400.)
-                };
-                run_font.style = if style.italic {
-                    FontStyle::Italic
-                } else {
-                    FontStyle::Normal
-                };
-                Piece {
-                    text: span.text.clone(),
-                    font: run_font,
-                    size: if style.code { px(13.6) } else { px(16.) },
-                    color: text_color,
-                    underline: style.underline,
-                    strike: style.strike,
-                    boxed: style.code.then(inline_code_box),
-                }
-            })
+            .map(|span| self.piece(span, text_color, 16., 400.))
             .collect();
         inline(pieces, px(22.)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+    }
+
+    /// `h1`, `h2` and `h3` from the capture: size and line height per level, all bold.
+    fn heading(&self, spans: &[Span], level: u8, key: (u64, u32)) -> Inline {
+        let (size, line) = match level {
+            1 => (24., 33.),
+            2 => (20., 27.5),
+            _ => (16., 22.),
+        };
+        let strong = hsla("--text-strong");
+        let pieces = spans
+            .iter()
+            .map(|span| {
+                let mut piece = self.piece(span, strong, size, 700.);
+                piece.font.weight = FontWeight(700.);
+                piece
+            })
+            .collect();
+        inline(pieces, px(line)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+    }
+
+    fn subtext(&self, spans: &[Span], key: (u64, u32)) -> Inline {
+        let muted = hsla("--interactive-text-default");
+        let pieces = spans
+            .iter()
+            .map(|span| self.piece(span, muted, 14., 400.))
+            .collect();
+        inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
 
     fn content(&self, message: &Message) -> impl IntoElement {
         let text = hsla("--text-default");
         let blocks = parse(&message.content);
-        let quote_at: Vec<usize> = blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, block)| matches!(block, Block::Quote(_)))
-            .map(|(index, _)| index)
-            .collect();
+        let gaps = block_gaps(&blocks);
         div()
             .flex()
             .flex_col()
-            .children(blocks.into_iter().enumerate().map(|(index, block)| {
-                // A quote keeps 4px above it and above whatever follows it.
-                let after_quote = index > 0 && quote_at.contains(&(index - 1));
-                match block {
-                    Block::Paragraph(spans) => div()
-                        .min_h(px(22.))
-                        .when(after_quote, |this| this.mt(px(4.)))
-                        .child(self.spans(&spans, text, (message.id, index as u32)))
-                        .into_any_element(),
-                    Block::Quote(spans) => div()
-                        .mt(px(4.))
-                        .flex()
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(4.))
+            .children(
+                blocks
+                    .into_iter()
+                    .zip(gaps)
+                    .enumerate()
+                    .map(|(index, (block, gap))| {
+                        let key = (message.id, index as u32);
+                        match block {
+                            Block::Paragraph(spans) => div()
+                                .min_h(px(22.))
+                                .mt(px(gap))
+                                .child(self.spans(&spans, text, key))
+                                .into_any_element(),
+                            Block::Heading { level, spans } => div()
+                                .mt(px(gap))
+                                .child(self.heading(&spans, level, key))
+                                .into_any_element(),
+                            Block::Subtext(spans) => div()
+                                .mt(px(gap))
+                                .child(self.subtext(&spans, key))
+                                .into_any_element(),
+                            Block::ListItem {
+                                depth,
+                                number,
+                                spans,
+                            } => {
+                                let indent = 16. * (f32::from(depth) + 1.);
+                                let marker = match (number, depth) {
+                                    (Some(number), _) => format!("{number}."),
+                                    (None, 0) => "\u{2022}".to_owned(),
+                                    (None, _) => "\u{25E6}".to_owned(),
+                                };
+                                div()
+                                    .relative()
+                                    .mt(px(gap))
+                                    .ml(px(indent))
+                                    .min_h(px(22.))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px(-18.))
+                                            .top(px(0.))
+                                            .line_height(px(22.))
+                                            .text_color(color("--text-default"))
+                                            .child(marker),
+                                    )
+                                    .child(self.spans(&spans, text, key))
+                                    .into_any_element()
+                            }
+                            Block::Quote(spans) => div()
+                                .mt(px(gap))
+                                .flex()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(4.))
+                                        .rounded(px(4.))
+                                        .bg(color("--spine-default")),
+                                )
+                                .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
+                                    &spans,
+                                    hsla("--text-subtle"),
+                                    key,
+                                )))
+                                .into_any_element(),
+                            Block::Code { language, text } => div()
+                                .mt(px(gap))
+                                .w(px(640.))
+                                .p(px(7.))
                                 .rounded(px(4.))
-                                .bg(color("--spine-default")),
-                        )
-                        .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
-                            &spans,
-                            hsla("--text-subtle"),
-                            (message.id, index as u32),
-                        )))
-                        .into_any_element(),
-                    Block::Code { language, text } => div()
-                        .mt(px(6.))
-                        .w(px(640.))
-                        .p(px(7.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(color("--background-mod-subtle"))
-                        .bg(color("--background-code"))
-                        .font_family(MONO)
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .text_color(color("--text-code"))
-                        .children(code_lines(language.as_deref(), &text))
-                        .into_any_element(),
-                }
-            }))
+                                .border_1()
+                                .border_color(color("--background-mod-subtle"))
+                                .bg(color("--background-code"))
+                                .font_family(MONO)
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-code"))
+                                .children(code_lines(language.as_deref(), &text))
+                                .into_any_element(),
+                        }
+                    }),
+            )
     }
 
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1636,16 +1761,103 @@ fn parse_block_text(content: &str) -> String {
 /// Plain text of a block, the same bytes the inline engine lays out.
 fn block_text(block: &Block) -> String {
     match block {
-        Block::Paragraph(spans) | Block::Quote(spans) => {
-            spans.iter().map(|span| span.text.as_str()).collect()
-        }
+        Block::Paragraph(spans)
+        | Block::Quote(spans)
+        | Block::Subtext(spans)
+        | Block::Heading { spans, .. }
+        | Block::ListItem { spans, .. } => spans.iter().map(|span| span.text.as_str()).collect(),
         Block::Code { text, .. } => text.clone(),
+    }
+}
+
+/// The space above each block. CSS margins collapse, so a pair of neighbors takes the larger of its two.
+fn block_gaps(blocks: &[Block]) -> Vec<f32> {
+    let top = |block: &Block| match block {
+        Block::Heading { level: 1, .. } => 8.,
+        Block::Heading { .. } => 16.,
+        Block::Quote(_) | Block::ListItem { .. } => 4.,
+        Block::Code { .. } => 6.,
+        Block::Paragraph(_) | Block::Subtext(_) => 0.,
+    };
+    let bottom = |block: &Block| match block {
+        Block::Heading { .. } => 8.,
+        Block::Quote(_) | Block::ListItem { .. } => 4.,
+        _ => 0.,
+    };
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| match index.checked_sub(1) {
+            Some(previous) => f32::max(top(block), bottom(&blocks[previous])),
+            None => top(block),
+        })
+        .collect()
+}
+
+/// A rounded box behind inline text: mentions, stamps and spoilers.
+fn pill(padding: f32, radius: f32, background: &str) -> BoxStyle {
+    BoxStyle {
+        icon: None,
+        padding_x: px(padding),
+        height: px(21.),
+        top: px(0.),
+        background: hsla(background),
+        border: Hsla::transparent_black(),
+        radius: px(radius),
+        text_line_height: px(22.),
+        text_top: px(0.),
+    }
+}
+
+/// `<t:...>` styles, formatted for en-US as the official client does.
+fn format_timestamp(unix: i64, style: char) -> String {
+    let Some(time) = chrono::DateTime::from_timestamp(unix, 0) else {
+        return unix.to_string();
+    };
+    let local = time.with_timezone(&chrono::Local);
+    match style {
+        't' => local.format("%-I:%M %p").to_string(),
+        'T' => local.format("%-I:%M:%S %p").to_string(),
+        'd' => local.format("%m/%d/%Y").to_string(),
+        'D' => local.format("%B %-d, %Y").to_string(),
+        'F' => local.format("%A, %B %-d, %Y %-I:%M %p").to_string(),
+        'R' => relative_time(chrono::Utc::now().timestamp() - unix),
+        _ => local.format("%B %-d, %Y %-I:%M %p").to_string(),
+    }
+}
+
+/// moment's relative time with its default thresholds, which is what `R` uses.
+fn relative_time(seconds_ago: i64) -> String {
+    let (seconds, past) = (seconds_ago.abs(), seconds_ago >= 0);
+    let minutes = (seconds + 30) / 60;
+    let hours = (seconds + 1800) / 3600;
+    let days = (seconds + 43200) / 86400;
+    let months = (days as f64 / 30.4).round() as i64;
+    let years = (days as f64 / 365.).round() as i64;
+    let span = match () {
+        () if seconds < 45 => "a few seconds".to_owned(),
+        () if seconds < 90 => "a minute".to_owned(),
+        () if minutes < 45 => format!("{minutes} minutes"),
+        () if minutes < 90 => "an hour".to_owned(),
+        () if hours < 22 => format!("{hours} hours"),
+        () if hours < 36 => "a day".to_owned(),
+        () if days < 26 => format!("{days} days"),
+        () if days < 46 => "a month".to_owned(),
+        () if days < 320 => format!("{months} months"),
+        () if days < 548 => "a year".to_owned(),
+        () => format!("{years} years"),
+    };
+    if past {
+        format!("{span} ago")
+    } else {
+        format!("in {span}")
     }
 }
 
 /// `code.inline` from the captured DOM: 0.2em padding plus the border, 20px tall, 1px below the line top.
 fn inline_code_box() -> BoxStyle {
     BoxStyle {
+        icon: None,
         padding_x: px(3.72),
         height: px(20.),
         top: px(1.),
@@ -1660,6 +1872,7 @@ fn inline_code_box() -> BoxStyle {
 /// Inline code inside a reply preview: 0.85 of 14px, so its box is smaller than in the message.
 fn preview_code_box() -> BoxStyle {
     BoxStyle {
+        icon: None,
         padding_x: px(3.38),
         height: px(18.),
         top: px(0.),
@@ -1864,4 +2077,31 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
                     this.child(div().w(px(6.)).h(px(2.)).rounded(px(1.)).bg(color(ring)))
                 }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{block_gaps, relative_time};
+    use dc_markdown::parse;
+
+    #[test]
+    fn relative_time_follows_the_captured_wording() {
+        assert_eq!(relative_time(90_000), "a day ago");
+        assert_eq!(relative_time(10), "a few seconds ago");
+        assert_eq!(relative_time(3 * 3600), "3 hours ago");
+        assert_eq!(relative_time(-600), "in 10 minutes");
+    }
+
+    #[test]
+    fn neighboring_margins_collapse_as_in_the_capture() {
+        // Heading one, two, three and subtext in the fixture: 8, then 16, 16, 8.
+        let blocks = parse("# a\n## b\n### c\n-# d");
+        assert_eq!(block_gaps(&blocks), [8., 16., 16., 8.]);
+    }
+
+    #[test]
+    fn a_quote_keeps_its_margin_on_both_sides() {
+        let blocks = parse("> a\nb");
+        assert_eq!(block_gaps(&blocks), [4., 4.]);
+    }
 }
