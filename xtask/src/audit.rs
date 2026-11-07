@@ -1,7 +1,8 @@
 //! `cargo xtask audit`: checks `FEATURES.md` against the rules in the project plan section 8.4 and Appendix A.
 //!
-//! Not checked yet: that a `done` row's test passed in the last `cargo test` report. No row is `done`, and the check
-//! fails loudly if one appears, so it cannot be skipped silently.
+//! A `done` row names its tests as `<file>::<path to the test fn>` (for example
+//! `app/src/ui/links.rs::tests::discord_hosts_are_trusted`), several separated by commas. The audit runs `cargo test`
+//! once and requires every named test to have passed in that run.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -71,13 +72,61 @@ fn check_rows(rows: &[Row<'_>]) -> Vec<String> {
             errors.push(format!("F-{:04} is {} without a test", row.id, row.status));
         }
         if row.status == "done" {
-            errors.push(format!(
-                "F-{:04} is done but test results are not verified yet",
-                row.id
-            ));
+            for reference in references(row.test) {
+                if test_id(reference).is_none() {
+                    errors.push(format!(
+                        "F-{:04} names {reference}, which is not <file>.rs::<test path>",
+                        row.id
+                    ));
+                }
+            }
         }
     }
     errors
+}
+
+fn references(cell: &str) -> impl Iterator<Item = &str> {
+    cell.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+/// `app/src/ui/links.rs::tests::x` becomes `ui::links::tests::x`, the name libtest prints. A crate root (`lib.rs`,
+/// `main.rs`) adds nothing to the path; `mod.rs` stands for its directory.
+fn test_id(reference: &str) -> Option<String> {
+    let (file, path) = reference.split_once(".rs::")?;
+    let (_, inside) = file.split_once("/src/")?;
+    let mut parts: Vec<&str> = inside.split('/').collect();
+    let last = parts.pop()?;
+    if !matches!(last, "lib" | "main" | "mod") {
+        parts.push(last);
+    }
+    parts.push(path);
+    Some(parts.join("::"))
+}
+
+/// Names of the tests that passed in one `cargo test` run over the workspace.
+fn passing_tests(repo: &Path) -> Result<BTreeSet<String>> {
+    let output = Command::new("cargo")
+        .args([
+            "test",
+            "--workspace",
+            "--exclude",
+            "xtask",
+            "--no-fail-fast",
+        ])
+        .current_dir(repo)
+        .output()
+        .context("running cargo test")?;
+    Ok(parse_passing(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_passing(report: &str) -> BTreeSet<String> {
+    report
+        .lines()
+        .filter_map(|line| line.strip_prefix("test ")?.strip_suffix(" ... ok"))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Ids in the committed file that the working file lost. Rows are never deleted.
@@ -178,7 +227,20 @@ pub fn run(repo: &Path) -> Result<()> {
         }
     }
 
-    let done = current.iter().filter(|row| row.status == "done").count();
+    let done_rows: Vec<&Row<'_>> = current.iter().filter(|row| row.status == "done").collect();
+    if !done_rows.is_empty() {
+        let passing = passing_tests(repo)?;
+        for row in &done_rows {
+            for reference in references(row.test) {
+                if let Some(id) = test_id(reference)
+                    && !passing.contains(&id)
+                {
+                    errors.push(format!("F-{:04}: {id} did not pass", row.id));
+                }
+            }
+        }
+    }
+    let done = done_rows.len();
     println!("{} rows, {done} done", current.len());
     let missing: Vec<&str> = REQUIRED_DUMPS
         .into_iter()
@@ -222,9 +284,27 @@ mod tests {
     }
 
     #[test]
-    fn refuses_done_until_test_results_are_verified() {
+    fn refuses_a_test_reference_without_a_file() {
         let errors = check_rows(&rows("| F-0001 | a | b | X:1 | done | t::x | |\n").unwrap());
-        assert!(errors.iter().any(|e| e.contains("not verified")));
+        assert!(errors.iter().any(|e| e.contains("not <file>.rs")));
+    }
+
+    #[test]
+    fn maps_files_to_libtest_names() {
+        assert_eq!(
+            test_id("app/src/ui/links.rs::tests::a").as_deref(),
+            Some("ui::links::tests::a")
+        );
+        assert_eq!(
+            test_id("crates/dc-proto/src/lib.rs::tests::b").as_deref(),
+            Some("tests::b")
+        );
+        assert_eq!(
+            test_id("app/src/ui/settings/mod.rs::tests::c").as_deref(),
+            Some("ui::settings::tests::c")
+        );
+        let passing = parse_passing("test ui::links::tests::a ... ok\ntest x ... FAILED\n");
+        assert!(passing.contains("ui::links::tests::a") && !passing.contains("x"));
     }
 
     #[test]

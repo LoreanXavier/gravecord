@@ -30,9 +30,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 mod badge_paths;
 mod dm;
+mod dm_profile;
 mod embed;
 mod files;
 mod home;
+mod links;
 mod menu;
 mod plaintext_extensions;
 mod profile;
@@ -130,6 +132,10 @@ pub struct Root {
     menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
     show_members: bool,
+    /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
+    show_dm_profile: bool,
+    /// The Leaving Discord modal, open while a link waits for confirmation.
+    leaving: Option<links::Leaving>,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
     /// Channels whose first message has been loaded: the welcome goes above it.
@@ -191,6 +197,8 @@ impl Root {
             menu: None,
             confirm_delete: None,
             show_members: false,
+            show_dm_profile: true,
+            leaving: None,
             last_typing_sent: None,
             tip: None,
             complete_history: HashSet::new(),
@@ -260,10 +268,12 @@ impl Root {
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
-                let profile = key.starts_with("profile:");
+                let profile = key
+                    .strip_prefix("profile:")
+                    .and_then(|user| user.parse::<Id>().ok());
                 self.fetched.insert(key, body);
-                if profile {
-                    self.request_profile_images();
+                if let Some(user) = profile {
+                    self.request_profile_images(user);
                 }
                 cx.notify();
             }
@@ -879,8 +889,10 @@ impl Root {
         let title = match (self.current_guild(), self.channel) {
             (Some(guild), _) => guild.name.clone(),
             (None, None) => "Friends".to_owned(),
-            (None, Some(_)) => self.channel_title(),
+            // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
+            (None, Some(_)) => "Direct Messages".to_owned(),
         };
+        let in_dm = self.guild.is_none() && self.channel.is_some();
         let acronym = self.current_guild().map(Guild::acronym).unwrap_or_default();
         div()
             .parity("titlebar")
@@ -919,6 +931,8 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child(acronym)
                             .into_any_element()
+                    } else if in_dm {
+                        icon("title_direct_messages", 18., "--text-default").into_any_element()
                     } else {
                         icon("home_friends", 16., "--text-default").into_any_element()
                     })
@@ -1500,11 +1514,19 @@ impl Root {
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.channel_title();
+        let dm_user = self
+            .current_dm()
+            .and_then(|channel| self.stores.dm_recipient(channel))
+            .cloned();
         let search = format!(
             "Search {}",
-            self.current_guild()
-                .map(|guild| guild.name.as_str())
-                .unwrap_or_default()
+            match &dm_user {
+                Some(user) => user.username.as_str(),
+                None => self
+                    .current_guild()
+                    .map(|guild| guild.name.as_str())
+                    .unwrap_or_default(),
+            }
         );
         // Header icons brighten to `--interactive-text-default` under the pointer.
         let tool = |name: &str| {
@@ -1540,9 +1562,27 @@ impl Root {
             .when(self.guild.is_some(), |this| {
                 this.child(icon("header_hash", 20., "--channels-default"))
             })
+            .when_some(dm_user.clone(), |this, user| {
+                // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
+                let presence = self
+                    .stores
+                    .presences
+                    .get(&user.id)
+                    .cloned()
+                    .unwrap_or_else(|| "offline".to_owned());
+                let picture = self.images.get(&avatar_source(&user).0).cloned();
+                this.child(
+                    div()
+                        .ml(px(1.))
+                        .relative()
+                        .size(px(20.))
+                        .children(picture.map(|picture| img(picture).size(px(20.)).rounded_full()))
+                        .child(status_dot_small(&presence, "--background-base-lower")),
+                )
+            })
             .child(
                 div()
-                    .ml(px(9.))
+                    .ml(px(if dm_user.is_some() { 8. } else { 9. }))
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
@@ -1550,54 +1590,122 @@ impl Root {
                     .child(name),
             )
             .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .child(self.with_tip(
-                        "threads",
-                        Tip::text("Threads", Side::Bottom),
-                        tool("threads"),
-                        cx,
-                    ))
-                    .child(self.with_tip(
-                        "notifications",
-                        Tip::text("Notification Settings", Side::Bottom),
-                        tool("bell"),
-                        cx,
-                    ))
-                    .child(self.with_tip(
-                        "pins",
-                        Tip::text("Pinned Messages", Side::Bottom),
-                        tool("pin"),
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .id("toggle-members")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_members = !this.show_members;
-                                cx.notify();
-                            }))
-                            .child(
+            .when(dm_user.is_some(), |this| {
+                let shown = self.show_dm_profile;
+                this.child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(self.with_tip(
+                            "dm-call",
+                            Tip::text("Start Voice Call", Side::Bottom),
+                            tool("dm_call"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "dm-video",
+                            Tip::text("Start Video Call", Side::Bottom),
+                            tool("dm_video"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "dm-pins",
+                            Tip::text("Pinned Messages", Side::Bottom),
+                            tool("pin"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "dm-add",
+                            Tip::text("Add to DM", Side::Bottom),
+                            tool("dm_add"),
+                            cx,
+                        ))
+                        .child(
+                            self.with_tip(
+                                "dm-profile",
+                                Tip::text(
+                                    if shown {
+                                        "Hide User Profile"
+                                    } else {
+                                        "Show User Profile"
+                                    },
+                                    Side::Bottom,
+                                ),
                                 div()
+                                    .id("toggle-dm-profile")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_dm_profile = !this.show_dm_profile;
+                                        cx.notify();
+                                    }))
                                     .size(px(32.))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .child(icon(
-                                        "members",
+                                        "dm_profile",
                                         20.,
-                                        if self.show_members {
+                                        if shown {
                                             "--text-strong"
                                         } else {
                                             "--text-muted"
                                         },
                                     )),
+                                cx,
                             ),
-                    ),
-            )
+                        ),
+                )
+            })
+            .when(dm_user.is_none(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(self.with_tip(
+                            "threads",
+                            Tip::text("Threads", Side::Bottom),
+                            tool("threads"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "notifications",
+                            Tip::text("Notification Settings", Side::Bottom),
+                            tool("bell"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "pins",
+                            Tip::text("Pinned Messages", Side::Bottom),
+                            tool("pin"),
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .id("toggle-members")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_members = !this.show_members;
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(32.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "members",
+                                            20.,
+                                            if self.show_members {
+                                                "--text-strong"
+                                            } else {
+                                                "--text-muted"
+                                            },
+                                        )),
+                                ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .ml(px(12.))
@@ -1772,15 +1880,22 @@ impl Root {
         let line = if jumbo { px(48.) } else { px(22.) };
         let mut element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
-        if spoilers.iter().any(Option::is_some) {
+        let links = link_runs(spans);
+        if spoilers.iter().any(Option::is_some) || links.iter().any(Option::is_some) {
             let root = self.weak.clone();
             element = element.on_piece_click(move |piece, _, cx| {
-                if let Some(Some(start)) = spoilers.get(piece).copied() {
-                    let _ = root.update(cx, |this, cx| {
-                        this.revealed.insert((key.0, key.1, start));
+                let _ = root.update(cx, |this, cx| {
+                    // A hidden spoiler takes the first click; a link inside it follows on the next.
+                    if let Some(Some(start)) = spoilers.get(piece).copied()
+                        && this.revealed.insert((key.0, key.1, start))
+                    {
                         cx.notify();
-                    });
-                }
+                        return;
+                    }
+                    if let Some(Some((url, label))) = links.get(piece).cloned() {
+                        this.follow_link(&url, &label, cx);
+                    }
+                });
             });
         }
         element
@@ -2500,6 +2615,30 @@ fn editor_style() -> EditorStyle {
 }
 
 /// A message's text as copied: its blocks, one per line.
+/// For each span, the link it belongs to: its address and the whole run's visible text (a masked link's label can span
+/// several styled spans).
+fn link_runs(spans: &[Span]) -> Vec<Option<(String, String)>> {
+    let mut out = vec![None; spans.len()];
+    let mut index = 0;
+    while index < spans.len() {
+        let Kind::Link(url) = &spans[index].kind else {
+            index += 1;
+            continue;
+        };
+        let start = index;
+        let mut label = String::new();
+        while index < spans.len() && matches!(&spans[index].kind, Kind::Link(other) if other == url)
+        {
+            label.push_str(&spans[index].text);
+            index += 1;
+        }
+        for slot in &mut out[start..index] {
+            *slot = Some((url.clone(), label.clone()));
+        }
+    }
+    out
+}
+
 fn parse_block_text(content: &str) -> String {
     parse(content)
         .iter()
@@ -2722,7 +2861,14 @@ fn avatar_source(user: &User) -> (String, String) {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
-        let members = if self.show_members { 264. } else { 0. };
+        // The member list in a guild, the profile beside a DM.
+        let members = if self.current_dm().is_some() && self.show_dm_profile {
+            320.
+        } else if self.show_members && self.guild.is_some() {
+            264.
+        } else {
+            0.
+        };
         self.content_width = f32::from(window.viewport_size().width) - 375. - members - 112.;
         let rows = list(
             self.list.clone(),
@@ -2822,7 +2968,8 @@ impl Render for Root {
                                                 .bg(color("--background-mod-subtle")),
                                         )
                                         .child(self.member_panel(cx))
-                                    }),
+                                    })
+                                    .children(self.dm_profile(cx)),
                             )
                             .into_any_element()
                     }),
@@ -2830,6 +2977,7 @@ impl Render for Root {
             .child(self.user_panel(cx))
             .children(self.context_menu(cx))
             .children(self.delete_modal(cx))
+            .children(self.leaving_modal(cx))
     }
 }
 
@@ -2858,6 +3006,38 @@ fn status_label(status: &str) -> &'static str {
 }
 
 /// The presence dot in its cut-out ring. Do Not Disturb adds the bar across the dot.
+/// The status of a 20px avatar (`svg-mask-avatar-status-round-20`): a 6px dot at (14, 14) in a 10px hole.
+fn status_dot_small(status: &str, ring: &str) -> impl IntoElement {
+    let tint = match status {
+        "dnd" => "--icon-status-dnd",
+        "idle" => "--icon-status-idle",
+        "invisible" | "offline" => "--icon-status-offline",
+        _ => "--icon-status-online",
+    };
+    div()
+        .absolute()
+        .left(px(12.))
+        .top(px(12.))
+        .size(px(10.))
+        .rounded_full()
+        .bg(color(ring))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(6.))
+                .rounded_full()
+                .bg(color(tint))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(status == "dnd", |this| {
+                    this.child(div().w(px(4.)).h(px(1.)).rounded(px(0.5)).bg(color(ring)))
+                }),
+        )
+}
+
 fn status_dot(status: &str, ring: &str) -> impl IntoElement {
     let tint = match status {
         "dnd" => "--icon-status-dnd",

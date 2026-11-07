@@ -130,7 +130,7 @@ impl Root {
         )
     }
 
-    fn badges(&self, user: Id) -> Vec<AnyElement> {
+    pub(super) fn badges(&self, user: Id) -> Vec<AnyElement> {
         let Some(body) = self.fetched.get(&profile_key(user)) else {
             return Vec::new();
         };
@@ -151,11 +151,9 @@ impl Root {
     }
 
     /// Badge icons the open popout needs.
-    pub(super) fn request_profile_images(&mut self) {
-        let Some(popout) = &self.profile else {
-            return;
-        };
-        let Some(body) = self.fetched.get(&profile_key(popout.user)) else {
+    /// Badge icons a fetched profile names.
+    pub(super) fn request_profile_images(&mut self, user: Id) {
+        let Some(body) = self.fetched.get(&profile_key(user)) else {
             return;
         };
         let wanted: Vec<(String, String)> = body["badges"]
@@ -170,7 +168,15 @@ impl Root {
                 )
             })
             .collect();
-        for (key, url) in wanted {
+        let mutuals: Vec<(String, String)> = body["mutual_friends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(3)
+            .filter_map(super::dm_profile::mutual_user)
+            .map(|user| super::avatar_source(&user))
+            .collect();
+        for (key, url) in wanted.into_iter().chain(mutuals) {
             self.request_image(key, url);
         }
     }

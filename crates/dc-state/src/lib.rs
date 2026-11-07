@@ -30,7 +30,7 @@ pub struct User {
 }
 
 impl User {
-    fn from_value(value: &Value) -> Option<Self> {
+    pub fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             id: id(&value["id"])?,
             username: text(&value["username"])?,
