@@ -103,10 +103,8 @@ impl Root {
             .map(|(index, embed)| self.embed(message.id, index, embed))
             .collect();
         (!cards.is_empty()).then(|| {
-            // `container_YUQhib`: 2px above and below, 4px between accessories.
             div()
                 .parity("embeds")
-                .py(px(2.))
                 .flex()
                 .flex_col()
                 .gap(px(4.))

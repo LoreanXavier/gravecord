@@ -558,7 +558,7 @@ impl Root {
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
         format!(
-            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={}",
+            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={}",
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
@@ -575,6 +575,7 @@ impl Root {
                     .iter()
                     .map(|message| message.embeds.len())
                     .sum::<usize>()),
+            self.stores.theme,
         )
     }
 
@@ -1798,14 +1799,34 @@ impl Root {
             })
             .collect();
         (!images.is_empty()).then(|| {
-            // 3px of the bottom space is the inline-block baseline gap under the official image.
+            // 3px under each image is the inline-block baseline gap of the official mosaic.
             div()
-                .pt(px(2.))
-                .pb(px(5.))
+                .pb(px(3.))
                 .flex()
                 .flex_col()
                 .gap(px(4.))
                 .children(images)
+                .into_any_element()
+        })
+    }
+
+    /// `container_YUQhib`: pictures, files and embeds in one grid, 2px above and below, 4px between them.
+    fn accessories(&self, message: &Message) -> Option<AnyElement> {
+        let parts: Vec<AnyElement> = [
+            self.attachments(message),
+            self.files(message),
+            self.embeds(message),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!parts.is_empty()).then(|| {
+            div()
+                .py(px(2.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(parts)
                 .into_any_element()
         })
     }
@@ -2004,9 +2025,7 @@ impl Root {
                     Some(editor) => self.edit_box(editor).into_any_element(),
                     None => div()
                         .child(self.content(message))
-                        .children(self.attachments(message))
-                        .children(self.files(message))
-                        .children(self.embeds(message))
+                        .children(self.accessories(message))
                         .children(self.reactions(message, cx))
                         .into_any_element(),
                 };
