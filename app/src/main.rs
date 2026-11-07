@@ -6,6 +6,7 @@ mod fonts;
 mod harness;
 mod inline;
 mod net;
+mod palette;
 mod parity;
 mod text_buffer;
 mod ui;

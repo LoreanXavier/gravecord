@@ -34,6 +34,7 @@ mod files;
 mod home;
 mod menu;
 mod plaintext_extensions;
+mod profile;
 mod settings;
 mod tooltip;
 mod uploads;
@@ -125,6 +126,8 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// The open profile popout.
+    profile: Option<profile::Popout>,
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
     self_mute: bool,
@@ -180,6 +183,7 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            profile: None,
             call: None,
             self_mute: false,
             self_deaf: false,
@@ -240,7 +244,11 @@ impl Root {
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
+                let profile = key.starts_with("profile:");
                 self.fetched.insert(key, body);
+                if profile {
+                    self.request_profile_images();
+                }
                 cx.notify();
             }
             Update::Image { key, bytes } if key.starts_with("text:") => {
@@ -2174,9 +2182,16 @@ impl Root {
                                     .left(px(16.))
                                     .top(px(4. + reply_offset))
                                     .size(px(40.))
-                                    .children(
-                                        avatar.map(|image| img(image).size(px(40.)).rounded_full()),
-                                    ),
+                                    .child(self.profile_trigger(
+                                        format!("avatar-{id}"),
+                                        message.author.id,
+                                        div().size(px(40.)).children(
+                                            avatar.map(|image| {
+                                                img(image).size(px(40.)).rounded_full()
+                                            }),
+                                        ),
+                                        cx,
+                                    )),
                             )
                             .child(
                                 div()
@@ -2184,11 +2199,16 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .child(
-                                        div()
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-strong"))
-                                            .line_height(px(22.))
-                                            .child(message.author.display_name().to_owned()),
+                                        self.profile_trigger(
+                                            format!("name-{id}"),
+                                            message.author.id,
+                                            div()
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .line_height(px(22.))
+                                                .child(message.author.display_name().to_owned()),
+                                            cx,
+                                        ),
                                     )
                                     .child(
                                         div()
@@ -2679,7 +2699,11 @@ impl Render for Root {
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && this.settings.is_some() {
+                if event.keystroke.key == "escape" && this.profile.is_some() {
+                    this.profile = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.settings.is_some() {
                     this.close_settings(cx);
                     cx.stop_propagation();
                 }
@@ -2703,6 +2727,7 @@ impl Render for Root {
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
             .children(self.settings_layer(window, cx))
+            .children(self.profile_layer(cx))
             .children(self.tip_layer())
             .child(self.titlebar())
             .child(
@@ -2824,6 +2849,38 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
                 .justify_center()
                 .when(status == "dnd", |this| {
                     this.child(div().w(px(6.)).h(px(2.)).rounded(px(1.)).bg(color(ring)))
+                }),
+        )
+}
+
+/// The status of an 80px avatar (`svg-mask-avatar-status-round-80`): a 16px dot at (60, 60) in a 24px hole.
+fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
+    let tint = match status {
+        "dnd" => "--icon-status-dnd",
+        "idle" => "--icon-status-idle",
+        "invisible" | "offline" => "--icon-status-offline",
+        _ => "--icon-status-online",
+    };
+    div()
+        .absolute()
+        .left(px(56.))
+        .top(px(56.))
+        .size(px(24.))
+        .rounded_full()
+        .bg(color(ring))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(16.))
+                .rounded_full()
+                .bg(color(tint))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(status == "dnd", |this| {
+                    this.child(div().w(px(10.)).h(px(3.)).rounded(px(1.5)).bg(color(ring)))
                 }),
         )
 }

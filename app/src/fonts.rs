@@ -6,14 +6,17 @@ use dc_proto::pin;
 use std::path::PathBuf;
 
 /// `design/tokens/font-faces.json`, the faces the M0 screens use.
-const FACES: [&str; 9] = [
+const FACES: [&str; 12] = [
     "66d715454104d24e", // gg sans 400
     "dd24010f3cf7def7", // gg sans 400 italic
     "b272b33815319bae", // gg sans 500
+    "6a1346ad3821ff3c", // gg sans 500 italic
     "2df2c3ff74408972", // gg sans 600
+    "d5d789aeb6282532", // gg sans 600 italic
     "189422196a4f8b53", // gg sans 700
     "ce3b8055f5114434", // gg sans 700 italic
     "b2fdbe507d6ce9ef", // gg sans 800
+    "03dcf979852e8b8e", // gg sans 800 italic
     "249d0a057895c668", // gg mono 400
     "45efa6936fdfb918", // gg mono 700
 ];
