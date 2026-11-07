@@ -102,6 +102,21 @@ pub struct Guild {
     pub joined_at: String,
     pub channels: Vec<Channel>,
     pub roles: HashMap<Id, String>,
+    pub features: Vec<String>,
+    pub premium_tier: u64,
+    pub premium_subscription_count: u64,
+}
+
+/// `_` in module 426983.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Badge {
+    Partnered,
+    Verified,
+    VerifiedAndPartnered,
+    Community,
+    Discoverable,
+    Staff,
+    None,
 }
 
 impl Guild {
@@ -126,7 +141,42 @@ impl Guild {
                 .flatten()
                 .filter_map(|role| Some((id(&role["id"])?, text(&role["name"])?)))
                 .collect(),
+            features: properties["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(text)
+                .collect(),
+            premium_tier: properties["premium_tier"].as_u64().unwrap_or(0),
+            premium_subscription_count: value["premium_subscription_count"]
+                .as_u64()
+                .or(properties["premium_subscription_count"].as_u64())
+                .unwrap_or(0),
         })
+    }
+
+    fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|known| known == feature)
+    }
+
+    /// `K` in module 426983 over the traits from 176128.
+    pub fn badge(&self) -> Badge {
+        let verified = self.has_feature("VERIFIED");
+        let partnered = self.has_feature("PARTNERED");
+        let community = self.has_feature("COMMUNITY");
+        match (verified, partnered) {
+            _ if self.has_feature("INTERNAL_EMPLOYEE_ONLY") => Badge::Staff,
+            (true, true) => Badge::VerifiedAndPartnered,
+            (true, false) => Badge::Verified,
+            (false, true) => Badge::Partnered,
+            _ if community && self.has_feature("DISCOVERABLE") => Badge::Discoverable,
+            _ if community => Badge::Community,
+            _ => Badge::None,
+        }
+    }
+
+    pub fn premium(&self) -> bool {
+        self.premium_subscription_count > 0 || self.premium_tier > 0
     }
 
     /// The official server acronym: the first letter of each word.
@@ -594,6 +644,40 @@ impl Stores {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn badges_follow_the_official_precedence() {
+        let guild = |features: &[&str]| Guild {
+            id: 1,
+            name: String::new(),
+            icon: None,
+            owner_id: None,
+            joined_at: String::new(),
+            channels: Vec::new(),
+            roles: HashMap::new(),
+            features: features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect(),
+            premium_tier: 0,
+            premium_subscription_count: 0,
+        };
+        assert_eq!(guild(&[]).badge(), Badge::None);
+        assert_eq!(guild(&["COMMUNITY"]).badge(), Badge::Community);
+        assert_eq!(
+            guild(&["COMMUNITY", "DISCOVERABLE"]).badge(),
+            Badge::Discoverable
+        );
+        assert_eq!(guild(&["VERIFIED", "COMMUNITY"]).badge(), Badge::Verified);
+        assert_eq!(
+            guild(&["VERIFIED", "PARTNERED"]).badge(),
+            Badge::VerifiedAndPartnered
+        );
+        assert_eq!(
+            guild(&["PARTNERED", "INTERNAL_EMPLOYEE_ONLY"]).badge(),
+            Badge::Staff
+        );
+    }
     use serde_json::json;
 
     fn ready() -> Value {

@@ -15,18 +15,25 @@ use dc_state::{
 };
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontFeatures,
-    FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment,
-    ListState, MouseButton, MouseDownEvent, Render, Rgba, SharedString, StyledText, TextRun,
-    Window, WindowControlArea, div, font, img, list, prelude::*, px, rgba, svg,
+    AnyElement, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
+    FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent,
+    ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels, Render, Rgba, SharedString,
+    StyledText, TextRun, Window, WindowControlArea, div, font, img, list, prelude::*, px, rgba,
+    svg,
 };
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+mod badge_paths;
 mod home;
 mod menu;
+mod tooltip;
+
+use tooltip::{Body, Side, Tip};
 
 const SANS: &str = "gg sans";
 /// The CSS family is `gg mono`; the font file calls itself `gg sans mono`.
@@ -88,6 +95,8 @@ pub struct Root {
     confirm_delete: Option<Id>,
     show_members: bool,
     last_typing_sent: Option<Instant>,
+    tip: Option<tooltip::Active>,
+    tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     pub ready: bool,
 }
 
@@ -122,6 +131,8 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             last_typing_sent: None,
+            tip: None,
+            tip_anchors: Rc::default(),
             ready: false,
         }
     }
@@ -882,7 +893,7 @@ impl Root {
                             .group_hover(group, |style| style.opacity(1.))
                     }),
             )
-            .child(tile)
+            .child(self.with_tip(format!("guild-{id}"), Tip::rail(Body::Guild(id)), tile, cx))
     }
 
     fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -919,8 +930,18 @@ impl Root {
                     .map(|guild| self.rail_item(guild, cx).into_any_element())
                     .collect::<Vec<_>>(),
             )
-            .child(tool("add_server", 20.))
-            .child(tool("discover", 20.));
+            .child(self.with_tip(
+                "add-server",
+                Tip::rail(Body::Text("Add a Server".into())),
+                tool("add_server", 20.),
+                cx,
+            ))
+            .child(self.with_tip(
+                "discover",
+                Tip::rail(Body::Text("Discover".into())),
+                tool("discover", 20.),
+                cx,
+            ));
         // The official rail ends where the user panel starts.
         div()
             .flex_none()
@@ -1140,7 +1161,7 @@ impl Root {
             .children(rows)
     }
 
-    fn user_panel(&self) -> impl IntoElement {
+    fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let button = |name: &str| {
@@ -1211,7 +1232,7 @@ impl Root {
                     .ml(px(12.))
                     .flex()
                     .items_center()
-                    .child(button("mic"))
+                    .child(self.with_tip("mic", Tip::text("Mute", Side::Top), button("mic"), cx))
                     .child(chevron()),
             )
             .child(
@@ -1219,10 +1240,20 @@ impl Root {
                     .ml(px(8.))
                     .flex()
                     .items_center()
-                    .child(button("headphones"))
+                    .child(self.with_tip(
+                        "deafen",
+                        Tip::text("Deafen", Side::Top),
+                        button("headphones"),
+                        cx,
+                    ))
                     .child(chevron()),
             )
-            .child(div().ml(px(8.)).child(button("settings")))
+            .child(div().ml(px(8.)).child(self.with_tip(
+                "user-settings",
+                Tip::text("User Settings", Side::Top),
+                button("settings"),
+                cx,
+            )))
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1233,13 +1264,25 @@ impl Root {
                 .map(|guild| guild.name.as_str())
                 .unwrap_or_default()
         );
+        // Header icons brighten to `--interactive-text-default` under the pointer.
         let tool = |name: &str| {
+            let group = SharedString::from(format!("header-{name}"));
             div()
+                .group(group.clone())
                 .size(px(32.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(name, 20., "--text-muted"))
+                .child(
+                    svg()
+                        .path(format!("icons/{name}.svg"))
+                        .size(px(20.))
+                        .flex_none()
+                        .text_color(color("--text-muted"))
+                        .group_hover(group, |style| {
+                            style.text_color(color("--interactive-text-default"))
+                        }),
+                )
         };
         div()
             .parity_below("chat-header", 1.)
@@ -1269,9 +1312,24 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .child(tool("threads"))
-                    .child(tool("bell"))
-                    .child(tool("pin"))
+                    .child(self.with_tip(
+                        "threads",
+                        Tip::text("Threads", Side::Bottom),
+                        tool("threads"),
+                        cx,
+                    ))
+                    .child(self.with_tip(
+                        "notifications",
+                        Tip::text("Notification Settings", Side::Bottom),
+                        tool("bell"),
+                        cx,
+                    ))
+                    .child(self.with_tip(
+                        "pins",
+                        Tip::text("Pinned Messages", Side::Bottom),
+                        tool("pin"),
+                        cx,
+                    ))
                     .child(
                         div()
                             .id("toggle-members")
@@ -1902,7 +1960,12 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .items_center()
-            .child(button("msg_react"))
+            .child(self.with_tip(
+                "toolbar-react",
+                Tip::text("Add Reaction", Side::Top),
+                button("msg_react"),
+                cx,
+            ))
             .when(own, |this| {
                 this.child(
                     div()
@@ -1911,11 +1974,26 @@ impl Root {
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.begin_edit(id, &text, window, cx);
                         }))
-                        .child(button("msg_edit")),
+                        .child(self.with_tip(
+                            "toolbar-edit-tip",
+                            Tip::text("Edit", Side::Top),
+                            button("msg_edit"),
+                            cx,
+                        )),
                 )
             })
-            .child(button("msg_forward"))
-            .child(button("msg_more"))
+            .child(self.with_tip(
+                "toolbar-forward",
+                Tip::text("Forward", Side::Top),
+                button("msg_forward"),
+                cx,
+            ))
+            .child(self.with_tip(
+                "toolbar-more",
+                Tip::text("More", Side::Top),
+                button("msg_more"),
+                cx,
+            ))
     }
 
     fn edit_box(&self, editor: Entity<Editor>) -> impl IntoElement {
@@ -2293,6 +2371,7 @@ impl Render for Root {
             .line_height(px(22.))
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
+            .children(self.tip_layer())
             .child(self.titlebar())
             .child(
                 div()
@@ -2355,7 +2434,7 @@ impl Render for Root {
                             .into_any_element()
                     }),
             )
-            .child(self.user_panel())
+            .child(self.user_panel(cx))
             .children(self.context_menu(cx))
             .children(self.delete_modal(cx))
     }
