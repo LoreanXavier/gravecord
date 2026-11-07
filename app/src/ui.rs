@@ -14,14 +14,15 @@ use dc_tokens::Theme;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontFeatures,
     FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment,
-    ListState, Render, Rgba, SharedString, StyledText, TextRun, Window, WindowControlArea, div,
-    font, img, list, prelude::*, px, rgba, svg,
+    ListState, MouseButton, MouseDownEvent, Render, Rgba, SharedString, StyledText, TextRun,
+    Window, WindowControlArea, div, font, img, list, prelude::*, px, rgba, svg,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod home;
+mod menu;
 
 const SANS: &str = "gg sans";
 /// The CSS family is `gg mono`; the font file calls itself `gg sans mono`.
@@ -77,6 +78,8 @@ pub struct Root {
     hovered: Option<Id>,
     /// The message being edited, with its own field. Enter saves, Escape cancels.
     editing: Option<(Id, Entity<Editor>)>,
+    menu: Option<menu::OpenMenu>,
+    confirm_delete: Option<Id>,
     pub ready: bool,
 }
 
@@ -103,6 +106,8 @@ impl Root {
             selection: SharedSelection::default(),
             hovered: None,
             editing: None,
+            menu: None,
+            confirm_delete: None,
             ready: false,
         }
     }
@@ -1100,6 +1105,12 @@ impl Root {
                         }
                         cx.notify();
                     }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.open_menu(event.position, id, own, cx);
+                        }),
+                    )
                     .when(hovered && editing.is_none(), |this| {
                         this.child(self.message_toolbar(message, own, cx))
                     });
@@ -1316,6 +1327,15 @@ fn editor_style() -> EditorStyle {
     }
 }
 
+/// A message's text as copied: its blocks, one per line.
+fn parse_block_text(content: &str) -> String {
+    parse(content)
+        .iter()
+        .map(block_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Plain text of a block, the same bytes the inline engine lays out.
 fn block_text(block: &Block) -> String {
     match block {
@@ -1451,6 +1471,8 @@ impl Render for Root {
                     }),
             )
             .child(self.user_panel())
+            .children(self.context_menu(cx))
+            .children(self.delete_modal(cx))
     }
 }
 

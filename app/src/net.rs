@@ -29,6 +29,10 @@ pub enum Request {
         message: u64,
         content: String,
     },
+    Delete {
+        channel: u64,
+        message: u64,
+    },
     Subscribe {
         guild: u64,
         channel: u64,
@@ -137,6 +141,15 @@ pub async fn run(
                         .await
                     {
                         warn!("editing failed: {error}");
+                    }
+                });
+            }
+            Request::Delete { channel, message } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{channel}/messages/{message}");
+                    if let Err(error) = client.request(reqwest::Method::DELETE, &route, None).await
+                    {
+                        warn!("deleting failed: {error}");
                     }
                 });
             }

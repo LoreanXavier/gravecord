@@ -45,6 +45,16 @@ fn down(position: Point<gpui::Pixels>) -> PlatformInput {
     })
 }
 
+fn right_down(position: Point<gpui::Pixels>) -> PlatformInput {
+    PlatformInput::MouseDown(MouseDownEvent {
+        button: MouseButton::Right,
+        position,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    })
+}
+
 fn up(position: Point<gpui::Pixels>) -> PlatformInput {
     PlatformInput::MouseUp(MouseUpEvent {
         button: MouseButton::Left,
@@ -105,6 +115,14 @@ pub async fn run(
             ["move", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                }
+            }
+            ["rightclick", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, right_down(position));
+                    });
                 }
             }
             ["click", x, y] => {
