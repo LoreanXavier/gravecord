@@ -119,7 +119,7 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(mask_icon("theme_sync", 24., "--text-default")),
+                        .child(mask_icon("theme_sync", 24., "--interactive-text-default")),
                 )
             })
             .when(selected, |this| {
@@ -218,7 +218,7 @@ impl Root {
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .text_color(color("--text-default"))
-                                    .child("Create your own custom theme to make Discord feel like home."),
+                                    .child("Create your own custom theme to make Discord uniquely yours. Only with Nitro."),
                             ),
                     )
                     .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
@@ -243,6 +243,19 @@ impl Root {
                         .items_center()
                         .justify_center()
                         .child(mask_icon("theme_palette", 24., "--text-default"))
+                        // `badgeContainer_lUEm2A`: a brand ring 4px out and a NEW badge over the top edge.
+                        .child(div().absolute().top(px(-5.)).left(px(-5.)).child(mask_icon(
+                            "theme_new_ring",
+                            56.,
+                            "--background-brand",
+                        )))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(-9.))
+                                .left(px(2.))
+                                .child(super::new_badge()),
+                        )
                         .into_any_element()
                 } else {
                     self.swatch(swatch, false, cx)
@@ -297,14 +310,26 @@ impl Root {
                                     .gap(px(12.))
                                     .child(button(
                                         "theme-preview",
-                                        "Preview Themes",
+                                        "Preview Theme",
                                         super::ButtonKind::Secondary,
                                     ))
-                                    .child(button(
-                                        "theme-nitro",
-                                        "Get Nitro",
-                                        super::ButtonKind::Primary,
-                                    )),
+                                    // `expressive_F7qvhY`: white, black text, the Nitro mark before it.
+                                    .child(
+                                        div()
+                                            .h(px(40.))
+                                            .px(px(15.))
+                                            .rounded(px(8.))
+                                            .bg(gpui::white())
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(gpui::black())
+                                            .child(mask_icon("nitro_wheel", 20., "--black"))
+                                            .child("Unlock with Nitro"),
+                                    ),
                             ),
                     )
                     .child(
