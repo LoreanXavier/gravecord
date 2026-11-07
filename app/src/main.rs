@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod editor;
 mod fonts;
 #[cfg(feature = "capture")]
 mod harness;
 mod inline;
 mod net;
+mod text_buffer;
 mod ui;
 
 use anyhow::{Context as _, Result};
@@ -155,11 +157,11 @@ fn main() -> Result<()> {
                             break;
                         }
                     }
+                    #[cfg(feature = "capture")]
                     if let Some(text) = &capture.send {
-                        root.update(cx, |root, _| {
-                            root.type_text(text);
-                            root.submit();
-                        });
+                        let script = format!("click 700 683; type {text}; key enter");
+                        let log = capture.path.with_extension("log");
+                        harness::run(&script, window.into(), root.clone(), log, cx).await;
                     }
                     #[cfg(feature = "capture")]
                     if let Some(script) = &capture.script {

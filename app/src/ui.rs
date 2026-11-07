@@ -1,6 +1,7 @@
 //! First screen: rail, channel list, user panel, header, messages, composer.
 //! Geometry and colors are from `design/dom/channel/text-darker-cozy.json`; every color is an official token.
 
+use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::inline::{BoxStyle, Inline, Piece, SharedSelection, inline};
 use crate::net::{Request, Update};
 use chrono::Datelike;
@@ -10,10 +11,10 @@ use dc_state::grouping::starts_group;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, FocusHandle, Font, FontFeatures, FontStyle,
-    FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListState,
-    Render, Rgba, SharedString, StyledText, TextRun, Window, WindowControlArea, div, font, img,
-    list, prelude::*, px, rgba, svg,
+    AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontFeatures,
+    FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment,
+    ListState, Render, Rgba, SharedString, StyledText, TextRun, Window, WindowControlArea, div,
+    font, img, list, prelude::*, px, rgba, svg,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -65,7 +66,7 @@ pub struct Root {
     channel: Option<Id>,
     rows: Vec<Row>,
     list: ListState,
-    composer: String,
+    composer: Entity<Editor>,
     focus: FocusHandle,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
@@ -75,6 +76,24 @@ pub struct Root {
 
 impl Root {
     pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
+        let composer = cx.new(|cx| {
+            let mut text_font: Font = font(SANS);
+            text_font.features = kerning();
+            Editor::new(
+                EditorStyle {
+                    font: text_font,
+                    text: hsla("--text-default"),
+                    placeholder: hsla("--channel-text-area-placeholder"),
+                    selection: hsla_from(SELECTION),
+                    caret: hsla("--text-default"),
+                },
+                cx,
+            )
+        });
+        cx.subscribe(&composer, |this, _, event, _| match event {
+            EditorEvent::Submit(content) => this.send(content.clone()),
+        })
+        .detach();
         Self {
             stores: Stores::default(),
             requests,
@@ -82,7 +101,7 @@ impl Root {
             channel: None,
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
-            composer: String::new(),
+            composer,
             focus: cx.focus_handle(),
             images: HashMap::new(),
             requested: HashSet::new(),
@@ -145,7 +164,6 @@ impl Root {
     fn select(&mut self, guild: Id, channel: Option<Id>) {
         self.guild = Some(guild);
         self.channel = channel;
-        self.composer.clear();
         if let Some(channel) = channel {
             let _ = self.requests.send(Request::Subscribe { guild, channel });
             let _ = self.requests.send(Request::LoadMessages { channel });
@@ -243,54 +261,39 @@ impl Root {
     }
 
     /// For test scripts: where the app is now.
-    pub fn describe(&self) -> String {
+    pub fn describe(&self, cx: &App) -> String {
+        let composer = self.composer.read(cx).text();
         format!(
-            "guild={} channel={} composer={:?} rows={} selected={:?}",
+            "guild={} channel={} composer={composer:?} rows={} selected={:?}",
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
             self.current_channel()
                 .map(|channel| channel.name.as_str())
                 .unwrap_or("-"),
-            self.composer,
             self.rows.len(),
             self.selected_text(),
         )
     }
 
-    /// Sends what is in the composer, the same path the Enter key takes.
-    pub fn submit(&mut self) {
-        let content = self.composer.trim().to_owned();
-        if let (false, Some(channel)) = (content.is_empty(), self.channel) {
+    fn send(&mut self, content: String) {
+        if let Some(channel) = self.channel {
             let _ = self.requests.send(Request::Send { channel, content });
-            self.composer.clear();
         }
     }
 
-    pub fn type_text(&mut self, text: &str) {
-        self.composer.push_str(text);
+    pub fn composer(&self) -> Entity<Editor> {
+        self.composer.clone()
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        match keystroke.key.as_str() {
-            "enter" if !keystroke.modifiers.shift => self.submit(),
-            "c" if keystroke.modifiers.control => {
-                let text = self.selected_text();
-                if !text.is_empty() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            }
-            "backspace" => {
-                self.composer.pop();
-            }
-            _ => {
-                if let Some(text) = &keystroke.key_char {
-                    self.composer.push_str(text);
-                }
+        if keystroke.key == "c" && keystroke.modifiers.control {
+            let text = self.selected_text();
+            if !text.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
         }
-        cx.notify();
     }
 
     fn titlebar(&self) -> impl IntoElement {
@@ -989,7 +992,15 @@ impl Root {
         }
     }
 
-    fn composer(&self) -> impl IntoElement {
+    fn composer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let placeholder = format!(
+            "Message #{}",
+            self.current_channel()
+                .map(|channel| channel.name.as_str())
+                .unwrap_or_default()
+        );
+        self.composer
+            .update(cx, |composer, _| composer.set_placeholder(placeholder));
         let emoji = self.images.get("emoji_button").cloned();
         let emoji_button = div()
             .size(px(32.))
@@ -997,21 +1008,10 @@ impl Root {
             .items_center()
             .justify_center()
             .children(emoji.map(|image| img(image).size(px(18.))));
-        let placeholder = format!(
-            "Message #{}",
-            self.current_channel()
-                .map(|channel| channel.name.as_str())
-                .unwrap_or_default()
-        );
-        let empty = self.composer.is_empty();
-        let text = if empty {
-            placeholder
-        } else {
-            self.composer.clone()
-        };
         let tool = |name: &str| {
             div()
                 .size(px(32.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1019,30 +1019,27 @@ impl Root {
         };
         div().flex_none().px(px(8.)).pb(px(8.)).child(
             div()
-                .h(px(58.))
+                .min_h(px(58.))
                 .rounded(px(8.))
                 .bg(color("--chat-background-default"))
                 .border_1()
                 .border_color(color("--background-mod-subtle"))
                 .flex()
-                .items_center()
+                .items_start()
                 .pl(px(11.))
                 .pr(px(12.))
-                .child(tool("attach"))
+                .child(div().pt(px(12.)).child(tool("attach")))
                 .child(
                     div()
                         .ml(px(20.))
                         .flex_1()
-                        .line_height(px(22.))
-                        .text_color(if empty {
-                            color("--channel-text-area-placeholder")
-                        } else {
-                            color("--text-default")
-                        })
-                        .child(text),
+                        .min_w(px(0.))
+                        .py(px(17.))
+                        .child(self.composer.clone()),
                 )
                 .child(
                     div()
+                        .pt(px(12.))
                         .flex()
                         .gap(px(8.))
                         .child(tool("gift"))
@@ -1181,7 +1178,7 @@ impl Render for Root {
                                     .min_h(px(0.))
                                     .bg(color("--background-base-lower"))
                                     .child(div().flex_1().min_h(px(0.)).child(rows))
-                                    .child(self.composer()),
+                                    .child(self.composer_bar(cx)),
                             ),
                     ),
             )
@@ -1190,7 +1187,7 @@ impl Render for Root {
 }
 
 pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) {
-    let handle = root.read(cx).focus.clone();
+    let handle = root.read(cx).composer.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
 }
 

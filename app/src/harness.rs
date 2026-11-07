@@ -5,10 +5,11 @@
 //! `note` appends the app's state to `<capture>.log`. The clipboard is shared with the owner's desktop, so scripts never
 //! press ctrl-c; `note` reports the selection directly.
 
+use crate::editor::Editor;
 use crate::ui::Root;
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Entity, KeyDownEvent, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, point, px,
+    AnyWindowHandle, App, AsyncApp, Entity, EntityInputHandler, KeyDownEvent, Keystroke, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, point, px,
 };
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -65,12 +66,19 @@ fn key(cx: &mut App, window: AnyWindowHandle, stroke: Keystroke) {
     );
 }
 
-fn character(value: char) -> Keystroke {
-    Keystroke {
-        modifiers: Modifiers::default(),
-        key: value.to_lowercase().to_string(),
-        key_char: Some(value.to_string()),
-    }
+/// Calls the composer through `EntityInputHandler`, the trait the OS input method calls.
+fn with_composer(
+    cx: &mut AsyncApp,
+    window: AnyWindowHandle,
+    root: &Entity<Root>,
+    edit: impl FnOnce(&mut Editor, &mut gpui::Window, &mut gpui::Context<Editor>),
+) {
+    cx.update(|cx| {
+        let composer = root.read(cx).composer();
+        let _ = window.update(cx, |_, window, cx| {
+            composer.update(cx, |composer, cx| edit(composer, window, cx));
+        });
+    });
 }
 
 pub async fn run(
@@ -122,14 +130,26 @@ pub async fn run(
             }
             ["type", ..] => {
                 let text = step.trim_start_matches("type").trim_start();
-                cx.update(|cx| {
+                with_composer(cx, window, &root, |composer, window, cx| {
                     for value in text.chars() {
-                        key(cx, window, character(value));
+                        composer.replace_text_in_range(None, &value.to_string(), window, cx);
                     }
                 });
             }
+            ["compose", ..] => {
+                let text = step.trim_start_matches("compose").trim_start();
+                with_composer(cx, window, &root, |composer, window, cx| {
+                    composer.replace_and_mark_text_in_range(None, text, None, window, cx);
+                });
+            }
+            ["commit", ..] => {
+                let text = step.trim_start_matches("commit").trim_start();
+                with_composer(cx, window, &root, |composer, window, cx| {
+                    composer.replace_text_in_range(None, text, window, cx);
+                });
+            }
             ["note", label @ ..] => {
-                let state = root.read_with(cx, |root, _| root.describe());
+                let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));
             }
             other => {
