@@ -1,6 +1,8 @@
 //! M0 subset of the message markdown: bold, italic, underline, strikethrough, inline code, block quotes, fenced code.
 //! The full rule set is the simple-markdown port in the project plan section 5.6; its rows stay open until that replaces this.
 
+pub mod highlight;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub bold: bool,

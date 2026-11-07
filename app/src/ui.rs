@@ -3,6 +3,7 @@
 
 use crate::net::{Request, Update};
 use chrono::Datelike;
+use dc_markdown::highlight::highlight;
 use dc_markdown::{Block, Span, parse};
 use dc_state::grouping::starts_group;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
@@ -124,6 +125,11 @@ impl Root {
             .map(|channel| channel.id);
         self.select(guild_id, channel);
         self.request_images();
+        let tint = Theme::Darker.color("--interactive-text-default");
+        let _ = self.requests.send(Request::Sprite {
+            key: "emoji_button".to_owned(),
+            tint,
+        });
     }
 
     fn select(&mut self, guild: Id, channel: Option<Id>) {
@@ -833,7 +839,7 @@ impl Root {
                                 .child(self.spans(&spans, hsla("--text-subtle"))),
                         )
                         .into_any_element(),
-                    Block::Code { text, .. } => div()
+                    Block::Code { language, text } => div()
                         .mt(px(6.))
                         .w(px(640.))
                         .p(px(7.))
@@ -845,16 +851,7 @@ impl Root {
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .text_color(color("--text-code"))
-                        .children(
-                            text.lines()
-                                .map(|line| {
-                                    div()
-                                        .min_h(px(18.))
-                                        .child(line.to_owned())
-                                        .into_any_element()
-                                })
-                                .collect::<Vec<_>>(),
-                        )
+                        .children(code_lines(language.as_deref(), &text))
                         .into_any_element(),
                 }
             }))
@@ -948,6 +945,13 @@ impl Root {
     }
 
     fn composer(&self) -> impl IntoElement {
+        let emoji = self.images.get("emoji_button").cloned();
+        let emoji_button = div()
+            .size(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .children(emoji.map(|image| img(image).size(px(18.))));
         let placeholder = format!(
             "Message #{}",
             self.current_channel()
@@ -999,11 +1003,37 @@ impl Root {
                         .child(tool("gift"))
                         .child(tool("gif"))
                         .child(tool("sticker"))
-                        .child(div().size(px(32.)))
+                        .child(emoji_button)
                         .child(tool("apps")),
                 ),
         )
     }
+}
+
+/// Each line as styled runs in the code font, colored from the official `--text-code-*` tokens.
+fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
+    let mut code_font: Font = font(MONO);
+    code_font.features = kerning();
+    text.lines()
+        .zip(highlight(language, text))
+        .map(|(line, spans)| {
+            let runs = spans
+                .into_iter()
+                .map(|(len, token)| TextRun {
+                    len,
+                    font: code_font.clone(),
+                    color: hsla(token.css_name()),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                })
+                .collect();
+            div()
+                .min_h(px(18.))
+                .child(StyledText::new(line.to_owned()).with_runs(runs))
+                .into_any_element()
+        })
+        .collect()
 }
 
 fn avatar_source(user: &User) -> (String, String) {

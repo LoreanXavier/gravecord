@@ -21,9 +21,27 @@ pub enum Request {
     Send { channel: u64, content: String },
     Subscribe { guild: u64, channel: u64 },
     Image { key: String, url: String },
+    Sprite { key: String, tint: u32 },
 }
 
 const MESSAGE_PAGE: u32 = 50;
+/// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
+const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
+
+/// Cuts the cell and paints it in `tint` (0xRRGGBBAA), which is what the CSS mask over a colored box does.
+fn emoji_cell(sprite: &[u8], tint: u32) -> image::ImageResult<Vec<u8>> {
+    let sheet = image::load_from_memory_with_format(sprite, image::ImageFormat::Png)?.to_rgba8();
+    let scale = sheet.width() / 360;
+    let [red, green, blue, _] = tint.to_be_bytes();
+    let cell = image::imageops::crop_imm(&sheet, 180 * scale, 36 * scale, 18 * scale, 18 * scale)
+        .to_image();
+    let painted = image::RgbaImage::from_fn(cell.width(), cell.height(), |x, y| {
+        image::Rgba([red, green, blue, cell.get_pixel(x, y)[3]])
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    painted.write_to(&mut bytes, image::ImageFormat::Png)?;
+    Ok(bytes.into_inner())
+}
 
 pub async fn run(
     token: Token,
@@ -90,6 +108,21 @@ pub async fn run(
                 let _ = commands.send(Command::Send {
                     op: Op::GuildSubscriptionsBulk,
                     data,
+                });
+            }
+            Request::Sprite { key, tint } => {
+                tokio::spawn(async move {
+                    match client
+                        .fetch_public(EMOJI_SPRITE)
+                        .await
+                        .map(|bytes| emoji_cell(&bytes, tint))
+                    {
+                        Ok(Ok(bytes)) => {
+                            let _ = updates.send(Update::Image { key, bytes });
+                        }
+                        Ok(Err(error)) => warn!("sprite failed: {error}"),
+                        Err(error) => warn!("sprite failed: {error}"),
+                    }
                 });
             }
             Request::Image { key, url } => {
