@@ -96,11 +96,40 @@ fn save_frame(image: &image::RgbaImage, path: &Path) -> Result<()> {
 /// Calibrated against the official client with `tools/calibrate-text.py`. 2.2 is the top of gpui's table.
 const TEXT_GAMMA: &str = "2.2";
 
+/// A panic on the UI thread aborts the process with nothing on screen, so it is written down first:
+/// `%LOCALAPPDATA%\gravecord\panic.log`, newest last. The message never holds tokens or message content.
+fn record_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(dir) =
+            std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("gravecord"))
+        {
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("panic.log"))
+            {
+                use std::io::Write as _;
+                let backtrace = std::backtrace::Backtrace::force_capture();
+                let _ = writeln!(
+                    file,
+                    "{info}
+{backtrace}
+"
+                );
+            }
+        }
+        previous(info);
+    }));
+}
+
 fn main() -> Result<()> {
     // Read once by gpui's renderer. Set before any other thread exists.
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
     }
+    record_panics();
     let secrets_path = find_upwards("secrets.toml").context("secrets.toml not found")?;
     let token = secrets::load(&secrets_path).context("loading secrets.toml")?;
     let assets_root = find_upwards("app/assets").context("app/assets not found")?;

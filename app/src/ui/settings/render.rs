@@ -25,7 +25,14 @@ pub(super) fn measure_text(window: &mut Window, text: &str, size: f32, weight: f
     measure(window, text, size, weight)
 }
 
+/// The widest line of `text`; a line break ends a line as it does in the page.
 fn measure(window: &mut Window, text: &str, size: f32, weight: f32) -> Pixels {
+    if text.contains('\n') {
+        return text
+            .lines()
+            .map(|line| measure(window, line, size, weight))
+            .fold(px(0.), Pixels::max);
+    }
     if text.is_empty() {
         return px(0.);
     }
