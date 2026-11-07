@@ -1,0 +1,9 @@
+[package]
+name = "gravecord"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features = ["windows-manifest"] }
+gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }

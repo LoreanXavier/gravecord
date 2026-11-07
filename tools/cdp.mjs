@@ -12,8 +12,13 @@ export async function connect(match = /discord(app)?\.com/) {
   });
   let next = 0;
   const pending = new Map();
+  const listeners = new Map();
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
+    if (message.method) {
+      listeners.get(message.method)?.(message.params);
+      return;
+    }
     const waiter = pending.get(message.id);
     if (!waiter) return;
     pending.delete(message.id);
@@ -34,5 +39,5 @@ export async function connect(match = /discord(app)?\.com/) {
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
   };
-  return { send, evaluate, close: () => socket.close() };
+  return { send, evaluate, on: (method, callback) => listeners.set(method, callback), close: () => socket.close() };
 }

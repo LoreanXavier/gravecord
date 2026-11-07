@@ -1,0 +1,9 @@
+{
+  "name": "gravecord-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "acorn": "8.15.0",
+    "prettier": "3.6.2"
+  }
+}
