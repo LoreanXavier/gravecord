@@ -2227,12 +2227,10 @@ impl Root {
                                             .line_height(px(22.))
                                             .font_weight(FontWeight(500.))
                                             .text_color(color("--channels-default"))
-                                            .child(
-                                                message
-                                                    .local_time()
-                                                    .format("%-I:%M %p")
-                                                    .to_string(),
-                                            ),
+                                            .child(header_time(
+                                                message.local_time(),
+                                                chrono::Local::now(),
+                                            )),
                                     ),
                             )
                             .child(content),
@@ -2866,6 +2864,22 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
         )
 }
 
+/// `C(timestamp, true)` in the bundle's date helpers: today is the time alone, yesterday "Yesterday at" the time, and
+/// older days the short date and time (moment's `L LT`).
+fn header_time(
+    local: chrono::DateTime<chrono::Local>,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let days = (local.date_naive() - now.date_naive()).num_days();
+    let time = local.format("%-I:%M %p");
+    match days {
+        0 => time.to_string(),
+        -1 => format!("Yesterday at {time}"),
+        days if days < -1 => format!("{} {time}", local.format("%m/%d/%Y")),
+        _ => format!("{} {time}", local.format("%m/%d/%Y")),
+    }
+}
+
 /// The status of an 80px avatar (`svg-mask-avatar-status-round-80`): a 16px dot at (60, 60) in a 24px hole.
 fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
     let tint = match status {
@@ -2902,6 +2916,25 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
 mod tests {
     use super::{block_gaps, relative_time};
     use dc_markdown::parse;
+
+    #[test]
+    fn header_times_follow_the_calendar_rule() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 11, 8, 1, 0, 0)
+            .unwrap();
+        let at = |day, hour, minute| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+                .unwrap()
+        };
+        assert_eq!(super::header_time(at(8, 0, 30), now), "12:30 AM");
+        assert_eq!(
+            super::header_time(at(7, 22, 26), now),
+            "Yesterday at 10:26 PM"
+        );
+        assert_eq!(super::header_time(at(5, 9, 5), now), "11/05/2026 9:05 AM");
+    }
 
     #[test]
     fn relative_time_follows_the_captured_wording() {
