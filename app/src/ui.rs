@@ -299,7 +299,7 @@ impl Root {
                                             .ml(px(12.))
                                             .line_height(px(20.))
                                             .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-strong"))
+                                            .text_color(color("--channels-default"))
                                             .child(name),
                                     )
                                     .when(owner == Some(user.id), |this| {
@@ -513,6 +513,7 @@ impl Root {
                 div()
                     .ml(px(4.))
                     .flex_none()
+                    .opacity(0.64)
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
                     .child(referenced.author.display_name().to_owned()),
@@ -520,19 +521,20 @@ impl Root {
             .child(
                 div()
                     .ml(px(4.))
+                    .flex_1()
+                    .min_w(px(0.))
                     .h(px(18.))
-                    .overflow_hidden()
                     .child(self.preview_text(&text)),
             )
     }
 
     fn preview_text(&self, spans: &[Span]) -> Inline {
-        let color_value = hsla("--text-muted");
+        let color_value = hsla("--text-default");
         let pieces = spans
             .iter()
             .map(|span| {
                 let style = span.style;
-                let mut run_font: Font = font(SANS);
+                let mut run_font: Font = font(if style.code { MONO } else { SANS });
                 run_font.features = kerning();
                 run_font.weight = if style.bold {
                     FontWeight(700.)
@@ -547,15 +549,15 @@ impl Root {
                 Piece {
                     text: span.text.clone(),
                     font: run_font,
-                    size: px(14.),
+                    size: if style.code { px(11.9) } else { px(14.) },
                     color: color_value,
                     underline: style.underline,
                     strike: style.strike,
-                    boxed: None,
+                    boxed: style.code.then(preview_code_box),
                 }
             })
             .collect();
-        inline(pieces, px(18.))
+        inline(pieces, px(18.)).truncate()
     }
 
     /// The field with focus: the inline editor while editing, else the composer.
@@ -1145,7 +1147,22 @@ impl Root {
                                 this.show_members = !this.show_members;
                                 cx.notify();
                             }))
-                            .child(tool("members")),
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        "members",
+                                        20.,
+                                        if self.show_members {
+                                            "--text-strong"
+                                        } else {
+                                            "--text-muted"
+                                        },
+                                    )),
+                            ),
                     ),
             )
             .child(
@@ -1318,7 +1335,7 @@ impl Root {
                     .id(SharedString::from(format!("message-{id}")))
                     .relative()
                     .pl(px(72.))
-                    .pr(px(48.))
+                    .pr(px(24.))
                     .pt(px(2.))
                     .pb(px(2.))
                     .hover(|style| style.bg(color("--background-mod-subtle")))
@@ -1640,6 +1657,20 @@ fn inline_code_box() -> BoxStyle {
     }
 }
 
+/// Inline code inside a reply preview: 0.85 of 14px, so its box is smaller than in the message.
+fn preview_code_box() -> BoxStyle {
+    BoxStyle {
+        padding_x: px(3.38),
+        height: px(18.),
+        top: px(0.),
+        background: hsla("--background-code"),
+        border: hsla("--background-mod-strong"),
+        radius: px(4.),
+        text_line_height: px(18.),
+        text_top: px(0.),
+    }
+}
+
 /// Each line as styled runs in the code font, colored from the official `--text-code-*` tokens.
 fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
     let mut code_font: Font = font(MONO);
@@ -1760,7 +1791,14 @@ impl Render for Root {
                                             .child(self.composer_bar(cx)),
                                     )
                                     .when(self.show_members && self.guild.is_some(), |this| {
-                                        this.child(self.member_panel())
+                                        this.child(
+                                            div()
+                                                .flex_none()
+                                                .w(px(1.))
+                                                .h_full()
+                                                .bg(color("--background-mod-subtle")),
+                                        )
+                                        .child(self.member_panel())
                                     }),
                             )
                             .into_any_element()

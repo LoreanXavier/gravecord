@@ -195,7 +195,7 @@ fn place(
     laid.width = laid.width.max(*x);
 }
 
-fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, window: &Window) -> Laid {
+fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: &Window) -> Laid {
     let mut laid = Laid {
         lines: 1,
         ..Laid::default()
@@ -207,6 +207,12 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, window: &Window) -> Laid
         // Shaped whole when it fits, which keeps kerning across spaces. Split only to wrap.
         let whole = shape(piece, &piece.text, window);
         let fits = max_width.is_none_or(|limit| x + whole.width + padding * 2. <= limit);
+        if truncate && !fits {
+            let limit = max_width.unwrap_or(px(0.));
+            let shortened = shorten(piece, &whole, limit - x - padding * 2., window);
+            place(&mut laid, &mut x, None, (shortened, index, offset), padding);
+            break;
+        }
         if fits || piece.boxed.is_some() {
             place(
                 &mut laid,
@@ -232,11 +238,25 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, window: &Window) -> Laid
     laid
 }
 
+/// The longest prefix that fits with an ellipsis after it.
+fn shorten(piece: &Piece, whole: &ShapedLine, width: Pixels, window: &Window) -> ShapedLine {
+    let ellipsis = shape(piece, "\u{2026}", window).width;
+    let room = (width - ellipsis).max(px(0.));
+    let cut = caret_positions(whole)
+        .into_iter()
+        .take_while(|(_, x)| *x <= room)
+        .last()
+        .map_or(0, |(at, _)| at);
+    let text = format!("{}\u{2026}", piece.text[..cut].trim_end());
+    shape(piece, &text, window)
+}
+
 pub struct Inline {
     pieces: Rc<Vec<Piece>>,
     line_height: Pixels,
     laid: Rc<RefCell<Laid>>,
     selectable: Option<Selectable>,
+    truncate: bool,
 }
 
 #[derive(Clone)]
@@ -252,10 +272,17 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         line_height,
         laid: Rc::default(),
         selectable: None,
+        truncate: false,
     }
 }
 
 impl Inline {
+    /// One line, cut with an ellipsis.
+    pub fn truncate(mut self) -> Self {
+        self.truncate = true;
+        self
+    }
+
     pub fn selectable(
         mut self,
         key: (u64, u32),
@@ -376,7 +403,7 @@ impl Element for Inline {
                     gpui::AvailableSpace::Definite(width) => Some(width),
                     _ => None,
                 });
-                let result = lay_out(&pieces, limit, window);
+                let result = lay_out(&pieces, limit, truncate, window);
                 let measured: Size<Pixels> = size(result.width, line_height * result.lines as f32);
                 *laid.borrow_mut() = result;
                 measured
