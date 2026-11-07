@@ -1,6 +1,7 @@
 //! First screen: rail, channel list, user panel, header, messages, composer.
 //! Geometry and colors are from `design/dom/channel/text-darker-cozy.json`; every color is an official token.
 
+use crate::inline::{BoxStyle, Inline, Piece, SharedSelection, inline};
 use crate::net::{Request, Update};
 use chrono::Datelike;
 use dc_markdown::highlight::highlight;
@@ -9,10 +10,10 @@ use dc_state::grouping::starts_group;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, App, Context, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
-    ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Rgba, SharedString,
-    StrikethroughStyle, StyledText, TextRun, UnderlineStyle, Window, WindowControlArea, div, font,
-    img, list, prelude::*, px, rgba, svg,
+    AnyElement, App, ClipboardItem, Context, FocusHandle, Font, FontFeatures, FontStyle,
+    FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListState,
+    Render, Rgba, SharedString, StyledText, TextRun, Window, WindowControlArea, div, font, img,
+    list, prelude::*, px, rgba, svg,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,6 +31,13 @@ fn kerning() -> FontFeatures {
 
 fn color(name: &str) -> Rgba {
     rgba(Theme::Darker.color(name))
+}
+
+/// Selection highlight, measured on the official client. The bundle sets no `::selection`.
+const SELECTION: u32 = 0x093da7ff;
+
+fn hsla_from(value: u32) -> Hsla {
+    rgba(value).into()
 }
 
 fn hsla(name: &str) -> Hsla {
@@ -61,6 +69,7 @@ pub struct Root {
     focus: FocusHandle,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
+    selection: SharedSelection,
     pub ready: bool,
 }
 
@@ -77,6 +86,7 @@ impl Root {
             focus: cx.focus_handle(),
             images: HashMap::new(),
             requested: HashSet::new(),
+            selection: SharedSelection::default(),
             ready: false,
         }
     }
@@ -211,6 +221,43 @@ impl Root {
             .find(|known| known.id == channel)
     }
 
+    /// The selected text across messages, one block per line.
+    pub fn selected_text(&self) -> String {
+        let selection = self.selection.borrow();
+        let empty = Vec::new();
+        let messages = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .unwrap_or(&empty);
+        let mut lines = Vec::new();
+        for message in messages {
+            for (index, block) in parse(&message.content).iter().enumerate() {
+                let text = block_text(block);
+                if let Some((from, to)) = selection.range_in((message.id, index as u32), text.len())
+                {
+                    lines.push(text[from..to].to_owned());
+                }
+            }
+        }
+        lines.join("\n")
+    }
+
+    /// For test scripts: where the app is now.
+    pub fn describe(&self) -> String {
+        format!(
+            "guild={} channel={} composer={:?} rows={} selected={:?}",
+            self.current_guild()
+                .map(|guild| guild.name.as_str())
+                .unwrap_or("-"),
+            self.current_channel()
+                .map(|channel| channel.name.as_str())
+                .unwrap_or("-"),
+            self.composer,
+            self.rows.len(),
+            self.selected_text(),
+        )
+    }
+
     /// Sends what is in the composer, the same path the Enter key takes.
     pub fn submit(&mut self) {
         let content = self.composer.trim().to_owned();
@@ -228,6 +275,12 @@ impl Root {
         let keystroke = &event.keystroke;
         match keystroke.key.as_str() {
             "enter" if !keystroke.modifiers.shift => self.submit(),
+            "c" if keystroke.modifiers.control => {
+                let text = self.selected_text();
+                if !text.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
             "backspace" => {
                 self.composer.pop();
             }
@@ -763,9 +816,8 @@ impl Root {
             )
     }
 
-    fn spans(&self, spans: &[Span], text_color: Hsla) -> StyledText {
-        let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-        let runs = spans
+    fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
+        let pieces = spans
             .iter()
             .map(|span| {
                 let style = span.style;
@@ -781,24 +833,18 @@ impl Root {
                 } else {
                     FontStyle::Normal
                 };
-                TextRun {
-                    len: span.text.len(),
+                Piece {
+                    text: span.text.clone(),
                     font: run_font,
+                    size: if style.code { px(13.6) } else { px(16.) },
                     color: text_color,
-                    background_color: style.code.then(|| hsla("--background-code")),
-                    underline: style.underline.then_some(UnderlineStyle {
-                        thickness: px(1.),
-                        color: Some(text_color),
-                        wavy: false,
-                    }),
-                    strikethrough: style.strike.then_some(StrikethroughStyle {
-                        thickness: px(1.),
-                        color: Some(text_color),
-                    }),
+                    underline: style.underline,
+                    strike: style.strike,
+                    boxed: style.code.then(inline_code_box),
                 }
             })
             .collect();
-        StyledText::new(text).with_runs(runs)
+        inline(pieces, px(22.)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
 
     fn content(&self, message: &Message) -> impl IntoElement {
@@ -820,7 +866,7 @@ impl Root {
                     Block::Paragraph(spans) => div()
                         .min_h(px(22.))
                         .when(after_quote, |this| this.mt(px(4.)))
-                        .child(self.spans(&spans, text))
+                        .child(self.spans(&spans, text, (message.id, index as u32)))
                         .into_any_element(),
                     Block::Quote(spans) => div()
                         .mt(px(4.))
@@ -832,12 +878,11 @@ impl Root {
                                 .rounded(px(4.))
                                 .bg(color("--spine-default")),
                         )
-                        .child(
-                            div()
-                                .pl(px(12.))
-                                .pr(px(8.))
-                                .child(self.spans(&spans, hsla("--text-subtle"))),
-                        )
+                        .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
+                            &spans,
+                            hsla("--text-subtle"),
+                            (message.id, index as u32),
+                        )))
                         .into_any_element(),
                     Block::Code { language, text } => div()
                         .mt(px(6.))
@@ -1010,6 +1055,30 @@ impl Root {
     }
 }
 
+/// Plain text of a block, the same bytes the inline engine lays out.
+fn block_text(block: &Block) -> String {
+    match block {
+        Block::Paragraph(spans) | Block::Quote(spans) => {
+            spans.iter().map(|span| span.text.as_str()).collect()
+        }
+        Block::Code { text, .. } => text.clone(),
+    }
+}
+
+/// `code.inline` from the captured DOM: 0.2em padding plus the border, 20px tall, 1px below the line top.
+fn inline_code_box() -> BoxStyle {
+    BoxStyle {
+        padding_x: px(3.72),
+        height: px(20.),
+        top: px(1.),
+        background: hsla("--background-code"),
+        border: hsla("--background-mod-strong"),
+        radius: px(4.),
+        text_line_height: px(18.),
+        text_top: px(2.),
+    }
+}
+
 /// Each line as styled runs in the code font, colored from the official `--text-code-*` tokens.
 fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
     let mut code_font: Font = font(MONO);
@@ -1066,6 +1135,11 @@ impl Render for Root {
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            // Capture runs before the text under the pointer starts its own selection.
+            .capture_any_mouse_down(cx.listener(|this, _, window, _| {
+                this.selection.borrow_mut().clear();
+                window.refresh();
+            }))
             .relative()
             .size_full()
             .flex()

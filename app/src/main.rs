@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod fonts;
+#[cfg(feature = "capture")]
+mod harness;
+mod inline;
 mod net;
 mod ui;
 
@@ -55,6 +58,8 @@ struct Capture {
     settle_ms: u64,
     /// Typed and sent through the composer once the channel has loaded, for end-to-end tests.
     send: Option<String>,
+    /// Scripted input, see `harness.rs`.
+    script: Option<String>,
 }
 
 fn capture_args() -> Option<Capture> {
@@ -66,7 +71,15 @@ fn capture_args() -> Option<Capture> {
             .get(at + 2)
             .and_then(|value| value.parse().ok())
             .unwrap_or(2500),
-        send: args.get(at + 3).cloned(),
+        send: args
+            .get(at + 3)
+            .filter(|value| !value.starts_with("--"))
+            .cloned(),
+        script: args
+            .iter()
+            .position(|arg| arg == "--script")
+            .and_then(|at| args.get(at + 1))
+            .cloned(),
     })
 }
 
@@ -147,6 +160,11 @@ fn main() -> Result<()> {
                             root.type_text(text);
                             root.submit();
                         });
+                    }
+                    #[cfg(feature = "capture")]
+                    if let Some(script) = &capture.script {
+                        let log = capture.path.with_extension("log");
+                        harness::run(script, window.into(), root.clone(), log, cx).await;
                     }
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(capture.settle_ms))
