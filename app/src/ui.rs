@@ -305,7 +305,7 @@ impl Root {
         let control = |id: &'static str, name: &str, area: WindowControlArea| {
             div()
                 .id(id)
-                .w(px(36.))
+                .w(px(32.))
                 .h(px(32.))
                 .flex()
                 .items_center()
@@ -377,15 +377,27 @@ impl Root {
                     .child(
                         div()
                             .size(px(24.))
-                            .mr(px(19.))
+                            .mr(px(16.))
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(icon("help", 18., "--text-muted")),
                     )
-                    .child(control("min", "minimize", WindowControlArea::Min))
-                    .child(control("max", "maximize", WindowControlArea::Max))
-                    .child(control("close", "close", WindowControlArea::Close)),
+                    .child(
+                        div()
+                            .w(px(1.))
+                            .h(px(20.))
+                            .mr(px(8.))
+                            .bg(color("--background-mod-subtle")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .child(control("min", "minimize", WindowControlArea::Min))
+                            .child(control("max", "maximize", WindowControlArea::Max))
+                            .child(control("close", "close", WindowControlArea::Close)),
+                    ),
             )
     }
 
