@@ -4,9 +4,8 @@
 use gpui::{
     App, Background, BorderStyle, Bounds, Corners, DispatchPhase, Edges, Element, ElementId, Font,
     GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size,
-    StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, point, px, quad,
-    size,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size, Style, TextAlign,
+    TextRun, Window, fill, point, px, quad, size,
 };
 use std::cell::RefCell;
 use std::cmp::{max, min};
@@ -126,21 +125,37 @@ pub fn words(text: &str) -> Vec<(usize, &str)> {
     out
 }
 
+/// Decorations are painted by `paint_decorations`, not the run: gpui places them differently from Chromium.
 fn run_for(piece: &Piece, length: usize) -> TextRun {
     TextRun {
         len: length,
         font: piece.font.clone(),
         color: piece.color,
         background_color: None,
-        underline: piece.underline.then_some(UnderlineStyle {
-            thickness: px(1.),
-            color: Some(piece.color),
-            wavy: false,
-        }),
-        strikethrough: piece.strike.then_some(StrikethroughStyle {
-            thickness: px(1.),
-            color: Some(piece.color),
-        }),
+        underline: None,
+        strikethrough: None,
+    }
+}
+
+/// Blink's rules: thickness is a tenth of the font size, at least 1px; the underline sits 1px under the baseline and the
+/// line-through two thirds of the way down the ascent.
+fn paint_decorations(
+    piece: &Piece,
+    fragment: &Fragment,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+) {
+    let ascent = fragment.shaped.ascent.round();
+    let descent = fragment.shaped.descent.round();
+    let top = origin.y + ((line_height - ascent - descent) / 2.).floor();
+    let thickness = (piece.size / 10.).floor().max(px(1.));
+    let bar = |y: Pixels| Bounds::new(point(origin.x, y), size(fragment.shaped.width, thickness));
+    if piece.underline {
+        window.paint_quad(fill(bar(top + ascent + px(1.)), piece.color));
+    }
+    if piece.strike {
+        window.paint_quad(fill(bar(top + (ascent * 2. / 3.).floor()), piece.color));
     }
 }
 

@@ -25,6 +25,9 @@ const COMPUTED = [
 const root = join(import.meta.dirname, '..', 'design');
 const page = await connect();
 await page.send('DOMSnapshot.enable');
+// A golden must not depend on where the pointer was left: park it on empty titlebar space.
+await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 16 });
+await new Promise((ok) => setTimeout(ok, 500));
 const { width, height, dpr, route, theme, density } = await page.evaluate(`({
   width: innerWidth,
   height: innerHeight,
