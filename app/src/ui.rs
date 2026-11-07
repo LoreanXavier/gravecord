@@ -8,8 +8,8 @@ use dc_state::grouping::starts_group;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, App, Context, FocusHandle, Font, FontStyle, FontWeight, Hsla, Image, ImageFormat,
-    IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Rgba, SharedString,
+    AnyElement, App, Context, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
+    ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Rgba, SharedString,
     StrikethroughStyle, StyledText, TextRun, UnderlineStyle, Window, WindowControlArea, div, font,
     img, list, prelude::*, px, rgba, svg,
 };
@@ -20,6 +20,12 @@ use tokio::sync::mpsc::UnboundedSender;
 const SANS: &str = "gg sans";
 /// The CSS family is `gg mono`; the font file calls itself `gg sans mono`.
 const MONO: &str = "gg sans mono";
+
+/// The page sets `text-rendering: optimizelegibility`. gpui hands DirectWrite an explicit feature list, so `kern` has to
+/// be on that list or text comes out wider than the official client's.
+fn kerning() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("kern".to_owned(), 1)]))
+}
 
 fn color(name: &str) -> Rgba {
     rgba(Theme::Darker.color(name))
@@ -481,9 +487,13 @@ impl Root {
                             .child(channel.name.clone()),
                     )
                     .when(selected, |this| {
-                        this.child(icon("invite_small", 16., tint))
-                            .child(div().w(px(4.)))
-                            .child(icon("settings_small", 16., tint))
+                        this.child(
+                            div()
+                                .flex()
+                                .gap(px(4.))
+                                .child(icon("invite_small", 16., tint))
+                                .child(icon("settings_small", 16., tint)),
+                        )
                     }),
             )
             .into_any_element()
@@ -727,7 +737,9 @@ impl Root {
                     .w(px(244.))
                     .h(px(32.))
                     .rounded(px(8.))
-                    .bg(color("--background-base-lowest"))
+                    .bg(color("--input-background-default"))
+                    .border_1()
+                    .border_color(color("--background-mod-subtle"))
                     .flex()
                     .items_center()
                     .pl(px(8.))
@@ -752,6 +764,7 @@ impl Root {
             .map(|span| {
                 let style = span.style;
                 let mut run_font: Font = font(if style.code { MONO } else { SANS });
+                run_font.features = kerning();
                 run_font.weight = if style.bold {
                     FontWeight(700.)
                 } else {
@@ -1028,6 +1041,7 @@ impl Render for Root {
             .flex()
             .flex_col()
             .font_family(SANS)
+            .font_features(kerning())
             .text_size(px(16.))
             .line_height(px(22.))
             .text_color(color("--text-default"))
