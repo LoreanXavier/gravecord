@@ -199,16 +199,23 @@ impl Root {
             .find(|known| known.id == channel)
     }
 
+    /// Sends what is in the composer, the same path the Enter key takes.
+    pub fn submit(&mut self) {
+        let content = self.composer.trim().to_owned();
+        if let (false, Some(channel)) = (content.is_empty(), self.channel) {
+            let _ = self.requests.send(Request::Send { channel, content });
+            self.composer.clear();
+        }
+    }
+
+    pub fn type_text(&mut self, text: &str) {
+        self.composer.push_str(text);
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         match keystroke.key.as_str() {
-            "enter" if !keystroke.modifiers.shift => {
-                let content = self.composer.trim().to_owned();
-                if let (false, Some(channel)) = (content.is_empty(), self.channel) {
-                    let _ = self.requests.send(Request::Send { channel, content });
-                    self.composer.clear();
-                }
-            }
+            "enter" if !keystroke.modifiers.shift => self.submit(),
             "backspace" => {
                 self.composer.pop();
             }
@@ -619,10 +626,10 @@ impl Root {
             .pl(px(11.))
             .child(
                 div()
+                    .relative()
                     .size(px(32.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .children(avatar.map(|image| img(image).size(px(32.)).rounded_full())),
+                    .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
+                    .child(status_dot(&self.stores.status)),
             )
             .child(
                 div()
@@ -645,7 +652,7 @@ impl Root {
                             .line_height(px(13.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--interactive-text-default"))
-                            .child(user.username.clone()),
+                            .child(status_label(&self.stores.status)),
                     ),
             )
             .child(
@@ -777,33 +784,44 @@ impl Root {
 
     fn content(&self, message: &Message) -> impl IntoElement {
         let text = hsla("--text-default");
+        let blocks = parse(&message.content);
+        let quote_at: Vec<usize> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| matches!(block, Block::Quote(_)))
+            .map(|(index, _)| index)
+            .collect();
         div()
             .flex()
             .flex_col()
-            .children(parse(&message.content).into_iter().map(|block| {
+            .children(blocks.into_iter().enumerate().map(|(index, block)| {
+                // A quote keeps 4px above it and above whatever follows it.
+                let after_quote = index > 0 && quote_at.contains(&(index - 1));
                 match block {
                     Block::Paragraph(spans) => div()
                         .min_h(px(22.))
+                        .when(after_quote, |this| this.mt(px(4.)))
                         .child(self.spans(&spans, text))
                         .into_any_element(),
                     Block::Quote(spans) => div()
+                        .mt(px(4.))
                         .flex()
                         .child(
                             div()
+                                .flex_none()
                                 .w(px(4.))
                                 .rounded(px(4.))
-                                .bg(color("--background-mod-strong")),
+                                .bg(color("--spine-default")),
                         )
                         .child(
                             div()
                                 .pl(px(12.))
                                 .pr(px(8.))
-                                .pt(px(0.))
-                                .child(self.spans(&spans, text)),
+                                .child(self.spans(&spans, hsla("--text-subtle"))),
                         )
                         .into_any_element(),
                     Block::Code { text, .. } => div()
-                        .mt(px(4.))
+                        .mt(px(6.))
                         .w(px(640.))
                         .p(px(7.))
                         .rounded(px(4.))
@@ -1056,4 +1074,52 @@ impl Render for Root {
 pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) {
     let handle = root.read(cx).focus.clone();
     window.focus(&handle, cx);
+}
+
+/// English labels of the status picker. The full catalog comes with `STRINGS/`.
+fn status_label(status: &str) -> &'static str {
+    match status {
+        "dnd" => "Do Not Disturb",
+        "idle" => "Idle",
+        "invisible" => "Invisible",
+        _ => "Online",
+    }
+}
+
+/// The presence dot in its cut-out ring. Do Not Disturb adds the bar across the dot.
+fn status_dot(status: &str) -> impl IntoElement {
+    let tint = match status {
+        "dnd" => "--icon-status-dnd",
+        "idle" => "--icon-status-idle",
+        "invisible" => "--icon-status-offline",
+        _ => "--icon-status-online",
+    };
+    div()
+        .absolute()
+        .right(px(-3.))
+        .bottom(px(-3.))
+        .size(px(16.))
+        .rounded_full()
+        .bg(color("--background-base-low"))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(10.))
+                .rounded_full()
+                .bg(color(tint))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(status == "dnd", |this| {
+                    this.child(
+                        div()
+                            .w(px(6.))
+                            .h(px(2.))
+                            .rounded(px(1.))
+                            .bg(color("--background-base-low")),
+                    )
+                }),
+        )
 }

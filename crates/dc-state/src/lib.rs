@@ -208,6 +208,8 @@ impl Message {
 #[derive(Default)]
 pub struct Stores {
     pub current_user: Option<User>,
+    /// This session's status as READY reports it.
+    pub status: String,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
 }
@@ -241,6 +243,7 @@ impl Stores {
 
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
+        self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
         self.guilds = data["guilds"]
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())

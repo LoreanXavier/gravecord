@@ -8,8 +8,8 @@ use anyhow::{Context as _, Result};
 use dc_proto::identity::Identity;
 use dc_proto::secrets;
 use gpui::{
-    App, AssetSource, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions,
-    prelude::*, px, size,
+    App, AssetSource, Bounds, SharedString, TextRenderingMode, TitlebarOptions, WindowBounds,
+    WindowOptions, prelude::*, px, size,
 };
 use gpui_platform::application;
 use std::borrow::Cow;
@@ -53,6 +53,8 @@ fn find_upwards(name: &str) -> Option<PathBuf> {
 struct Capture {
     path: PathBuf,
     settle_ms: u64,
+    /// Typed and sent through the composer once the channel has loaded, for end-to-end tests.
+    send: Option<String>,
 }
 
 fn capture_args() -> Option<Capture> {
@@ -64,6 +66,7 @@ fn capture_args() -> Option<Capture> {
             .get(at + 2)
             .and_then(|value| value.parse().ok())
             .unwrap_or(2500),
+        send: args.get(at + 3).cloned(),
     })
 }
 
@@ -92,6 +95,8 @@ fn main() -> Result<()> {
     application()
         .with_assets(Assets { root: assets_root })
         .run(move |cx: &mut App| {
+            // Chromium draws this UI with grayscale antialiasing.
+            cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
             cx.text_system()
                 .add_fonts(faces.into_iter().map(Cow::Owned).collect())
                 .expect("gg sans must load");
@@ -136,6 +141,12 @@ fn main() -> Result<()> {
                         if root.read_with(cx, |root, _| root.ready) {
                             break;
                         }
+                    }
+                    if let Some(text) = &capture.send {
+                        root.update(cx, |root, _| {
+                            root.type_text(text);
+                            root.submit();
+                        });
                     }
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(capture.settle_ms))
