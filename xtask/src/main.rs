@@ -1,4 +1,5 @@
 mod asar;
+mod client;
 mod snapshot;
 
 use anyhow::{Result, bail};
@@ -17,6 +18,7 @@ fn main() -> Result<()> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["snapshot", "pin", rest @ ..] => snapshot::pin(&repo_root(), rest),
+        ["client", rest @ ..] => client::run(&repo_root(), rest),
         [] => bail!("usage: cargo xtask <command>, see the working rules"),
         other => bail!("not implemented yet: {}", other.join(" ")),
     }

@@ -21,7 +21,7 @@ fn app_version(name: &str) -> Option<Vec<u32>> {
         .collect()
 }
 
-fn newest_app_dir(install: &Path) -> Result<PathBuf> {
+pub fn newest_app_dir(install: &Path) -> Result<PathBuf> {
     let mut best: Option<(Vec<u32>, PathBuf)> = None;
     for entry in fs::read_dir(install).with_context(|| format!("reading {}", install.display()))? {
         let entry = entry?;
@@ -38,12 +38,12 @@ fn newest_app_dir(install: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_install() -> Result<PathBuf> {
+pub fn default_install() -> Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
     Ok(PathBuf::from(local).join("Discord"))
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
