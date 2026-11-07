@@ -653,7 +653,12 @@ impl Root {
                     )
                     .into_any_element()
             }
-            Node::Custom { height, .. } => div().h(px(*height)).into_any_element(),
+            Node::Custom { key, height } => match *key {
+                "appearance_default_themes" => self.default_themes(cx),
+                "appearance_custom_themes_upsell" => self.custom_theme_card(),
+                "appearance_client_themes" => self.color_themes(cx),
+                _ => div().h(px(*height)).into_any_element(),
+            },
         }
     }
 

@@ -113,6 +113,22 @@ impl Node {
     }
 }
 
+/// A CSS gradient layer: its angle (0 points up, 180 down) and color stops at 0 to 1.
+pub(in crate::ui) struct Layer {
+    pub angle: f32,
+    pub stops: &'static [(u32, f32)],
+}
+
+/// A theme swatch of the Appearance page, as `tools/gen-theme-swatches.py` reads it.
+pub(in crate::ui) struct Swatch {
+    pub name: &'static str,
+    /// "default" for the four palettes and sync, "client" for the Nitro color themes.
+    pub group: &'static str,
+    pub base: Option<u32>,
+    /// Top layer first.
+    pub layers: &'static [Layer],
+}
+
 /// What the user changed on a page, by setting key. Unchanged settings show the captured value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::ui) enum Choice {

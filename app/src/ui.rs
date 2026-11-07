@@ -50,8 +50,31 @@ fn kerning() -> FontFeatures {
     FontFeatures(Arc::new(vec![("kern".to_owned(), 1)]))
 }
 
+/// The palette every color comes from. "Dark" in the Appearance page is `Darker` here, "Ash" is `Dark` and "Onyx" is
+/// `Midnight`, as the token sets are named.
+static THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+pub(crate) fn theme() -> Theme {
+    match THEME.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => Theme::Dark,
+        1 => Theme::Light,
+        3 => Theme::Midnight,
+        _ => Theme::Darker,
+    }
+}
+
+pub(crate) fn set_theme(theme: Theme) {
+    let value = match theme {
+        Theme::Dark => 0,
+        Theme::Light => 1,
+        Theme::Darker => 2,
+        Theme::Midnight => 3,
+    };
+    THEME.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn color(name: &str) -> Rgba {
-    rgba(Theme::Darker.color(name))
+    rgba(theme().color(name))
 }
 
 /// Selection highlight, measured on the official client. The bundle sets no `::selection`.
@@ -203,7 +226,10 @@ impl Root {
                 cx.notify();
             }
             Update::Image { key, bytes } => {
-                let format = if key.starts_with("emoji:") || key.starts_with("filekind:") {
+                let format = if key.starts_with("emoji:")
+                    || key.starts_with("filekind:")
+                    || bytes.starts_with(b"<svg")
+                {
                     ImageFormat::Svg
                 } else if bytes.starts_with(b"\x89PNG") {
                     ImageFormat::Png
@@ -231,7 +257,12 @@ impl Root {
             .map(|channel| channel.id);
         self.select(guild_id, channel);
         self.request_images();
-        let tint = Theme::Darker.color("--interactive-text-default");
+        self.request_emoji_button();
+    }
+
+    /// The composer's emoji button is a sprite cell tinted with the theme's icon color, so it follows the theme.
+    pub(crate) fn request_emoji_button(&mut self) {
+        let tint = theme().color("--interactive-text-default");
         let _ = self.requests.send(Request::Sprite {
             key: "emoji_button".to_owned(),
             tint,

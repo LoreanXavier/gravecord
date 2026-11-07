@@ -2,9 +2,11 @@
 //! content `content_3Rvb29`, panel `panel_nNq2Vb`, rows `baseControlItem_FiiQ6I`, buttons `button_F7qvhY`.
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
+mod appearance;
 mod model;
 mod pages;
 mod render;
+mod swatches;
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};
 use crate::net::Request;
@@ -594,6 +596,12 @@ fn info_notice(parts: Runs) -> impl IntoElement {
 impl Root {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = Some(Open::new(Page::Account));
+        // The custom theme card's banner (`bannerImage_yH_g_W`).
+        self.request_image(
+            "theme_upsell_banner".to_owned(),
+            "https://cdn.discordapp.com/assets/content/568728735ebc2ee3eb3a7ab29d37c1f698f413d29cee50f9a19ed2d2eefea27f.svg"
+                .to_owned(),
+        );
         let _ = self.requests.send(Request::Fetch {
             key: "sessions".to_owned(),
             route: "/auth/sessions".to_owned(),
