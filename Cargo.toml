@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"
+chrono = "0.4"
 futures-util = "0.3"
 iana-time-zone = "0.1"
 rand = "0.9"
@@ -26,6 +27,9 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
 dc-gateway = { path = "crates/dc-gateway" }
+dc-markdown = { path = "crates/dc-markdown" }
+dc-state = { path = "crates/dc-state" }
+dc-tokens = { path = "crates/dc-tokens" }
 dc-http = { path = "crates/dc-http" }
 dc-proto = { path = "crates/dc-proto" }
 
