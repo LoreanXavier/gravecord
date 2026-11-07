@@ -421,74 +421,79 @@ impl Root {
     }
 
     /// The official panel: 264px wide, 42px rows, section headers with their counts.
-    fn member_panel(&self) -> impl IntoElement {
+    fn member_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let list = self
             .guild
             .and_then(|guild| self.stores.member_lists.get(&guild));
         let owner = self.current_guild().and_then(|guild| guild.owner_id);
-        let rows: Vec<AnyElement> =
-            list.map(|list| list.rows.as_slice())
-                .unwrap_or_default()
-                .iter()
-                .map(|row| match row {
-                    MemberRow::Group { id, count } => div()
+        let rows: Vec<AnyElement> = list
+            .map(|list| list.rows.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|row| match row {
+                MemberRow::Group { id, count } => div()
+                    .h(px(42.))
+                    .pt(px(20.))
+                    .pl(px(16.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--channels-default"))
+                    .child(format!("{} \u{2014} {count}", group_label(id)))
+                    .into_any_element(),
+                MemberRow::Member { user, nick, status } => {
+                    let avatar = self.images.get(&avatar_source(user).0).cloned();
+                    let name = nick
+                        .clone()
+                        .unwrap_or_else(|| user.display_name().to_owned());
+                    let item = div()
+                        .h(px(40.))
+                        .w(px(248.))
+                        .pl(px(8.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .hover(|style| style.bg(color("--background-mod-subtle")))
+                        .child(
+                            div()
+                                .relative()
+                                .size(px(32.))
+                                .children(
+                                    avatar.map(|image| img(image).size(px(32.)).rounded_full()),
+                                )
+                                .child(status_dot(status, "--background-base-lower")),
+                        )
+                        .child(
+                            div()
+                                .ml(px(12.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--channels-default"))
+                                .child(name),
+                        )
+                        .when(owner == Some(user.id), |this| {
+                            this.child(div().ml(px(4.)).child(icon(
+                                "owner_crown",
+                                14.,
+                                "--status-warning",
+                            )))
+                        });
+                    div()
                         .h(px(42.))
-                        .pt(px(20.))
-                        .pl(px(16.))
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--channels-default"))
-                        .child(format!("{} \u{2014} {count}", group_label(id)))
-                        .into_any_element(),
-                    MemberRow::Member { user, nick, status } => {
-                        let avatar = self.images.get(&avatar_source(user).0).cloned();
-                        let name = nick
-                            .clone()
-                            .unwrap_or_else(|| user.display_name().to_owned());
-                        div()
-                            .h(px(42.))
-                            .pt(px(1.))
-                            .pl(px(8.))
-                            .child(
-                                div()
-                                    .h(px(40.))
-                                    .w(px(248.))
-                                    .pl(px(8.))
-                                    .rounded(px(8.))
-                                    .flex()
-                                    .items_center()
-                                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .size(px(32.))
-                                            .children(avatar.map(|image| {
-                                                img(image).size(px(32.)).rounded_full()
-                                            }))
-                                            .child(status_dot(status, "--background-base-lower")),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml(px(12.))
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--channels-default"))
-                                            .child(name),
-                                    )
-                                    .when(owner == Some(user.id), |this| {
-                                        this.child(div().ml(px(4.)).child(icon(
-                                            "owner_crown",
-                                            14.,
-                                            "--status-warning",
-                                        )))
-                                    }),
-                            )
-                            .into_any_element()
-                    }
-                    MemberRow::Unknown => div().h(px(42.)).into_any_element(),
-                })
-                .collect();
+                        .pt(px(1.))
+                        .pl(px(8.))
+                        .child(self.profile_trigger_side(
+                            format!("member-{}", user.id),
+                            user.id,
+                            item,
+                            true,
+                            cx,
+                        ))
+                        .into_any_element()
+                }
+                MemberRow::Unknown => div().h(px(42.)).into_any_element(),
+            })
+            .collect();
         div()
             .parity("members")
             .flex_none()
@@ -2785,7 +2790,7 @@ impl Render for Root {
                                                 .h_full()
                                                 .bg(color("--background-mod-subtle")),
                                         )
-                                        .child(self.member_panel())
+                                        .child(self.member_panel(cx))
                                     }),
                             )
                             .into_any_element()

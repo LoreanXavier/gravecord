@@ -15,6 +15,8 @@ pub(crate) struct Popout {
     pub user: Id,
     /// The clicked avatar or name, in window coordinates.
     pub anchor: gpui::Bounds<Pixels>,
+    /// Members in the member list open their popout to the left; messages open it to the right.
+    pub left: bool,
 }
 
 fn profile_key(user: Id) -> String {
@@ -28,6 +30,17 @@ impl Root {
         key: String,
         user: Id,
         target: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.profile_trigger_side(key, user, target, false, cx)
+    }
+
+    pub(super) fn profile_trigger_side(
+        &self,
+        key: String,
+        user: Id,
+        target: impl IntoElement,
+        left: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let anchors = self.tip_anchors.clone();
@@ -53,13 +66,19 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 let anchor = this.tip_anchors.borrow().get(&lookup).copied();
                 if let Some(anchor) = anchor {
-                    this.open_profile(user, anchor, cx);
+                    this.open_profile(user, anchor, left, cx);
                 }
             }))
             .into_any_element()
     }
 
-    fn open_profile(&mut self, user: Id, anchor: gpui::Bounds<Pixels>, cx: &mut Context<Self>) {
+    fn open_profile(
+        &mut self,
+        user: Id,
+        anchor: gpui::Bounds<Pixels>,
+        left: bool,
+        cx: &mut Context<Self>,
+    ) {
         let me = self.stores.current_user.as_ref().map(|current| current.id);
         let other = Some(user) != me;
         let mut route = format!(
@@ -72,7 +91,7 @@ impl Root {
             key: profile_key(user),
             route,
         });
-        self.profile = Some(Popout { user, anchor });
+        self.profile = Some(Popout { user, anchor, left });
         cx.notify();
     }
 
@@ -334,7 +353,11 @@ impl Root {
             .child(header)
             .child(body)
             .children(footer);
-        let at: Point<Pixels> = point(popout.anchor.right() + px(8.), popout.anchor.top() - px(1.));
+        let at: Point<Pixels> = if popout.left {
+            point(popout.anchor.left() - px(308.), popout.anchor.top())
+        } else {
+            point(popout.anchor.right() + px(8.), popout.anchor.top() - px(1.))
+        };
         Some(
             deferred(
                 div()
