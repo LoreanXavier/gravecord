@@ -1306,6 +1306,9 @@ impl Root {
         let toggle = |name: &str, muted: bool| {
             div()
                 .size(px(32.))
+                .when(muted, |this| {
+                    this.rounded_l(px(8.)).bg(color("--background-voice-muted"))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1316,6 +1319,9 @@ impl Root {
                 .w(px(16.))
                 .h(px(32.))
                 .ml(px(1.))
+                .when(muted, |this| {
+                    this.rounded_r(px(8.)).bg(color("--background-voice-muted"))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1363,8 +1369,6 @@ impl Root {
                     .ml(px(12.))
                     .flex()
                     .items_center()
-                    .rounded(px(8.))
-                    .when(mic_muted, |this| this.bg(color("--background-voice-muted")))
                     .child(
                         div()
                             .id("toggle-mute")
@@ -1384,10 +1388,6 @@ impl Root {
                     .ml(px(8.))
                     .flex()
                     .items_center()
-                    .rounded(px(8.))
-                    .when(self.self_deaf, |this| {
-                        this.bg(color("--background-voice-muted"))
-                    })
                     .child(
                         div()
                             .id("toggle-deafen")
