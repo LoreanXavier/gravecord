@@ -24,10 +24,23 @@ pub(in crate::ui) enum Node {
         group: Option<&'static str>,
         /// The `legend` of a fieldset group, like "Notify me when...".
         legend: Option<&'static str>,
+        /// `split_p1llMl`: the children side by side in two equal columns 16px apart.
+        split: bool,
+        /// Space between rows: 8, or 16 in fieldsets.
+        gap: f32,
+        description: Runs,
+        children: &'static [Node],
+    },
+    /// `react-aria-Disclosure`: a clickable row with a 48px toggle that shows its children below it.
+    Accordion {
+        key: &'static str,
+        label: &'static str,
         description: Runs,
         children: &'static [Node],
     },
     Divider,
+    /// `divider_ZaYWLb` inside a list: a bare 1px rule between rows.
+    Rule,
     Switch {
         key: &'static str,
         label: &'static str,
@@ -87,6 +100,7 @@ impl Node {
     pub fn key(&self) -> &'static str {
         match self {
             Node::Category { key, .. }
+            | Node::Accordion { key, .. }
             | Node::Switch { key, .. }
             | Node::Slider { key, .. }
             | Node::Radio { key, .. }
@@ -94,7 +108,7 @@ impl Node {
             | Node::Control { key, .. }
             | Node::Notice { key, .. }
             | Node::Custom { key, .. } => key,
-            Node::Divider => "",
+            Node::Divider | Node::Rule => "",
         }
     }
 }

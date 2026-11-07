@@ -34,6 +34,8 @@ const DATAPRIVACY: &[Node] = &[
         title: Some("How Discord Uses My Data"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Control {
@@ -152,6 +154,8 @@ const DATAPRIVACY: &[Node] = &[
         title: Some("Profile Privacy"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[
             (
                 "Control who can see your profile info — like your bio and connected accounts. ",
@@ -205,6 +209,8 @@ const DATAPRIVACY: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "profile_privacy_to_activity_privacy_navigator",
@@ -228,6 +234,8 @@ const DATAPRIVACY: &[Node] = &[
         title: Some("Voice End-to-end Encryption"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Switch {
             key: "persistent_verification_codes_setting",
@@ -251,6 +259,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
         title: Some("Content Filters"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Custom {
@@ -282,6 +292,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "content_filters_appearance_navigator",
@@ -302,6 +314,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
         title: Some("Spam Filters"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Radio {
             key: "dm_spam_setting",
@@ -334,6 +348,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
         title: Some("Direct Message (DM) Permissions"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Select {
@@ -383,6 +399,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
         title: Some("Friend Request Permissions"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "Control who can send you friend requests and how they appear.",
             false,
@@ -393,6 +411,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
                 title: None,
                 group: None,
                 legend: Some("Allow Friend Requests from..."),
+                split: false,
+                gap: 16.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -439,6 +459,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
         title: Some("Messaging in Connected Games"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "These are settings for games that use Discord to power their social experiences.",
             false,
@@ -453,6 +475,8 @@ const MESSAGINGPERMISSIONS: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "connected_games_authorized_apps_navigator",
@@ -475,6 +499,8 @@ const NOTIFICATIONS: &[Node] = &[
         title: Some("Overview"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -502,6 +528,8 @@ const NOTIFICATIONS: &[Node] = &[
                 title: None,
                 group: None,
                 legend: Some("Notify me when..."),
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -558,6 +586,8 @@ const NOTIFICATIONS: &[Node] = &[
         title: Some("Sounds"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Category {
@@ -565,6 +595,8 @@ const NOTIFICATIONS: &[Node] = &[
                 title: None,
                 group: None,
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -574,6 +606,7 @@ const NOTIFICATIONS: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "selected_channel_notifications",
                         label: "New Message in the channel I’m currently reading",
@@ -581,6 +614,7 @@ const NOTIFICATIONS: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: false,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_call_ringing",
                         label: "Incoming Ring",
@@ -588,6 +622,7 @@ const NOTIFICATIONS: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "disable_all_notification_sounds",
                         label: "Disable All Notification Sounds",
@@ -605,6 +640,8 @@ const NOTIFICATIONS: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "notifications_to_voice_and_video_sounds_navigator",
@@ -628,6 +665,8 @@ const NOTIFICATIONS: &[Node] = &[
         title: Some("Badges"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Switch {
             key: "enable_unread_message_badge",
@@ -646,6 +685,8 @@ const NOTIFICATIONS: &[Node] = &[
         title: Some("Email"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -716,13 +757,16 @@ const NOTIFICATIONS: &[Node] = &[
         title: Some("Advanced"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
-        children: &[Node::Category {
+        children: &[Node::Accordion {
             key: "notifications_advanced_accordion",
-            title: None,
-            group: None,
-            legend: None,
-            description: &[],
+            label: "Show Advanced Notification Settings",
+            description: &[(
+                "Mobile notification delay, allow playback and usage of /tts command, and more",
+                false,
+            )],
             children: &[
                 Node::Select {
                     key: "mobile_notification_delay",
@@ -784,6 +828,8 @@ const NITRO: &[Node] = &[Node::Category {
     title: None,
     group: None,
     legend: None,
+    split: false,
+    gap: 8.0,
     description: &[],
     children: &[Node::Custom {
         key: "nitro_setting",
@@ -796,6 +842,8 @@ const SERVERBOOST: &[Node] = &[Node::Category {
     title: None,
     group: None,
     legend: None,
+    split: false,
+    gap: 8.0,
     description: &[],
     children: &[Node::Custom {
         key: "premium_guild_subscriptions_setting",
@@ -808,6 +856,8 @@ const SUBSCRIPTIONS: &[Node] = &[Node::Category {
     title: None,
     group: None,
     legend: None,
+    split: false,
+    gap: 8.0,
     description: &[],
     children: &[Node::Custom {
         key: "subscriptions_settings",
@@ -821,6 +871,8 @@ const GIFTINVENTORY: &[Node] = &[
         title: Some("Redeem Codes"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "redeem_code_input",
@@ -833,6 +885,8 @@ const GIFTINVENTORY: &[Node] = &[
         title: Some("The Gifting Badge"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "gifting_badge_content",
@@ -845,6 +899,8 @@ const GIFTINVENTORY: &[Node] = &[
         title: Some("Gifts I Purchased"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "purchased_gifts_content",
@@ -859,6 +915,8 @@ const BILLING: &[Node] = &[
         title: Some("Payment Methods"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[("Country/Region: United States", false)],
         children: &[Node::Custom {
             key: "billing_payment_methods",
@@ -871,6 +929,8 @@ const BILLING: &[Node] = &[
         title: Some("Transaction History"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "billing_transaction_history",
@@ -885,6 +945,8 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Voice"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Category {
@@ -892,6 +954,8 @@ const VOICEVIDEO: &[Node] = &[
                 title: None,
                 group: None,
                 legend: None,
+                split: true,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Custom {
@@ -909,6 +973,8 @@ const VOICEVIDEO: &[Node] = &[
                 title: None,
                 group: None,
                 legend: None,
+                split: true,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Slider {
@@ -943,6 +1009,8 @@ const VOICEVIDEO: &[Node] = &[
         title: None,
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Radio {
@@ -1009,12 +1077,13 @@ const VOICEVIDEO: &[Node] = &[
                 description: &[],
                 on: false,
             },
-            Node::Category {
+            Node::Accordion {
                 key: "input_profile_voice_advanced_accordion",
-                title: None,
-                group: None,
-                legend: None,
-                description: &[],
+                label: "Show Advanced Voice Settings",
+                description: &[(
+                    "Automatic Gain Control, Advanced Voice Activity, Bypass System Audio Input Processing, and more",
+                    false,
+                )],
                 children: &[
                     Node::Switch {
                         key: "voice_automatic_gain_control_setting",
@@ -1081,6 +1150,8 @@ const VOICEVIDEO: &[Node] = &[
                         title: None,
                         group: None,
                         legend: Some("Global Attenuation"),
+                        split: false,
+                        gap: 8.0,
                         description: &[],
                         children: &[
                             Node::Slider {
@@ -1128,6 +1199,8 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Camera"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Custom {
@@ -1157,6 +1230,8 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Streaming"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -1169,12 +1244,13 @@ const VOICEVIDEO: &[Node] = &[
                 )],
                 on: true,
             },
-            Node::Category {
+            Node::Accordion {
                 key: "streaming_advanced_accordion",
-                title: None,
-                group: None,
-                legend: None,
-                description: &[],
+                label: "Show Advanced Stream Settings",
+                description: &[(
+                    "Stream Attenuation, Stream Attenuation Strength, and more",
+                    false,
+                )],
                 children: &[
                     Node::Switch {
                         key: "streaming_stream_attenuation",
@@ -1215,14 +1291,14 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Sounds"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
-            Node::Category {
+            Node::Accordion {
                 key: "voice_and_video_sounds_list",
-                title: None,
-                group: None,
-                legend: None,
-                description: &[],
+                label: "Show 18 more sounds",
+                description: &[("Camera On, Camera Off, Voice Disconnected, and more", false)],
                 children: &[
                     Node::Switch {
                         key: "sounds_list_item_deafen",
@@ -1231,6 +1307,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_undeafen",
                         label: "Undeafen",
@@ -1238,6 +1315,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_mute",
                         label: "Mute",
@@ -1245,6 +1323,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_unmute",
                         label: "Unmute",
@@ -1252,6 +1331,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_camera_on",
                         label: "Camera On",
@@ -1259,6 +1339,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_camera_off",
                         label: "Camera Off",
@@ -1266,6 +1347,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_disconnect",
                         label: "Voice Disconnected",
@@ -1273,6 +1355,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_ptt_start",
                         label: "PTT Activate",
@@ -1280,6 +1363,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_ptt_stop",
                         label: "PTT Deactivate",
@@ -1287,6 +1371,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_user_join",
                         label: "User Join",
@@ -1294,6 +1379,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_user_leave",
                         label: "User Leave",
@@ -1301,6 +1387,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_user_moved",
                         label: "User Moved",
@@ -1308,6 +1395,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_call_calling",
                         label: "Outgoing Ring",
@@ -1315,6 +1403,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_stream_started",
                         label: "Stream Started",
@@ -1322,6 +1411,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_stream_ended",
                         label: "Stream Stopped",
@@ -1329,6 +1419,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_stream_user_joined",
                         label: "Viewer Join",
@@ -1336,6 +1427,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_stream_user_left",
                         label: "Viewer Leave",
@@ -1343,6 +1435,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_activity_launch",
                         label: "Activity Start",
@@ -1350,6 +1443,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_activity_end",
                         label: "Activity End",
@@ -1357,6 +1451,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_activity_user_join",
                         label: "Activity User Join",
@@ -1364,6 +1459,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_activity_user_left",
                         label: "Activity User Leave",
@@ -1371,6 +1467,7 @@ const VOICEVIDEO: &[Node] = &[
                         description: &[("Preview Sound", true)],
                         on: true,
                     },
+                    Node::Rule,
                     Node::Switch {
                         key: "sounds_list_item_reconnect",
                         label: "Invited to Speak",
@@ -1385,6 +1482,8 @@ const VOICEVIDEO: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "voice_and_video_to_notification_sounds_navigator",
@@ -1408,6 +1507,8 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Soundboard"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Slider {
@@ -1439,14 +1540,17 @@ const VOICEVIDEO: &[Node] = &[
         title: Some("Advanced"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
-            Node::Category {
+            Node::Accordion {
                 key: "voice_and_video_diagnostics_accordion",
-                title: None,
-                group: None,
-                legend: None,
-                description: &[],
+                label: "Show Diagnostic Settings",
+                description: &[(
+                    "Settings that collect technical data for Discord Support to analyze, such as debug logging and audio recording",
+                    false,
+                )],
                 children: &[
                     Node::Switch {
                         key: "voice_and_video_audio_recording",
@@ -1493,6 +1597,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("Theme"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Category {
@@ -1500,6 +1606,8 @@ const APPEARANCE: &[Node] = &[
                 title: None,
                 group: None,
                 legend: None,
+                split: false,
+                gap: 16.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -1542,6 +1650,8 @@ const APPEARANCE: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "appearance_theme_accessibility_navigator",
@@ -1565,6 +1675,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("App Icon"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[("Change the Discord in-app icon, only with Nitro.", false)],
         children: &[Node::Custom {
             key: "appearance_in_app_icon",
@@ -1577,6 +1689,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("Messages"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Category {
@@ -1584,6 +1698,8 @@ const APPEARANCE: &[Node] = &[
                 title: None,
                 group: None,
                 legend: Some("Show images, videos, and lolcats..."),
+                split: false,
+                gap: 16.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -1662,6 +1778,8 @@ const APPEARANCE: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "appearance_chat_accessibility_navigator",
@@ -1682,6 +1800,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("Chat Box"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -1730,6 +1850,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("Search"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Radio {
             key: "message_search_default_dm_search_behavior",
@@ -1755,6 +1877,8 @@ const APPEARANCE: &[Node] = &[
         title: Some("Streamer Mode"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -1779,6 +1903,8 @@ const APPEARANCE: &[Node] = &[
                 title: None,
                 group: None,
                 legend: Some("If Streamer Mode is enabled..."),
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -1835,6 +1961,8 @@ const ACCESSIBILITY: &[Node] = &[
         title: Some("Text Readability"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Slider {
@@ -1883,6 +2011,8 @@ const ACCESSIBILITY: &[Node] = &[
         title: Some("Visual Density"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Radio {
@@ -1973,6 +2103,8 @@ const ACCESSIBILITY: &[Node] = &[
         title: Some("Color & Contrast"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Slider {
@@ -2082,6 +2214,8 @@ const ACCESSIBILITY: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "accessibility_to_display_navigator",
@@ -2102,6 +2236,8 @@ const ACCESSIBILITY: &[Node] = &[
         title: Some("Reduced Motion"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -2202,6 +2338,8 @@ const ACCESSIBILITY: &[Node] = &[
         title: Some("Audio & Screen Reader"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Slider {
@@ -2288,6 +2426,8 @@ const SYSTEM: &[Node] = &[
         title: Some("General"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -2332,6 +2472,8 @@ const SYSTEM: &[Node] = &[
         title: Some("Custom Keybinds"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "Keybinds are custom keyboard shortcuts that let you perform specific actions in Discord without needing to click through menus.",
             false,
@@ -2350,6 +2492,8 @@ const SYSTEM: &[Node] = &[
         title: Some("Default Keybinds"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "default_keybinds_setting",
@@ -2362,6 +2506,8 @@ const SYSTEM: &[Node] = &[
         title: Some("System Helper"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "os_system_service",
@@ -2374,6 +2520,8 @@ const SYSTEM: &[Node] = &[
         title: Some("Advanced"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Control {
             key: "capture_performance_trace",
@@ -2396,6 +2544,8 @@ const LANGUAGETIME: &[Node] = &[Node::Category {
     title: None,
     group: None,
     legend: None,
+    split: false,
+    gap: 8.0,
     description: &[],
     children: &[
         Node::Select {
@@ -2437,6 +2587,8 @@ const REGISTEREDGAMES: &[Node] = &[
         title: Some("Current Game"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Custom {
             key: "registered_games_current_game_setting",
@@ -2449,6 +2601,8 @@ const REGISTEREDGAMES: &[Node] = &[
         title: Some("Added Games"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[("No games added", false)],
         children: &[
             Node::Custom {
@@ -2460,6 +2614,8 @@ const REGISTEREDGAMES: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "registered_games_to_activity_privacy_navigator",
@@ -2485,6 +2641,8 @@ const ACTIVITYPRIVACY: &[Node] = &[
         title: Some("What Activity I Share"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -2525,6 +2683,8 @@ const ACTIVITYPRIVACY: &[Node] = &[
         title: Some("Where I Share Activity"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Radio {
@@ -2560,6 +2720,8 @@ const ACTIVITYPRIVACY: &[Node] = &[
                 title: None,
                 group: Some("Related Settings"),
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[Node::Control {
                     key: "activity_privacy_to_profile_privacy_navigator",
@@ -2583,6 +2745,8 @@ const ACTIVITYPRIVACY: &[Node] = &[
         title: Some("Activity Joining"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "Some games allow users to join the game you're playing when viewing your activity.",
             false,
@@ -2616,13 +2780,15 @@ const ACTIVITYPRIVACY: &[Node] = &[
 const GAMEOVERLAY: &[Node] = &[
     Node::Custom {
         key: "decoration",
-        height: 866.0,
+        height: 818.0,
     },
     Node::Category {
         key: "overlay_enable_category",
         title: None,
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Switch {
@@ -2651,6 +2817,8 @@ const GAMEOVERLAY: &[Node] = &[
         title: None,
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Custom {
@@ -2675,6 +2843,8 @@ const GAMEOVERLAY: &[Node] = &[
         title: Some("Widgets"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Category {
@@ -2682,6 +2852,8 @@ const GAMEOVERLAY: &[Node] = &[
                 title: None,
                 group: None,
                 legend: None,
+                split: false,
+                gap: 8.0,
                 description: &[],
                 children: &[
                     Node::Switch {
@@ -2753,6 +2925,8 @@ const GAMEOVERLAY: &[Node] = &[
         title: Some("Voice Widget"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[
             Node::Custom {
@@ -2810,12 +2984,16 @@ const GAMEOVERLAY: &[Node] = &[
         title: Some("Notifications"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[],
         children: &[Node::Category {
             key: "overlay_notifications_list",
             title: None,
             group: None,
             legend: None,
+            split: false,
+            gap: 8.0,
             description: &[],
             children: &[
                 Node::Switch {
@@ -2879,6 +3057,8 @@ const CONNECTEDAPPS: &[Node] = &[
         title: Some("Connections"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "These are accounts from other platforms. Connecting them here can unlock new features on Discord, like the ability to share what you're currently listening to, get paid safely and securely, and more.",
             false,
@@ -2900,6 +3080,8 @@ const CONNECTEDAPPS: &[Node] = &[
         title: Some("Authorized Apps"),
         group: None,
         legend: None,
+        split: false,
+        gap: 8.0,
         description: &[(
             "These include third-party services you've given permission to access your Discord account. You can review what each app can do and revoke access anytime.",
             false,
@@ -2916,6 +3098,8 @@ const DEVELOPER: &[Node] = &[Node::Category {
     title: None,
     group: None,
     legend: None,
+    split: false,
+    gap: 8.0,
     description: &[],
     children: &[Node::Switch {
         key: "developer_mode",
@@ -2932,3 +3116,23 @@ const DEVELOPER: &[Node] = &[Node::Category {
         on: false,
     }],
 }];
+
+/// Rows holding pieces not modelled yet, with the height they take in the capture.
+pub(in crate::ui) fn padded(key: &str) -> Option<f32> {
+    match key {
+        "profile_privacy_to_activity_privacy_navigator" => Some(84.0),
+        "permissions_guild_selector" => Some(56.0),
+        "voice_input_sensitivity_field_set" => Some(124.0),
+        "voice_noise_suppression_setting" => Some(90.0),
+        "entrance_sounds_setting" => Some(296.0),
+        "voice_and_video_debug_logging" => Some(120.0),
+        "chat_emoji_convert_emoticons" => Some(59.2),
+        "tts_playback_rate" => Some(162.0),
+        "custom_keybinds_setting" => Some(90.0),
+        "language_select_setting" => Some(106.0),
+        "activity_sharing_per_guild_setting" => Some(264.0),
+        "overlay_oop_setting" => Some(86.0),
+        "overlay_legacy_setting" => Some(86.0),
+        _ => None,
+    }
+}

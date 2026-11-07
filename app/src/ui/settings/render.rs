@@ -11,7 +11,7 @@ use gpui::{
 };
 
 /// The panel's inner width: `panel_nNq2Vb` max-width 696.
-const PANEL: f32 = 696.;
+pub(super) const PANEL: f32 = 696.;
 /// `column-gap` of a horizontal field.
 const COLUMN_GAP: f32 = 24.;
 const SWITCH_WIDTH: f32 = 48.;
@@ -264,12 +264,15 @@ fn slider(
     marks: &'static [(&'static str, f32)],
     default_mark: Option<usize>,
     value: f32,
+    width: f32,
 ) -> impl IntoElement {
-    let track = PANEL - 10.;
+    let track = width - 10.;
     let last = marks.len().saturating_sub(1);
+    // Without marks the slider is 24 tall and the bar sits at its middle.
+    let offset = if marks.is_empty() { 0. } else { 24. };
     div()
         .relative()
-        .h(px(48.))
+        .h(px(24. + offset))
         .w_full()
         .children(marks.iter().enumerate().map(|(index, (text, at))| {
             let x = 5. + track * at;
@@ -319,7 +322,7 @@ fn slider(
         .child(
             div()
                 .absolute()
-                .top(px(34.))
+                .top(px(10. + offset))
                 .left_0()
                 .w_full()
                 .h(px(4.))
@@ -338,7 +341,7 @@ fn slider(
         .child(
             div()
                 .absolute()
-                .top(px(28.))
+                .top(px(4. + offset))
                 .left(px(5. + track * value - 8.))
                 .size(px(16.))
                 .rounded_full()
@@ -367,6 +370,7 @@ impl Root {
     pub(super) fn render_node(
         &self,
         node: &'static Node,
+        width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -375,10 +379,13 @@ impl Root {
                 title,
                 group,
                 legend,
+                split,
+                gap,
                 description,
                 children,
                 ..
             } => {
+                let column = if *split { (width - 16.) / 2. } else { width };
                 // Each row keeps its official key as its id, the anchor the subnav and search scroll to.
                 let rows: Vec<AnyElement> = children
                     .iter()
@@ -386,9 +393,13 @@ impl Root {
                         div()
                             .parity(child.key())
                             .id(SharedString::from(child.key()))
+                            .when(*split, |this| this.flex_1().min_w(px(0.)))
+                            .when_some(super::pages::padded(child.key()), |this, height| {
+                                this.min_h(px(height))
+                            })
                             .flex()
                             .flex_col()
-                            .child(self.render_node(child, window, cx))
+                            .child(self.render_node(child, column, window, cx))
                             .into_any_element()
                     })
                     .collect();
@@ -408,8 +419,8 @@ impl Root {
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .gap(px(8.))
+                            .when(*split, |this| this.flex_row().gap(px(16.)))
+                            .when(!*split, |this| this.flex_col().gap(px(*gap)))
                             .when(legend.is_some(), |this| this.pt(px(16.)))
                             .children(group.map(|group| {
                                 div()
@@ -426,6 +437,10 @@ impl Root {
                     .into_any_element()
             }
             Node::Divider => divider(),
+            Node::Rule => div()
+                .h(px(1.))
+                .bg(color("--border-subtle"))
+                .into_any_element(),
             Node::Switch {
                 key,
                 label,
@@ -434,7 +449,7 @@ impl Root {
                 on,
             } => {
                 let extent = label_extent(window, label, *badge, description);
-                let width = label_track(PANEL - COLUMN_GAP, extent, SWITCH_WIDTH);
+                let label_width = label_track(width - COLUMN_GAP, extent, SWITCH_WIDTH);
                 let on = self.choice_on(key, *on);
                 div()
                     .min_h(px(48.))
@@ -450,7 +465,7 @@ impl Root {
                             description,
                             Some(description_max_width(window)),
                         )
-                        .w(px(width)),
+                        .w(px(label_width)),
                     )
                     .child(switch(
                         SharedString::from(format!("switch-{key}")),
@@ -474,7 +489,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(label_block(label, *badge, description).mb(px(8.)))
-                .child(slider(marks, *default_mark, *value))
+                .child(slider(marks, *default_mark, *value, width))
                 .into_any_element(),
             Node::Radio {
                 key,
@@ -510,7 +525,7 @@ impl Root {
                 description,
                 value,
                 vertical,
-                width,
+                width: field,
                 ..
             } => {
                 if *vertical {
@@ -520,7 +535,7 @@ impl Root {
                         .flex()
                         .flex_col()
                         .child(label_block(label, *badge, description).mb(px(8.)))
-                        .child(select_field(value, (*width < PANEL).then_some(*width)))
+                        .child(select_field(value, (*field < width).then_some(*field)))
                         .into_any_element()
                 } else {
                     div()
@@ -530,9 +545,9 @@ impl Root {
                         .gap(px(COLUMN_GAP))
                         .child(
                             label_block(label, *badge, description)
-                                .w(px(PANEL - COLUMN_GAP - width)),
+                                .w(px(width - COLUMN_GAP - field)),
                         )
-                        .child(select_field(value, Some(*width)))
+                        .child(select_field(value, Some(*field)))
                         .into_any_element()
                 }
             }
@@ -577,6 +592,67 @@ impl Root {
                 row.render()
             }
             Node::Notice { text, .. } => info_notice(text).into_any_element(),
+            Node::Accordion {
+                key,
+                label,
+                description,
+                children,
+            } => {
+                let open = self.setting_choices.get(key) == Some(&Choice::On(true));
+                let header = div()
+                    .id(SharedString::from(format!("accordion-{key}")))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .mx(px(-12.))
+                    .p(px(12.))
+                    .rounded(px(16.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.setting_choices.insert(key, Choice::On(!open));
+                        cx.notify();
+                    }))
+                    .child(label_block(label, false, description).flex_1())
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(48.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(mask_icon(
+                                if open {
+                                    "settings_accordion_open"
+                                } else {
+                                    "settings_accordion_closed"
+                                },
+                                24.,
+                                "--text-default",
+                            )),
+                    );
+                let rows: Vec<AnyElement> = if open {
+                    children
+                        .iter()
+                        .map(|child| self.render_node(child, width, window, cx))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(
+                        div()
+                            .when(!open, |this| this.h(px(0.)))
+                            .when(open, |this| this.pt(px(16.)).flex().flex_col().gap(px(16.)))
+                            .children(rows),
+                    )
+                    .into_any_element()
+            }
             Node::Custom { height, .. } => div().h(px(*height)).into_any_element(),
         }
     }

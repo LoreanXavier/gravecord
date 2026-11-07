@@ -1205,7 +1205,7 @@ impl Root {
                         .parity(node.key())
                         .flex()
                         .flex_col()
-                        .child(self.render_node(node, window, cx))
+                        .child(self.render_node(node, render::PANEL, window, cx))
                         .into_any_element()
                 })
                 .collect(),

@@ -154,10 +154,33 @@ def slug(key):
     return re.sub(r'[^a-z0-9]+', '_', (key or 'unnamed').lower()).strip('_')
 
 
+# Module class suffixes of the components the renderer draws. A row holding anything else gets padded to its
+# captured height until that piece is modelled.
+KNOWN = {
+    '4Z2WJy', 'VhFsFg', '9AraPt', 'OnqacX', 'oJuRbG', 'vWC4bk', 'UcGqzv', 'b5PEJH', 'o2hjBM', 'cmkR8z', 'FiiQ6I',
+    'EEwkB0', 'yLRxYp', 'W6yko_', 'F7qvhY', 'R6ReNl', 'FX8kaC', 'TWWX0S', 'RAOoio', 'MMUIw6', 'HtJY5C', 'tqapBM',
+    '0v8Ae1', 'Gl6U0S', '4guu7-', 'ZaYWLb', 'MdUQoo', 'UGw2wN', 'GX4h9d', 'g4KcSq', 'p1llMl', '0PLWhS', 'hkRWAH',
+    'HjOfxu', 'nNq2Vb',
+}
+
+
 class Generator:
     def __init__(self, capture):
         self.capture = capture
         self.unknown = []
+        self.padded = []
+
+    def extras(self, node):
+        """True when the row holds an element no modelled component explains."""
+        c = self.capture
+        for inner in c.walk(node, self.nested):
+            if c.name(inner) in ('IMG', 'VIDEO', 'CANVAS'):
+                return True
+            for cls in c.cls(inner).split():
+                found = re.match(r'[A-Za-z][A-Za-z0-9]*_([A-Za-z0-9-]{6})$', cls)
+                if found and found.group(1) not in KNOWN:
+                    return True
+        return False
 
     def nested(self, node):
         return 'container_Gl6U0S' in self.capture.cls(node)
@@ -169,6 +192,15 @@ class Generator:
         return text, badge
 
     def leaf(self, node, key, indent):
+        line = self.leaf_line(node, key, indent)
+        # A switch, slider or select row with a button beside it is a composite not modelled yet.
+        composite = any(f'Node::{kind}' in line for kind in ('Switch', 'Slider', 'Select')) and             self.capture.first(node, 'button_F7qvhY', self.nested) is not None and 'chevronButton' not in self.capture.cls(self.capture.first(node, 'button_F7qvhY', self.nested))
+        if 'Node::Custom' not in line and (self.extras(node) or composite):
+            box = self.capture.bounds.get(node, [0, 0, 0, 0])
+            self.padded.append((key, round(box[3] - 16, 1)))
+        return line
+
+    def leaf_line(self, node, key, indent):
         c = self.capture
         stop = self.nested
         pad = ' ' * indent
@@ -272,16 +304,43 @@ class Generator:
             pass
         # Direct nested containers: those whose nearest container ancestor is `node`.
         for inner in c.walk(node):
-            if inner == node or not self.nested(inner):
+            if inner == node:
+                continue
+            is_rule = 'divider_ZaYWLb' in c.cls(inner) and 'divider_nNq2Vb' not in c.cls(inner)
+            if not (self.nested(inner) or is_rule):
                 continue
             parent = c.parent[inner]
             while parent >= 0 and not self.nested(parent):
                 parent = c.parent[parent]
             if parent == node:
                 direct.append(inner)
+        has_rows = any(self.nested(inner) for inner in direct)
+        if not has_rows:
+            direct = []
         if not direct:
             return [self.leaf(node, key, indent)]
         pad = ' ' * indent
+        disclosure = c.first(node, 'react-aria-Disclosure', self.nested)
+        if disclosure is not None:
+            title = c.first(disclosure, 'baseControlItemTitle_FiiQ6I', self.nested)
+            content = c.first(disclosure, 'baseControlItemContent_FiiQ6I', self.nested)
+            parts = [child for child in c.children[content] if 'baseControlItemTitle' not in c.cls(child)] if content is not None else []
+            note = c.runs(parts[0]) if parts else []
+            lines = [
+                f'{pad}Node::Accordion {{ key: {rust_str(key)}, label: {rust_str(c.text(title) if title is not None else "")}, '
+                f'description: {rust_runs(note)}, children: &['
+            ]
+            for child in direct:
+                lines.extend(self.child(child, indent + 4))
+            lines.append(f'{pad}] }},')
+            return lines
+        split = c.first(node, 'split_', self.nested) is not None
+        # The rows' gap: boxes of consecutive containers overlap by their 8px padding on each side.
+        rows = [inner for inner in direct if self.nested(inner) and inner in c.bounds]
+        gap = 8.0
+        if len(rows) > 1 and not split and all(self.nested(inner) for inner in direct):
+            first, second = c.bounds[rows[0]], c.bounds[rows[1]]
+            gap = round(second[1] - (first[1] + first[3]) + 16, 1)
         heading = next(
             (inner for inner in c.walk(node, self.nested) if re.search(r'heading-(xl|lg)', c.cls(inner))),
             None,
@@ -307,12 +366,17 @@ class Generator:
         lines = [
             f'{pad}Node::Category {{ key: {rust_str(key)}, title: {"Some(" + title + ")" if title else "None"}, '
             f'group: {"Some(" + group + ")" if group else "None"}, legend: {"Some(" + legend + ")" if legend else "None"}, '
-            f'description: {rust_runs(note)}, children: &['
+            f'split: {str(split).lower()}, gap: {gap:.1f}, description: {rust_runs(note)}, children: &['
         ]
         for child in direct:
-            lines.extend(self.container(child, indent + 4))
+            lines.extend(self.child(child, indent + 4))
         lines.append(f'{pad}] }},')
         return lines
+
+    def child(self, node, indent):
+        if self.nested(node):
+            return self.container(node, indent)
+        return [' ' * indent + 'Node::Rule,']
 
     def page(self):
         c = self.capture
@@ -327,7 +391,8 @@ class Generator:
             elif 'decorationWrapper' in cls:
                 box = c.bounds.get(child, [0, 0, 0, 0])
                 # `decorationWrapper sticky` keeps 48px under it.
-                lines.append(f'    Node::Custom {{ key: "decoration", height: {round(box[3] + 48, 1):.1f} }},')
+                margin = 48 if 'sticky' in cls else 0
+                lines.append(f'    Node::Custom {{ key: "decoration", height: {round(box[3] + margin, 1):.1f} }},')
         return lines
 
 
@@ -346,6 +411,7 @@ def main():
         out.append(f'        Page::{variant} => {variant.upper()},')
     out += ['        _ => &[],', '    }', '}', '']
     report = []
+    padded = []
     for variant, file in PAGES:
         path = DOM / f'{file}-darker-cozy.json'
         generator = Generator(Capture(path))
@@ -354,7 +420,17 @@ def main():
         out.extend(body)
         out.append('];')
         out.append('')
-        report.append(f'{file}: {len(generator.unknown)} custom ({", ".join(generator.unknown[:8])})')
+        padded.extend(generator.padded)
+        report.append(f'{file}: {len(generator.unknown)} custom ({", ".join(generator.unknown[:8])}), {len(generator.padded)} padded')
+    out.append('/// Rows holding pieces not modelled yet, with the height they take in the capture.')
+    out.append("pub(in crate::ui) fn padded(key: &str) -> Option<f32> {")
+    out.append('    match key {')
+    for key, height in padded:
+        out.append(f'        {rust_str(key)} => Some({height:.1f}),')
+    out.append('        _ => None,')
+    out.append('    }')
+    out.append('}')
+    out.append('')
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text('\n'.join(out), encoding='utf8')
     print('\n'.join(report))
