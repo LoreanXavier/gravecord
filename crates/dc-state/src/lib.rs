@@ -8,6 +8,7 @@ use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 pub type Id = u64;
 
@@ -326,9 +327,14 @@ impl PrivateChannel {
     }
 }
 
+/// `T` in module 741961: how long a typing notice lasts.
+pub const TYPING_DURATION: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 pub struct Stores {
     pub users: HashMap<Id, User>,
+    /// Channel to who is typing and when that notice ends.
+    pub typing: HashMap<Id, Vec<(Id, Instant)>>,
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
     pub private_channels: Vec<PrivateChannel>,
@@ -366,8 +372,20 @@ impl Stores {
                     self.sort_guilds();
                 }
             }
+            "TYPING_START" => {
+                if let (Some(channel), Some(user)) = (id(&data["channel_id"]), id(&data["user_id"]))
+                {
+                    let list = self.typing.entry(channel).or_default();
+                    list.retain(|(known, _)| *known != user);
+                    list.push((user, Instant::now() + TYPING_DURATION));
+                }
+            }
             "MESSAGE_CREATE" => {
                 if let Some(message) = Message::from_value(data) {
+                    // A sent message ends its author's typing notice.
+                    if let Some(list) = self.typing.get_mut(&message.channel_id) {
+                        list.retain(|(user, _)| *user != message.author.id);
+                    }
                     self.insert_message(message);
                 }
             }
@@ -493,6 +511,20 @@ impl Stores {
             known.content = content;
             known.edited = data["edited_timestamp"].is_string();
         }
+    }
+
+    /// Who is typing in a channel right now, without this client's own user.
+    pub fn typing_users(&self, channel: Id, now: Instant) -> Vec<Id> {
+        let me = self.current_user.as_ref().map(|user| user.id);
+        self.typing
+            .get(&channel)
+            .map(|list| {
+                list.iter()
+                    .filter(|(user, ends)| *ends > now && Some(*user) != me)
+                    .map(|(user, _)| *user)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn set_presence(&mut self, data: &Value) {
@@ -797,6 +829,43 @@ mod tests {
         stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
         stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("11"));
         assert!(stores.messages[&23][0].reactions.is_empty());
+    }
+
+    #[test]
+    fn typing_expires_and_ignores_myself() {
+        let mut stores = Stores {
+            current_user: Some(User {
+                id: 10,
+                ..User::default()
+            }),
+            ..Stores::default()
+        };
+        stores.dispatch(
+            "TYPING_START",
+            &json!({"channel_id": "23", "user_id": "10"}),
+        );
+        stores.dispatch(
+            "TYPING_START",
+            &json!({"channel_id": "23", "user_id": "11"}),
+        );
+        let now = Instant::now();
+        assert_eq!(stores.typing_users(23, now), [11]);
+        assert!(
+            stores
+                .typing_users(23, now + TYPING_DURATION + Duration::from_secs(1))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_sent_message_ends_the_typing_notice() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "TYPING_START",
+            &json!({"channel_id": "23", "user_id": "10"}),
+        );
+        stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
+        assert!(stores.typing_users(23, Instant::now()).is_empty());
     }
 
     #[test]

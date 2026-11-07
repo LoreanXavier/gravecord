@@ -18,6 +18,9 @@ pub enum Update {
 }
 
 pub enum Request {
+    Typing {
+        channel: u64,
+    },
     React {
         channel: u64,
         message: u64,
@@ -221,6 +224,14 @@ pub async fn run(
                     };
                     if let Err(error) = client.request(method, &route, None).await {
                         warn!("reaction failed: {error}");
+                    }
+                });
+            }
+            Request::Typing { channel } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{channel}/typing");
+                    if let Err(error) = client.request(reqwest::Method::POST, &route, None).await {
+                        warn!("typing notice failed: {error}");
                     }
                 });
             }

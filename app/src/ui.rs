@@ -10,7 +10,9 @@ use dc_markdown::highlight::highlight;
 use dc_markdown::{Block, Kind, Span, parse};
 use dc_state::grouping::starts_group;
 use dc_state::member_list::Row as MemberRow;
-use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User, fit_media};
+use dc_state::{
+    Channel, ChannelKind, Guild, Id, Message, Stores, TYPING_DURATION, User, fit_media,
+};
 use dc_tokens::Theme;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontFeatures,
@@ -20,6 +22,7 @@ use gpui::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod home;
@@ -84,16 +87,20 @@ pub struct Root {
     menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
     show_members: bool,
+    last_typing_sent: Option<Instant>,
     pub ready: bool,
 }
 
 impl Root {
     pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
-        cx.subscribe(&composer, |this, _, event, _| {
-            if let EditorEvent::Submit(content) = event {
+        cx.subscribe(&composer, |this, _, event, _| match event {
+            EditorEvent::Submit(content) => {
+                this.last_typing_sent = None;
                 this.send(content.clone());
             }
+            EditorEvent::Edited => this.notify_typing(),
+            EditorEvent::Cancel => {}
         })
         .detach();
         Self {
@@ -114,6 +121,7 @@ impl Root {
             menu: None,
             confirm_delete: None,
             show_members: false,
+            last_typing_sent: None,
             ready: false,
         }
     }
@@ -133,6 +141,14 @@ impl Root {
                 }
                 if name == "GUILD_MEMBER_LIST_UPDATE" {
                     self.request_member_images();
+                }
+                if name == "TYPING_START" {
+                    // Redraw when the notice runs out.
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(TYPING_DURATION).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
                 }
             }
             Update::Messages { channel, page } => {
@@ -470,6 +486,7 @@ impl Root {
                     this.editing = None;
                 }
                 EditorEvent::Cancel => this.editing = None,
+                EditorEvent::Edited => {}
             }
             cx.notify();
         })
@@ -477,6 +494,70 @@ impl Root {
         window.focus(&editor.read(cx).focus_handle(cx), cx);
         self.editing = Some((message, editor));
         cx.notify();
+    }
+
+    /// `TYPING_START_LOCAL`: at most one notice per 80% of the notice's length.
+    fn notify_typing(&mut self) {
+        let due = self
+            .last_typing_sent
+            .is_none_or(|sent| sent.elapsed() >= TYPING_DURATION.mul_f32(0.8));
+        if let (true, Some(channel)) = (due, self.channel) {
+            self.last_typing_sent = Some(Instant::now());
+            let _ = self.requests.send(Request::Typing { channel });
+        }
+    }
+
+    fn typing_bar(&self) -> Option<AnyElement> {
+        let channel = self.channel?;
+        let users = self.stores.typing_users(channel, Instant::now());
+        let names: Vec<String> = users
+            .iter()
+            .filter_map(|user| self.stores.users.get(user))
+            .map(|user| user.display_name().to_owned())
+            .collect();
+        let (lead, tail) = match names.as_slice() {
+            [] => return None,
+            [one] => (one.clone(), " is typing..."),
+            [one, two] => (format!("{one}, {two}"), " are typing..."),
+            _ => ("Several people".to_owned(), " are typing..."),
+        };
+        let dot = || {
+            div()
+                .size(px(6.))
+                .rounded_full()
+                .bg(color("--text-default"))
+        };
+        Some(
+            div()
+                .absolute()
+                .left(px(16.))
+                .top(px(-24.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--interactive-text-default"))
+                .child(
+                    div()
+                        .ml(px(8.))
+                        .flex()
+                        .gap(px(3.))
+                        .child(dot())
+                        .child(dot())
+                        .child(dot()),
+                )
+                .child(
+                    div()
+                        .ml(px(6.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(lead),
+                )
+                .child(tail)
+                .into_any_element(),
+        )
     }
 
     fn send(&mut self, content: String) {
@@ -1858,46 +1939,53 @@ impl Root {
                 .child(icon(name, 20., "--interactive-text-default"))
         };
         // The form overlaps the list by 16px, as the official layout does.
-        div().flex_none().mt(px(-16.)).px(px(8.)).pb(px(8.)).child(
-            div()
-                .parity_with_border("composer", 1.)
-                .min_h(px(58.))
-                .rounded(px(8.))
-                .bg(color("--chat-background-default"))
-                .border_1()
-                .border_color(color("--background-mod-subtle"))
-                .flex()
-                .flex_col()
-                .children(reply_bar)
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .pl(px(11.))
-                        .pr(px(12.))
-                        .child(div().pt(px(12.)).child(tool("attach")))
-                        .child(
-                            div()
-                                .ml(px(20.))
-                                .flex_1()
-                                .min_w(px(0.))
-                                .py(px(17.))
-                                .parity("composer-text")
-                                .child(self.composer.clone()),
-                        )
-                        .child(
-                            div()
-                                .pt(px(12.))
-                                .flex()
-                                .gap(px(8.))
-                                .child(tool("gift"))
-                                .child(tool("gif"))
-                                .child(tool("sticker"))
-                                .child(emoji_button)
-                                .child(tool("apps")),
-                        ),
-                ),
-        )
+        div()
+            .relative()
+            .flex_none()
+            .mt(px(-16.))
+            .px(px(8.))
+            .pb(px(8.))
+            .children(self.typing_bar())
+            .child(
+                div()
+                    .parity_with_border("composer", 1.)
+                    .min_h(px(58.))
+                    .rounded(px(8.))
+                    .bg(color("--chat-background-default"))
+                    .border_1()
+                    .border_color(color("--background-mod-subtle"))
+                    .flex()
+                    .flex_col()
+                    .children(reply_bar)
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .pl(px(11.))
+                            .pr(px(12.))
+                            .child(div().pt(px(12.)).child(tool("attach")))
+                            .child(
+                                div()
+                                    .ml(px(20.))
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .py(px(17.))
+                                    .parity("composer-text")
+                                    .child(self.composer.clone()),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(12.))
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(tool("gift"))
+                                    .child(tool("gif"))
+                                    .child(tool("sticker"))
+                                    .child(emoji_button)
+                                    .child(tool("apps")),
+                            ),
+                    ),
+            )
     }
 }
 

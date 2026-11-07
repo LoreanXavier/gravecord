@@ -20,6 +20,8 @@ const FONT_SIZE: f32 = 16.;
 pub enum EditorEvent {
     Submit(String),
     Cancel,
+    /// The text changed through typing or the input method.
+    Edited,
 }
 
 pub struct EditorStyle {
@@ -281,6 +283,7 @@ impl EntityInputHandler for Editor {
     ) {
         let range = range.map(|range| self.buffer.range_from_utf16(&range));
         self.buffer.replace(range, text);
+        cx.emit(EditorEvent::Edited);
         cx.notify();
     }
 
