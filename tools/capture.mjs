@@ -25,9 +25,14 @@ const COMPUTED = [
 const root = join(import.meta.dirname, '..', 'design');
 const page = await connect();
 await page.send('DOMSnapshot.enable');
-const { width, height, dpr } = await page.evaluate(
-  '({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })',
-);
+const { width, height, dpr, route, theme, density } = await page.evaluate(`({
+  width: innerWidth,
+  height: innerHeight,
+  dpr: devicePixelRatio,
+  route: location.pathname,
+  theme: [...document.documentElement.classList].filter((c) => c.startsWith('theme-')).join(' '),
+  density: [...document.documentElement.classList].find((c) => c.startsWith('density-')),
+})`);
 const snapshot = await page.send('DOMSnapshot.captureSnapshot', {
   computedStyles: COMPUTED,
   includeDOMRects: true,
@@ -39,8 +44,8 @@ page.close();
 const domPath = join(root, 'dom', screen, `${variant}.json`);
 const pngPath = join(root, 'golden', 'windows', screen, `${variant}@${dpr}.png`);
 for (const path of [domPath, pngPath]) mkdirSync(dirname(path), { recursive: true });
-writeFileSync(domPath, JSON.stringify({ viewport: { width, height, dpr }, computed: COMPUTED, snapshot }));
+writeFileSync(domPath, JSON.stringify({ viewport: { width, height, dpr }, route, theme, density, computed: COMPUTED, snapshot }));
 writeFileSync(pngPath, Buffer.from(data, 'base64'));
 
 const nodes = snapshot.documents.reduce((sum, doc) => sum + doc.nodes.nodeName.length, 0);
-console.log(`${screen}/${variant}: ${width}x${height}@${dpr}, ${nodes} nodes, ${snapshot.strings.length} strings`);
+console.log(`${screen}/${variant}: ${width}x${height}@${dpr}, ${nodes} nodes, route ${route}, ${theme}, ${density}`);

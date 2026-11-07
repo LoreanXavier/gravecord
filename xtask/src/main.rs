@@ -1,4 +1,5 @@
 mod asar;
+mod audit;
 mod client;
 mod snapshot;
 
@@ -19,6 +20,7 @@ fn main() -> Result<()> {
     match args.as_slice() {
         ["snapshot", "pin", rest @ ..] => snapshot::pin(&repo_root(), rest),
         ["client", rest @ ..] => client::run(&repo_root(), rest),
+        ["audit"] => audit::run(&repo_root()),
         [] => bail!("usage: cargo xtask <command>, see the working rules"),
         other => bail!("not implemented yet: {}", other.join(" ")),
     }

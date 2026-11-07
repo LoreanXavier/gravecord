@@ -50,7 +50,7 @@ const indexResponse = await fetch(`${loaded.origin}/app`);
 writeFileSync(join(snapshot, 'index.html'), await indexResponse.text());
 
 // `p.k` (styles) and `p.u` (scripts) name lazy files two ways: `if(<id>===e)return""+e+".<hash>.js"` chains for the first
-// few hundred, then one `({<id>:"<hash>",...})[e]+".js"` table for the rest. Both have to be read.
+// few hundred (id in the filename), then one `""+({<id>:"<stem>",...})[e]+".js"` table for the rest (stem only).
 const runtimeFile = readdirSync(assets).find((name) => /^web\.[0-9a-f]+\.js$/.test(name));
 if (!runtimeFile) throw new Error('no web.*.js runtime in assets');
 const runtime = readFileSync(join(assets, runtimeFile), 'utf8');
@@ -66,7 +66,8 @@ for (const [segment, extension] of [
   for (const [, id, prefixed, name] of segment.matchAll(/if\((\d+|"[^"]+")===e\)return(""\+e\+)?"([^"]+\.(?:js|css))"/g)) {
     lazy.add(prefixed ? `${id}${name}` : name);
   }
-  for (const [, id, hash] of segment.matchAll(/[,{](\d+):"([0-9a-f]{16})"/g)) lazy.add(`${id}.${hash}.${extension}`);
+  const table = segment.slice(segment.lastIndexOf('({'), segment.lastIndexOf('})[e]'));
+  for (const [, stem] of table.matchAll(/[,{](?:\d+|"[^"]+"):"([^"]+)"/g)) lazy.add(`${stem}.${extension}`);
 }
 console.log(`lazy files named by the runtime: ${lazy.size}`);
 writeFileSync(join(snapshot, 'lazy-files.txt'), [...lazy].join(String.fromCharCode(10)));
