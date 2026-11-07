@@ -524,8 +524,46 @@ impl Account {
     }
 }
 
+/// One member's place in voice, from READY's `voice_states` and `VOICE_STATE_UPDATE`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VoiceState {
+    pub user_id: Id,
+    pub channel_id: Id,
+    pub session_id: String,
+    pub self_mute: bool,
+    pub self_deaf: bool,
+    pub mute: bool,
+    pub deaf: bool,
+}
+
+impl VoiceState {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            user_id: id(&value["user_id"])?,
+            channel_id: id(&value["channel_id"])?,
+            session_id: text(&value["session_id"]).unwrap_or_default(),
+            self_mute: value["self_mute"].as_bool().unwrap_or(false),
+            self_deaf: value["self_deaf"].as_bool().unwrap_or(false),
+            mute: value["mute"].as_bool().unwrap_or(false),
+            deaf: value["deaf"].as_bool().unwrap_or(false),
+        })
+    }
+}
+
+/// `VOICE_SERVER_UPDATE`: where the voice connection for a guild goes. The token is a secret.
+#[derive(Clone, PartialEq)]
+pub struct VoiceServer {
+    pub guild_id: Id,
+    pub endpoint: String,
+    pub token: String,
+}
+
 #[derive(Default)]
 pub struct Stores {
+    /// Guild to its members in voice. A state without a channel removes the member.
+    pub voice_states: HashMap<Id, Vec<VoiceState>>,
+    /// The last voice server handed to this session.
+    pub voice_server: Option<VoiceServer>,
     /// `appearance.theme` from the settings proto: 0 unset, 1 dark, 2 light, 3 darker, 4 midnight.
     pub theme: u64,
     pub account: Account,
@@ -560,6 +598,28 @@ impl Stores {
             "GUILD_MEMBER_LIST_UPDATE" => {
                 if let Some(guild) = id(&data["guild_id"]) {
                     self.member_lists.entry(guild).or_default().apply(data);
+                }
+            }
+            "VOICE_STATE_UPDATE" => {
+                if let (Some(guild), Some(user)) = (id(&data["guild_id"]), id(&data["user_id"])) {
+                    let list = self.voice_states.entry(guild).or_default();
+                    list.retain(|state| state.user_id != user);
+                    if let Some(state) = VoiceState::from_value(data) {
+                        list.push(state);
+                    }
+                }
+            }
+            "VOICE_SERVER_UPDATE" => {
+                if let (Some(guild_id), Some(endpoint), Some(token)) = (
+                    id(&data["guild_id"]),
+                    text(&data["endpoint"]),
+                    text(&data["token"]),
+                ) {
+                    self.voice_server = Some(VoiceServer {
+                        guild_id,
+                        endpoint,
+                        token,
+                    });
                 }
             }
             "GUILD_CREATE" => {
@@ -639,6 +699,19 @@ impl Stores {
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
             .unwrap_or_default();
+        self.voice_states = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|guild| {
+                let states = guild["voice_states"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(VoiceState::from_value)
+                    .collect();
+                Some((id(&guild["id"])?, states))
+            })
+            .collect();
         self.sort_guilds();
     }
 
@@ -720,6 +793,19 @@ impl Stores {
         if let Some(embeds) = data["embeds"].as_array() {
             known.embeds = embeds.iter().map(Embed::from_value).collect();
         }
+    }
+
+    /// Members in a voice channel, in the order they joined.
+    pub fn voice_members(&self, guild: Id, channel: Id) -> Vec<&VoiceState> {
+        self.voice_states
+            .get(&guild)
+            .map(|states| {
+                states
+                    .iter()
+                    .filter(|state| state.channel_id == channel)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Who is typing in a channel right now, without this client's own user.
@@ -835,6 +921,30 @@ mod tests {
         assert_eq!(
             stores.messages[&23][0].embeds[0].title.as_deref(),
             Some("t")
+        );
+    }
+
+    #[test]
+    fn voice_states_follow_updates_and_leaves() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"guild_id": "1", "channel_id": "9", "user_id": "5", "session_id": "s", "self_mute": true}),
+        );
+        assert_eq!(stores.voice_members(1, 9)[0].session_id, "s");
+        assert!(stores.voice_members(1, 9)[0].self_mute);
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"guild_id": "1", "channel_id": null, "user_id": "5"}),
+        );
+        assert!(stores.voice_members(1, 9).is_empty());
+        stores.dispatch(
+            "VOICE_SERVER_UPDATE",
+            &json!({"guild_id": "1", "endpoint": "c-ams.discord.media", "token": "t"}),
+        );
+        assert_eq!(
+            stores.voice_server.as_ref().unwrap().endpoint,
+            "c-ams.discord.media"
         );
     }
 

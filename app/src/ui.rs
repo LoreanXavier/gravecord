@@ -37,6 +37,7 @@ mod plaintext_extensions;
 mod settings;
 mod tooltip;
 mod uploads;
+mod voice;
 
 use tooltip::{Body, Side, Tip};
 
@@ -124,6 +125,12 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// The voice call, from joining until leaving.
+    call: Option<voice::Call>,
+    self_mute: bool,
+    self_deaf: bool,
+    /// Users the voice connection reports as speaking.
+    speaking: HashSet<Id>,
     /// Text of attachments shown as plaintext previews, by `text:` key.
     texts: HashMap<String, String>,
     /// Files picked or dropped, waiting for the next send.
@@ -173,6 +180,10 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            call: None,
+            self_mute: false,
+            self_deaf: false,
+            speaking: HashSet::new(),
             texts: HashMap::new(),
             pending_files: Vec::new(),
             revealed: HashSet::new(),
@@ -206,6 +217,9 @@ impl Root {
                 ) {
                     self.rebuild_rows();
                 }
+                if matches!(name.as_str(), "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") {
+                    self.maybe_connect_voice();
+                }
                 if name == "GUILD_MEMBER_LIST_UPDATE" {
                     self.request_member_images();
                 }
@@ -224,6 +238,7 @@ impl Root {
                 self.request_images();
                 self.ready = true;
             }
+            Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
                 self.fetched.insert(key, body);
                 cx.notify();
@@ -558,7 +573,7 @@ impl Root {
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
         format!(
-            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={}",
+            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
@@ -576,6 +591,11 @@ impl Root {
                     .map(|message| message.embeds.len())
                     .sum::<usize>()),
             self.stores.theme,
+            match &self.call {
+                Some(call) if call.connected => "connected",
+                Some(_) => "connecting",
+                None => "none",
+            },
         )
     }
 
@@ -1033,7 +1053,7 @@ impl Root {
             .child(div().flex_none().h(px(50.)))
     }
 
-    fn channel_row(&self, channel: &Channel) -> AnyElement {
+    fn channel_row(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
         if channel.kind == ChannelKind::Category {
             return div()
                 .flex_none()
@@ -1083,6 +1103,7 @@ impl Root {
         };
         let action_group = group.clone();
         let name_group = group.clone();
+        let target = channel.id;
         div()
             .flex_none()
             .h(px(34.))
@@ -1090,6 +1111,22 @@ impl Root {
             .pl(px(8.))
             .child(
                 div()
+                    .id(SharedString::from(format!("channel-row-{}", channel.id)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if voice {
+                            if let Some(guild) = this.guild {
+                                this.join_voice(guild, target, cx);
+                            }
+                        } else {
+                            let guild = this.guild;
+                            if let Some(guild) = guild {
+                                this.select(guild, Some(target));
+                                this.request_images();
+                            }
+                            cx.notify();
+                        }
+                    }))
                     .group(group)
                     .h(px(32.))
                     .w(px(286.))
@@ -1137,7 +1174,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn sidebar(&self) -> impl IntoElement {
+    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let guild = self.current_guild();
         let name = guild.map(|guild| guild.name.clone()).unwrap_or_default();
         let plain_row = |icon_name: &str, label: &str| {
@@ -1165,7 +1202,13 @@ impl Root {
                 guild
                     .sidebar_rows()
                     .into_iter()
-                    .map(|row| self.channel_row(row))
+                    .flat_map(|row| {
+                        let mut rows = vec![self.channel_row(row, cx)];
+                        if row.kind == ChannelKind::Voice {
+                            rows.extend(self.voice_members(guild.id, row.id));
+                        }
+                        rows
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1244,6 +1287,14 @@ impl Root {
     fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        // Muted and deafened buttons turn red with their chevron: `redGlow_Y-8oZW`.
+        let tint = |muted: bool| {
+            if muted {
+                "--icon-voice-muted"
+            } else {
+                "--interactive-text-default"
+            }
+        };
         let button = |name: &str| {
             div()
                 .size(px(32.))
@@ -1252,7 +1303,15 @@ impl Root {
                 .justify_center()
                 .child(icon(name, 20., "--interactive-text-default"))
         };
-        let chevron = || {
+        let toggle = |name: &str, muted: bool| {
+            div()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(name, 20., tint(muted)))
+        };
+        let chevron = |muted: bool| {
             div()
                 .w(px(16.))
                 .h(px(32.))
@@ -1260,19 +1319,11 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon("audio_chevron", 16., "--interactive-text-default"))
+                .child(icon("audio_chevron", 16., tint(muted)))
         };
-        div()
-            .parity_with_border("user-panel", 1.)
-            .absolute()
-            .left(px(8.))
-            .bottom(px(8.))
-            .w(px(359.))
-            .h(px(58.))
-            .rounded(px(8.))
-            .bg(color("--background-base-low"))
-            .border_1()
-            .border_color(color("--background-mod-subtle"))
+        let mic_muted = self.self_mute || self.self_deaf;
+        let row = div()
+            .h(px(56.))
             .flex()
             .items_center()
             .pl(px(11.))
@@ -1312,21 +1363,54 @@ impl Root {
                     .ml(px(12.))
                     .flex()
                     .items_center()
-                    .child(self.with_tip("mic", Tip::text("Mute", Side::Top), button("mic"), cx))
-                    .child(chevron()),
+                    .rounded(px(8.))
+                    .when(mic_muted, |this| this.bg(color("--background-voice-muted")))
+                    .child(
+                        div()
+                            .id("toggle-mute")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_self_mute(cx)))
+                            .child(self.with_tip(
+                                "mic",
+                                Tip::text(if mic_muted { "Unmute" } else { "Mute" }, Side::Top),
+                                toggle(if mic_muted { "mic_muted" } else { "mic" }, mic_muted),
+                                cx,
+                            )),
+                    )
+                    .child(chevron(mic_muted)),
             )
             .child(
                 div()
                     .ml(px(8.))
                     .flex()
                     .items_center()
-                    .child(self.with_tip(
-                        "deafen",
-                        Tip::text("Deafen", Side::Top),
-                        button("headphones"),
-                        cx,
-                    ))
-                    .child(chevron()),
+                    .rounded(px(8.))
+                    .when(self.self_deaf, |this| {
+                        this.bg(color("--background-voice-muted"))
+                    })
+                    .child(
+                        div()
+                            .id("toggle-deafen")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_self_deaf(cx)))
+                            .child(self.with_tip(
+                                "deafen",
+                                Tip::text(
+                                    if self.self_deaf { "Undeafen" } else { "Deafen" },
+                                    Side::Top,
+                                ),
+                                toggle(
+                                    if self.self_deaf {
+                                        "headphones_deafened"
+                                    } else {
+                                        "headphones"
+                                    },
+                                    self.self_deaf,
+                                ),
+                                cx,
+                            )),
+                    )
+                    .child(chevron(self.self_deaf)),
             )
             .child(
                 div()
@@ -1340,7 +1424,22 @@ impl Root {
                         button("settings"),
                         cx,
                     )),
-            )
+            );
+        // `panels_pog62O`: one bordered box; while in voice the call panel sits above the user row.
+        div()
+            .parity_with_border("user-panel", 1.)
+            .absolute()
+            .left(px(8.))
+            .bottom(px(8.))
+            .w(px(359.))
+            .rounded(px(8.))
+            .bg(color("--background-base-low"))
+            .border_1()
+            .border_color(color("--background-mod-subtle"))
+            .flex()
+            .flex_col()
+            .children(self.voice_panel(cx))
+            .child(row)
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2592,7 +2691,7 @@ impl Render for Root {
                     .min_h(px(0.))
                     .child(self.rail(cx))
                     .child(if self.guild.is_some() {
-                        self.sidebar().into_any_element()
+                        self.sidebar(cx).into_any_element()
                     } else {
                         self.home_sidebar(cx).into_any_element()
                     })

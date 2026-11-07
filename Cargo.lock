@@ -2636,6 +2636,7 @@ dependencies = [
  "dc-proto",
  "dc-state",
  "dc-tokens",
+ "dc-voice",
  "gpui",
  "gpui_platform",
  "image",

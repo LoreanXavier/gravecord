@@ -24,6 +24,8 @@ pub enum Update {
         key: String,
         bytes: Vec<u8>,
     },
+    /// An event of the voice connection.
+    Voice(dc_voice::Event),
     /// The body of a `Request::Fetch`.
     Fetched {
         key: String,
@@ -32,6 +34,19 @@ pub enum Update {
 }
 
 pub enum Request {
+    /// Op 4 `VOICE_STATE_UPDATE`, as the bundle's `voiceStateUpdate` writes it. No channel leaves voice.
+    VoiceState {
+        guild: u64,
+        channel: Option<u64>,
+        self_mute: bool,
+        self_deaf: bool,
+        flags: u64,
+    },
+    /// Opens the voice connection once the gateway named the server.
+    VoiceConnect {
+        join: dc_voice::Join,
+        controls: dc_voice::Controls,
+    },
     /// GET a route and hand its JSON back under `key`.
     Fetch {
         key: String,
@@ -319,6 +334,38 @@ pub async fn run(
                         }
                         Err(error) => warn!("fetch failed: {error}"),
                     }
+                });
+            }
+            Request::VoiceState {
+                guild,
+                channel,
+                self_mute,
+                self_deaf,
+                flags,
+            } => {
+                let data = json!({
+                    "guild_id": guild.to_string(),
+                    "channel_id": channel.map(|channel| channel.to_string()),
+                    "self_mute": self_mute,
+                    "self_deaf": self_deaf,
+                    "self_video": false,
+                    "flags": flags,
+                });
+                let _ = commands.send(Command::Send {
+                    op: Op::VoiceStateUpdate,
+                    data,
+                });
+            }
+            Request::VoiceConnect { join, controls } => {
+                let (task, mut events) = dc_voice::connect(join, &controls);
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        if updates.send(Update::Voice(event)).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = task.await;
                 });
             }
             Request::Subscribe { guild, channel } => {
