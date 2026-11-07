@@ -2,6 +2,7 @@
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
 pub mod grouping;
+pub mod member_list;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
@@ -96,6 +97,7 @@ pub struct Guild {
     pub id: Id,
     pub name: String,
     pub icon: Option<String>,
+    pub owner_id: Option<Id>,
     pub joined_at: String,
     pub channels: Vec<Channel>,
 }
@@ -113,6 +115,7 @@ impl Guild {
             id: id(&value["id"])?,
             name: text(&properties["name"])?,
             icon: text(&properties["icon"]),
+            owner_id: id(&properties["owner_id"]),
             joined_at: text(&value["joined_at"]).unwrap_or_default(),
             channels: channels.iter().filter_map(Channel::from_value).collect(),
         })
@@ -242,6 +245,7 @@ pub struct Stores {
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
     pub private_channels: Vec<PrivateChannel>,
+    pub member_lists: HashMap<Id, member_list::MemberList>,
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
     pub current_user: Option<User>,
@@ -263,6 +267,11 @@ impl Stores {
                 }
             }
             "PRESENCE_UPDATE" => self.set_presence(data),
+            "GUILD_MEMBER_LIST_UPDATE" => {
+                if let Some(guild) = id(&data["guild_id"]) {
+                    self.member_lists.entry(guild).or_default().apply(data);
+                }
+            }
             "GUILD_CREATE" => {
                 if let Some(guild) = Guild::from_value(data) {
                     self.guilds.retain(|known| known.id != guild.id);

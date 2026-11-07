@@ -1,0 +1,7 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "chat-header": { "class": "title_z_gUBg" },
+  "messages": { "class": "messagesWrapper_8AE1Qq" },
+  "composer": { "class": "channelTextArea_z_gUBg" },
+  "members": { "class": "membersWrap_86es0b" }
+}

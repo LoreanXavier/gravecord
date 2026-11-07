@@ -9,6 +9,7 @@ use chrono::Datelike;
 use dc_markdown::highlight::highlight;
 use dc_markdown::{Block, Span, parse};
 use dc_state::grouping::starts_group;
+use dc_state::member_list::Row as MemberRow;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
 use dc_tokens::Theme;
 use gpui::{
@@ -82,6 +83,7 @@ pub struct Root {
     replying: Option<Message>,
     menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
+    show_members: bool,
     pub ready: bool,
 }
 
@@ -111,6 +113,7 @@ impl Root {
             replying: None,
             menu: None,
             confirm_delete: None,
+            show_members: false,
             ready: false,
         }
     }
@@ -122,8 +125,14 @@ impl Root {
                 if name == "READY" {
                     self.after_ready();
                 }
-                if name == "MESSAGE_CREATE" || name == "MESSAGE_DELETE" {
+                if matches!(
+                    name.as_str(),
+                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE"
+                ) {
                     self.rebuild_rows();
+                }
+                if name == "GUILD_MEMBER_LIST_UPDATE" {
+                    self.request_member_images();
                 }
             }
             Update::Messages { channel, page } => {
@@ -214,6 +223,107 @@ impl Root {
             let (key, url) = avatar_source(&user);
             self.request_image(key, url);
         }
+    }
+
+    fn request_member_images(&mut self) {
+        let Some(list) = self
+            .guild
+            .and_then(|guild| self.stores.member_lists.get(&guild))
+        else {
+            return;
+        };
+        let users: Vec<User> = list
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                MemberRow::Member { user, .. } => Some(user.clone()),
+                _ => None,
+            })
+            .collect();
+        for user in users {
+            let (key, url) = avatar_source(&user);
+            self.request_image(key, url);
+        }
+    }
+
+    /// The official panel: 264px wide, 42px rows, section headers with their counts.
+    fn member_panel(&self) -> impl IntoElement {
+        let list = self
+            .guild
+            .and_then(|guild| self.stores.member_lists.get(&guild));
+        let owner = self.current_guild().and_then(|guild| guild.owner_id);
+        let rows: Vec<AnyElement> =
+            list.map(|list| list.rows.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .map(|row| match row {
+                    MemberRow::Group { id, count } => div()
+                        .h(px(42.))
+                        .pt(px(20.))
+                        .pl(px(16.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--channels-default"))
+                        .child(format!("{} \u{2014} {count}", group_label(id)))
+                        .into_any_element(),
+                    MemberRow::Member { user, nick, status } => {
+                        let avatar = self.images.get(&avatar_source(user).0).cloned();
+                        let name = nick
+                            .clone()
+                            .unwrap_or_else(|| user.display_name().to_owned());
+                        div()
+                            .h(px(42.))
+                            .pt(px(1.))
+                            .pl(px(8.))
+                            .child(
+                                div()
+                                    .h(px(40.))
+                                    .w(px(248.))
+                                    .pl(px(8.))
+                                    .rounded(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .size(px(32.))
+                                            .children(avatar.map(|image| {
+                                                img(image).size(px(32.)).rounded_full()
+                                            }))
+                                            .child(status_dot(status, "--background-base-lower")),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(12.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child(name),
+                                    )
+                                    .when(owner == Some(user.id), |this| {
+                                        this.child(div().ml(px(4.)).child(icon(
+                                            "owner_crown",
+                                            14.,
+                                            "--status-warning",
+                                        )))
+                                    }),
+                            )
+                            .into_any_element()
+                    }
+                    MemberRow::Unknown => div().h(px(42.)).into_any_element(),
+                })
+                .collect();
+        div()
+            .parity("members")
+            .flex_none()
+            .w(px(264.))
+            .h_full()
+            .bg(color("--background-base-lower"))
+            .flex()
+            .flex_col()
+            .children(rows)
     }
 
     fn rebuild_rows(&mut self) {
@@ -980,7 +1090,7 @@ impl Root {
             .child(div().ml(px(8.)).child(button("settings")))
     }
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.channel_title();
         let search = format!(
             "Search {}",
@@ -1027,7 +1137,16 @@ impl Root {
                     .child(tool("threads"))
                     .child(tool("bell"))
                     .child(tool("pin"))
-                    .child(tool("members")),
+                    .child(
+                        div()
+                            .id("toggle-members")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_members = !this.show_members;
+                                cx.notify();
+                            }))
+                            .child(tool("members")),
+                    ),
             )
             .child(
                 div()
@@ -1615,7 +1734,7 @@ impl Render for Root {
                             .min_w(px(0.))
                             .h_full()
                             .pt(px(1.))
-                            .child(self.header())
+                            .child(self.header(cx))
                             .child(
                                 div()
                                     .flex()
@@ -1623,10 +1742,26 @@ impl Render for Root {
                                     .flex_1()
                                     .min_h(px(0.))
                                     .bg(color("--background-base-lower"))
+                                    .flex_row()
                                     .child(
-                                        div().parity("messages").flex_1().min_h(px(0.)).child(rows),
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .h_full()
+                                            .child(
+                                                div()
+                                                    .parity("messages")
+                                                    .flex_1()
+                                                    .min_h(px(0.))
+                                                    .child(rows),
+                                            )
+                                            .child(self.composer_bar(cx)),
                                     )
-                                    .child(self.composer_bar(cx)),
+                                    .when(self.show_members && self.guild.is_some(), |this| {
+                                        this.child(self.member_panel())
+                                    }),
                             )
                             .into_any_element()
                     }),
@@ -1640,6 +1775,15 @@ impl Render for Root {
 pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) {
     let handle = root.read(cx).composer.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
+}
+
+/// Built-in sections; anything else is a hoisted role, named once roles are stored.
+fn group_label(id: &str) -> &str {
+    match id {
+        "online" => "Online",
+        "offline" => "Offline",
+        other => other,
+    }
 }
 
 /// English labels of the status picker. The full catalog comes with `STRINGS/`.

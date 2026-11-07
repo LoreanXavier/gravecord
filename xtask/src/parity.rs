@@ -201,10 +201,15 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         .join("dom")
         .join(screen)
         .join(format!("{variant}.json"));
-    let map = repo
-        .join("tests")
-        .join("parity")
-        .join(format!("{screen}.json"));
+    let maps = repo.join("tests").join("parity");
+    // A variant can have its own map: `channel-members.json` for `members-darker-cozy`.
+    let state = variant.split('-').next().unwrap_or(variant);
+    let specific = maps.join(format!("{screen}-{state}.json"));
+    let map = if specific.exists() {
+        specific
+    } else {
+        maps.join(format!("{screen}.json"))
+    };
     let (checked, mismatches) = layout::compare(&dom, &map, &frame.with_extension("layout.json"))?;
     println!(
         "layout tree: {checked} elements, {} differ",
