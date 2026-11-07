@@ -1,5 +1,5 @@
 // Adds one FEATURES.md row per dump item that has none. Existing rows, ids and statuses are never changed or removed.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
@@ -34,6 +34,18 @@ for (const [name, route] of Object.entries(read('endpoints.live.json')).sort()) 
   add('route', `Route ${name}`, `ENDPOINTS:${name}`, (route.template ?? '').replaceAll('|', '/'));
 }
 for (const path of nativeLeaves(read('discord-native.json'), '', []).sort()) add('native', `Native ${path}`, `DISCORD_NATIVE:${path}`);
+
+for (const [action] of read('KEYBINDS.md').actions) add('keybind', `Keybind action ${action}`, `KEYBINDS:${action}`);
+for (const [menu, { itemsInModule }] of Object.entries(read('CONTEXT_MENUS.md')).sort()) {
+  add('menu', `Context menu ${menu}`, `CONTEXT_MENUS:${menu}`, `${itemsInModule.length} item ids in its module`);
+}
+for (const id of read('SETTINGS.md').ids) add('setting', `Setting ${id}`, `SETTINGS:${id}`);
+for (const [id, name] of Object.entries(read('SOUNDS.md')).sort()) add('sound', `Sound ${name}`, `SOUNDS:${id}`);
+for (const type of read('EMBEDS.md').types) add('embed', `Embed type ${type}`, `EMBEDS:${type}`);
+for (const file of readdirSync(join(dumps, 'PROTOS')).sort()) {
+  const name = file.replace(/\.json$/, '');
+  add('proto', `Proto ${name}`, `PROTOS:${name}`);
+}
 
 const file = join(root, 'FEATURES.md');
 const text = readFileSync(file, 'utf8');

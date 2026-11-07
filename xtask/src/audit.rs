@@ -112,6 +112,45 @@ fn dump_sources(dumps: &Path) -> Result<Vec<String>> {
     if let Value::Object(routes) = read("endpoints.live.json")? {
         sources.extend(routes.keys().map(|name| format!("ENDPOINTS:{name}")));
     }
+    if let Value::Object(keybinds) = read("KEYBINDS.md")?
+        && let Some(actions) = keybinds.get("actions").and_then(Value::as_array)
+    {
+        sources.extend(
+            actions
+                .iter()
+                .filter_map(|action| action[0].as_str())
+                .map(|name| format!("KEYBINDS:{name}")),
+        );
+    }
+    if let Value::Object(menus) = read("CONTEXT_MENUS.md")? {
+        sources.extend(menus.keys().map(|name| format!("CONTEXT_MENUS:{name}")));
+    }
+    if let Value::Object(settings) = read("SETTINGS.md")?
+        && let Some(ids) = settings.get("ids").and_then(Value::as_array)
+    {
+        sources.extend(
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(|name| format!("SETTINGS:{name}")),
+        );
+    }
+    if let Value::Object(sounds) = read("SOUNDS.md")? {
+        sources.extend(sounds.keys().map(|id| format!("SOUNDS:{id}")));
+    }
+    if let Value::Object(embeds) = read("EMBEDS.md")?
+        && let Some(types) = embeds.get("types").and_then(Value::as_array)
+    {
+        sources.extend(
+            types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|name| format!("EMBEDS:{name}")),
+        );
+    }
+    for entry in fs::read_dir(dumps.join("PROTOS"))? {
+        let name = entry?.file_name().to_string_lossy().replace(".json", "");
+        sources.push(format!("PROTOS:{name}"));
+    }
     Ok(sources)
 }
 
@@ -143,7 +182,13 @@ pub fn run(repo: &Path) -> Result<()> {
     println!("{} rows, {done} done", current.len());
     let missing: Vec<&str> = REQUIRED_DUMPS
         .into_iter()
-        .filter(|name| !dumps.join(format!("{name}.md")).exists() && !dumps.join(name).exists())
+        .filter(|name| {
+            !dumps.join(format!("{name}.md")).exists()
+                && !dumps.join(name).exists()
+                && !dumps
+                    .parent()
+                    .is_some_and(|snapshot| snapshot.join(name).exists())
+        })
         .collect();
     if !missing.is_empty() {
         println!("dumps not produced yet: {}", missing.join(" "));
