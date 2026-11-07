@@ -271,10 +271,8 @@ impl Inline {
                 continue;
             }
             let padding = (fragment.width - fragment.shaped.width) / 2.;
-            let left = fragment
-                .shaped
-                .x_for_index(from.max(fragment.start) - fragment.start);
-            let right = fragment.shaped.x_for_index(to.min(end) - fragment.start);
+            let left = caret_x(&fragment.shaped, from.max(fragment.start) - fragment.start);
+            let right = caret_x(&fragment.shaped, to.min(end) - fragment.start);
             let origin = point(
                 bounds.origin.x + fragment.x + padding + left,
                 bounds.origin.y + self.line_height * fragment.line as f32,
@@ -427,18 +425,58 @@ impl Element for Inline {
     }
 }
 
+/// A ligature is one glyph over several characters. gpui reports a character inside one at the glyph's end, so it shares
+/// its x with the next caret. Like Chromium, this divides the glyph evenly between its characters.
+fn spread_ligatures(carets: &mut [(usize, Pixels)]) {
+    let mut index = 1;
+    while index + 1 < carets.len() {
+        if carets[index].1 != carets[index + 1].1 {
+            index += 1;
+            continue;
+        }
+        let mut last = index + 1;
+        while last + 1 < carets.len() && carets[last + 1].1 == carets[index].1 {
+            last += 1;
+        }
+        let (from, to) = (carets[index - 1].1, carets[last].1);
+        let steps = (last - index + 1) as f32;
+        for (step, caret) in carets[index..last].iter_mut().enumerate() {
+            caret.1 = from + (to - from) * ((step + 1) as f32 / steps);
+        }
+        index = last + 1;
+    }
+}
+
+/// The x of every caret position.
+fn caret_positions(line: &ShapedLine) -> Vec<(usize, Pixels)> {
+    let text = line.text.as_ref();
+    let mut carets: Vec<(usize, Pixels)> = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([text.len()])
+        .map(|at| (at, line.x_for_index(at)))
+        .collect();
+    spread_ligatures(&mut carets);
+    carets
+}
+
+fn caret_x(line: &ShapedLine, index: usize) -> Pixels {
+    caret_positions(line)
+        .iter()
+        .find(|(at, _)| *at >= index)
+        .map_or(line.width, |(_, x)| *x)
+}
+
 /// The caret position nearest to `x`, as a browser picks it: the closer of a character's two edges.
 fn nearest_caret(line: &ShapedLine, x: Pixels) -> usize {
-    let text = line.text.as_ref();
-    let edges = text.char_indices().map(|(at, _)| at).chain([text.len()]);
-    edges
+    caret_positions(line)
+        .into_iter()
         .min_by(|a, b| {
-            let distance = |index: usize| (line.x_for_index(index) - x).abs();
-            distance(*a)
-                .partial_cmp(&distance(*b))
+            let (left, right) = ((a.1 - x).abs(), (b.1 - x).abs());
+            left.partial_cmp(&right)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .unwrap_or(0)
+        .map_or(0, |(at, _)| at)
 }
 
 impl Laid {
@@ -466,7 +504,34 @@ impl Laid {
 
 #[cfg(test)]
 mod tests {
-    use super::{Position, Selection, words};
+    use super::{Position, Selection, spread_ligatures, words};
+    use gpui::px;
+
+    #[test]
+    fn a_ligature_is_divided_evenly() {
+        // "fi" as one glyph ending at 8, then "l" ending at 12.
+        let mut carets = [(0, px(0.)), (1, px(8.)), (2, px(8.)), (3, px(12.))];
+        spread_ligatures(&mut carets);
+        assert_eq!(carets[1].1, px(4.));
+        assert_eq!(carets[2].1, px(8.));
+        assert_eq!(carets[3].1, px(12.));
+    }
+
+    #[test]
+    fn a_three_character_ligature_gets_thirds() {
+        let mut carets = [(0, px(3.)), (1, px(9.)), (2, px(9.)), (3, px(9.))];
+        spread_ligatures(&mut carets);
+        assert_eq!(carets[1].1, px(5.));
+        assert_eq!(carets[2].1, px(7.));
+        assert_eq!(carets[3].1, px(9.));
+    }
+
+    #[test]
+    fn plain_text_is_untouched() {
+        let mut carets = [(0, px(0.)), (1, px(4.)), (2, px(9.))];
+        spread_ligatures(&mut carets);
+        assert_eq!(carets, [(0, px(0.)), (1, px(4.)), (2, px(9.))]);
+    }
 
     fn at(message: u64, block: u32, offset: usize) -> Position {
         Position {
