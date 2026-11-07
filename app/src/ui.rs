@@ -30,10 +30,13 @@ use tokio::sync::mpsc::UnboundedSender;
 
 mod badge_paths;
 mod embed;
+mod files;
 mod home;
 mod menu;
+mod plaintext_extensions;
 mod settings;
 mod tooltip;
+mod uploads;
 
 use tooltip::{Body, Side, Tip};
 
@@ -98,6 +101,10 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// Text of attachments shown as plaintext previews, by `text:` key.
+    texts: HashMap<String, String>,
+    /// Files picked or dropped, waiting for the next send.
+    pending_files: Vec<uploads::Pending>,
     /// This view, for handlers built while rendering that have no context of their own.
     weak: WeakEntity<Root>,
     /// Spoilers opened by a click: message, block and the first span of the spoiler.
@@ -143,6 +150,8 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            texts: HashMap::new(),
+            pending_files: Vec::new(),
             revealed: HashSet::new(),
             weak: cx.weak_entity(),
             settings: None,
@@ -188,8 +197,13 @@ impl Root {
                 self.fetched.insert(key, body);
                 cx.notify();
             }
+            Update::Image { key, bytes } if key.starts_with("text:") => {
+                self.texts
+                    .insert(key, String::from_utf8_lossy(&bytes).into_owned());
+                cx.notify();
+            }
             Update::Image { key, bytes } => {
-                let format = if key.starts_with("emoji:") {
+                let format = if key.starts_with("emoji:") || key.starts_with("filekind:") {
                     ImageFormat::Svg
                 } else if bytes.starts_with(b"\x89PNG") {
                     ImageFormat::Png
@@ -270,6 +284,7 @@ impl Root {
             users.extend(messages.iter().map(|message| message.author.clone()));
             for message in messages.iter() {
                 media.extend(embed::wanted(message));
+                media.extend(files::wanted(message));
             }
             for attachment in messages.iter().flat_map(|message| &message.attachments) {
                 if attachment.is_image() {
@@ -532,6 +547,11 @@ impl Root {
         });
         cx.subscribe(&editor, move |this, _, event, cx| {
             match event {
+                // Saving an empty edit asks to delete the message instead.
+                EditorEvent::Submit(content) if content.is_empty() => {
+                    this.confirm_delete = Some(message);
+                    this.editing = None;
+                }
                 EditorEvent::Submit(content) => {
                     if let Some(channel) = this.channel {
                         let _ = this.requests.send(Request::Edit {
@@ -618,11 +638,20 @@ impl Root {
     }
 
     fn send(&mut self, content: String) {
+        if content.is_empty() && self.pending_files.is_empty() {
+            return;
+        }
         let reply = self.replying.take().map(|message| (self.guild, message.id));
+        let files = self
+            .pending_files
+            .drain(..)
+            .map(|pending| pending.path)
+            .collect();
         if let Some(channel) = self.channel {
             let _ = self.requests.send(Request::Send {
                 channel,
                 content,
+                files,
                 reply,
             });
         }
@@ -1941,6 +1970,7 @@ impl Root {
                     None => div()
                         .child(self.content(message))
                         .children(self.attachments(message))
+                        .children(self.files(message))
                         .children(self.embeds(message))
                         .children(self.reactions(message, cx))
                         .into_any_element(),
@@ -2189,6 +2219,7 @@ impl Root {
                     .border_color(color("--background-mod-subtle"))
                     .flex()
                     .flex_col()
+                    .children(self.upload_area(cx))
                     .children(reply_bar)
                     .child(
                         div()
@@ -2196,7 +2227,14 @@ impl Root {
                             .items_start()
                             .pl(px(11.))
                             .pr(px(12.))
-                            .child(div().pt(px(12.)).child(tool("attach")))
+                            .child(
+                                div()
+                                    .id("attach")
+                                    .pt(px(12.))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))
+                                    .child(tool("attach")),
+                            )
                             .child(
                                 div()
                                     .ml(px(20.))
@@ -2465,6 +2503,9 @@ impl Render for Root {
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                this.on_drop_files(paths, cx);
+            }))
             // Capture runs before the text under the pointer starts its own selection.
             .capture_any_mouse_down(cx.listener(|this, _, window, _| {
                 this.selection.borrow_mut().clear();

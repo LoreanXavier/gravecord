@@ -246,6 +246,8 @@ impl Reaction {
 pub struct Attachment {
     pub id: Id,
     pub filename: String,
+    /// The CDN address, for downloads and text previews.
+    pub url: String,
     pub proxy_url: String,
     pub content_type: Option<String>,
     pub width: Option<u32>,
@@ -258,6 +260,7 @@ impl Attachment {
         Some(Self {
             id: id(&value["id"])?,
             filename: text(&value["filename"])?,
+            url: text(&value["url"]).unwrap_or_default(),
             proxy_url: text(&value["proxy_url"]).or_else(|| text(&value["url"]))?,
             content_type: text(&value["content_type"]),
             width: value["width"].as_u64().map(|width| width as u32),

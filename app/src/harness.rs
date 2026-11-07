@@ -191,6 +191,11 @@ pub async fn run(
                     composer.replace_text_in_range(None, text, window, cx);
                 });
             }
+            // Puts a file in the composer's upload area, as the file dialog or a drop does.
+            ["attach", path] => {
+                let path = std::path::PathBuf::from(*path);
+                root.update(cx, |root, cx| root.attach_files(vec![path], cx));
+            }
             // Opens a settings page by its label in lower case with dashes, as the captures are named.
             ["settings", page] => {
                 let page = (*page).to_owned();

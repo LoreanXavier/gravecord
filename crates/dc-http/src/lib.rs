@@ -134,6 +134,19 @@ impl Client {
         Ok(response.bytes().await?.to_vec())
     }
 
+    /// Puts a file at the signed URL `POST /channels/{id}/attachments` handed out. The URL is the grant, so no
+    /// authorization goes with it.
+    pub async fn put_upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
+        self.http
+            .put(url)
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     pub async fn get(&self, route: &str) -> Result<Value, Error> {
         self.request(Method::GET, route, None).await
     }

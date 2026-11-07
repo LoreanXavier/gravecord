@@ -52,6 +52,8 @@ pub enum Request {
     Send {
         channel: u64,
         content: String,
+        /// Files to upload first, sent with the message.
+        files: Vec<std::path::PathBuf>,
         /// Guild, if any, and the message being answered.
         reply: Option<(Option<u64>, u64)>,
     },
@@ -95,6 +97,51 @@ fn percent_encode(text: &str) -> String {
 }
 
 /// The body the official client posts, field for field (`TRAFFIC`).
+/// The cloud upload of module 48325: for each file, `POST /channels/{id}/attachments` with
+/// `{files: [{filename, file_size, id, is_clip}]}` for a signed URL, then a PUT of the bytes there. The message then
+/// names each upload (`OW` in module 292348): `{id, filename, uploaded_filename}`, ids counting from 0.
+async fn upload_all(
+    client: &dc_http::Client,
+    channel: u64,
+    files: &[std::path::PathBuf],
+) -> Result<Vec<Value>, String> {
+    let mut attachments = Vec::new();
+    for (index, path) in files.iter().enumerate() {
+        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_owned());
+        let request = json!({"files": [{
+            "filename": filename,
+            "file_size": bytes.len(),
+            "id": (index + 1).to_string(),
+            "is_clip": false,
+        }]});
+        let granted = client
+            .post(&format!("/channels/{channel}/attachments"), &request)
+            .await
+            .map_err(|error| error.to_string())?;
+        let slot = &granted["attachments"][0];
+        let (Some(url), Some(uploaded)) = (
+            slot["upload_url"].as_str(),
+            slot["upload_filename"].as_str(),
+        ) else {
+            return Err("no upload url".to_owned());
+        };
+        client
+            .put_upload(url, bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        attachments.push(json!({
+            "id": index.to_string(),
+            "filename": filename,
+            "uploaded_filename": uploaded,
+        }));
+    }
+    Ok(attachments)
+}
+
 fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> Value {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -188,10 +235,20 @@ pub async fn run(
             Request::Send {
                 channel,
                 content,
+                files,
                 reply,
             } => {
                 tokio::spawn(async move {
-                    let body = send_body(channel, &content, reply);
+                    let mut body = send_body(channel, &content, reply);
+                    if !files.is_empty() {
+                        match upload_all(&client, channel, &files).await {
+                            Ok(attachments) => body["attachments"] = Value::Array(attachments),
+                            Err(error) => {
+                                warn!("upload failed: {error}");
+                                return;
+                            }
+                        }
+                    }
                     if let Err(error) = client
                         .post(&format!("/channels/{channel}/messages"), &body)
                         .await

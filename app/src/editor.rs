@@ -125,12 +125,11 @@ impl Editor {
         self.buffer.text()
     }
 
+    /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.
     fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.buffer.text().trim().to_owned();
-        if !text.is_empty() {
-            self.buffer.clear();
-            cx.emit(EditorEvent::Submit(text));
-        }
+        self.buffer.clear();
+        cx.emit(EditorEvent::Submit(text));
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
