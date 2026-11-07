@@ -3,13 +3,14 @@
 
 use gpui::{
     App, Background, BorderStyle, Bounds, Corners, DispatchPhase, Edges, Element, ElementId, Font,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size, Style, TextAlign,
-    TextRun, TransformationMatrix, Window, fill, point, px, quad, size,
+    GlobalElementId, Hsla, Image, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size,
+    Style, TextAlign, TextRun, TransformationMatrix, Window, fill, point, px, quad, size,
 };
 use std::cell::RefCell;
 use std::cmp::{max, min};
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct BoxStyle {
@@ -34,6 +35,8 @@ pub struct Piece {
     pub underline: bool,
     pub strike: bool,
     pub boxed: Option<BoxStyle>,
+    /// An emoji drawn in place of text, with its size.
+    pub image: Option<(Arc<Image>, Pixels)>,
 }
 
 /// A place in the document: a message id, a block inside it, and a byte offset in that block.
@@ -209,6 +212,19 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
     let mut x = px(0.);
     let mut offset = 0;
     for (index, piece) in pieces.iter().enumerate() {
+        if let Some((_, size)) = &piece.image {
+            let empty = shape(piece, "", window);
+            place(
+                &mut laid,
+                &mut x,
+                max_width,
+                (empty, index, offset),
+                px(0.),
+                *size,
+            );
+            offset += piece.text.len();
+            continue;
+        }
         let padding = piece.boxed.as_ref().map_or(px(0.), |style| style.padding_x);
         let icon = piece
             .boxed
@@ -460,6 +476,15 @@ impl Element for Inline {
             let piece = &self.pieces[fragment.piece];
             let top = bounds.origin.y + self.line_height * fragment.line as f32;
             let left = bounds.origin.x + fragment.x;
+            if let Some((image, size)) = &piece.image {
+                if let Some(data) = image.clone().use_render_image(window, cx) {
+                    // Chromium snaps replaced images to whole pixels.
+                    let area =
+                        Bounds::new(point(left.round(), top.round()), gpui::size(*size, *size));
+                    let _ = window.paint_image(area, area, Corners::default(), data, 0, false);
+                }
+                continue;
+            }
             let (text_origin, text_height): (Point<Pixels>, Pixels) = match &piece.boxed {
                 Some(style) => {
                     if let Some((path, icon_size, _)) = &style.icon {

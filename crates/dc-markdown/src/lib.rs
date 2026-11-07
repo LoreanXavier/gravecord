@@ -23,6 +23,8 @@ pub enum Kind {
     Channel(u64),
     /// `@everyone` or `@here`, kept as written.
     Everyone,
+    /// A unicode emoji; the span's text is the emoji.
+    Unicode,
     Emoji {
         name: String,
         id: u64,
@@ -364,6 +366,15 @@ fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
             at += length;
             continue;
         }
+        if let Some(length) = dc_tokens::emoji_prefix(rest) {
+            spans.push(Span {
+                text: rest[..length].to_owned(),
+                style,
+                kind: Kind::Unicode,
+            });
+            at += length;
+            continue;
+        }
         let mark = MARKS.iter().find_map(|(mark, apply)| {
             let body = rest.strip_prefix(mark)?;
             let end = closing(body, mark)?;
@@ -387,9 +398,35 @@ fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
     }
 }
 
+/// Jumbo rule from module 354777: nothing but emoji and whitespace, and at most 30 of them.
+pub fn is_jumbo(spans: &[Span]) -> bool {
+    let emoji = |span: &&Span| matches!(span.kind, Kind::Unicode | Kind::Emoji { .. });
+    let only_emoji = spans
+        .iter()
+        .all(|span| emoji(&span) || (span.kind == Kind::Text && span.text.trim().is_empty()));
+    only_emoji && (1..=30).contains(&spans.iter().filter(emoji).count())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_emoji_become_their_own_spans() {
+        let spans = inline("hi \u{1f600} there");
+        assert_eq!(spans[1].kind, Kind::Unicode);
+        assert_eq!(spans[2].text, " there");
+    }
+
+    #[test]
+    fn jumbo_needs_only_emoji_and_at_most_thirty() {
+        assert!(is_jumbo(&inline("\u{1f600}\u{1f525}")));
+        assert!(is_jumbo(&inline("\u{1f600} <:a:1>")));
+        assert!(!is_jumbo(&inline("hi \u{1f600}")));
+        assert!(!is_jumbo(&inline("")));
+        assert!(!is_jumbo(&inline(&"\u{1f600}".repeat(31))));
+        assert!(is_jumbo(&inline(&"\u{1f600}".repeat(30))));
+    }
 
     fn styled(spans: &[Span]) -> Vec<(&str, Style)> {
         spans

@@ -46,9 +46,33 @@ pub fn emoji_file(text: &str) -> Option<&'static str> {
     Some(emoji::EMOJI_FILES[index].1)
 }
 
+/// The longest emoji at the start of `text`, with its length in bytes, a trailing variation selector included.
+pub fn emoji_prefix(text: &str) -> Option<usize> {
+    let first = text.chars().next()?;
+    if first.is_ascii() && !matches!(first, '#' | '*' | '0'..='9') {
+        return None;
+    }
+    let mut best = None;
+    for (index, character) in text.char_indices().take(12) {
+        let end = index + character.len_utf8();
+        if emoji_file(&text[..end]).is_some() {
+            best = Some(end);
+        }
+    }
+    best.filter(|_| !first.is_ascii())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Theme, emoji_file};
+    use super::{Theme, emoji_file, emoji_prefix};
+
+    #[test]
+    fn emoji_prefix_takes_the_longest_sequence() {
+        assert_eq!(emoji_prefix("\u{1f600} hi"), Some(4));
+        assert_eq!(emoji_prefix("\u{2764}\u{fe0f}x"), Some(6));
+        assert_eq!(emoji_prefix("plain"), None);
+        assert_eq!(emoji_prefix("\u{e7}\u{131}\u{11f}"), None);
+    }
 
     #[test]
     fn emoji_map_to_the_captured_assets() {

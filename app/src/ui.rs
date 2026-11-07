@@ -255,6 +255,23 @@ impl Root {
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
         {
+            for block in messages.iter().flat_map(|message| parse(&message.content)) {
+                for span in block_spans(&block) {
+                    match &span.kind {
+                        Kind::Unicode => {
+                            if let Some(file) = dc_tokens::emoji_file(&span.text) {
+                                let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
+                                media.push((format!("emoji:{}", span.text), url));
+                            }
+                        }
+                        Kind::Emoji { id, .. } => media.push((
+                            format!("custom:{id}"),
+                            format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
+                        )),
+                        _ => {}
+                    }
+                }
+            }
             for reaction in messages.iter().flat_map(|message| &message.reactions) {
                 if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
                     let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
@@ -669,6 +686,7 @@ impl Root {
                     underline: style.underline,
                     strike: style.strike,
                     boxed: style.code.then(preview_code_box),
+                    image: None,
                 }
             })
             .collect();
@@ -1328,11 +1346,11 @@ impl Root {
                 .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
             Kind::Emoji { name, .. } => format!(":{name}:"),
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
-            Kind::Text | Kind::Link(_) | Kind::Everyone => span.text.clone(),
+            Kind::Text | Kind::Link(_) | Kind::Everyone | Kind::Unicode => span.text.clone(),
         }
     }
 
-    fn piece(&self, span: &Span, base: Hsla, size: f32, weight: f32) -> Piece {
+    fn piece(&self, span: &Span, base: Hsla, size: f32, weight: f32, emoji_size: f32) -> Piece {
         let style = span.style;
         let mention = matches!(
             span.kind,
@@ -1372,6 +1390,14 @@ impl Root {
         } else {
             None
         };
+        let emoji_key = match &span.kind {
+            Kind::Unicode => Some(format!("emoji:{}", span.text)),
+            Kind::Emoji { id, .. } => Some(format!("custom:{id}")),
+            _ => None,
+        };
+        let image = emoji_key
+            .and_then(|key| self.images.get(&key).cloned())
+            .map(|image| (image, px(emoji_size)));
         Piece {
             text: self.span_label(span),
             font: run_font,
@@ -1384,15 +1410,19 @@ impl Root {
             underline: style.underline,
             strike: style.strike,
             boxed,
+            image,
         }
     }
 
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
+        let jumbo = dc_markdown::is_jumbo(spans);
+        let emoji_size = if jumbo { 48. } else { 22. };
         let pieces = spans
             .iter()
-            .map(|span| self.piece(span, text_color, 16., 400.))
+            .map(|span| self.piece(span, text_color, 16., 400., emoji_size))
             .collect();
-        inline(pieces, px(22.)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+        let line = if jumbo { px(48.) } else { px(22.) };
+        inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
 
     /// `h1`, `h2` and `h3` from the capture: size and line height per level, all bold.
@@ -1406,7 +1436,7 @@ impl Root {
         let pieces = spans
             .iter()
             .map(|span| {
-                let mut piece = self.piece(span, strong, size, 700.);
+                let mut piece = self.piece(span, strong, size, 700., size * 1.375);
                 piece.font.weight = FontWeight(700.);
                 piece
             })
@@ -1418,7 +1448,7 @@ impl Root {
         let muted = hsla("--interactive-text-default");
         let pieces = spans
             .iter()
-            .map(|span| self.piece(span, muted, 14., 400.))
+            .map(|span| self.piece(span, muted, 14., 400., 19.))
             .collect();
         inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
@@ -1440,25 +1470,31 @@ impl Root {
                     reaction_route_name(reaction),
                     !reaction.me,
                 );
+                let group = SharedString::from(format!("reaction-{}-{index}", message.id));
                 div()
-                    .id(SharedString::from(format!(
-                        "reaction-{}-{index}",
-                        message.id
-                    )))
+                    .id(group.clone())
+                    .group(group.clone())
                     .h(px(30.))
-                    .px(px(7.))
+                    .mr(px(4.))
+                    .mb(px(4.))
+                    .px(px(6.))
                     .rounded(px(8.))
                     .flex()
+                    .flex_none()
                     .items_center()
                     .cursor_pointer()
                     .border_1()
                     .when(reaction.me, |this| {
-                        this.bg(color("--mention-background"))
-                            .border_color(color("--background-brand"))
+                        this.bg(color("--reaction-background-reacted-default"))
+                            .border_color(color("--reaction-border-reacted-default"))
                     })
                     .when(!reaction.me, |this| {
-                        this.bg(color("--background-mod-subtle"))
-                            .border_color(color("--background-mod-subtle"))
+                        this.bg(color("--reaction-background-default"))
+                            .border_color(gpui::transparent_black())
+                            .hover(|this| {
+                                this.bg(color("--reaction-background-hover"))
+                                    .border_color(color("--reaction-border-hover"))
+                            })
                     })
                     .on_click(cx.listener(move |this, _, _, _| {
                         let _ = this.requests.send(Request::React {
@@ -1476,13 +1512,21 @@ impl Root {
                     .child(
                         div()
                             .ml(px(6.))
-                            .text_size(px(14.))
+                            .min_w(px(12.))
+                            .flex()
+                            .justify_center()
+                            .text_size(px(16.))
                             .line_height(px(16.))
                             .font_weight(FontWeight(600.))
                             .text_color(if reaction.me {
-                                color("--mention-foreground")
+                                color("--reaction-text-reacted-default")
                             } else {
-                                color("--text-muted")
+                                color("--text-subtle")
+                            })
+                            .when(!reaction.me, |this| {
+                                this.group_hover(group.clone(), |this| {
+                                    this.text_color(color("--reaction-text-hover"))
+                                })
                             })
                             .child(reaction.count.to_string()),
                     )
@@ -1490,12 +1534,35 @@ impl Root {
             })
             .collect();
         (!pills.is_empty()).then(|| {
+            // `forceShow` in module 367790: the add button always follows the pills.
+            let add = div()
+                .id(SharedString::from(format!("reaction-add-{}", message.id)))
+                .h(px(30.))
+                .w(px(34.))
+                .mb(px(4.))
+                .mr(px(4.))
+                .rounded(px(8.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .bg(color("--reaction-background-default"))
+                .hover(|this| {
+                    this.bg(color("--reaction-background-hover"))
+                        .border_color(color("--reaction-border-hover"))
+                })
+                .child(icon("msg_react", 18., "--reaction-text-default"));
             div()
                 .pt(px(2.))
-                .pb(px(6.))
+                .pb(px(2.))
                 .flex()
-                .gap(px(4.))
+                .flex_wrap()
+                .items_center()
                 .children(pills)
+                .child(add)
                 .into_any_element()
         })
     }
@@ -2015,6 +2082,17 @@ fn reaction_route_name(reaction: &dc_state::Reaction) -> String {
     match reaction.emoji_id {
         Some(id) => format!("{}:{id}", reaction.name),
         None => reaction.name.clone(),
+    }
+}
+
+fn block_spans(block: &Block) -> &[Span] {
+    match block {
+        Block::Paragraph(spans)
+        | Block::Quote(spans)
+        | Block::Subtext(spans)
+        | Block::Heading { spans, .. }
+        | Block::ListItem { spans, .. } => spans,
+        Block::Code { .. } => &[],
     }
 }
 
