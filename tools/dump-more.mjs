@@ -89,11 +89,7 @@ save('SETTINGS.md', { source: 'pattern: every .X.<NAME> settings id in the bundl
 save('SOUNDS.md', sounds);
 save('IMAGES.md', images);
 save('EMBEDS.md', { source: 'pattern: embed type members', types: [...embedTypes].sort() });
-save('VOICE.md', {
-  status: 'partial: the voice gateway and its opcodes live in the native discord_voice module, not in the bundle',
-  source: 'pattern: numeric enums in modules that use the voice protocol',
-  enums,
-});
+save('VOICE.md', readFileSync(join(import.meta.dirname, 'voice-notes.md'), 'utf8'));
 for (const [name, fields] of Object.entries(protos)) save(join('PROTOS', `${name}.json`), fields);
 
 save(

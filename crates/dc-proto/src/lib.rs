@@ -6,3 +6,4 @@ pub mod op;
 pub mod pin;
 pub mod qos;
 pub mod secrets;
+pub mod voice_op;
