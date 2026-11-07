@@ -1,0 +1,20 @@
+//! Values of the pinned build. Moving the pin changes these together.
+//! Sources: `design/snapshot/BUILD`, `WEB_BUILD.json`, `TRAFFIC/identify.json`.
+
+pub const CLIENT_BUILD_NUMBER: u32 = 667580;
+pub const CLIENT_VERSION: &str = "1.0.9267";
+pub const RELEASE_CHANNEL: &str = "stable";
+pub const ELECTRON_VERSION: &str = "44.10.0";
+pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9267 Chrome/152.0.7977.169 Electron/44.10.0 Safari/537.36";
+pub const SEC_CH_UA: &str = "\"Not?A_Brand\";v=\"24\", \"Chromium\";v=\"152\"";
+
+pub const API_VERSION: u32 = 9;
+pub const WEBAPP_ORIGIN: &str = "https://discordapp.com";
+pub const API_BASE: &str = "https://discordapp.com/api/v9";
+pub const CDN_HOST: &str = "cdn.discordapp.com";
+pub const GATEWAY_ENDPOINT: &str = "wss://gateway.discord.gg";
+
+/// Module 868, `capabilities`: 1734653, or this value with channel obfuscation on, as the pinned session sent.
+pub const GATEWAY_CAPABILITIES: u64 = 1767421;
+/// Module 903063, `client_heartbeat_version`.
+pub const QOS_HEARTBEAT_VERSION: u64 = 31;

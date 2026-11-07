@@ -1,11 +1,33 @@
 [workspace]
 resolver = "3"
-members = ["app", "xtask"]
+members = ["app", "crates/*", "xtask"]
 exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
 publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
+futures-util = "0.3"
+iana-time-zone = "0.1"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "gzip", "brotli", "zstd"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sys-locale = "0.3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+toml = "0.9"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+zstd = "0.13"
+dc-gateway = { path = "crates/dc-gateway" }
+dc-http = { path = "crates/dc-http" }
+dc-proto = { path = "crates/dc-proto" }
 
 [profile.dev]
 debug = "limited"
