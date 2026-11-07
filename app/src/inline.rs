@@ -472,6 +472,24 @@ impl Element for Inline {
         self.listen(bounds, window);
         self.paint_selection(bounds, window);
         let laid = self.laid.borrow();
+        // Plain text of different sizes shares a baseline, set by the line's largest text, as inline boxes do.
+        let mut main: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
+        for fragment in &laid.fragments {
+            let piece = &self.pieces[fragment.piece];
+            if piece.boxed.is_some() || piece.image.is_some() {
+                continue;
+            }
+            if main.len() <= fragment.line {
+                main.resize(fragment.line + 1, (px(0.), px(0.), px(0.)));
+            }
+            if piece.size > main[fragment.line].0 {
+                main[fragment.line] = (
+                    piece.size,
+                    fragment.shaped.ascent.round(),
+                    fragment.shaped.descent.round(),
+                );
+            }
+        }
         for fragment in &laid.fragments {
             let piece = &self.pieces[fragment.piece];
             let top = bounds.origin.y + self.line_height * fragment.line as f32;
@@ -517,7 +535,16 @@ impl Element for Inline {
                         style.text_line_height,
                     )
                 }
-                None => (point(left, top), self.line_height),
+                None => match main.get(fragment.line) {
+                    Some(&(largest, ascent, descent)) if piece.size < largest => {
+                        let baseline =
+                            top + ((self.line_height - ascent - descent) / 2.).floor() + ascent;
+                        let own_ascent = fragment.shaped.ascent.round();
+                        let own_height = own_ascent + fragment.shaped.descent.round();
+                        (point(left, baseline - own_ascent), own_height)
+                    }
+                    _ => (point(left, top), self.line_height),
+                },
             };
             let _ =
                 fragment

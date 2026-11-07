@@ -1479,12 +1479,35 @@ impl Root {
     }
 
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
+        self.spans_edited(spans, text_color, key, false)
+    }
+
+    /// A message's last paragraph ends in `(edited)` when the message was edited: `edited_2i8Bfm`, 10px in
+    /// `--chat-text-muted`, after a space in the message's own size.
+    fn spans_edited(
+        &self,
+        spans: &[Span],
+        text_color: Hsla,
+        key: (u64, u32),
+        edited: bool,
+    ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
         let emoji_size = if jumbo { 48. } else { 22. };
-        let pieces = spans
+        let mut pieces: Vec<Piece> = spans
             .iter()
             .map(|span| self.piece(span, text_color, 16., 400., emoji_size))
             .collect();
+        if edited {
+            let plain = Span {
+                text: " ".to_owned(),
+                style: dc_markdown::Style::default(),
+                kind: Kind::Text,
+            };
+            pieces.push(self.piece(&plain, text_color, 16., 400., emoji_size));
+            let mut label = self.piece(&plain, hsla("--chat-text-muted"), 10., 400., emoji_size);
+            label.text = "(edited)".to_owned();
+            pieces.push(label);
+        }
         let line = if jumbo { px(48.) } else { px(22.) };
         inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
@@ -1679,6 +1702,7 @@ impl Root {
         } else {
             0.
         };
+        let last = blocks.len().saturating_sub(1);
         div().flex().flex_col().pb(px(trailing)).children(
             blocks
                 .into_iter()
@@ -1690,7 +1714,12 @@ impl Root {
                         Block::Paragraph(spans) => div()
                             .min_h(px(22.))
                             .mt(px(gap))
-                            .child(self.spans(&spans, text, key))
+                            .child(self.spans_edited(
+                                &spans,
+                                text,
+                                key,
+                                message.edited && index == last,
+                            ))
                             .into_any_element(),
                         Block::Heading { level, spans } => div()
                             .mt(px(gap))
