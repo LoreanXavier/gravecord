@@ -190,6 +190,14 @@ impl Root {
             Update::Dispatch { name, data } => {
                 self.stores.dispatch(&name, &data);
                 if name == "READY" {
+                    // The account's saved theme; unset keeps the default.
+                    match self.stores.theme {
+                        1 => set_theme(Theme::Dark),
+                        2 => set_theme(Theme::Light),
+                        3 => set_theme(Theme::Darker),
+                        4 => set_theme(Theme::Midnight),
+                        _ => {}
+                    }
                     self.after_ready();
                 }
                 if matches!(

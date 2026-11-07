@@ -526,6 +526,8 @@ impl Account {
 
 #[derive(Default)]
 pub struct Stores {
+    /// `appearance.theme` from the settings proto: 0 unset, 1 dark, 2 light, 3 darker, 4 midnight.
+    pub theme: u64,
     pub account: Account,
     pub users: HashMap<Id, User>,
     /// Channel to who is typing and when that notice ends.
@@ -601,6 +603,10 @@ impl Stores {
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
         self.account = Account::from_value(&data["user"]);
+        self.theme = data["user_settings_proto"]
+            .as_str()
+            .and_then(settings::theme)
+            .unwrap_or(0);
         self.guild_order = data["user_settings_proto"]
             .as_str()
             .and_then(settings::guild_order)

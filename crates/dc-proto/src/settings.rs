@@ -4,6 +4,8 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+const FIELD_APPEARANCE: u64 = 13;
+const APPEARANCE_THEME: u64 = 1;
 const FIELD_GUILD_FOLDERS: u64 = 14;
 const FOLDERS_FOLDER: u64 = 1;
 const FOLDERS_POSITIONS: u64 = 2;
@@ -89,6 +91,42 @@ fn fixed64_list(bytes: &[u8]) -> Vec<u64> {
         .collect()
 }
 
+/// The varint value of field `number` at the top level of `bytes`.
+fn varint_of(bytes: &[u8], number: u64) -> Option<u64> {
+    let mut reader = Reader { bytes };
+    while !reader.bytes.is_empty() {
+        let tag = reader.varint()?;
+        let (field, wire) = (tag >> 3, tag & 7);
+        match wire {
+            WIRE_VARINT => {
+                let value = reader.varint()?;
+                if field == number {
+                    return Some(value);
+                }
+            }
+            WIRE_FIXED64 => {
+                reader.take(8)?;
+            }
+            WIRE_BYTES => {
+                let length = usize::try_from(reader.varint()?).ok()?;
+                reader.take(length)?;
+            }
+            WIRE_FIXED32 => {
+                reader.take(4)?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// `appearance.theme`: the `discord_users.v1.Theme` enum, UNSET 0, DARK 1, LIGHT 2, DARKER 3, MIDNIGHT 4.
+pub fn theme(settings_base64: &str) -> Option<u64> {
+    let settings = STANDARD.decode(settings_base64).ok()?;
+    let (_, appearance) = fields(&settings).find(|(number, _)| *number == FIELD_APPEARANCE)?;
+    varint_of(appearance, APPEARANCE_THEME)
+}
+
 /// Guild ids in sidebar order, from `guild_folders`. Folders win over the legacy flat list.
 pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
     let settings = STANDARD.decode(settings_base64).ok()?;
@@ -114,6 +152,16 @@ pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_is_read_from_appearance() {
+        // appearance (13) holding theme (1) = DARKER (3), after an unrelated varint field.
+        let appearance = [0x10, 0x01, 0x08, 0x03];
+        let mut settings = vec![(13 << 3) | 2, appearance.len() as u8];
+        settings.extend_from_slice(&appearance);
+        assert_eq!(theme(&STANDARD.encode(&settings)), Some(3));
+        assert_eq!(theme(&STANDARD.encode([])), None);
+    }
 
     fn bytes_field(number: u8, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![(number << 3) | 2, payload.len() as u8];
