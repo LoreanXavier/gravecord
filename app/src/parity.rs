@@ -52,6 +52,11 @@ pub trait Parity: ParentElement + Styled + Sized {
         self.probe(id, [border; 4])
     }
 
+    /// As `parity_with_border`, for an element with a left border only.
+    fn parity_left(self, id: &'static str, border: f32) -> Self {
+        self.probe(id, [0., 0., 0., border])
+    }
+
     /// As `parity_with_border`, for an element with a bottom border only.
     fn parity_below(self, id: &'static str, border: f32) -> Self {
         self.probe(id, [0., 0., border, 0.])

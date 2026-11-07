@@ -21,6 +21,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
+mod home;
+
 const SANS: &str = "gg sans";
 /// The CSS family is `gg mono`; the font file calls itself `gg sans mono`.
 const MONO: &str = "gg sans mono";
@@ -192,6 +194,14 @@ impl Root {
             );
         }
         let mut users: Vec<User> = self.stores.current_user.iter().cloned().collect();
+        users.extend(self.stores.friends().into_iter().cloned());
+        users.extend(
+            self.stores
+                .private_channels
+                .iter()
+                .filter_map(|channel| self.stores.dm_recipient(channel))
+                .cloned(),
+        );
         if let Some(messages) = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
@@ -230,6 +240,25 @@ impl Root {
 
     fn current_guild(&self) -> Option<&Guild> {
         self.guild.and_then(|guild| self.stores.guild(guild))
+    }
+
+    /// The current channel's name, or the other person's in a DM.
+    fn channel_title(&self) -> String {
+        if let Some(channel) = self.current_channel() {
+            return channel.name.clone();
+        }
+        self.current_dm()
+            .and_then(|channel| self.stores.dm_recipient(channel))
+            .map(|user| user.display_name().to_owned())
+            .unwrap_or_default()
+    }
+
+    fn current_dm(&self) -> Option<&dc_state::PrivateChannel> {
+        let channel = self.channel?;
+        self.stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
     }
 
     fn current_channel(&self) -> Option<&Channel> {
@@ -300,10 +329,11 @@ impl Root {
     }
 
     fn titlebar(&self) -> impl IntoElement {
-        let title = self
-            .current_guild()
-            .map(|guild| guild.name.clone())
-            .unwrap_or_default();
+        let title = match (self.current_guild(), self.channel) {
+            (Some(guild), _) => guild.name.clone(),
+            (None, None) => "Friends".to_owned(),
+            (None, Some(_)) => self.channel_title(),
+        };
         let acronym = self.current_guild().map(Guild::acronym).unwrap_or_default();
         let control = |id: &'static str, name: &str, area: WindowControlArea| {
             div()
@@ -341,7 +371,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .gap(px(8.))
-                    .child(
+                    .child(if self.guild.is_some() {
                         div()
                             .size(px(16.))
                             .rounded(px(4.))
@@ -351,8 +381,11 @@ impl Root {
                             .justify_center()
                             .text_size(px(8.))
                             .text_color(color("--text-default"))
-                            .child(acronym),
-                    )
+                            .child(acronym)
+                            .into_any_element()
+                    } else {
+                        icon("home_friends", 16., "--text-default").into_any_element()
+                    })
                     .child(
                         div()
                             .text_size(px(14.))
@@ -489,7 +522,7 @@ impl Root {
             .flex_col()
             .items_center()
             .gap(px(8.))
-            .child(tool("home", 24.))
+            .child(self.home_tile(cx))
             .child(
                 div()
                     .w(px(32.))
@@ -764,7 +797,7 @@ impl Root {
                     .relative()
                     .size(px(32.))
                     .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
-                    .child(status_dot(&self.stores.status)),
+                    .child(status_dot(&self.stores.status, "--background-base-low")),
             )
             .child(
                 div()
@@ -810,10 +843,7 @@ impl Root {
     }
 
     fn header(&self) -> impl IntoElement {
-        let name = self
-            .current_channel()
-            .map(|channel| channel.name.clone())
-            .unwrap_or_default();
+        let name = self.channel_title();
         let search = format!(
             "Search {}",
             self.current_guild()
@@ -839,7 +869,9 @@ impl Root {
             .flex()
             .items_center()
             .bg(color("--background-base-lower"))
-            .child(icon("header_hash", 20., "--channels-default"))
+            .when(self.guild.is_some(), |this| {
+                this.child(icon("header_hash", 20., "--channels-default"))
+            })
             .child(
                 div()
                     .ml(px(9.))
@@ -1071,12 +1103,8 @@ impl Root {
     }
 
     fn composer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let placeholder = format!(
-            "Message #{}",
-            self.current_channel()
-                .map(|channel| channel.name.as_str())
-                .unwrap_or_default()
-        );
+        let prefix = if self.guild.is_some() { "#" } else { "@" };
+        let placeholder = format!("Message {prefix}{}", self.channel_title());
         self.composer
             .update(cx, |composer, _| composer.set_placeholder(placeholder));
         let emoji = self.images.get("emoji_button").cloned();
@@ -1235,8 +1263,14 @@ impl Render for Root {
                     .flex_1()
                     .min_h(px(0.))
                     .child(self.rail(cx))
-                    .child(self.sidebar())
-                    .child(
+                    .child(if self.guild.is_some() {
+                        self.sidebar().into_any_element()
+                    } else {
+                        self.home_sidebar(cx).into_any_element()
+                    })
+                    .child(if self.guild.is_none() && self.channel.is_none() {
+                        self.friends_panel().into_any_element()
+                    } else {
                         div()
                             .parity("chat")
                             .flex()
@@ -1257,8 +1291,9 @@ impl Render for Root {
                                         div().parity("messages").flex_1().min_h(px(0.)).child(rows),
                                     )
                                     .child(self.composer_bar(cx)),
-                            ),
-                    ),
+                            )
+                            .into_any_element()
+                    }),
             )
             .child(self.user_panel())
     }
@@ -1280,11 +1315,11 @@ fn status_label(status: &str) -> &'static str {
 }
 
 /// The presence dot in its cut-out ring. Do Not Disturb adds the bar across the dot.
-fn status_dot(status: &str) -> impl IntoElement {
+fn status_dot(status: &str, ring: &str) -> impl IntoElement {
     let tint = match status {
         "dnd" => "--icon-status-dnd",
         "idle" => "--icon-status-idle",
-        "invisible" => "--icon-status-offline",
+        "invisible" | "offline" => "--icon-status-offline",
         _ => "--icon-status-online",
     };
     div()
@@ -1293,7 +1328,7 @@ fn status_dot(status: &str) -> impl IntoElement {
         .bottom(px(-3.))
         .size(px(16.))
         .rounded_full()
-        .bg(color("--background-base-low"))
+        .bg(color(ring))
         .flex()
         .items_center()
         .justify_center()
@@ -1306,13 +1341,7 @@ fn status_dot(status: &str) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .when(status == "dnd", |this| {
-                    this.child(
-                        div()
-                            .w(px(6.))
-                            .h(px(2.))
-                            .rounded(px(1.))
-                            .bg(color("--background-base-low")),
-                    )
+                    this.child(div().w(px(6.)).h(px(2.)).rounded(px(1.)).bg(color(ring)))
                 }),
         )
 }

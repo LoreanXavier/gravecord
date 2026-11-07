@@ -200,8 +200,11 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     let dom = design
         .join("dom")
         .join(screen)
-        .join("text-darker-cozy.json");
-    let map = repo.join("tests").join("parity").join("map.json");
+        .join(format!("{variant}.json"));
+    let map = repo
+        .join("tests")
+        .join("parity")
+        .join(format!("{screen}.json"));
     let (checked, mismatches) = layout::compare(&dom, &map, &frame.with_extension("layout.json"))?;
     println!(
         "layout tree: {checked} elements, {} differ",

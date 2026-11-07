@@ -206,8 +206,39 @@ impl Message {
     }
 }
 
+/// `RelationshipTypes` from the bundle.
+pub const RELATIONSHIP_FRIEND: u64 = 1;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrivateChannel {
+    pub id: Id,
+    pub kind: u64,
+    pub recipients: Vec<Id>,
+    pub last_message_id: Id,
+}
+
+impl PrivateChannel {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            id: id(&value["id"])?,
+            kind: value["type"].as_u64()?,
+            recipients: value["recipient_ids"]
+                .as_array()
+                .map(|ids| ids.iter().filter_map(id).collect())
+                .unwrap_or_default(),
+            last_message_id: id(&value["last_message_id"]).unwrap_or(0),
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Stores {
+    pub users: HashMap<Id, User>,
+    /// User id to relationship type.
+    pub relationships: HashMap<Id, u64>,
+    pub private_channels: Vec<PrivateChannel>,
+    /// User id to status, for people this session has presence for.
+    pub presences: HashMap<Id, String>,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
@@ -220,6 +251,13 @@ impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
         match name {
             "READY" => self.on_ready(data),
+            "READY_SUPPLEMENTAL" => {
+                let friends = data["merged_presences"]["friends"].as_array();
+                for presence in friends.into_iter().flatten() {
+                    self.set_presence(presence);
+                }
+            }
+            "PRESENCE_UPDATE" => self.set_presence(data),
             "GUILD_CREATE" => {
                 if let Some(guild) = Guild::from_value(data) {
                     self.guilds.retain(|known| known.id != guild.id);
@@ -250,6 +288,29 @@ impl Stores {
             .and_then(settings::guild_order)
             .unwrap_or_default();
         self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
+        for user in data["users"].as_array().into_iter().flatten() {
+            if let Some(user) = User::from_value(user) {
+                self.users.insert(user.id, user);
+            }
+        }
+        self.relationships = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((id(&entry["id"])?, entry["type"].as_u64()?)))
+            .collect();
+        self.private_channels = data["private_channels"]
+            .as_array()
+            .map(|channels| {
+                channels
+                    .iter()
+                    .filter_map(PrivateChannel::from_value)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Most recent conversation first, as the official list is.
+        self.private_channels
+            .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
         self.guilds = data["guilds"]
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
@@ -271,6 +332,43 @@ impl Stores {
             (None, None) => second.joined_at.cmp(&first.joined_at),
         });
         self.guilds = ranked.into_iter().map(|(_, guild)| guild).collect();
+    }
+
+    fn set_presence(&mut self, data: &Value) {
+        let user = id(&data["user_id"]).or_else(|| id(&data["user"]["id"]));
+        if let (Some(user), Some(status)) = (user, text(&data["status"])) {
+            self.presences.insert(user, status);
+        }
+    }
+
+    /// `offline` when nothing says otherwise, as the official presence store answers.
+    pub fn status(&self, user: Id) -> &str {
+        self.presences.get(&user).map_or("offline", String::as_str)
+    }
+
+    pub fn friends(&self) -> Vec<&User> {
+        let mut friends: Vec<&User> = self
+            .relationships
+            .iter()
+            .filter(|(_, kind)| **kind == RELATIONSHIP_FRIEND)
+            .filter_map(|(user, _)| self.users.get(user))
+            .collect();
+        friends.sort_by_key(|user| user.display_name().to_lowercase());
+        friends
+    }
+
+    pub fn online_friends(&self) -> Vec<&User> {
+        let mut friends = self.friends();
+        friends.retain(|user| self.status(user.id) != "offline");
+        friends
+    }
+
+    /// The other person in a DM, or nothing for a group.
+    pub fn dm_recipient(&self, channel: &PrivateChannel) -> Option<&User> {
+        match channel.recipients.as_slice() {
+            [only] => self.users.get(only),
+            _ => None,
+        }
     }
 
     pub fn insert_message(&mut self, message: Message) {
@@ -332,6 +430,81 @@ mod tests {
         assert_eq!(stores.current_user.as_ref().unwrap().username, "me");
         assert_eq!(stores.guilds[0].name, "gravecord fixture");
         assert_eq!(stores.guilds[1].icon.as_deref(), Some("abc"));
+    }
+
+    fn ready_with_people() -> Value {
+        json!({
+            "user": {"id": "10", "username": "me", "discriminator": "0"},
+            "guilds": [],
+            "users": [
+                {"id": "20", "username": "zed", "global_name": "Zed", "discriminator": "0"},
+                {"id": "21", "username": "amy", "global_name": null, "discriminator": "0"},
+                {"id": "22", "username": "blocked", "discriminator": "0"},
+            ],
+            "relationships": [{"id": "20", "type": 1}, {"id": "21", "type": 1}, {"id": "22", "type": 2}],
+            "private_channels": [
+                {"id": "30", "type": 1, "recipient_ids": ["20"], "last_message_id": "100"},
+                {"id": "31", "type": 1, "recipient_ids": ["21"], "last_message_id": "200"},
+                {"id": "32", "type": 3, "recipient_ids": ["20", "21"], "last_message_id": null},
+            ],
+        })
+    }
+
+    #[test]
+    fn friends_exclude_other_relationships_and_sort_by_name() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready_with_people());
+        let names: Vec<&str> = stores
+            .friends()
+            .iter()
+            .map(|user| user.username.as_str())
+            .collect();
+        assert_eq!(names, ["amy", "zed"]);
+    }
+
+    #[test]
+    fn private_channels_are_most_recent_first() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready_with_people());
+        let ids: Vec<Id> = stores
+            .private_channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect();
+        assert_eq!(ids, [31, 30, 32]);
+    }
+
+    #[test]
+    fn dm_recipient_is_only_for_one_to_one_channels() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready_with_people());
+        assert_eq!(
+            stores
+                .dm_recipient(&stores.private_channels[0])
+                .unwrap()
+                .username,
+            "amy"
+        );
+        assert_eq!(stores.dm_recipient(&stores.private_channels[2]), None);
+    }
+
+    #[test]
+    fn presence_comes_from_supplemental_and_updates() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready_with_people());
+        assert_eq!(stores.status(20), "offline");
+        assert!(stores.online_friends().is_empty());
+        stores.dispatch(
+            "READY_SUPPLEMENTAL",
+            &json!({"merged_presences": {"friends": [{"user_id": "20", "status": "dnd"}]}}),
+        );
+        assert_eq!(stores.status(20), "dnd");
+        stores.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({"user": {"id": "20"}, "status": "idle"}),
+        );
+        assert_eq!(stores.status(20), "idle");
+        assert_eq!(stores.online_friends().len(), 1);
     }
 
     #[test]
