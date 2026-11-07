@@ -6,12 +6,13 @@
 //! The copy shares Windows registry names with the real install (`Run\Discord`), so `prepare` records those values
 //! and `check` fails if they changed. Run `check` after every capture session.
 
+use crate::headless;
 use crate::snapshot::{copy_tree, default_install, newest_app_dir};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub const CDP_PORT: u16 = 9230;
 
@@ -175,24 +176,20 @@ fn launch(repo: &Path) -> Result<()> {
         println!("already running, CDP on 127.0.0.1:{CDP_PORT}");
         return Ok(());
     }
-    let mut command = Command::new(paths.app.join("Discord.exe"));
-    command
-        .env("DISCORD_USER_DATA_DIR", &paths.data)
-        .arg(format!("--remote-debugging-port={CDP_PORT}"))
-        .arg("--remote-debugging-address=127.0.0.1")
-        .arg("--multi-instance")
-        .current_dir(&paths.app)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x8;
-        command.creation_flags(DETACHED_PROCESS);
-    }
-    let child = command.spawn().context("starting the clean client")?;
-    println!("started pid {}, CDP on 127.0.0.1:{CDP_PORT}", child.id());
+    // Inherited by the child. xtask is single threaded here.
+    unsafe { std::env::set_var("DISCORD_USER_DATA_DIR", &paths.data) };
+    let args = [
+        format!("--remote-debugging-port={CDP_PORT}"),
+        "--remote-debugging-address=127.0.0.1".to_owned(),
+        "--multi-instance".to_owned(),
+        // Nothing on the hidden desktop is ever visible, so stop Chromium throttling it for that reason.
+        "--disable-backgrounding-occluded-windows".to_owned(),
+        "--disable-renderer-backgrounding".to_owned(),
+        "--disable-background-timer-throttling".to_owned(),
+        "--mute-audio".to_owned(),
+    ];
+    let pid = headless::spawn(&paths.app.join("Discord.exe"), &args, &paths.app)?;
+    println!("started pid {pid} on the hidden desktop, CDP on 127.0.0.1:{CDP_PORT}");
     Ok(())
 }
 

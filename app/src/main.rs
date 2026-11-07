@@ -1,13 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use gpui::{App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size};
+use gpui::{
+    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+};
 use gpui_platform::application;
 
 struct Root;
 
 impl Render for Root {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(rgb(0x121214)).text_color(rgb(0xffffff)).child("gravecord")
+        div()
+            .size_full()
+            .bg(rgb(0x121214))
+            .text_color(rgb(0xffffff))
+            .child("gravecord")
     }
 }
 
