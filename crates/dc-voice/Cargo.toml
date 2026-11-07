@@ -1,0 +1,28 @@
+[package]
+name = "dc-voice"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+# Adapted from Serein's discord-voice crate (MIT OR Apache-2.0); see DECISIONS.md.
+
+[dependencies]
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
+cpal.workspace = true
+davey.workspace = true
+dc-proto.workspace = true
+futures-util.workspace = true
+openmls.workspace = true
+opus2.workspace = true
+rand.workspace = true
+rtrb.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

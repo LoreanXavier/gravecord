@@ -1,0 +1,556 @@
+//! Default microphone and speaker through cpal. Device callbacks only touch preallocated
+//! lock-free rings; a worker thread moves 20 ms mono 48 kHz frames between those rings and
+//! the voice loop's bounded channels, and reopens devices that fail.
+//!
+//! Adapted from Serein `crates/discord-voice/src/audio.rs` (`Gate`, `Streams::open`,
+//! `input_config`, `input_stream`, `output_stream`, `Capture`, `Playback`) and
+//! `crates/platform/src/audio.rs` (`output_config`), MIT OR Apache-2.0. Dropped: echo
+//! cancellation, noise suppression, input gate, gain, device selection and listing, the
+//! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
+use crate::Frame;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
+};
+use std::time::{Duration, Instant};
+use tracing::{debug, warn};
+
+/// Frames buffered in each device ring: 160 ms.
+const RING: usize = 8;
+const RECOVERY_DELAY: Duration = Duration::from_millis(250);
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+const INPUT_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+pub(crate) struct Gate {
+    /// The call is secured; otherwise both directions stay silent.
+    ready: AtomicBool,
+    muted: AtomicBool,
+    deafened: AtomicBool,
+    stopped: AtomicBool,
+    output_failed: AtomicBool,
+    input_failed: AtomicBool,
+    /// Bumped when the microphone gate changes; capture drops partial PCM.
+    capture_generation: AtomicU64,
+    /// Bumped when the speaker gate changes; playback drops queued audio.
+    playback_generation: AtomicU64,
+}
+impl Gate {
+    fn capture(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+            && !self.muted.load(Ordering::Acquire)
+            && !self.stopped.load(Ordering::Acquire)
+    }
+    fn playback(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+            && !self.deafened.load(Ordering::Acquire)
+            && !self.stopped.load(Ordering::Acquire)
+    }
+}
+
+/// Owns the device worker; dropping it stops the worker and closes both devices.
+pub(crate) struct Audio {
+    gate: Arc<Gate>,
+    thread: std::thread::Thread,
+}
+impl Audio {
+    /// `capture` receives microphone frames; `playback` supplies mixed frames to play.
+    pub fn start(
+        capture: mpsc::SyncSender<Frame>,
+        playback: mpsc::Receiver<Frame>,
+    ) -> Result<Self, &'static str> {
+        let gate = Arc::new(Gate::default());
+        let worker = gate.clone();
+        let thread = std::thread::Builder::new()
+            .name("dc-voice-audio".into())
+            .spawn(move || run(&worker, &capture, &playback))
+            .map_err(|_| "Could not start audio device worker")?;
+        Ok(Self {
+            gate,
+            thread: thread.thread().clone(),
+        })
+    }
+    pub fn set_ready(&self, ready: bool) {
+        if self.gate.ready.swap(ready, Ordering::AcqRel) != ready {
+            self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.gate.playback_generation.fetch_add(1, Ordering::AcqRel);
+            self.thread.unpark();
+        }
+    }
+    /// Idempotent. Each gate only invalidates its own direction.
+    pub fn set_controls(&self, muted: bool, deafened: bool) {
+        let muted = muted || deafened;
+        if self.gate.muted.swap(muted, Ordering::AcqRel) != muted {
+            self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+        }
+        if self.gate.deafened.swap(deafened, Ordering::AcqRel) != deafened {
+            self.gate.playback_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+impl Drop for Audio {
+    fn drop(&mut self) {
+        self.gate.stopped.store(true, Ordering::Release);
+        self.gate.ready.store(false, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+
+fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Receiver<Frame>) {
+    let mut streams: Option<Streams> = None;
+    let mut open_at = Instant::now();
+    let mut input_retry_at = Instant::now();
+    // A live call keeps its place while a device is away: failures reopen, never end the call.
+    while !gate.stopped.load(Ordering::Acquire) {
+        let now = Instant::now();
+        if gate.output_failed.swap(false, Ordering::AcqRel) && streams.is_some() {
+            debug!("voice speaker stream failed; reopening devices");
+            streams = None;
+            open_at = now + RECOVERY_DELAY;
+        }
+        if streams.is_none() && now >= open_at {
+            match Streams::open(gate) {
+                Ok(opened) => streams = Some(opened),
+                Err(error) => {
+                    warn!("voice audio devices unavailable: {error}");
+                    open_at = now + RETRY_DELAY;
+                }
+            }
+        }
+        let Some(active) = &mut streams else {
+            while playback.try_recv().is_ok() {}
+            std::thread::park_timeout(Duration::from_millis(10));
+            continue;
+        };
+        if gate.input_failed.swap(false, Ordering::AcqRel) && active.input_stream.is_some() {
+            debug!("voice microphone stream failed; retrying");
+            active.input_stream = None;
+            input_retry_at = now + INPUT_RETRY_DELAY;
+        }
+        if active.input_stream.is_none() && now >= input_retry_at {
+            input_retry_at = now + INPUT_RETRY_DELAY;
+            match open_input(&active.host, gate) {
+                Ok((stream, ring)) => {
+                    active.input_stream = Some(stream);
+                    active.input = ring;
+                }
+                Err(error) => debug!("voice microphone unavailable: {error}"),
+            }
+        }
+        for _ in 0..RING {
+            let Ok(frame) = active.input.pop() else {
+                break;
+            };
+            if gate.capture() {
+                // A full channel means the voice loop is behind; drop rather than block.
+                let _ = capture.try_send(frame);
+            }
+        }
+        for _ in 0..RING {
+            let Ok(frame) = playback.try_recv() else {
+                break;
+            };
+            if gate.playback() {
+                let _ = active.output.push(frame);
+            }
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+}
+
+struct Streams {
+    host: cpal::Host,
+    input_stream: Option<cpal::Stream>,
+    _output_stream: cpal::Stream,
+    input: rtrb::Consumer<Frame>,
+    output: rtrb::Producer<Frame>,
+}
+impl Streams {
+    fn open(gate: &Arc<Gate>) -> Result<Self, &'static str> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or("No default speaker is available")?;
+        let config = output_config(&device)?;
+        let (output, output_read) = rtrb::RingBuffer::new(RING);
+        let render = Playback::new(config.sample_rate(), output_read);
+        let stream_config = config.config();
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => output_stream::<f32>(&device, &stream_config, render, gate),
+            cpal::SampleFormat::I16 => output_stream::<i16>(&device, &stream_config, render, gate),
+            cpal::SampleFormat::I32 => output_stream::<i32>(&device, &stream_config, render, gate),
+            cpal::SampleFormat::U16 => output_stream::<u16>(&device, &stream_config, render, gate),
+            _ => Err("Speaker sample format is not supported"),
+        }?;
+        stream
+            .play()
+            .map_err(|_| "Could not start speaker playback")?;
+        // A missing microphone leaves the call listen-only; the worker keeps retrying.
+        let (input_stream, input) = match open_input(&host, gate) {
+            Ok((stream, ring)) => (Some(stream), ring),
+            Err(error) => {
+                debug!("voice microphone unavailable: {error}");
+                (None, rtrb::RingBuffer::new(RING).1)
+            }
+        };
+        Ok(Self {
+            host,
+            input_stream,
+            _output_stream: stream,
+            input,
+            output,
+        })
+    }
+}
+
+fn open_input(
+    host: &cpal::Host,
+    gate: &Arc<Gate>,
+) -> Result<(cpal::Stream, rtrb::Consumer<Frame>), &'static str> {
+    let device = host
+        .default_input_device()
+        .ok_or("No default microphone is available")?;
+    let config = input_config(&device)?;
+    let (ring, read) = rtrb::RingBuffer::new(RING);
+    let capture = Capture::new(config.sample_rate(), ring);
+    let stream_config = config.config();
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => input_stream::<f32>(&device, &stream_config, capture, gate),
+        cpal::SampleFormat::I16 => input_stream::<i16>(&device, &stream_config, capture, gate),
+        cpal::SampleFormat::I32 => input_stream::<i32>(&device, &stream_config, capture, gate),
+        cpal::SampleFormat::U16 => input_stream::<u16>(&device, &stream_config, capture, gate),
+        _ => Err("Microphone sample format is not supported"),
+    }?;
+    stream
+        .play()
+        .map_err(|_| "Could not start microphone; check system microphone permission")?;
+    Ok((stream, read))
+}
+
+fn supported_format(format: cpal::SampleFormat) -> bool {
+    matches!(
+        format,
+        cpal::SampleFormat::F32
+            | cpal::SampleFormat::I16
+            | cpal::SampleFormat::I32
+            | cpal::SampleFormat::U16
+    )
+}
+fn usable(config: &cpal::SupportedStreamConfig) -> bool {
+    (1..=8).contains(&config.channels())
+        && (8_000..=192_000).contains(&config.sample_rate())
+        && supported_format(config.sample_format())
+}
+
+/// 48 kHz with the fewest channels when offered, else the device default.
+fn input_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, &'static str> {
+    let supported: Vec<_> = device
+        .supported_input_configs()
+        .map_err(|_| "Microphone formats are unavailable")?
+        .take(64)
+        .collect();
+    if let Some(config) = supported
+        .into_iter()
+        .filter(|c| (1..=8).contains(&c.channels()) && supported_format(c.sample_format()))
+        .filter_map(|c| c.try_with_sample_rate(48_000))
+        .min_by_key(|c| c.channels())
+    {
+        return Ok(config);
+    }
+    let config = device
+        .default_input_config()
+        .map_err(|_| "Default microphone format is unavailable")?;
+    usable(&config)
+        .then_some(config)
+        .ok_or("Microphone format is unsupported")
+}
+
+/// Windows keeps the shared-mode default (Serein: some drivers advertise converted WASAPI
+/// formats they then reject). Elsewhere 48 kHz with the fewest channels, else the default.
+fn output_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, &'static str> {
+    if !cfg!(target_os = "windows")
+        && let Ok(supported) = device.supported_output_configs()
+        && let Some(config) = supported
+            .take(64)
+            .filter(|c| (1..=8).contains(&c.channels()) && supported_format(c.sample_format()))
+            .filter_map(|c| c.try_with_sample_rate(48_000))
+            .min_by_key(|c| c.channels())
+    {
+        return Ok(config);
+    }
+    let config = device
+        .default_output_config()
+        .map_err(|_| "Default speaker format is unavailable")?;
+    usable(&config)
+        .then_some(config)
+        .ok_or("Speaker format is unsupported")
+}
+
+fn is_fatal(error: &cpal::Error) -> bool {
+    !matches!(
+        error.kind(),
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied | cpal::ErrorKind::DeviceChanged
+    )
+}
+
+fn input_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut capture: Capture,
+    gate: &Arc<Gate>,
+) -> Result<cpal::Stream, &'static str>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = usize::from(config.channels);
+    let (callback_gate, failure) = (gate.clone(), gate.clone());
+    device
+        .build_input_stream(
+            *config,
+            move |data: &[T], _| capture.process(data, channels, &callback_gate),
+            move |error| {
+                if is_fatal(&error) {
+                    failure.input_failed.store(true, Ordering::Release);
+                }
+            },
+            None,
+        )
+        .map_err(|_| "Could not open microphone; check device and microphone permission")
+}
+
+fn output_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut render: Playback,
+    gate: &Arc<Gate>,
+) -> Result<cpal::Stream, &'static str>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    let channels = usize::from(config.channels);
+    let (callback_gate, failure) = (gate.clone(), gate.clone());
+    device
+        .build_output_stream(
+            *config,
+            move |data: &mut [T], _| render.render(data, channels, &callback_gate),
+            move |error| {
+                if is_fatal(&error) {
+                    failure.output_failed.store(true, Ordering::Release);
+                }
+            },
+            None,
+        )
+        .map_err(|_| "Could not open speaker device")
+}
+
+fn sanitize(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Downmix to mono and resample linearly to 48 kHz 960-sample frames.
+// Serein: linear conversion is a fallback for devices lacking 48 kHz.
+struct Capture {
+    generation: u64,
+    previous: Option<f32>,
+    phase: f64,
+    step: f64,
+    frame: Frame,
+    index: usize,
+    output: rtrb::Producer<Frame>,
+}
+impl Capture {
+    fn new(rate: u32, output: rtrb::Producer<Frame>) -> Self {
+        Self {
+            generation: 0,
+            previous: None,
+            phase: 0.0,
+            step: f64::from(rate) / 48_000.0,
+            frame: [0.0; 960],
+            index: 0,
+            output,
+        }
+    }
+    fn process<T: cpal::SizedSample>(&mut self, data: &[T], channels: usize, gate: &Gate)
+    where
+        f32: cpal::FromSample<T>,
+    {
+        let generation = gate.capture_generation.load(Ordering::Acquire);
+        if generation != self.generation {
+            self.generation = generation;
+            self.reset();
+        }
+        if !gate.capture() || channels == 0 {
+            self.reset();
+            return;
+        }
+        for frame in data.chunks_exact(channels) {
+            let sample = frame.iter().map(|v| v.to_sample::<f32>()).sum::<f32>() / channels as f32;
+            self.sample(sanitize(sample));
+        }
+    }
+    fn reset(&mut self) {
+        self.previous = None;
+        self.phase = 0.0;
+        self.index = 0;
+        self.frame.fill(0.0);
+    }
+    fn sample(&mut self, sample: f32) {
+        if let Some(previous) = self.previous {
+            while self.phase < 1.0 {
+                self.frame[self.index] = previous + (sample - previous) * self.phase as f32;
+                self.index += 1;
+                if self.index == 960 {
+                    // A full ring drops this frame; the worker drains it every 5 ms.
+                    let _ = self.output.push(self.frame);
+                    self.index = 0;
+                }
+                self.phase += self.step;
+            }
+            self.phase -= 1.0;
+        }
+        self.previous = Some(sample);
+    }
+}
+
+/// Resample 48 kHz mono frames linearly to the device rate, duplicated to every channel.
+struct Playback {
+    generation: u64,
+    input: rtrb::Consumer<Frame>,
+    frame: Frame,
+    index: usize,
+    previous: f32,
+    next: f32,
+    phase: f64,
+    step: f64,
+}
+impl Playback {
+    fn new(rate: u32, input: rtrb::Consumer<Frame>) -> Self {
+        Self {
+            generation: 0,
+            input,
+            frame: [0.0; 960],
+            index: 960,
+            previous: 0.0,
+            next: 0.0,
+            phase: 1.0,
+            step: 48_000.0 / f64::from(rate),
+        }
+    }
+    fn render<T: cpal::SizedSample + cpal::FromSample<f32>>(
+        &mut self,
+        data: &mut [T],
+        channels: usize,
+        gate: &Gate,
+    ) {
+        let generation = gate.playback_generation.load(Ordering::Acquire);
+        if generation != self.generation {
+            self.generation = generation;
+            self.reset();
+        }
+        if !gate.playback() || channels == 0 {
+            self.reset();
+            data.fill(T::from_sample(0.0));
+            return;
+        }
+        for frame in data.chunks_mut(channels) {
+            frame.fill(T::from_sample(self.sample()));
+        }
+    }
+    fn reset(&mut self) {
+        for _ in 0..RING {
+            if self.input.pop().is_err() {
+                break;
+            }
+        }
+        self.frame.fill(0.0);
+        self.index = 960;
+        self.previous = 0.0;
+        self.next = 0.0;
+        self.phase = 1.0;
+    }
+    fn pull(&mut self) -> f32 {
+        if self.index == 960 {
+            // An underrun plays one frame of silence.
+            self.frame = self.input.pop().unwrap_or([0.0; 960]);
+            self.index = 0;
+        }
+        let value = self.frame[self.index];
+        self.index += 1;
+        sanitize(value)
+    }
+    fn sample(&mut self) -> f32 {
+        while self.phase >= 1.0 {
+            self.previous = self.next;
+            self.next = self.pull();
+            self.phase -= 1.0;
+        }
+        let value = self.previous + (self.next - self.previous) * self.phase as f32;
+        self.phase += self.step;
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_gate() -> Gate {
+        let gate = Gate::default();
+        gate.ready.store(true, Ordering::Release);
+        gate
+    }
+
+    #[test]
+    fn capture_resamples_downmixes_and_respects_the_gate() {
+        // 44.1 kHz stereo in: 882 input frames make one 960-sample 48 kHz frame.
+        let (ring, mut read) = rtrb::RingBuffer::new(RING);
+        let mut capture = Capture::new(44_100, ring);
+        let gate = open_gate();
+        let stereo: Vec<f32> = std::iter::repeat_n([0.5f32, -0.1], 900).flatten().collect();
+        capture.process(&stereo, 2, &gate);
+        let frame = read.pop().expect("one frame");
+        assert!(
+            frame.iter().all(|s| (s - 0.2).abs() < 1e-6),
+            "mean of both channels"
+        );
+        assert!(read.pop().is_err());
+
+        gate.muted.store(true, Ordering::Release);
+        capture.process(&stereo, 2, &gate);
+        assert!(read.pop().is_err(), "muted microphone produces nothing");
+    }
+
+    #[test]
+    fn playback_upsamples_fills_channels_and_silences_when_deafened() {
+        let (mut ring, read) = rtrb::RingBuffer::new(RING);
+        let mut playback = Playback::new(96_000, read);
+        let gate = open_gate();
+        ring.push([0.25; 960]).unwrap();
+        ring.push([0.25; 960]).unwrap();
+        let mut data = vec![0.0f32; 2 * 1920];
+        playback.render(&mut data, 2, &gate);
+        // The first sample ramps from silence; the rest hold the frame's value.
+        assert!(data[4..].iter().all(|s| (s - 0.25).abs() < 1e-6));
+        assert_eq!(data[2], data[3], "every channel gets the same sample");
+
+        gate.deafened.store(true, Ordering::Release);
+        ring.push([0.25; 960]).unwrap();
+        playback.render(&mut data, 2, &gate);
+        assert!(data.iter().all(|s| *s == 0.0));
+        assert!(playback.input.pop().is_err(), "queued audio was flushed");
+    }
+
+    #[test]
+    fn non_finite_samples_become_silence() {
+        assert_eq!(sanitize(f32::NAN), 0.0);
+        assert_eq!(sanitize(3.0), 1.0);
+        assert_eq!(sanitize(-0.5), -0.5);
+    }
+}
