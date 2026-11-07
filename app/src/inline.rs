@@ -397,6 +397,7 @@ impl Element for Inline {
         let pieces = self.pieces.clone();
         let laid = self.laid.clone();
         let line_height = self.line_height;
+        let truncate = self.truncate;
         let id =
             window.request_measured_layout(Style::default(), move |known, available, window, _| {
                 let limit = known.width.or(match available.width {
