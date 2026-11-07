@@ -1079,7 +1079,13 @@ impl Root {
                 .into_any_element();
         }
         let selected = self.channel == Some(channel.id);
-        let tint = if selected {
+        // The voice channel this client is in reads like a selected one, with a green speaker and a status line.
+        let in_call = channel.kind == ChannelKind::Voice
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|call| call.channel == channel.id);
+        let tint = if selected || in_call {
             "--text-strong"
         } else {
             "--channels-default"
@@ -1096,7 +1102,7 @@ impl Root {
         } else {
             &["invite_small", "settings_small"]
         };
-        let action_tint = if selected {
+        let action_tint = if selected || in_call {
             "--text-strong"
         } else {
             "--interactive-icon-default"
@@ -1143,7 +1149,15 @@ impl Root {
                     .when(!selected, |this| {
                         this.hover(|style| style.bg(color("--background-mod-subtle")))
                     })
-                    .child(icon(name, 20., tint))
+                    .child(icon(
+                        name,
+                        20.,
+                        if in_call {
+                            "--icon-voice-connected"
+                        } else {
+                            tint
+                        },
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1160,7 +1174,7 @@ impl Root {
                         div()
                             .flex()
                             .gap(px(4.))
-                            .when(!selected, |this| {
+                            .when(!selected && !in_call, |this| {
                                 this.opacity(0.)
                                     .group_hover(action_group, |style| style.opacity(1.))
                             })
@@ -1205,6 +1219,13 @@ impl Root {
                     .flat_map(|row| {
                         let mut rows = vec![self.channel_row(row, cx)];
                         if row.kind == ChannelKind::Voice {
+                            if self
+                                .call
+                                .as_ref()
+                                .is_some_and(|call| call.channel == row.id)
+                            {
+                                rows.push(voice::status_line());
+                            }
                             rows.extend(self.voice_members(guild.id, row.id));
                         }
                         rows

@@ -20,6 +20,26 @@ pub(crate) struct Call {
     pub connected: bool,
 }
 
+/// `linkBottom_TNyK-N`: under the channel this client is in, "Set a channel status" with a pencil, 12/16 medium.
+pub(super) fn status_line() -> AnyElement {
+    div()
+        .flex_none()
+        .mt(px(-5.))
+        .mb(px(4.))
+        .h(px(16.))
+        .pl(px(44.))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight(500.))
+        .text_color(color("--text-muted"))
+        .child("Set a channel status")
+        .child(super::icon("channel_status_pencil", 12., "--text-muted"))
+        .into_any_element()
+}
+
 impl Root {
     fn voice_flags(&self) -> u64 {
         let allowed = match self
@@ -326,7 +346,7 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--channels-default"))
+                            .text_color(color("--text-strong"))
                             .child(user.display_name().to_owned()),
                     )
                     .into_any_element()
