@@ -172,6 +172,52 @@ impl Guild {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    pub id: Id,
+    pub filename: String,
+    pub proxy_url: String,
+    pub content_type: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub size: u64,
+}
+
+impl Attachment {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            id: id(&value["id"])?,
+            filename: text(&value["filename"])?,
+            proxy_url: text(&value["proxy_url"]).or_else(|| text(&value["url"]))?,
+            content_type: text(&value["content_type"]),
+            width: value["width"].as_u64().map(|width| width as u32),
+            height: value["height"].as_u64().map(|height| height as u32),
+            size: value["size"].as_u64().unwrap_or(0),
+        })
+    }
+
+    pub fn is_image(&self) -> bool {
+        self.width.is_some()
+            && self.height.is_some()
+            && self
+                .content_type
+                .as_deref()
+                .is_some_and(|kind| kind.starts_with("image/"))
+    }
+}
+
+/// Fits media into the message column without enlarging it. Official limits for a single image.
+pub fn fit_media(width: u32, height: u32) -> (u32, u32) {
+    const MAX_WIDTH: f64 = 550.;
+    const MAX_HEIGHT: f64 = 350.;
+    let (width, height) = (f64::from(width), f64::from(height));
+    let scale = (MAX_WIDTH / width).min(MAX_HEIGHT / height).min(1.);
+    (
+        (width * scale).round() as u32,
+        (height * scale).round() as u32,
+    )
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
     pub channel_id: Id,
@@ -180,6 +226,7 @@ pub struct Message {
     pub edited: bool,
     /// The message this one replies to, as the server embedded it.
     pub referenced: Option<Box<Message>>,
+    pub attachments: Vec<Attachment>,
     pub timestamp: DateTime<Utc>,
     pub kind: u64,
     pub flags: u64,
@@ -201,6 +248,12 @@ impl Message {
             content: text(&value["content"]).unwrap_or_default(),
             edited: value["edited_timestamp"].is_string(),
             referenced: Self::from_value(&value["referenced_message"]).map(Box::new),
+            attachments: value["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Attachment::from_value)
+                .collect(),
             timestamp: DateTime::parse_from_rfc3339(value["timestamp"].as_str()?)
                 .ok()?
                 .with_timezone(&Utc),
@@ -619,6 +672,27 @@ mod tests {
         reply["referenced_message"] = message("5", "the original");
         let parsed = Message::from_value(&reply).unwrap();
         assert_eq!(parsed.referenced.unwrap().content, "the original");
+    }
+
+    #[test]
+    fn media_shrinks_to_fit_and_never_grows() {
+        assert_eq!(fit_media(400, 240), (400, 240));
+        assert_eq!(fit_media(1100, 700), (550, 350));
+        assert_eq!(fit_media(2000, 500), (550, 138));
+        assert_eq!(fit_media(100, 1000), (35, 350));
+    }
+
+    #[test]
+    fn attachments_parse_and_know_images() {
+        let mut value = message("6", "x");
+        value["attachments"] = json!([
+            {"id": "1", "filename": "a.png", "proxy_url": "p", "content_type": "image/png", "width": 4, "height": 3, "size": 9},
+            {"id": "2", "filename": "b.txt", "url": "u", "content_type": "text/plain", "size": 1},
+        ]);
+        let parsed = Message::from_value(&value).unwrap();
+        assert!(parsed.attachments[0].is_image());
+        assert!(!parsed.attachments[1].is_image());
+        assert_eq!(parsed.attachments[1].proxy_url, "u");
     }
 
     #[test]

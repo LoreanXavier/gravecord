@@ -10,7 +10,7 @@ use dc_markdown::highlight::highlight;
 use dc_markdown::{Block, Kind, Span, parse};
 use dc_state::grouping::starts_group;
 use dc_state::member_list::Row as MemberRow;
-use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User};
+use dc_state::{Channel, ChannelKind, Guild, Id, Message, Stores, User, fit_media};
 use dc_tokens::Theme;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontFeatures,
@@ -213,11 +213,28 @@ impl Root {
                 .filter_map(|channel| self.stores.dm_recipient(channel))
                 .cloned(),
         );
+        let mut media = Vec::new();
         if let Some(messages) = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
         {
             users.extend(messages.iter().map(|message| message.author.clone()));
+            for attachment in messages.iter().flat_map(|message| &message.attachments) {
+                if attachment.is_image() {
+                    let (width, height) = fit_media(
+                        attachment.width.unwrap_or(1),
+                        attachment.height.unwrap_or(1),
+                    );
+                    let url = format!(
+                        "{}format=webp&quality=lossless&width={width}&height={height}",
+                        attachment.proxy_url,
+                    );
+                    media.push((format!("attachment:{}", attachment.id), url));
+                }
+            }
+        }
+        for (key, url) in media {
+            self.request_image(key, url);
         }
         for user in users {
             let (key, url) = avatar_source(&user);
@@ -1312,6 +1329,44 @@ impl Root {
         inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
 
+    /// Images in their grid: 2px above, 4px between, natural size up to the official limits, 8px corners.
+    fn attachments(&self, message: &Message) -> Option<AnyElement> {
+        let images: Vec<AnyElement> = message
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.is_image())
+            .map(|attachment| {
+                let (width, height) = fit_media(
+                    attachment.width.unwrap_or(1),
+                    attachment.height.unwrap_or(1),
+                );
+                let (width, height) = (px(width as f32), px(height as f32));
+                let image = self
+                    .images
+                    .get(&format!("attachment:{}", attachment.id))
+                    .cloned();
+                div()
+                    .w(width)
+                    .h(height)
+                    .rounded(px(8.))
+                    .bg(color("--background-base-low"))
+                    .children(image.map(|image| img(image).w(width).h(height).rounded(px(8.))))
+                    .into_any_element()
+            })
+            .collect();
+        (!images.is_empty()).then(|| {
+            // 3px of the bottom space is the inline-block baseline gap under the official image.
+            div()
+                .pt(px(2.))
+                .pb(px(5.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(images)
+                .into_any_element()
+        })
+    }
+
     fn content(&self, message: &Message) -> impl IntoElement {
         let text = hsla("--text-default");
         let blocks = parse(&message.content);
@@ -1498,7 +1553,10 @@ impl Root {
                     });
                 let content = match editing {
                     Some(editor) => self.edit_box(editor).into_any_element(),
-                    None => self.content(message).into_any_element(),
+                    None => div()
+                        .child(self.content(message))
+                        .children(self.attachments(message))
+                        .into_any_element(),
                 };
                 let row = div().pr(px(16.));
                 if !*head {
