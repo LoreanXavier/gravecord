@@ -436,6 +436,7 @@ impl Element for Inline {
                 fragment
                     .shaped
                     .paint(text_origin, text_height, TextAlign::Left, None, window, cx);
+            paint_decorations(piece, fragment, text_origin, text_height, window);
         }
     }
 }
