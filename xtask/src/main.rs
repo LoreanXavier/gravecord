@@ -2,6 +2,7 @@ mod asar;
 mod audit;
 mod client;
 mod headless;
+mod layout;
 mod parity;
 mod report;
 mod snapshot;

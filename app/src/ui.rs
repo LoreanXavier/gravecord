@@ -4,6 +4,7 @@
 use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::inline::{BoxStyle, Inline, Piece, SharedSelection, inline};
 use crate::net::{Request, Update};
+use crate::parity::Parity;
 use chrono::Datelike;
 use dc_markdown::highlight::highlight;
 use dc_markdown::{Block, Span, parse};
@@ -261,6 +262,7 @@ impl Root {
     }
 
     /// For test scripts: where the app is now.
+    #[cfg(feature = "capture")]
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
         format!(
@@ -282,6 +284,7 @@ impl Root {
         }
     }
 
+    #[cfg(feature = "capture")]
     pub fn composer(&self) -> Entity<Editor> {
         self.composer.clone()
     }
@@ -314,6 +317,7 @@ impl Root {
                 .child(icon(name, 12., "--interactive-text-default"))
         };
         div()
+            .parity("titlebar")
             .relative()
             .flex_none()
             .h(px(32.))
@@ -472,10 +476,11 @@ impl Root {
                 .justify_center()
                 .child(icon(name, size, "--text-default"))
         };
-        div()
-            .flex_none()
+        let list = div()
+            .parity("rail")
+            .flex_1()
+            .min_h(px(0.))
             .w(px(72.))
-            .h_full()
             .flex()
             .flex_col()
             .items_center()
@@ -495,7 +500,16 @@ impl Root {
                     .collect::<Vec<_>>(),
             )
             .child(tool("add_server", 20.))
-            .child(tool("discover", 20.))
+            .child(tool("discover", 20.));
+        // The official rail ends where the user panel starts.
+        div()
+            .flex_none()
+            .w(px(72.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(list)
+            .child(div().flex_none().h(px(50.)))
     }
 
     fn channel_row(&self, channel: &Channel) -> AnyElement {
@@ -549,7 +563,10 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .when(selected, |this| this.bg(color("--background-mod-strong")))
+                    .when(selected, |this| {
+                        this.parity("channel-selected")
+                            .bg(color("--background-mod-strong"))
+                    })
                     .child(icon(name, 20., tint))
                     .child(
                         div()
@@ -606,6 +623,7 @@ impl Root {
             })
             .unwrap_or_default();
         div()
+            .parity("sidebar")
             .relative()
             .flex_none()
             .w(px(303.))
@@ -623,41 +641,43 @@ impl Root {
             )
             .child(div().flex_none().h(px(1.)))
             .child(
-                div().flex_none().h(px(48.)).px(px(8.)).pt(px(8.)).child(
-                    div()
-                        .h(px(32.))
-                        .flex()
-                        .items_center()
-                        .pl(px(8.))
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(name),
-                        )
-                        .child(
-                            div()
-                                .ml(px(2.))
-                                .child(icon("chevron_down", 16., "--text-strong")),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .size(px(32.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon("invite", 20., "--text-strong")),
-                        ),
-                ),
-            )
-            .child(
                 div()
-                    .h(px(1.))
+                    .parity_below("guild-header", 1.)
                     .flex_none()
-                    .bg(color("--background-mod-subtle")),
+                    .h(px(49.))
+                    .border_b_1()
+                    .border_color(color("--background-mod-subtle"))
+                    .px(px(8.))
+                    .pt(px(8.))
+                    .child(
+                        div()
+                            .h(px(32.))
+                            .flex()
+                            .items_center()
+                            .pl(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(name),
+                            )
+                            .child(div().ml(px(2.)).child(icon(
+                                "chevron_down",
+                                16.,
+                                "--text-strong",
+                            )))
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("invite", 20., "--text-strong")),
+                            ),
+                    ),
             )
             .child(div().flex_none().h(px(12.)))
             .child(plain_row("events", "Events"))
@@ -696,6 +716,7 @@ impl Root {
                 .child(icon("audio_chevron", 16., "--interactive-text-default"))
         };
         div()
+            .parity_with_border("user-panel", 1.)
             .absolute()
             .left(px(8.))
             .bottom(px(8.))
@@ -778,8 +799,11 @@ impl Root {
                 .child(icon(name, 20., "--text-muted"))
         };
         div()
+            .parity_below("chat-header", 1.)
             .flex_none()
-            .h(px(48.))
+            .h(px(49.))
+            .border_b_1()
+            .border_color(color("--background-mod-subtle"))
             .pl(px(15.))
             .pr(px(8.))
             .flex()
@@ -808,6 +832,7 @@ impl Root {
             .child(
                 div()
                     .ml(px(12.))
+                    .parity_with_border("search", 1.)
                     .w(px(244.))
                     .h(px(32.))
                     .rounded(px(8.))
@@ -922,7 +947,7 @@ impl Root {
             return div().into_any_element();
         };
         match row {
-            Row::Spacer => div().h(px(24.)).into_any_element(),
+            Row::Spacer => div().h(px(40.)).into_any_element(),
             Row::Divider(date) => div()
                 .pt(px(24.))
                 .pl(px(16.))
@@ -1029,8 +1054,10 @@ impl Root {
                 .justify_center()
                 .child(icon(name, 20., "--interactive-text-default"))
         };
-        div().flex_none().px(px(8.)).pb(px(8.)).child(
+        // The form overlaps the list by 16px, as the official layout does.
+        div().flex_none().mt(px(-16.)).px(px(8.)).pb(px(8.)).child(
             div()
+                .parity_with_border("composer", 1.)
                 .min_h(px(58.))
                 .rounded(px(8.))
                 .bg(color("--chat-background-default"))
@@ -1047,6 +1074,7 @@ impl Root {
                         .flex_1()
                         .min_w(px(0.))
                         .py(px(17.))
+                        .parity("composer-text")
                         .child(self.composer.clone()),
                 )
                 .child(
@@ -1169,6 +1197,7 @@ impl Render for Root {
                     .child(self.sidebar())
                     .child(
                         div()
+                            .parity("chat")
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -1178,18 +1207,14 @@ impl Render for Root {
                             .child(self.header())
                             .child(
                                 div()
-                                    .flex_none()
-                                    .h(px(1.))
-                                    .bg(color("--background-mod-subtle")),
-                            )
-                            .child(
-                                div()
                                     .flex()
                                     .flex_col()
                                     .flex_1()
                                     .min_h(px(0.))
                                     .bg(color("--background-base-lower"))
-                                    .child(div().flex_1().min_h(px(0.)).child(rows))
+                                    .child(
+                                        div().parity("messages").flex_1().min_h(px(0.)).child(rows),
+                                    )
                                     .child(self.composer_bar(cx)),
                             ),
                     ),

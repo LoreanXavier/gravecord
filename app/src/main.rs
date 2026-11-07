@@ -6,6 +6,7 @@ mod fonts;
 mod harness;
 mod inline;
 mod net;
+mod parity;
 mod text_buffer;
 mod ui;
 
@@ -59,8 +60,10 @@ struct Capture {
     path: PathBuf,
     settle_ms: u64,
     /// Typed and sent through the composer once the channel has loaded, for end-to-end tests.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     send: Option<String>,
     /// Scripted input, see `harness.rs`.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     script: Option<String>,
 }
 
@@ -191,6 +194,7 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "capture")]
 fn write_capture(cx: &mut App, window: gpui::AnyWindowHandle, path: &Path) {
+    parity::write(&path.with_extension("layout.json"));
     let result = window.update(cx, |_, window, _| window.render_to_image());
     match result {
         Ok(Ok(image)) => {

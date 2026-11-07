@@ -3,7 +3,7 @@
 //! Pixel diff only so far. The layout-tree diff and calibrated thresholds (section 8.3) are open:
 //! this prints the measured mismatch and never reports a pass.
 
-use crate::headless;
+use crate::{headless, layout};
 use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 use std::fs;
@@ -184,6 +184,23 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         100.0 * different as f64 / total as f64
     );
     diff_image(&ours, &golden).save(dir.join(format!("{screen}-diff.png")))?;
+
+    let dom = design
+        .join("dom")
+        .join(screen)
+        .join("text-darker-cozy.json");
+    let map = repo.join("tests").join("parity").join("map.json");
+    let (checked, mismatches) = layout::compare(&dom, &map, &frame.with_extension("layout.json"))?;
+    println!(
+        "layout tree: {checked} elements, {} differ",
+        mismatches.len()
+    );
+    for mismatch in &mismatches {
+        println!(
+            "  {:<18} ours {:?} official {:?}",
+            mismatch.id, mismatch.ours, mismatch.official
+        );
+    }
     Ok(())
 }
 

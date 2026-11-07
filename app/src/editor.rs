@@ -112,6 +112,7 @@ impl Editor {
         self.placeholder = placeholder.into();
     }
 
+    #[cfg(feature = "capture")]
     pub fn text(&self) -> &str {
         self.buffer.text()
     }
