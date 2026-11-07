@@ -409,6 +409,7 @@ impl Root {
         let id = guild.id;
         let selected = self.guild == Some(id);
         let image = self.images.get(&format!("guild:{id}")).cloned();
+        let group = SharedString::from(format!("guild-row-{id}"));
         let tile = div()
             .id(SharedString::from(format!("guild-{id}")))
             .size(px(40.))
@@ -450,18 +451,21 @@ impl Root {
             .h(px(40.))
             .flex()
             .justify_center()
-            .when(selected, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px(0.))
-                        .w(px(4.))
-                        .h(px(40.))
-                        .rounded_r(px(4.))
-                        .bg(color("--text-strong")),
-                )
-            })
+            .group(group.clone())
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(if selected { 0. } else { 10. }))
+                    .w(px(4.))
+                    .h(px(if selected { 40. } else { 20. }))
+                    .rounded_r(px(4.))
+                    .bg(color("--text-strong"))
+                    .when(!selected, |this| {
+                        this.opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                    }),
+            )
             .child(tile)
     }
 
@@ -548,6 +552,20 @@ impl Root {
         } else {
             "text_channel"
         };
+        let group = SharedString::from(format!("channel-{}", channel.id));
+        let voice = channel.kind == ChannelKind::Voice;
+        let actions: &[&str] = if voice {
+            &["voice_action_1", "voice_action_2", "voice_action_3"]
+        } else {
+            &["invite_small", "settings_small"]
+        };
+        let action_tint = if selected {
+            "--text-strong"
+        } else {
+            "--interactive-icon-default"
+        };
+        let action_group = group.clone();
+        let name_group = group.clone();
         div()
             .flex_none()
             .h(px(34.))
@@ -555,6 +573,7 @@ impl Root {
             .pl(px(8.))
             .child(
                 div()
+                    .group(group)
                     .h(px(32.))
                     .w(px(286.))
                     .pl(px(8.))
@@ -567,6 +586,9 @@ impl Root {
                         this.parity("channel-selected")
                             .bg(color("--background-mod-strong"))
                     })
+                    .when(!selected, |this| {
+                        this.hover(|style| style.bg(color("--background-mod-subtle")))
+                    })
                     .child(icon(name, 20., tint))
                     .child(
                         div()
@@ -575,17 +597,25 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color(tint))
+                            .group_hover(name_group, |style| {
+                                style.text_color(color("--text-strong"))
+                            })
                             .child(channel.name.clone()),
                     )
-                    .when(selected, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .gap(px(4.))
-                                .child(icon("invite_small", 16., tint))
-                                .child(icon("settings_small", 16., tint)),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .when(!selected, |this| {
+                                this.opacity(0.)
+                                    .group_hover(action_group, |style| style.opacity(1.))
+                            })
+                            .children(
+                                actions
+                                    .iter()
+                                    .map(|name| icon(name, 16., action_tint).into_any_element()),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -981,49 +1011,60 @@ impl Root {
                 else {
                     return div().into_any_element();
                 };
-                // Padding, not margin: gpui lists measure an item without its margins.
-                let base = div().relative().pl(px(72.)).pr(px(64.)).pb(px(2.));
+                // The 17px between groups is outside the hover box, and the box stops 16px short of the edge. Padding,
+                // not margin: gpui lists measure an item without its margins.
+                let body = div()
+                    .relative()
+                    .pl(px(72.))
+                    .pr(px(48.))
+                    .pt(px(2.))
+                    .pb(px(2.))
+                    .hover(|style| style.bg(color("--background-mod-subtle")));
+                let row = div().pr(px(16.));
                 if !*head {
-                    return base
-                        .pt(px(2.))
-                        .child(self.content(message))
+                    return row
+                        .child(body.child(self.content(message)))
                         .into_any_element();
                 }
                 let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
-                base.pt(px(19.))
+                row.pt(px(17.))
                     .child(
-                        div()
-                            .absolute()
-                            .left(px(16.))
-                            .top(px(21.))
-                            .size(px(40.))
-                            .rounded_full()
-                            .overflow_hidden()
-                            .children(avatar.map(|image| img(image).size(px(40.)).rounded_full())),
+                        body.child(
+                            div()
+                                .absolute()
+                                .left(px(16.))
+                                .top(px(4.))
+                                .size(px(40.))
+                                .children(
+                                    avatar.map(|image| img(image).size(px(40.)).rounded_full()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h(px(22.))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .line_height(px(22.))
+                                        .child(message.author.display_name().to_owned()),
+                                )
+                                .child(
+                                    div()
+                                        .ml(px(8.))
+                                        .text_size(px(12.))
+                                        .line_height(px(22.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--channels-default"))
+                                        .child(
+                                            message.local_time().format("%-I:%M %p").to_string(),
+                                        ),
+                                ),
+                        )
+                        .child(self.content(message)),
                     )
-                    .child(
-                        div()
-                            .h(px(22.))
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
-                                    .line_height(px(22.))
-                                    .child(message.author.display_name().to_owned()),
-                            )
-                            .child(
-                                div()
-                                    .ml(px(8.))
-                                    .text_size(px(12.))
-                                    .line_height(px(22.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--channels-default"))
-                                    .child(message.local_time().format("%-I:%M %p").to_string()),
-                            ),
-                    )
-                    .child(self.content(message))
                     .into_any_element()
             }
         }

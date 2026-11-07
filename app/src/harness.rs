@@ -102,6 +102,11 @@ pub async fn run(
                     .timer(Duration::from_millis(ms))
                     .await;
             }
+            ["move", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                }
+            }
             ["click", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| {

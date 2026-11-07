@@ -1,11 +1,11 @@
-// node tools/capture.mjs <screen> <variant>
+// node tools/capture.mjs <screen> <variant> [hover x,y]
 // Writes design/dom/<screen>/<variant>.json (full DOM, bounds, computed styles) and
 // design/golden/windows/<screen>/<variant>@<dpr>.png from the clean client's current state.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { connect } from './cdp.mjs';
 
-const [screen, variant] = process.argv.slice(2);
+const [screen, variant, hover] = process.argv.slice(2);
 if (!screen || !variant) throw new Error('usage: capture.mjs <screen> <variant>');
 
 const SIDES = ['top', 'right', 'bottom', 'left'];
@@ -26,7 +26,8 @@ const root = join(import.meta.dirname, '..', 'design');
 const page = await connect();
 await page.send('DOMSnapshot.enable');
 // A golden must not depend on where the pointer was left: park it on empty titlebar space.
-await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 16 });
+const [x, y] = hover ? hover.split(',').map(Number) : [320, 16];
+await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
 await new Promise((ok) => setTimeout(ok, 500));
 const { width, height, dpr, route, theme, density } = await page.evaluate(`({
   width: innerWidth,

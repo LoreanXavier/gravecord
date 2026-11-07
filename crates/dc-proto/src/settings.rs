@@ -82,9 +82,10 @@ fn fields(bytes: &[u8]) -> impl Iterator<Item = (u64, &[u8])> {
 }
 
 fn fixed64_list(bytes: &[u8]) -> Vec<u64> {
-    bytes
-        .chunks_exact(8)
-        .filter_map(|chunk| chunk.try_into().ok().map(u64::from_le_bytes))
+    let (chunks, _) = bytes.as_chunks::<8>();
+    chunks
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk))
         .collect()
 }
 

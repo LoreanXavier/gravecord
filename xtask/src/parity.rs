@@ -105,7 +105,7 @@ fn diff_image(ours: &RgbaImage, golden: &RgbaImage) -> RgbaImage {
     })
 }
 
-fn render(repo: &Path, out: &Path) -> Result<()> {
+fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
     let status = Command::new("cargo")
         .args([
             "build",
@@ -122,11 +122,14 @@ fn render(repo: &Path, out: &Path) -> Result<()> {
     }
     let _ = fs::remove_file(out);
     let exe = repo.join("target").join("debug").join("gravecord.exe");
-    let args = [
+    let mut args = vec![
         "--capture".to_owned(),
         out.display().to_string(),
         "2000".to_owned(),
     ];
+    if let Some(script) = script {
+        args.extend(["--script".to_owned(), script.to_owned()]);
+    }
     headless::spawn(&exe, &args, repo)?;
     let started = Instant::now();
     while !out.exists() {
@@ -140,25 +143,34 @@ fn render(repo: &Path, out: &Path) -> Result<()> {
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
-    let screen = match args {
-        [] => "channel",
-        ["--screen", screen] => screen,
-        other => bail!("usage: cargo xtask parity [--screen X], got {other:?}"),
-    };
-    let variant = "text-darker-cozy@1";
+    let mut screen = "channel";
+    let mut variant = "text-darker-cozy";
+    let mut script = None;
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next().copied().context("flag without a value")?;
+        match *flag {
+            "--screen" => screen = value,
+            "--variant" => variant = value,
+            "--script" => script = Some(value),
+            other => bail!(
+                "usage: cargo xtask parity [--screen X] [--variant V] [--script S], got {other}"
+            ),
+        }
+    }
     let design = repo.join("design");
     let golden_path: PathBuf = [
         design.as_path(),
         Path::new("golden/windows"),
         Path::new(screen),
-        Path::new(&format!("{variant}.png")),
+        Path::new(&format!("{variant}@1.png")),
     ]
     .iter()
     .collect();
     let dir = design.join("parity");
     fs::create_dir_all(&dir)?;
-    let frame = dir.join(format!("{screen}-latest.png"));
-    render(repo, &frame)?;
+    let frame = dir.join(format!("{screen}-{variant}-latest.png"));
+    render(repo, &frame, script)?;
 
     let golden = image::open(&golden_path)
         .with_context(|| format!("reading {}", golden_path.display()))?
@@ -183,7 +195,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         "total",
         100.0 * different as f64 / total as f64
     );
-    diff_image(&ours, &golden).save(dir.join(format!("{screen}-diff.png")))?;
+    diff_image(&ours, &golden).save(dir.join(format!("{screen}-{variant}-diff.png")))?;
 
     let dom = design
         .join("dom")
