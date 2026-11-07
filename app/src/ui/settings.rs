@@ -2,15 +2,21 @@
 //! content `content_3Rvb29`, panel `panel_nNq2Vb`, rows `baseControlItem_FiiQ6I`, buttons `button_F7qvhY`.
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
+mod model;
+mod pages;
+mod render;
+
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_proto::pin;
 use gpui::{
-    AnyElement, Bounds, BoxShadow, Context, FontWeight, HighlightStyle, IntoElement, ScrollHandle,
-    SharedString, StyledText, canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size,
-    svg,
+    AnyElement, Bounds, BoxShadow, Context, ElementId, FontWeight, HighlightStyle, IntoElement,
+    ScrollHandle, SharedString, StyledText, Window, canvas, deferred, div, fill, hsla, img, point,
+    prelude::*, px, size, svg,
 };
+pub(super) use model::Choice;
+use model::{ButtonKind, Runs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -150,6 +156,77 @@ impl Open {
     }
 }
 
+struct Anchor {
+    label: &'static str,
+    badge: bool,
+    /// The panel child the subnav scrolls to.
+    target: usize,
+}
+
+/// The Account page lists its own anchors; every other page lists its titled sections.
+fn anchors_of(entry: &Entry) -> Vec<Anchor> {
+    if !entry.anchors.is_empty() {
+        return entry
+            .anchors
+            .iter()
+            .enumerate()
+            .map(|(index, (label, badge))| Anchor {
+                label,
+                badge: *badge,
+                // Categories sit between dividers: every other child of the panel.
+                target: index * 2,
+            })
+            .collect();
+    }
+    pages::nodes(entry.page)
+        .iter()
+        .enumerate()
+        .filter_map(|(target, node)| match node {
+            model::Node::Category {
+                title: Some(title), ..
+            } => Some(Anchor {
+                label: title,
+                badge: false,
+                target,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Lines a subnav label takes in its 184px column, wrapping between words.
+fn wrapped_lines(window: &mut Window, label: &str, badge: bool) -> usize {
+    let column = if badge { 184. - 8. - 41.6 } else { 184. };
+    let space = f32::from(render::measure_text(window, " ", 16., 400.));
+    let mut lines = 1;
+    let mut used = 0.;
+    for word in label.split_whitespace() {
+        let width = f32::from(render::measure_text(window, word, 16., 400.));
+        if used > 0. && used + space + width > column {
+            lines += 1;
+            used = width;
+        } else {
+            used += if used > 0. { space + width } else { width };
+        }
+    }
+    lines
+}
+
+/// "Voice & Video" becomes "voice-video".
+fn page_slug(label: &str) -> String {
+    let mut slug = String::new();
+    for word in label
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+    {
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(&word.to_ascii_lowercase());
+    }
+    slug
+}
+
 /// `NI` in the settings bundle: every character before the `@` becomes a star.
 pub(super) fn mask_email(email: &str) -> String {
     match email.split_once('@') {
@@ -163,16 +240,16 @@ fn devices(count: usize) -> String {
     format!("{count} {}", if count == 1 { "device" } else { "devices" })
 }
 
-#[derive(Clone, Copy)]
-enum ButtonKind {
-    Secondary,
-    CriticalSecondary,
-    CriticalPrimary,
-}
-
 /// `md` text button: 40 tall, at least 100 wide, 15px inside a 1px border.
-fn button(id: &'static str, label: &'static str, kind: ButtonKind) -> impl IntoElement {
+fn button(id: impl Into<ElementId>, label: &'static str, kind: ButtonKind) -> impl IntoElement {
     let (background, border, text, hover_background, hover_border) = match kind {
+        ButtonKind::Primary => (
+            "--control-primary-background-default",
+            "--control-primary-border-default",
+            "--control-primary-text-default",
+            "--control-primary-background-hover",
+            "--control-primary-border-hover",
+        ),
         ButtonKind::Secondary => (
             "--control-secondary-background-default",
             "--control-secondary-border-default",
@@ -417,21 +494,38 @@ fn tile(icon_name: &str, background: &str, tint: &str) -> impl IntoElement {
         .child(mask_icon(icon_name, 24., tint))
 }
 
+/// `heading-xl/medium` with its note 4px under it, 20px of space, then a 1px spacer before the rows.
+fn category_header(title: &'static str, description: Runs) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .pb(px(20.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(px(24.))
+                        .line_height(px(32.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .when(!description.is_empty(), |this| {
+                    this.child(described(description, "--text-subtle"))
+                }),
+        )
+        .child(div().h(px(1.)))
+}
+
 /// Heading `heading-xl/medium` with 20px under it, then the rows 8px apart.
 fn category(title: Option<&'static str>, rows: Vec<Row>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .children(title.map(|title| {
-            div()
-                .pb(px(20.))
-                .text_size(px(24.))
-                .line_height(px(32.))
-                .font_weight(FontWeight(500.))
-                .text_color(color("--text-strong"))
-                .child(title)
-        }))
-        .when(title.is_some(), |this| this.child(div().h(px(1.))))
+        .children(title.map(|title| category_header(title, &[])))
         .child(
             div()
                 .flex()
@@ -452,7 +546,7 @@ fn divider() -> AnyElement {
 }
 
 /// `container_0v8Ae1 info_0v8Ae1`.
-fn info_notice(parts: &[(&str, bool)]) -> impl IntoElement {
+fn info_notice(parts: Runs) -> impl IntoElement {
     div()
         .mb(px(8.))
         .flex()
@@ -507,15 +601,39 @@ impl Root {
         cx.notify();
     }
 
+    /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
+    pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
+        self.open_settings(cx);
+        let page = SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| entries.iter())
+            .find(|entry| page_slug(entry.label) == slug)
+            .map(|entry| entry.page);
+        if let (Some(open), Some(page)) = (self.settings.as_mut(), page) {
+            *open = Open::new(page);
+        }
+        cx.notify();
+    }
+
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = None;
         cx.notify();
     }
 
-    fn settings_nav_item(&self, entry: &'static Entry, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_nav_item(
+        &self,
+        entry: &'static Entry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let open = self.settings.as_ref();
         let active = open.is_some_and(|open| open.page == entry.page);
         let destructive = entry.page == Page::LogOut;
+        let anchors = if active {
+            anchors_of(entry)
+        } else {
+            Vec::new()
+        };
         let page = entry.page;
         let item = div()
             .id(SharedString::from(format!("settings-nav-{}", entry.icon)))
@@ -579,34 +697,84 @@ impl Root {
             .flex()
             .flex_col()
             .child(item)
-            .when(active && !entry.anchors.is_empty(), |this| {
-                this.child(self.settings_subnav(entry, cx))
-            })
+            .when_some(
+                (active && !anchors.is_empty()).then_some(anchors),
+                |this, anchors| this.child(self.settings_subnav(&anchors, window, cx)),
+            )
             .into_any_element()
     }
 
-    /// The grid of `subnav_8qMUr2`: a 2px track 17px in, labels 17px past it, 36px apart.
-    fn settings_subnav(&self, entry: &'static Entry, cx: &mut Context<Self>) -> AnyElement {
+    /// The grid of `subnav_8qMUr2`: a 2px track 17px in, labels 17px past it and 16px apart.
+    /// Labels wrap in the 184px column, so the thumb is placed by the measured heights above it.
+    fn settings_subnav(
+        &self,
+        anchors: &[Anchor],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let current = self.settings.as_ref().map_or(0, |open| open.anchor);
-        let count = entry.anchors.len();
+        let heights: Vec<f32> = anchors
+            .iter()
+            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge) as f32)
+            .collect();
+        let total = heights.iter().sum::<f32>() + 16. * heights.len().saturating_sub(1) as f32;
+        let thumb_top: f32 = heights
+            .iter()
+            .take(current)
+            .map(|height| height + 16.)
+            .sum();
+        let thumb_height = heights.get(current).copied().unwrap_or(20.);
         let track = div()
             .absolute()
             .left(px(0.))
             .top(px(0.))
             .w(px(2.))
-            .h(px((count * 20 + (count - 1) * 16) as f32))
+            .h(px(total))
             .rounded(px(1.))
             .bg(color("--background-mod-subtle"))
             .child(
                 div()
                     .absolute()
                     .left(px(0.))
-                    .top(px((current * 36) as f32))
+                    .top(px(thumb_top))
                     .w(px(2.))
-                    .h(px(20.))
+                    .h(px(thumb_height))
                     .rounded_full()
                     .bg(color("--interactive-text-active")),
             );
+        let rows: Vec<AnyElement> = anchors
+            .iter()
+            .enumerate()
+            .map(|(index, anchor)| {
+                let active = index == current;
+                let target = anchor.target;
+                div()
+                    .id(SharedString::from(format!("settings-anchor-{index}")))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color(if active {
+                        "--interactive-text-active"
+                    } else {
+                        "--text-muted"
+                    }))
+                    .hover(|style| style.text_color(color("--interactive-text-hover")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(open) = this.settings.as_mut() {
+                            open.anchor = index;
+                            open.content.scroll_to_top_of_item(target);
+                        }
+                        cx.notify();
+                    }))
+                    .child(div().min_w(px(0.)).child(anchor.label))
+                    .when(anchor.badge, |this| this.child(new_badge()))
+                    .into_any_element()
+            })
+            .collect();
         div()
             .ml(px(17.))
             .py(px(8.))
@@ -618,42 +786,7 @@ impl Root {
                     .gap(px(16.))
                     .pl(px(19.))
                     .child(track)
-                    .children(
-                        entry
-                            .anchors
-                            .iter()
-                            .enumerate()
-                            .map(|(index, (label, badge))| {
-                                let active = index == current;
-                                div()
-                                    .id(SharedString::from(format!("settings-anchor-{index}")))
-                                    .h(px(20.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .cursor_pointer()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_color(color(if active {
-                                        "--interactive-text-active"
-                                    } else {
-                                        "--text-muted"
-                                    }))
-                                    .hover(|style| {
-                                        style.text_color(color("--interactive-text-hover"))
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(open) = this.settings.as_mut() {
-                                            open.anchor = index;
-                                            // Categories sit between dividers: every other child of the panel.
-                                            open.content.scroll_to_top_of_item(index * 2);
-                                        }
-                                        cx.notify();
-                                    }))
-                                    .child(*label)
-                                    .when(*badge, |this| this.child(new_badge()))
-                            }),
-                    ),
+                    .children(rows),
             )
             .into_any_element()
     }
@@ -780,7 +913,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn settings_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let nav_scroll = self
             .settings
             .as_ref()
@@ -814,7 +947,7 @@ impl Root {
                         div().flex().flex_col().gap(px(4.)).children(
                             entries
                                 .iter()
-                                .map(|entry| self.settings_nav_item(entry, cx)),
+                                .map(|entry| self.settings_nav_item(entry, window, cx)),
                         ),
                     )
             });
@@ -1059,13 +1192,23 @@ impl Root {
         ]
     }
 
-    fn settings_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_content(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(open) = self.settings.as_ref() else {
             return div().into_any_element();
         };
         let body = match open.page {
             Page::Account => self.account_page(),
-            _ => Vec::new(),
+            page => pages::nodes(page)
+                .iter()
+                .map(|node| {
+                    div()
+                        .parity(node.key())
+                        .flex()
+                        .flex_col()
+                        .child(self.render_node(node, window, cx))
+                        .into_any_element()
+                })
+                .collect(),
         };
         div()
             .parity("settings-content")
@@ -1143,7 +1286,11 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn settings_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn settings_layer(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         self.settings.as_ref()?;
         let modal = div()
             .parity_with_border("settings-modal", 1.)
@@ -1166,8 +1313,8 @@ impl Root {
             .flex()
             .font_family(SANS)
             .font_features(kerning())
-            .child(self.settings_sidebar(cx))
-            .child(self.settings_content(cx));
+            .child(self.settings_sidebar(window, cx))
+            .child(self.settings_content(window, cx));
         Some(
             deferred(
                 div()
@@ -1233,6 +1380,12 @@ mod tests {
     fn email_and_phone_masks_match_the_bundle() {
         assert_eq!(mask_email("someone@gmail.com"), "*******@gmail.com");
         assert_eq!(mask_phone("+15551234567"), "********4567");
+    }
+
+    #[test]
+    fn page_slugs_match_the_capture_names() {
+        assert_eq!(super::page_slug("Voice & Video"), "voice-video");
+        assert_eq!(super::page_slug("Data & Privacy"), "data-privacy");
     }
 
     #[test]

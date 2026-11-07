@@ -191,6 +191,11 @@ pub async fn run(
                     composer.replace_text_in_range(None, text, window, cx);
                 });
             }
+            // Opens a settings page by its label in lower case with dashes, as the captures are named.
+            ["settings", page] => {
+                let page = (*page).to_owned();
+                root.update(cx, |root, cx| root.open_settings_page(&page, cx));
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

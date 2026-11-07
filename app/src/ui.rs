@@ -98,6 +98,8 @@ pub struct Root {
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
     settings: Option<settings::Open>,
+    /// Settings the user changed in the settings pages, by key.
+    setting_choices: HashMap<&'static str, settings::Choice>,
     /// Bodies of `Request::Fetch`, by key.
     fetched: HashMap<String, serde_json::Value>,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
@@ -137,6 +139,7 @@ impl Root {
             last_typing_sent: None,
             tip: None,
             settings: None,
+            setting_choices: HashMap::new(),
             fetched: HashMap::new(),
             tip_anchors: Rc::default(),
             ready: false,
@@ -2370,7 +2373,7 @@ fn avatar_source(user: &User) -> (String, String) {
 }
 
 impl Render for Root {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = list(
             self.list.clone(),
             cx.processor(|this, index, _, cx| this.row(index, cx)),
@@ -2395,7 +2398,7 @@ impl Render for Root {
             .line_height(px(22.))
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
-            .children(self.settings_layer(cx))
+            .children(self.settings_layer(window, cx))
             .children(self.tip_layer())
             .child(self.titlebar())
             .child(
