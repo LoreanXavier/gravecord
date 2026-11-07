@@ -4,6 +4,7 @@
 pub mod grouping;
 
 use chrono::{DateTime, Local, Utc};
+use dc_proto::settings;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -210,6 +211,7 @@ pub struct Stores {
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
+    pub guild_order: Vec<Id>,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
 }
@@ -243,6 +245,10 @@ impl Stores {
 
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
+        self.guild_order = data["user_settings_proto"]
+            .as_str()
+            .and_then(settings::guild_order)
+            .unwrap_or_default();
         self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
         self.guilds = data["guilds"]
             .as_array()
@@ -251,10 +257,20 @@ impl Stores {
         self.sort_guilds();
     }
 
-    /// The real order lives in the settings proto (`guild_folders`). Until that is decoded, newest first matches a
-    /// fresh account, where each joined server goes on top.
+    /// The order from the settings proto. Guilds it does not list yet go on top, newest first.
     fn sort_guilds(&mut self) {
-        self.guilds.sort_by(|a, b| b.joined_at.cmp(&a.joined_at));
+        let mut ranked: Vec<(Option<usize>, Guild)> =
+            self.guilds.drain(..).map(|guild| (None, guild)).collect();
+        for entry in &mut ranked {
+            entry.0 = self.guild_order.iter().position(|id| *id == entry.1.id);
+        }
+        ranked.sort_by(|(a, first), (b, second)| match (a, b) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, None) => second.joined_at.cmp(&first.joined_at),
+        });
+        self.guilds = ranked.into_iter().map(|(_, guild)| guild).collect();
     }
 
     pub fn insert_message(&mut self, message: Message) {
@@ -316,6 +332,18 @@ mod tests {
         assert_eq!(stores.current_user.as_ref().unwrap().username, "me");
         assert_eq!(stores.guilds[0].name, "gravecord fixture");
         assert_eq!(stores.guilds[1].icon.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn settings_order_wins_and_unlisted_guilds_go_on_top() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready());
+        stores.guild_order = vec![1, 2];
+        stores.sort_guilds();
+        assert_eq!(stores.guilds[0].id, 1);
+        stores.guild_order = vec![1];
+        stores.sort_guilds();
+        assert_eq!(stores.guilds[0].id, 2);
     }
 
     #[test]

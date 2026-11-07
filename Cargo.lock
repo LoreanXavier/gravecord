@@ -1224,6 +1224,7 @@ name = "dc-state"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "dc-proto",
  "serde_json",
 ]
 
