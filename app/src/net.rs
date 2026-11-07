@@ -4,6 +4,7 @@ use dc_gateway::{Command, Config, Event, spawn};
 use dc_http::Client;
 use dc_proto::identity::{IdentifyState, Identity};
 use dc_proto::op::Op;
+use dc_proto::pin;
 use dc_proto::secrets::Token;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,6 +24,8 @@ pub enum Request {
     Send {
         channel: u64,
         content: String,
+        /// Guild, if any, and the message being answered.
+        reply: Option<(Option<u64>, u64)>,
     },
     Edit {
         channel: u64,
@@ -50,6 +53,31 @@ pub enum Request {
 const MESSAGE_PAGE: u32 = 50;
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
 const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
+
+/// The body the official client posts, field for field (`TRAFFIC`).
+fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let mut body = json!({
+        "mobile_network_type": "unknown",
+        "content": content,
+        "nonce": pin::nonce_at(now),
+        "tts": false,
+    });
+    if let Some((guild, message)) = reply {
+        let mut reference =
+            json!({"channel_id": channel.to_string(), "message_id": message.to_string()});
+        if let Some(guild) = guild {
+            reference["guild_id"] = json!(guild.to_string());
+        }
+        body["message_reference"] = reference;
+        body["allowed_mentions"] =
+            json!({"parse": ["users", "roles", "everyone"], "replied_user": false});
+    }
+    body["flags"] = json!(0);
+    body
+}
 
 /// Cuts the cell and paints it in `tint` (0xRRGGBBAA), which is what the CSS mask over a colored box does.
 fn emoji_cell(sprite: &[u8], tint: u32) -> image::ImageResult<Vec<u8>> {
@@ -117,9 +145,13 @@ pub async fn run(
                     }
                 });
             }
-            Request::Send { channel, content } => {
+            Request::Send {
+                channel,
+                content,
+                reply,
+            } => {
                 tokio::spawn(async move {
-                    let body = json!({"content": content, "tts": false, "flags": 0});
+                    let body = send_body(channel, &content, reply);
                     if let Err(error) = client
                         .post(&format!("/channels/{channel}/messages"), &body)
                         .await
@@ -187,5 +219,39 @@ pub async fn run(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::send_body;
+
+    #[test]
+    fn plain_send_matches_the_recorded_fields() {
+        let body = send_body(5, "hi", None);
+        let keys: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["mobile_network_type", "content", "nonce", "tts", "flags"]
+        );
+    }
+
+    #[test]
+    fn a_reply_adds_the_reference_without_pinging() {
+        let body = send_body(5, "hi", Some((Some(9), 7)));
+        assert_eq!(body["message_reference"]["guild_id"], "9");
+        assert_eq!(body["message_reference"]["message_id"], "7");
+        assert_eq!(body["allowed_mentions"]["replied_user"], false);
+    }
+
+    #[test]
+    fn a_dm_reply_has_no_guild() {
+        let body = send_body(5, "hi", Some((None, 7)));
+        assert!(body["message_reference"].get("guild_id").is_none());
     }
 }

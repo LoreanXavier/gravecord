@@ -168,6 +168,8 @@ pub struct Message {
     pub author: User,
     pub content: String,
     pub edited: bool,
+    /// The message this one replies to, as the server embedded it.
+    pub referenced: Option<Box<Message>>,
     pub timestamp: DateTime<Utc>,
     pub kind: u64,
     pub flags: u64,
@@ -188,6 +190,7 @@ impl Message {
             author: User::from_value(&value["author"])?,
             content: text(&value["content"]).unwrap_or_default(),
             edited: value["edited_timestamp"].is_string(),
+            referenced: Self::from_value(&value["referenced_message"]).map(Box::new),
             timestamp: DateTime::parse_from_rfc3339(value["timestamp"].as_str()?)
                 .ok()?
                 .with_timezone(&Utc),
@@ -591,6 +594,15 @@ mod tests {
             &json!({"id": "5", "channel_id": "23", "embeds": []}),
         );
         assert_eq!(stores.messages[&23][0].content, "before");
+    }
+
+    #[test]
+    fn a_reply_carries_the_message_it_answers() {
+        let mut reply = message("6", "the reply");
+        reply["type"] = json!(19);
+        reply["referenced_message"] = message("5", "the original");
+        let parsed = Message::from_value(&reply).unwrap();
+        assert_eq!(parsed.referenced.unwrap().content, "the original");
     }
 
     #[test]

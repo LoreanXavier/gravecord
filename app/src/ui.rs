@@ -78,6 +78,8 @@ pub struct Root {
     hovered: Option<Id>,
     /// The message being edited, with its own field. Enter saves, Escape cancels.
     editing: Option<(Id, Entity<Editor>)>,
+    /// The message the next send answers.
+    replying: Option<Message>,
     menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
     pub ready: bool,
@@ -106,6 +108,7 @@ impl Root {
             selection: SharedSelection::default(),
             hovered: None,
             editing: None,
+            replying: None,
             menu: None,
             confirm_delete: None,
             ready: false,
@@ -337,9 +340,112 @@ impl Root {
     }
 
     fn send(&mut self, content: String) {
+        let reply = self.replying.take().map(|message| (self.guild, message.id));
         if let Some(channel) = self.channel {
-            let _ = self.requests.send(Request::Send { channel, content });
+            let _ = self.requests.send(Request::Send {
+                channel,
+                content,
+                reply,
+            });
         }
+    }
+
+    pub(crate) fn begin_reply(
+        &mut self,
+        message: Message,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replying = Some(message);
+        window.focus(&self.composer.read(cx).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// The official preview: a spine into the avatar, 16px avatar, name, and one line of the text.
+    fn reply_preview(&self, referenced: &Message) -> impl IntoElement {
+        let avatar = self
+            .images
+            .get(&avatar_source(&referenced.author).0)
+            .cloned();
+        let text = parse(&referenced.content)
+            .into_iter()
+            .find_map(|block| match block {
+                Block::Paragraph(spans) | Block::Quote(spans) => Some(spans),
+                Block::Code { .. } => None,
+            })
+            .unwrap_or_default();
+        div()
+            .relative()
+            .h(px(18.))
+            .flex()
+            .items_center()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-37.))
+                    .top(px(8.))
+                    .w(px(33.))
+                    .h(px(12.))
+                    .border_l_2()
+                    .border_t_2()
+                    .rounded_tl(px(6.))
+                    .border_color(color("--spine-default")),
+            )
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .children(avatar.map(|image| img(image).size(px(16.)).rounded_full())),
+            )
+            .child(
+                div()
+                    .ml(px(4.))
+                    .flex_none()
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(referenced.author.display_name().to_owned()),
+            )
+            .child(
+                div()
+                    .ml(px(4.))
+                    .h(px(18.))
+                    .overflow_hidden()
+                    .child(self.preview_text(&text)),
+            )
+    }
+
+    fn preview_text(&self, spans: &[Span]) -> Inline {
+        let color_value = hsla("--text-muted");
+        let pieces = spans
+            .iter()
+            .map(|span| {
+                let style = span.style;
+                let mut run_font: Font = font(SANS);
+                run_font.features = kerning();
+                run_font.weight = if style.bold {
+                    FontWeight(700.)
+                } else {
+                    FontWeight(400.)
+                };
+                run_font.style = if style.italic {
+                    FontStyle::Italic
+                } else {
+                    FontStyle::Normal
+                };
+                Piece {
+                    text: span.text.clone(),
+                    font: run_font,
+                    size: px(14.),
+                    color: color_value,
+                    underline: style.underline,
+                    strike: style.strike,
+                    boxed: None,
+                }
+            })
+            .collect();
+        inline(pieces, px(18.))
     }
 
     /// The field with focus: the inline editor while editing, else the composer.
@@ -1125,43 +1231,58 @@ impl Root {
                         .into_any_element();
                 }
                 let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
+                let reply_offset = if message.referenced.is_some() {
+                    22.
+                } else {
+                    0.
+                };
+                let preview = message.referenced.as_ref().map(|referenced| {
+                    div()
+                        .mb(px(2.))
+                        .child(self.reply_preview(referenced))
+                        .into_any_element()
+                });
                 row.pt(px(17.))
                     .child(
-                        body.child(
-                            div()
-                                .absolute()
-                                .left(px(16.))
-                                .top(px(4.))
-                                .size(px(40.))
-                                .children(
-                                    avatar.map(|image| img(image).size(px(40.)).rounded_full()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(22.))
-                                .flex()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--text-strong"))
-                                        .line_height(px(22.))
-                                        .child(message.author.display_name().to_owned()),
-                                )
-                                .child(
-                                    div()
-                                        .ml(px(8.))
-                                        .text_size(px(12.))
-                                        .line_height(px(22.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--channels-default"))
-                                        .child(
-                                            message.local_time().format("%-I:%M %p").to_string(),
-                                        ),
-                                ),
-                        )
-                        .child(content),
+                        body.children(preview)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(16.))
+                                    .top(px(4. + reply_offset))
+                                    .size(px(40.))
+                                    .children(
+                                        avatar.map(|image| img(image).size(px(40.)).rounded_full()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .line_height(px(22.))
+                                            .child(message.author.display_name().to_owned()),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(8.))
+                                            .text_size(px(12.))
+                                            .line_height(px(22.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--channels-default"))
+                                            .child(
+                                                message
+                                                    .local_time()
+                                                    .format("%-I:%M %p")
+                                                    .to_string(),
+                                            ),
+                                    ),
+                            )
+                            .child(content),
                     )
                     .into_any_element()
             }
@@ -1261,6 +1382,40 @@ impl Root {
         let placeholder = format!("Message {prefix}{}", self.channel_title());
         self.composer
             .update(cx, |composer, _| composer.set_placeholder(placeholder));
+        let reply_bar = self.replying.as_ref().map(|message| {
+            div()
+                .h(px(36.))
+                .rounded_t(px(8.))
+                .bg(color("--background-surface-higher"))
+                .flex()
+                .items_center()
+                .pl(px(16.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child("Replying to ")
+                .child(
+                    div()
+                        .font_weight(FontWeight(600.))
+                        .child(message.author.display_name().to_owned()),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("reply-close")
+                        .w(px(40.))
+                        .h(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.replying = None;
+                            cx.notify();
+                        }))
+                        .child(icon("reply_close", 16., "--interactive-text-default")),
+                )
+        });
         let emoji = self.images.get("emoji_button").cloned();
         let emoji_button = div()
             .size(px(32.))
@@ -1287,29 +1442,35 @@ impl Root {
                 .border_1()
                 .border_color(color("--background-mod-subtle"))
                 .flex()
-                .items_start()
-                .pl(px(11.))
-                .pr(px(12.))
-                .child(div().pt(px(12.)).child(tool("attach")))
+                .flex_col()
+                .children(reply_bar)
                 .child(
                     div()
-                        .ml(px(20.))
-                        .flex_1()
-                        .min_w(px(0.))
-                        .py(px(17.))
-                        .parity("composer-text")
-                        .child(self.composer.clone()),
-                )
-                .child(
-                    div()
-                        .pt(px(12.))
                         .flex()
-                        .gap(px(8.))
-                        .child(tool("gift"))
-                        .child(tool("gif"))
-                        .child(tool("sticker"))
-                        .child(emoji_button)
-                        .child(tool("apps")),
+                        .items_start()
+                        .pl(px(11.))
+                        .pr(px(12.))
+                        .child(div().pt(px(12.)).child(tool("attach")))
+                        .child(
+                            div()
+                                .ml(px(20.))
+                                .flex_1()
+                                .min_w(px(0.))
+                                .py(px(17.))
+                                .parity("composer-text")
+                                .child(self.composer.clone()),
+                        )
+                        .child(
+                            div()
+                                .pt(px(12.))
+                                .flex()
+                                .gap(px(8.))
+                                .child(tool("gift"))
+                                .child(tool("gif"))
+                                .child(tool("sticker"))
+                                .child(emoji_button)
+                                .child(tool("apps")),
+                        ),
                 ),
         )
     }

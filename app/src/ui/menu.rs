@@ -14,6 +14,7 @@ const EDGE_MARGIN: f32 = 8.;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     Edit,
+    Reply,
     CopyText,
     CopyLink,
     Delete,
@@ -38,7 +39,7 @@ pub(super) fn message_items(own: bool) -> Vec<Item> {
         items.push(Item::Entry("Edit Message", Action::Edit));
     }
     items.extend([
-        Item::Entry("Reply", Action::Pending),
+        Item::Entry("Reply", Action::Reply),
         Item::Entry("Forward", Action::Pending),
         Item::Entry("Create Thread", Action::Pending),
         Item::Separator,
@@ -84,6 +85,7 @@ impl Root {
         };
         match action {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
+            Action::Reply => self.begin_reply(found, window, cx),
             Action::CopyText => {
                 cx.write_to_clipboard(ClipboardItem::new_string(parse_block_text(&found.content)))
             }
