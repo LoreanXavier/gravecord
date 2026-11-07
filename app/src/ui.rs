@@ -1316,91 +1316,106 @@ impl Root {
         let text = hsla("--text-default");
         let blocks = parse(&message.content);
         let gaps = block_gaps(&blocks);
-        div()
-            .flex()
-            .flex_col()
-            .children(
-                blocks
-                    .into_iter()
-                    .zip(gaps)
-                    .enumerate()
-                    .map(|(index, (block, gap))| {
-                        let key = (message.id, index as u32);
-                        match block {
-                            Block::Paragraph(spans) => div()
+        // The last item's bottom margin stays inside the message.
+        let trailing = if matches!(blocks.last(), Some(Block::ListItem { .. })) {
+            4.
+        } else {
+            0.
+        };
+        div().flex().flex_col().pb(px(trailing)).children(
+            blocks
+                .into_iter()
+                .zip(gaps)
+                .enumerate()
+                .map(|(index, (block, gap))| {
+                    let key = (message.id, index as u32);
+                    match block {
+                        Block::Paragraph(spans) => div()
+                            .min_h(px(22.))
+                            .mt(px(gap))
+                            .child(self.spans(&spans, text, key))
+                            .into_any_element(),
+                        Block::Heading { level, spans } => div()
+                            .mt(px(gap))
+                            .child(self.heading(&spans, level, key))
+                            .into_any_element(),
+                        Block::Subtext(spans) => div()
+                            .mt(px(gap))
+                            .child(self.subtext(&spans, key))
+                            .into_any_element(),
+                        Block::ListItem {
+                            depth,
+                            number,
+                            spans,
+                        } => {
+                            let indent = 16. * (f32::from(depth) + 1.);
+                            let marker = match number {
+                                Some(number) => div()
+                                    .absolute()
+                                    .left(px(-18.))
+                                    .top(px(0.))
+                                    .line_height(px(22.))
+                                    .text_color(color("--text-default"))
+                                    .child(format!("{number}."))
+                                    .into_any_element(),
+                                None => {
+                                    let disc = div()
+                                        .absolute()
+                                        .left(px(-17.))
+                                        .top(px(8.))
+                                        .size(px(5.))
+                                        .rounded_full();
+                                    if depth == 0 {
+                                        disc.bg(color("--text-default")).into_any_element()
+                                    } else {
+                                        disc.border_1()
+                                            .border_color(color("--text-default"))
+                                            .into_any_element()
+                                    }
+                                }
+                            };
+                            div()
+                                .relative()
+                                .mt(px(gap))
+                                .ml(px(indent))
                                 .min_h(px(22.))
-                                .mt(px(gap))
+                                .child(marker)
                                 .child(self.spans(&spans, text, key))
-                                .into_any_element(),
-                            Block::Heading { level, spans } => div()
-                                .mt(px(gap))
-                                .child(self.heading(&spans, level, key))
-                                .into_any_element(),
-                            Block::Subtext(spans) => div()
-                                .mt(px(gap))
-                                .child(self.subtext(&spans, key))
-                                .into_any_element(),
-                            Block::ListItem {
-                                depth,
-                                number,
-                                spans,
-                            } => {
-                                let indent = 16. * (f32::from(depth) + 1.);
-                                let marker = match (number, depth) {
-                                    (Some(number), _) => format!("{number}."),
-                                    (None, 0) => "\u{2022}".to_owned(),
-                                    (None, _) => "\u{25E6}".to_owned(),
-                                };
-                                div()
-                                    .relative()
-                                    .mt(px(gap))
-                                    .ml(px(indent))
-                                    .min_h(px(22.))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(px(-18.))
-                                            .top(px(0.))
-                                            .line_height(px(22.))
-                                            .text_color(color("--text-default"))
-                                            .child(marker),
-                                    )
-                                    .child(self.spans(&spans, text, key))
-                                    .into_any_element()
-                            }
-                            Block::Quote(spans) => div()
-                                .mt(px(gap))
-                                .flex()
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(4.))
-                                        .rounded(px(4.))
-                                        .bg(color("--spine-default")),
-                                )
-                                .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
-                                    &spans,
-                                    hsla("--text-subtle"),
-                                    key,
-                                )))
-                                .into_any_element(),
-                            Block::Code { language, text } => div()
-                                .mt(px(gap))
-                                .w(px(640.))
-                                .p(px(7.))
-                                .rounded(px(4.))
-                                .border_1()
-                                .border_color(color("--background-mod-subtle"))
-                                .bg(color("--background-code"))
-                                .font_family(MONO)
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .text_color(color("--text-code"))
-                                .children(code_lines(language.as_deref(), &text))
-                                .into_any_element(),
+                                .into_any_element()
                         }
-                    }),
-            )
+                        Block::Quote(spans) => div()
+                            .mt(px(gap))
+                            .flex()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(4.))
+                                    .rounded(px(4.))
+                                    .bg(color("--spine-default")),
+                            )
+                            .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
+                                &spans,
+                                hsla("--text-subtle"),
+                                key,
+                            )))
+                            .into_any_element(),
+                        Block::Code { language, text } => div()
+                            .mt(px(gap))
+                            .w(px(640.))
+                            .p(px(7.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(color("--background-mod-subtle"))
+                            .bg(color("--background-code"))
+                            .font_family(MONO)
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-code"))
+                            .children(code_lines(language.as_deref(), &text))
+                            .into_any_element(),
+                    }
+                }),
+        )
     }
 
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
