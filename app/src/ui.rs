@@ -31,6 +31,7 @@ use tokio::sync::mpsc::UnboundedSender;
 mod badge_paths;
 mod home;
 mod menu;
+mod settings;
 mod tooltip;
 
 use tooltip::{Body, Side, Tip};
@@ -96,6 +97,9 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    settings: Option<settings::Open>,
+    /// Bodies of `Request::Fetch`, by key.
+    fetched: HashMap<String, serde_json::Value>,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     pub ready: bool,
 }
@@ -132,6 +136,8 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            settings: None,
+            fetched: HashMap::new(),
             tip_anchors: Rc::default(),
             ready: false,
         }
@@ -167,6 +173,10 @@ impl Root {
                 self.rebuild_rows();
                 self.request_images();
                 self.ready = true;
+            }
+            Update::Fetched { key, body } => {
+                self.fetched.insert(key, body);
+                cx.notify();
             }
             Update::Image { key, bytes } => {
                 let format = if key.starts_with("emoji:") {
@@ -714,6 +724,10 @@ impl Root {
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if keystroke.key == "escape" && self.settings.is_some() {
+            self.close_settings(cx);
+            return;
+        }
         if keystroke.key == "c" && keystroke.modifiers.control {
             let text = self.selected_text();
             if !text.is_empty() {
@@ -729,17 +743,6 @@ impl Root {
             (None, Some(_)) => self.channel_title(),
         };
         let acronym = self.current_guild().map(Guild::acronym).unwrap_or_default();
-        let control = |id: &'static str, name: &str, area: WindowControlArea| {
-            div()
-                .id(id)
-                .w(px(32.))
-                .h(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .window_control_area(area)
-                .child(icon(name, 12., "--interactive-text-default"))
-        };
         div()
             .parity("titlebar")
             .relative()
@@ -821,14 +824,7 @@ impl Root {
                             .mr(px(8.))
                             .bg(color("--background-mod-subtle")),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .child(control("min", "minimize", WindowControlArea::Min))
-                            .child(control("max", "maximize", WindowControlArea::Max))
-                            .child(control("close", "close", WindowControlArea::Close)),
-                    ),
+                    .child(window_controls()),
             )
     }
 
@@ -1248,12 +1244,19 @@ impl Root {
                     ))
                     .child(chevron()),
             )
-            .child(div().ml(px(8.)).child(self.with_tip(
-                "user-settings",
-                Tip::text("User Settings", Side::Top),
-                button("settings"),
-                cx,
-            )))
+            .child(
+                div()
+                    .id("open-settings")
+                    .ml(px(8.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                    .child(self.with_tip(
+                        "user-settings",
+                        Tip::text("User Settings", Side::Top),
+                        button("settings"),
+                        cx,
+                    )),
+            )
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2326,6 +2329,27 @@ fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
         .collect()
 }
 
+/// Minimize, maximize and close. They sit in the official `systemBar`, above every layer and its scrim.
+fn window_controls() -> impl IntoElement {
+    let control = |id: &'static str, name: &str, area: WindowControlArea| {
+        div()
+            .id(id)
+            .w(px(32.))
+            .h(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .window_control_area(area)
+            .child(icon(name, 12., "--interactive-text-default"))
+    };
+    div()
+        .flex()
+        .gap(px(4.))
+        .child(control("min", "minimize", WindowControlArea::Min))
+        .child(control("max", "maximize", WindowControlArea::Max))
+        .child(control("close", "close", WindowControlArea::Close))
+}
+
 fn avatar_source(user: &User) -> (String, String) {
     match &user.avatar {
         Some(hash) => (
@@ -2371,6 +2395,7 @@ impl Render for Root {
             .line_height(px(22.))
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
+            .children(self.settings_layer(cx))
             .children(self.tip_layer())
             .child(self.titlebar())
             .child(

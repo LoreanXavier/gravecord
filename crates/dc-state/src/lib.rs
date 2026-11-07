@@ -380,8 +380,29 @@ impl PrivateChannel {
 /// `T` in module 741961: how long a typing notice lasts.
 pub const TYPING_DURATION: Duration = Duration::from_secs(10);
 
+/// The private half of the READY user, which only the account settings show.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Account {
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub mfa_enabled: bool,
+    pub verified: bool,
+}
+
+impl Account {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            email: text(&value["email"]),
+            phone: text(&value["phone"]),
+            mfa_enabled: value["mfa_enabled"].as_bool().unwrap_or(false),
+            verified: value["verified"].as_bool().unwrap_or(false),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Stores {
+    pub account: Account,
     pub users: HashMap<Id, User>,
     /// Channel to who is typing and when that notice ends.
     pub typing: HashMap<Id, Vec<(Id, Instant)>>,
@@ -455,6 +476,7 @@ impl Stores {
 
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
+        self.account = Account::from_value(&data["user"]);
         self.guild_order = data["user_settings_proto"]
             .as_str()
             .and_then(settings::guild_order)

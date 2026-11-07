@@ -4,6 +4,8 @@
 pub const CLIENT_BUILD_NUMBER: u32 = 667580;
 pub const CLIENT_VERSION: &str = "1.0.9267";
 pub const RELEASE_CHANNEL: &str = "stable";
+/// `VERSION_HASH` in `WEB_BUILD.json`.
+pub const VERSION_HASH: &str = "7f6f109b760a6a8abddc126518351081780500c5";
 pub const ELECTRON_VERSION: &str = "44.10.0";
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9267 Chrome/152.0.7977.169 Electron/44.10.0 Safari/537.36";
 pub const SEC_CH_UA: &str = "\"Not?A_Brand\";v=\"24\", \"Chromium\";v=\"152\"";

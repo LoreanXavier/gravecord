@@ -9,7 +9,8 @@ use crate::editor::Editor;
 use crate::ui::Root;
 use gpui::{
     AnyWindowHandle, App, AsyncApp, Entity, EntityInputHandler, KeyDownEvent, Keystroke, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, point, px,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta,
+    ScrollEvent, ScrollSource, TouchPhase, point, px,
 };
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -115,6 +116,25 @@ pub async fn run(
             ["move", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                }
+            }
+            // Positive `dy` scrolls the content up, as a wheel turned toward the user does.
+            ["scroll", x, y, dy] => {
+                if let (Some(position), Ok(dy)) = (at(x, y), dy.parse::<f32>()) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::Scroll(ScrollEvent {
+                                position,
+                                delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+                                modifiers: Modifiers::default(),
+                                touch_phase: TouchPhase::Moved,
+                                source: ScrollSource::Pointer,
+                            }),
+                        );
+                    });
                 }
             }
             ["rightclick", x, y] => {

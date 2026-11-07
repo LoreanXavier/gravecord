@@ -12,12 +12,31 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
-    Dispatch { name: String, data: Value },
-    Messages { channel: u64, page: Value },
-    Image { key: String, bytes: Vec<u8> },
+    Dispatch {
+        name: String,
+        data: Value,
+    },
+    Messages {
+        channel: u64,
+        page: Value,
+    },
+    Image {
+        key: String,
+        bytes: Vec<u8>,
+    },
+    /// The body of a `Request::Fetch`.
+    Fetched {
+        key: String,
+        body: Value,
+    },
 }
 
 pub enum Request {
+    /// GET a route and hand its JSON back under `key`.
+    Fetch {
+        key: String,
+        route: String,
+    },
     Typing {
         channel: u64,
     },
@@ -232,6 +251,16 @@ pub async fn run(
                     let route = format!("/channels/{channel}/typing");
                     if let Err(error) = client.request(reqwest::Method::POST, &route, None).await {
                         warn!("typing notice failed: {error}");
+                    }
+                });
+            }
+            Request::Fetch { key, route } => {
+                tokio::spawn(async move {
+                    match client.get(&route).await {
+                        Ok(body) => {
+                            let _ = updates.send(Update::Fetched { key, body });
+                        }
+                        Err(error) => warn!("fetch failed: {error}"),
                     }
                 });
             }
