@@ -86,7 +86,7 @@ impl Root {
             .flex_none()
             .h(px(40.))
             .pt(px(1.))
-            .pl(px(8.))
+            .pl(px(9.))
             .child(
                 div()
                     .h(px(38.))

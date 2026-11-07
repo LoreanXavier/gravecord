@@ -74,7 +74,7 @@ fn with_composer(
     edit: impl FnOnce(&mut Editor, &mut gpui::Window, &mut gpui::Context<Editor>),
 ) {
     cx.update(|cx| {
-        let composer = root.read(cx).composer();
+        let composer = root.read(cx).active_editor();
         let _ = window.update(cx, |_, window, cx| {
             composer.update(cx, |composer, cx| edit(composer, window, cx));
         });

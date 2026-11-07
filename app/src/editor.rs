@@ -19,6 +19,7 @@ const FONT_SIZE: f32 = 16.;
 
 pub enum EditorEvent {
     Submit(String),
+    Cancel,
 }
 
 pub struct EditorStyle {
@@ -108,6 +109,11 @@ impl Editor {
         }
     }
 
+    pub fn set_text(&mut self, text: &str) {
+        self.buffer.clear();
+        self.buffer.insert(text);
+    }
+
     pub fn set_placeholder(&mut self, placeholder: String) {
         self.placeholder = placeholder.into();
     }
@@ -143,6 +149,7 @@ impl Editor {
         match stroke.key.as_str() {
             "enter" if shift => buffer.insert("\n"),
             "enter" => self.submit(cx),
+            "escape" => cx.emit(EditorEvent::Cancel),
             "backspace" => buffer.backspace(),
             "delete" => buffer.delete(),
             "left" => {

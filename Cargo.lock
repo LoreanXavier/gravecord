@@ -2257,6 +2257,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "image",
+ "reqwest",
  "serde_json",
  "tokio",
  "tracing",

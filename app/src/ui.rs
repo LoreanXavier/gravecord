@@ -74,27 +74,19 @@ pub struct Root {
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
     selection: SharedSelection,
+    hovered: Option<Id>,
+    /// The message being edited, with its own field. Enter saves, Escape cancels.
+    editing: Option<(Id, Entity<Editor>)>,
     pub ready: bool,
 }
 
 impl Root {
     pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
-        let composer = cx.new(|cx| {
-            let mut text_font: Font = font(SANS);
-            text_font.features = kerning();
-            Editor::new(
-                EditorStyle {
-                    font: text_font,
-                    text: hsla("--text-default"),
-                    placeholder: hsla("--channel-text-area-placeholder"),
-                    selection: hsla_from(SELECTION),
-                    caret: hsla("--text-default"),
-                },
-                cx,
-            )
-        });
-        cx.subscribe(&composer, |this, _, event, _| match event {
-            EditorEvent::Submit(content) => this.send(content.clone()),
+        let composer = cx.new(|cx| Editor::new(editor_style(), cx));
+        cx.subscribe(&composer, |this, _, event, _| {
+            if let EditorEvent::Submit(content) = event {
+                this.send(content.clone());
+            }
         })
         .detach();
         Self {
@@ -109,6 +101,8 @@ impl Root {
             images: HashMap::new(),
             requested: HashSet::new(),
             selection: SharedSelection::default(),
+            hovered: None,
+            editing: None,
             ready: false,
         }
     }
@@ -295,7 +289,7 @@ impl Root {
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
         format!(
-            "guild={} channel={} composer={composer:?} rows={} selected={:?}",
+            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={}",
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
@@ -304,7 +298,37 @@ impl Root {
                 .unwrap_or("-"),
             self.rows.len(),
             self.selected_text(),
+            self.hovered,
+            self.editing.is_some(),
         )
+    }
+
+    fn begin_edit(&mut self, message: Id, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_text(text);
+            editor
+        });
+        cx.subscribe(&editor, move |this, _, event, cx| {
+            match event {
+                EditorEvent::Submit(content) => {
+                    if let Some(channel) = this.channel {
+                        let _ = this.requests.send(Request::Edit {
+                            channel,
+                            message,
+                            content: content.clone(),
+                        });
+                    }
+                    this.editing = None;
+                }
+                EditorEvent::Cancel => this.editing = None,
+            }
+            cx.notify();
+        })
+        .detach();
+        window.focus(&editor.read(cx).focus_handle(cx), cx);
+        self.editing = Some((message, editor));
+        cx.notify();
     }
 
     fn send(&mut self, content: String) {
@@ -313,9 +337,12 @@ impl Root {
         }
     }
 
+    /// The field with focus: the inline editor while editing, else the composer.
     #[cfg(feature = "capture")]
-    pub fn composer(&self) -> Entity<Editor> {
-        self.composer.clone()
+    pub fn active_editor(&self) -> Entity<Editor> {
+        self.editing
+            .as_ref()
+            .map_or_else(|| self.composer.clone(), |(_, editor)| editor.clone())
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -1004,7 +1031,7 @@ impl Root {
             }))
     }
 
-    fn row(&self, index: usize) -> AnyElement {
+    fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.rows.get(index) else {
             return div().into_any_element();
         };
@@ -1045,13 +1072,41 @@ impl Root {
                 };
                 // The 17px between groups is outside the hover box, and the box stops 16px short of the edge. Padding,
                 // not margin: gpui lists measure an item without its margins.
+                let id = message.id;
+                let own = self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|user| user.id == message.author.id);
+                let hovered = self.hovered == Some(id);
+                let editing = self
+                    .editing
+                    .as_ref()
+                    .filter(|(target, _)| *target == id)
+                    .map(|(_, editor)| editor.clone());
                 let body = div()
+                    .id(SharedString::from(format!("message-{id}")))
                     .relative()
                     .pl(px(72.))
                     .pr(px(48.))
                     .pt(px(2.))
                     .pb(px(2.))
-                    .hover(|style| style.bg(color("--background-mod-subtle")));
+                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                        if *inside {
+                            this.hovered = Some(id);
+                        } else if this.hovered == Some(id) {
+                            this.hovered = None;
+                        }
+                        cx.notify();
+                    }))
+                    .when(hovered && editing.is_none(), |this| {
+                        this.child(self.message_toolbar(message, own, cx))
+                    });
+                let content = match editing {
+                    Some(editor) => self.edit_box(editor).into_any_element(),
+                    None => self.content(message).into_any_element(),
+                };
                 let row = div().pr(px(16.));
                 if !*head {
                     return row
@@ -1095,11 +1150,99 @@ impl Root {
                                         ),
                                 ),
                         )
-                        .child(self.content(message)),
+                        .child(content),
                     )
                     .into_any_element()
             }
         }
+    }
+
+    /// Own messages offer Edit; the official bar is at -25px, 14px in from the row's right edge.
+    fn message_toolbar(
+        &self,
+        message: &Message,
+        own: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = message.id;
+        let text = message.content.clone();
+        let button = |name: &str| {
+            div()
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .hover(|style| style.bg(color("--background-mod-subtle")))
+                .child(icon(name, 20., "--interactive-text-default"))
+        };
+        div()
+            .id(SharedString::from(format!("toolbar-{id}")))
+            .occlude()
+            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                // The bar reaches above its row, so it has to keep the row's hover alive.
+                if *inside {
+                    this.hovered = Some(id);
+                    cx.notify();
+                }
+            }))
+            .absolute()
+            .top(px(-25.))
+            .right(px(14.))
+            .h(px(34.))
+            .p(px(2.))
+            .rounded(px(8.))
+            .bg(color("--background-surface-high"))
+            .border_1()
+            .border_color(color("--background-mod-subtle"))
+            .flex()
+            .items_center()
+            .child(button("msg_react"))
+            .when(own, |this| {
+                this.child(
+                    div()
+                        .id("toolbar-edit")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.begin_edit(id, &text, window, cx);
+                        }))
+                        .child(button("msg_edit")),
+                )
+            })
+            .child(button("msg_forward"))
+            .child(button("msg_more"))
+    }
+
+    fn edit_box(&self, editor: Entity<Editor>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mt(px(8.))
+                    .w(px(795.))
+                    .min_h(px(58.))
+                    .rounded(px(8.))
+                    .bg(color("--chat-background-default"))
+                    .border_1()
+                    .border_color(color("--background-mod-subtle"))
+                    .px(px(15.))
+                    .py(px(17.))
+                    .child(editor),
+            )
+            .child(
+                div()
+                    .h(px(26.))
+                    .pt(px(7.))
+                    .text_size(px(12.))
+                    .line_height(px(12.))
+                    .text_color(color("--text-default"))
+                    .flex()
+                    .child("escape to ")
+                    .child(div().text_color(color("--text-link")).child("cancel"))
+                    .child(" \u{2022} enter to ")
+                    .child(div().text_color(color("--text-link")).child("save")),
+            )
     }
 
     fn composer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1158,6 +1301,18 @@ impl Root {
                         .child(tool("apps")),
                 ),
         )
+    }
+}
+
+fn editor_style() -> EditorStyle {
+    let mut text_font: Font = font(SANS);
+    text_font.features = kerning();
+    EditorStyle {
+        font: text_font,
+        text: hsla("--text-default"),
+        placeholder: hsla("--channel-text-area-placeholder"),
+        selection: hsla_from(SELECTION),
+        caret: hsla("--text-default"),
     }
 }
 
@@ -1234,7 +1389,7 @@ impl Render for Root {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = list(
             self.list.clone(),
-            cx.processor(|this, index, _, _| this.row(index)),
+            cx.processor(|this, index, _, cx| this.row(index, cx)),
         )
         .size_full();
         div()

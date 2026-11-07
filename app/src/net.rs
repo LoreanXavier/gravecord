@@ -17,11 +17,30 @@ pub enum Update {
 }
 
 pub enum Request {
-    LoadMessages { channel: u64 },
-    Send { channel: u64, content: String },
-    Subscribe { guild: u64, channel: u64 },
-    Image { key: String, url: String },
-    Sprite { key: String, tint: u32 },
+    LoadMessages {
+        channel: u64,
+    },
+    Send {
+        channel: u64,
+        content: String,
+    },
+    Edit {
+        channel: u64,
+        message: u64,
+        content: String,
+    },
+    Subscribe {
+        guild: u64,
+        channel: u64,
+    },
+    Image {
+        key: String,
+        url: String,
+    },
+    Sprite {
+        key: String,
+        tint: u32,
+    },
 }
 
 const MESSAGE_PAGE: u32 = 50;
@@ -102,6 +121,22 @@ pub async fn run(
                         .await
                     {
                         warn!("sending failed: {error}");
+                    }
+                });
+            }
+            Request::Edit {
+                channel,
+                message,
+                content,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{channel}/messages/{message}");
+                    let body = json!({"content": content});
+                    if let Err(error) = client
+                        .request(reqwest::Method::PATCH, &route, Some(&body))
+                        .await
+                    {
+                        warn!("editing failed: {error}");
                     }
                 });
             }

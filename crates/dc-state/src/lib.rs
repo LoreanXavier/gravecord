@@ -167,6 +167,7 @@ pub struct Message {
     pub channel_id: Id,
     pub author: User,
     pub content: String,
+    pub edited: bool,
     pub timestamp: DateTime<Utc>,
     pub kind: u64,
     pub flags: u64,
@@ -186,6 +187,7 @@ impl Message {
             channel_id: id(&value["channel_id"])?,
             author: User::from_value(&value["author"])?,
             content: text(&value["content"]).unwrap_or_default(),
+            edited: value["edited_timestamp"].is_string(),
             timestamp: DateTime::parse_from_rfc3339(value["timestamp"].as_str()?)
                 .ok()?
                 .with_timezone(&Utc),
@@ -270,6 +272,7 @@ impl Stores {
                     self.insert_message(message);
                 }
             }
+            "MESSAGE_UPDATE" => self.update_message(data),
             "MESSAGE_DELETE" => {
                 if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
                     && let Some(list) = self.messages.get_mut(&channel)
@@ -332,6 +335,21 @@ impl Stores {
             (None, None) => second.joined_at.cmp(&first.joined_at),
         });
         self.guilds = ranked.into_iter().map(|(_, guild)| guild).collect();
+    }
+
+    /// MESSAGE_UPDATE may be partial, so only what it carries changes.
+    fn update_message(&mut self, data: &Value) {
+        let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"])) else {
+            return;
+        };
+        let known = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == message));
+        if let (Some(known), Some(content)) = (known, text(&data["content"])) {
+            known.content = content;
+            known.edited = data["edited_timestamp"].is_string();
+        }
     }
 
     fn set_presence(&mut self, data: &Value) {
@@ -550,6 +568,29 @@ mod tests {
         let list = &stores.messages[&23];
         assert_eq!(list.iter().map(|m| m.id).collect::<Vec<_>>(), [3, 5]);
         assert_eq!(list[1].content, "edited");
+    }
+
+    #[test]
+    fn message_update_changes_content_and_marks_it_edited() {
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("5", "before"));
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "content": "after", "edited_timestamp": "2026-11-07T19:00:00+00:00"}),
+        );
+        assert_eq!(stores.messages[&23][0].content, "after");
+        assert!(stores.messages[&23][0].edited);
+    }
+
+    #[test]
+    fn partial_message_update_changes_nothing() {
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("5", "before"));
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "embeds": []}),
+        );
+        assert_eq!(stores.messages[&23][0].content, "before");
     }
 
     #[test]
