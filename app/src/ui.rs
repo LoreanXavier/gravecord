@@ -18,8 +18,8 @@ use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
     FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent,
     ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels, Render, Rgba, SharedString,
-    StyledText, TextRun, Window, WindowControlArea, div, font, img, list, prelude::*, px, rgba,
-    svg,
+    StyledText, TextRun, WeakEntity, Window, WindowControlArea, div, font, img, list, prelude::*,
+    px, rgba, svg,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -97,6 +97,10 @@ pub struct Root {
     show_members: bool,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// This view, for handlers built while rendering that have no context of their own.
+    weak: WeakEntity<Root>,
+    /// Spoilers opened by a click: message, block and the first span of the spoiler.
+    revealed: HashSet<(Id, u32, usize)>,
     settings: Option<settings::Open>,
     /// Settings the user changed in the settings pages, by key.
     setting_choices: HashMap<&'static str, settings::Choice>,
@@ -138,6 +142,8 @@ impl Root {
             show_members: false,
             last_typing_sent: None,
             tip: None,
+            revealed: HashSet::new(),
+            weak: cx.weak_entity(),
             settings: None,
             setting_choices: HashMap::new(),
             fetched: HashMap::new(),
@@ -1493,9 +1499,34 @@ impl Root {
     ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
         let emoji_size = if jumbo { 48. } else { 22. };
+        // A spoiler is a run of spoiler spans; clicking any of them opens the run, keyed by its first span.
+        let mut run_start = vec![0; spans.len()];
+        for index in 0..spans.len() {
+            run_start[index] =
+                if index > 0 && spans[index].style.spoiler && spans[index - 1].style.spoiler {
+                    run_start[index - 1]
+                } else {
+                    index
+                };
+        }
         let mut pieces: Vec<Piece> = spans
             .iter()
-            .map(|span| self.piece(span, text_color, 16., 400., emoji_size))
+            .enumerate()
+            .map(|(index, span)| {
+                let open =
+                    span.style.spoiler && self.revealed.contains(&(key.0, key.1, run_start[index]));
+                let mut piece = self.piece(span, text_color, 16., 400., emoji_size);
+                if open {
+                    piece.color = text_color;
+                    piece.boxed = Some(pill(0., 4., "--__spoiler-background-color--revealed"));
+                }
+                piece
+            })
+            .collect();
+        let spoilers: Vec<Option<usize>> = spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| span.style.spoiler.then_some(run_start[index]))
             .collect();
         if edited {
             let plain = Span {
@@ -1509,7 +1540,20 @@ impl Root {
             pieces.push(label);
         }
         let line = if jumbo { px(48.) } else { px(22.) };
-        inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+        let mut element =
+            inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        if spoilers.iter().any(Option::is_some) {
+            let root = self.weak.clone();
+            element = element.on_piece_click(move |piece, _, cx| {
+                if let Some(Some(start)) = spoilers.get(piece).copied() {
+                    let _ = root.update(cx, |this, cx| {
+                        this.revealed.insert((key.0, key.1, start));
+                        cx.notify();
+                    });
+                }
+            });
+        }
+        element
     }
 
     /// `h1`, `h2` and `h3` from the capture: size and line height per level, all bold.

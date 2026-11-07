@@ -287,12 +287,16 @@ fn shorten(piece: &Piece, whole: &ShapedLine, width: Pixels, window: &Window) ->
     shape(piece, &text, window)
 }
 
+/// Called with the index of the piece a click landed on.
+type PieceClick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
 pub struct Inline {
     pieces: Rc<Vec<Piece>>,
     line_height: Pixels,
     laid: Rc<RefCell<Laid>>,
     selectable: Option<Selectable>,
     truncate: bool,
+    on_piece_click: Option<PieceClick>,
 }
 
 #[derive(Clone)]
@@ -309,10 +313,20 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         laid: Rc::default(),
         selectable: None,
         truncate: false,
+        on_piece_click: None,
     }
 }
 
 impl Inline {
+    /// Reports clicks on pieces, for spoilers that open where they are clicked.
+    pub fn on_piece_click(
+        mut self,
+        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_piece_click = Some(Rc::new(handler));
+        self
+    }
+
     /// One line, cut with an ellipsis.
     pub fn truncate(mut self) -> Self {
         self.truncate = true;
@@ -363,6 +377,23 @@ impl Inline {
     }
 
     fn listen(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+        if let Some(handler) = self.on_piece_click.clone() {
+            let laid = self.laid.clone();
+            let line_height = self.line_height;
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Left
+                    && bounds.contains(&event.position)
+                {
+                    let hit = laid
+                        .borrow()
+                        .piece_at(event.position - bounds.origin, line_height);
+                    if let Some(piece) = hit {
+                        handler(piece, window, cx);
+                    }
+                }
+            });
+        }
         let Some(selectable) = self.selectable.clone() else {
             return;
         };
@@ -611,6 +642,19 @@ fn nearest_caret(line: &ShapedLine, x: Pixels) -> usize {
 
 impl Laid {
     /// The byte offset closest to a point relative to the element's origin.
+    /// The piece drawn under `position`, if any.
+    pub fn piece_at(&self, position: Point<Pixels>, line_height: Pixels) -> Option<usize> {
+        let line = (position.y / line_height).floor().max(0.) as usize;
+        self.fragments
+            .iter()
+            .find(|fragment| {
+                fragment.line == line
+                    && position.x >= fragment.x
+                    && position.x < fragment.x + fragment.width
+            })
+            .map(|fragment| fragment.piece)
+    }
+
     pub fn index_at(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
         let line = (position.y / line_height).floor().max(0.) as usize;
         let line = line.min(self.lines.saturating_sub(1));
