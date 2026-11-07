@@ -90,7 +90,14 @@ fn save_frame(image: &image::RgbaImage, path: &Path) -> Result<()> {
     image.save(path).context("writing the capture")
 }
 
+/// Calibrated against the official client with `tools/calibrate-text.py`. 2.2 is the top of gpui's table.
+const TEXT_GAMMA: &str = "2.2";
+
 fn main() -> Result<()> {
+    // Read once by gpui's renderer. Set before any other thread exists.
+    if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
+        unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
+    }
     let secrets_path = find_upwards("secrets.toml").context("secrets.toml not found")?;
     let token = secrets::load(&secrets_path).context("loading secrets.toml")?;
     let assets_root = find_upwards("app/assets").context("app/assets not found")?;
