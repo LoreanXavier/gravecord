@@ -803,10 +803,6 @@ impl Root {
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        if keystroke.key == "escape" && self.settings.is_some() {
-            self.close_settings(cx);
-            return;
-        }
         if keystroke.key == "c" && keystroke.modifiers.control {
             let text = self.selected_text();
             if !text.is_empty() {
@@ -2534,6 +2530,13 @@ impl Render for Root {
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            // Escape closes settings before the focused field, which would take it for itself, sees it.
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.settings.is_some() {
+                    this.close_settings(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.on_drop_files(paths, cx);
             }))
