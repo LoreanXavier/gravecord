@@ -142,7 +142,9 @@ impl Root {
                 self.ready = true;
             }
             Update::Image { key, bytes } => {
-                let format = if bytes.starts_with(b"\x89PNG") {
+                let format = if key.starts_with("emoji:") {
+                    ImageFormat::Svg
+                } else if bytes.starts_with(b"\x89PNG") {
                     ImageFormat::Png
                 } else if bytes.starts_with(b"RIFF") {
                     ImageFormat::Webp
@@ -230,6 +232,17 @@ impl Root {
                         attachment.proxy_url,
                     );
                     media.push((format!("attachment:{}", attachment.id), url));
+                }
+            }
+        }
+        if let Some(messages) = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+        {
+            for reaction in messages.iter().flat_map(|message| &message.reactions) {
+                if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
+                    let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
+                    media.push((format!("emoji:{}", reaction.name), url));
                 }
             }
         }
@@ -1329,6 +1342,83 @@ impl Root {
         inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
     }
 
+    /// The official pills: 30px tall, a 20px emoji, the count 6px after it, 4px between pills.
+    fn reactions(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pills: Vec<AnyElement> = message
+            .reactions
+            .iter()
+            .enumerate()
+            .map(|(index, reaction)| {
+                let image = self
+                    .images
+                    .get(&format!("emoji:{}", reaction.name))
+                    .cloned();
+                let (channel, id, emoji, add) = (
+                    message.channel_id,
+                    message.id,
+                    reaction_route_name(reaction),
+                    !reaction.me,
+                );
+                div()
+                    .id(SharedString::from(format!(
+                        "reaction-{}-{index}",
+                        message.id
+                    )))
+                    .h(px(30.))
+                    .px(px(7.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .border_1()
+                    .when(reaction.me, |this| {
+                        this.bg(color("--mention-background"))
+                            .border_color(color("--background-brand"))
+                    })
+                    .when(!reaction.me, |this| {
+                        this.bg(color("--background-mod-subtle"))
+                            .border_color(color("--background-mod-subtle"))
+                    })
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        let _ = this.requests.send(Request::React {
+                            channel,
+                            message: id,
+                            emoji: emoji.clone(),
+                            add,
+                        });
+                    }))
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .children(image.map(|image| img(image).size(px(20.)))),
+                    )
+                    .child(
+                        div()
+                            .ml(px(6.))
+                            .text_size(px(14.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(if reaction.me {
+                                color("--mention-foreground")
+                            } else {
+                                color("--text-muted")
+                            })
+                            .child(reaction.count.to_string()),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        (!pills.is_empty()).then(|| {
+            div()
+                .pt(px(2.))
+                .pb(px(6.))
+                .flex()
+                .gap(px(4.))
+                .children(pills)
+                .into_any_element()
+        })
+    }
+
     /// Images in their grid: 2px above, 4px between, natural size up to the official limits, 8px corners.
     fn attachments(&self, message: &Message) -> Option<AnyElement> {
         let images: Vec<AnyElement> = message
@@ -1556,6 +1646,7 @@ impl Root {
                     None => div()
                         .child(self.content(message))
                         .children(self.attachments(message))
+                        .children(self.reactions(message, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -1829,6 +1920,14 @@ fn parse_block_text(content: &str) -> String {
         .map(block_text)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The route form of a reaction: the emoji itself, or `name:id` for a custom one.
+fn reaction_route_name(reaction: &dc_state::Reaction) -> String {
+    match reaction.emoji_id {
+        Some(id) => format!("{}:{id}", reaction.name),
+        None => reaction.name.clone(),
+    }
 }
 
 /// Plain text of a block, the same bytes the inline engine lays out.

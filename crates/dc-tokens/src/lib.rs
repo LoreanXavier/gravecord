@@ -1,5 +1,6 @@
 //! Design tokens of the pinned build, resolved per theme by `tools/dump-tokens.mjs`.
 
+mod emoji;
 mod generated;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,9 +32,35 @@ impl Theme {
     }
 }
 
+/// The asset file of a unicode emoji. Variation selectors are not part of the file names.
+pub fn emoji_file(text: &str) -> Option<&'static str> {
+    let codepoints: Vec<String> = text
+        .chars()
+        .filter(|character| *character != '\u{fe0f}')
+        .map(|character| format!("{:x}", character as u32))
+        .collect();
+    let key = codepoints.join("-");
+    let index = emoji::EMOJI_FILES
+        .binary_search_by(|(known, _)| (*known).cmp(key.as_str()))
+        .ok()?;
+    Some(emoji::EMOJI_FILES[index].1)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Theme;
+    use super::{Theme, emoji_file};
+
+    #[test]
+    fn emoji_map_to_the_captured_assets() {
+        assert_eq!(emoji_file("\u{1f44d}"), Some("a4faf6864a96a042.svg"));
+        assert_eq!(emoji_file("\u{1f525}"), Some("a7bd71d6389d0dfe.svg"));
+        assert_eq!(emoji_file("not an emoji"), None);
+    }
+
+    #[test]
+    fn variation_selectors_are_ignored() {
+        assert_eq!(emoji_file("\u{2764}\u{fe0f}"), emoji_file("\u{2764}"));
+    }
 
     #[test]
     fn values_match_the_captured_dom() {

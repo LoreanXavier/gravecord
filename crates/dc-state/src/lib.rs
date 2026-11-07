@@ -172,6 +172,26 @@ impl Guild {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Reaction {
+    /// The unicode emoji, or a custom emoji's name.
+    pub name: String,
+    pub emoji_id: Option<Id>,
+    pub count: u64,
+    pub me: bool,
+}
+
+impl Reaction {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            name: text(&value["emoji"]["name"])?,
+            emoji_id: id(&value["emoji"]["id"]),
+            count: value["count"].as_u64().unwrap_or(1),
+            me: value["me"].as_bool().unwrap_or(false),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub id: Id,
     pub filename: String,
@@ -227,6 +247,7 @@ pub struct Message {
     /// The message this one replies to, as the server embedded it.
     pub referenced: Option<Box<Message>>,
     pub attachments: Vec<Attachment>,
+    pub reactions: Vec<Reaction>,
     pub timestamp: DateTime<Utc>,
     pub kind: u64,
     pub flags: u64,
@@ -253,6 +274,12 @@ impl Message {
                 .into_iter()
                 .flatten()
                 .filter_map(Attachment::from_value)
+                .collect(),
+            reactions: value["reactions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Reaction::from_value)
                 .collect(),
             timestamp: DateTime::parse_from_rfc3339(value["timestamp"].as_str()?)
                 .ok()?
@@ -345,6 +372,8 @@ impl Stores {
                 }
             }
             "MESSAGE_UPDATE" => self.update_message(data),
+            "MESSAGE_REACTION_ADD" => self.react(data, 1),
+            "MESSAGE_REACTION_REMOVE" => self.react(data, -1),
             "MESSAGE_DELETE" => {
                 if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
                     && let Some(list) = self.messages.get_mut(&channel)
@@ -407,6 +436,48 @@ impl Stores {
             (None, None) => second.joined_at.cmp(&first.joined_at),
         });
         self.guilds = ranked.into_iter().map(|(_, guild)| guild).collect();
+    }
+
+    fn react(&mut self, data: &Value, change: i64) {
+        let (Some(channel), Some(message_id), Some(name)) = (
+            id(&data["channel_id"]),
+            id(&data["message_id"]),
+            text(&data["emoji"]["name"]),
+        ) else {
+            return;
+        };
+        let mine = self.current_user.as_ref().map(|user| user.id) == id(&data["user_id"]);
+        let Some(message) = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == message_id))
+        else {
+            return;
+        };
+        let emoji_id = id(&data["emoji"]["id"]);
+        let found = message
+            .reactions
+            .iter()
+            .position(|reaction| reaction.name == name && reaction.emoji_id == emoji_id);
+        match (found, change > 0) {
+            (Some(index), _) => {
+                let reaction = &mut message.reactions[index];
+                reaction.count = reaction.count.saturating_add_signed(change);
+                if mine {
+                    reaction.me = change > 0;
+                }
+                if reaction.count == 0 {
+                    message.reactions.remove(index);
+                }
+            }
+            (None, true) => message.reactions.push(Reaction {
+                name,
+                emoji_id,
+                count: 1,
+                me: mine,
+            }),
+            (None, false) => {}
+        }
     }
 
     /// MESSAGE_UPDATE may be partial, so only what it carries changes.
@@ -693,6 +764,39 @@ mod tests {
         assert!(parsed.attachments[0].is_image());
         assert!(!parsed.attachments[1].is_image());
         assert_eq!(parsed.attachments[1].proxy_url, "u");
+    }
+
+    fn reaction_event(user: &str) -> Value {
+        json!({"channel_id": "23", "message_id": "5", "user_id": user, "emoji": {"name": "\u{1f44d}", "id": null}})
+    }
+
+    #[test]
+    fn reactions_count_up_and_down_and_track_mine() {
+        let mut stores = Stores {
+            current_user: Some(User {
+                id: 10,
+                ..User::default()
+            }),
+            ..Stores::default()
+        };
+        stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
+        stores.dispatch("MESSAGE_REACTION_ADD", &reaction_event("10"));
+        stores.dispatch("MESSAGE_REACTION_ADD", &reaction_event("11"));
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.me), (2, true));
+        stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("10"));
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.me), (1, false));
+        stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("11"));
+        assert!(stores.messages[&23][0].reactions.is_empty());
+    }
+
+    #[test]
+    fn removing_an_unknown_reaction_changes_nothing() {
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
+        stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("11"));
+        assert!(stores.messages[&23][0].reactions.is_empty());
     }
 
     #[test]

@@ -18,6 +18,12 @@ pub enum Update {
 }
 
 pub enum Request {
+    React {
+        channel: u64,
+        message: u64,
+        emoji: String,
+        add: bool,
+    },
     LoadMessages {
         channel: u64,
     },
@@ -53,6 +59,18 @@ pub enum Request {
 const MESSAGE_PAGE: u32 = 50;
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
 const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
+
+fn percent_encode(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
 
 /// The body the official client posts, field for field (`TRAFFIC`).
 fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> Value {
@@ -185,6 +203,27 @@ pub async fn run(
                     }
                 });
             }
+            Request::React {
+                channel,
+                message,
+                emoji,
+                add,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!(
+                        "/channels/{channel}/messages/{message}/reactions/{}/@me?location=Message&type=0",
+                        percent_encode(&emoji),
+                    );
+                    let method = if add {
+                        reqwest::Method::PUT
+                    } else {
+                        reqwest::Method::DELETE
+                    };
+                    if let Err(error) = client.request(method, &route, None).await {
+                        warn!("reaction failed: {error}");
+                    }
+                });
+            }
             Request::Subscribe { guild, channel } => {
                 let subscription = json!({"typing": true, "activities": true, "threads": true, "channels": {channel.to_string(): [[0, 99]]}});
                 let data = json!({"subscriptions": {guild.to_string(): subscription}});
@@ -224,7 +263,13 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::send_body;
+    use super::{percent_encode, send_body};
+
+    #[test]
+    fn emoji_encode_as_in_the_recorded_route() {
+        assert_eq!(percent_encode("\u{1f44d}"), "%F0%9F%91%8D");
+        assert_eq!(percent_encode("name:123"), "name:123");
+    }
 
     #[test]
     fn plain_send_matches_the_recorded_fields() {
