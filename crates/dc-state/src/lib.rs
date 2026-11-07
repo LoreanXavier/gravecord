@@ -288,6 +288,120 @@ pub fn fit_media(width: u32, height: u32) -> (u32, u32) {
     )
 }
 
+/// An image, thumbnail or video of an embed, as `O` in module 659674 keeps it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbedMedia {
+    pub url: String,
+    pub proxy_url: Option<String>,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl EmbedMedia {
+    /// `C` in module 659674: media without both sides is dropped.
+    fn from_value(value: &Value) -> Option<Self> {
+        let width = value["width"].as_u64().filter(|width| *width > 0)? as u32;
+        let height = value["height"].as_u64().filter(|height| *height > 0)? as u32;
+        Some(Self {
+            url: text(&value["url"])?,
+            proxy_url: text(&value["proxy_url"]),
+            width,
+            height,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EmbedField {
+    pub name: String,
+    pub value: String,
+    pub inline: bool,
+}
+
+/// A message embed after `fK` in module 659674.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Embed {
+    pub kind: String,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<u32>,
+    pub provider: Option<String>,
+    pub author: Option<String>,
+    pub author_url: Option<String>,
+    pub author_icon: Option<String>,
+    pub footer: Option<String>,
+    pub footer_icon: Option<String>,
+    pub image: Option<EmbedMedia>,
+    pub thumbnail: Option<EmbedMedia>,
+    pub fields: Vec<EmbedField>,
+}
+
+impl Embed {
+    pub fn from_value(value: &Value) -> Self {
+        let kind = text(&value["type"]).unwrap_or_else(|| "rich".to_owned());
+        let mut embed = Self {
+            url: text(&value["url"]),
+            title: text(&value["title"]),
+            description: text(&value["description"]),
+            color: value["color"].as_u64().map(|color| color as u32),
+            provider: text(&value["provider"]["name"]),
+            author: text(&value["author"]["name"]),
+            author_url: text(&value["author"]["url"]),
+            author_icon: text(&value["author"]["proxy_icon_url"])
+                .or_else(|| text(&value["author"]["icon_url"])),
+            footer: text(&value["footer"]["text"]),
+            footer_icon: text(&value["footer"]["proxy_icon_url"])
+                .or_else(|| text(&value["footer"]["icon_url"])),
+            ..Self::default()
+        };
+        // Articles and images show their thumbnail as the large image.
+        if let Some(thumbnail) = EmbedMedia::from_value(&value["thumbnail"]) {
+            match kind.as_str() {
+                "article" | "image" => embed.image = Some(thumbnail),
+                _ => embed.thumbnail = Some(thumbnail),
+            }
+        }
+        if let Some(image) = EmbedMedia::from_value(&value["image"]) {
+            embed.image = Some(image);
+        }
+        // Only rich and auto-moderation embeds carry fields (`u.pd`).
+        if matches!(kind.as_str(), "rich" | "auto_moderation_message") {
+            embed.fields = value["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|field| {
+                    Some(EmbedField {
+                        name: text(&field["name"])?,
+                        value: text(&field["value"])?,
+                        inline: field["inline"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect();
+        }
+        embed.kind = kind;
+        embed
+    }
+
+    /// `ds` in module 659674 for embeds that are not TikTok or portrait YouTube.
+    pub const MAX_MEDIA: (f64, f64) = (400., 300.);
+
+    /// The image fitted into `MAX_MEDIA`, never enlarged.
+    pub fn fitted(media: &EmbedMedia) -> (f64, f64) {
+        let (max_width, max_height) = Self::MAX_MEDIA;
+        let (width, height) = (f64::from(media.width), f64::from(media.height));
+        let scale = (max_width / width).min(max_height / height).min(1.);
+        (width * scale, height * scale)
+    }
+
+    /// `getMaxWidth`: an embed whose media is at least 300 wide is that wide plus 32.
+    pub fn max_width(&self) -> Option<f64> {
+        let (width, _) = Self::fitted(self.image.as_ref()?);
+        (self.kind == "video" || width >= 300.).then_some(width + 32.)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
@@ -298,6 +412,7 @@ pub struct Message {
     /// The message this one replies to, as the server embedded it.
     pub referenced: Option<Box<Message>>,
     pub attachments: Vec<Attachment>,
+    pub embeds: Vec<Embed>,
     pub reactions: Vec<Reaction>,
     pub timestamp: DateTime<Utc>,
     pub kind: u64,
@@ -325,6 +440,12 @@ impl Message {
                 .into_iter()
                 .flatten()
                 .filter_map(Attachment::from_value)
+                .collect(),
+            embeds: value["embeds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(Embed::from_value)
                 .collect(),
             reactions: value["reactions"]
                 .as_array()
@@ -579,9 +700,16 @@ impl Stores {
             .messages
             .get_mut(&channel)
             .and_then(|list| list.iter_mut().find(|known| known.id == message));
-        if let (Some(known), Some(content)) = (known, text(&data["content"])) {
+        let Some(known) = known else {
+            return;
+        };
+        if let Some(content) = text(&data["content"]) {
             known.content = content;
             known.edited = data["edited_timestamp"].is_string();
+        }
+        // Link previews arrive later, in an update that may carry only the embeds.
+        if let Some(embeds) = data["embeds"].as_array() {
+            known.embeds = embeds.iter().map(Embed::from_value).collect();
         }
     }
 
@@ -666,6 +794,40 @@ impl Stores {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn article_thumbnails_become_the_image_and_size_the_embed() {
+        let embed = Embed::from_value(&json!({
+            "type": "article",
+            "url": "https://github.com/zed-industries/zed",
+            "title": "zed",
+            "provider": {"name": "GitHub"},
+            "thumbnail": {"url": "https://x/y.png", "proxy_url": "https://p/y.png", "width": 1200, "height": 600}
+        }));
+        assert!(embed.thumbnail.is_none());
+        let image = embed.image.as_ref().unwrap();
+        assert_eq!(Embed::fitted(image), (400., 200.));
+        assert_eq!(embed.max_width(), Some(432.));
+    }
+
+    #[test]
+    fn link_embeds_keep_a_side_thumbnail_and_late_embeds_arrive_by_update() {
+        let embed = Embed::from_value(&json!({
+            "type": "link",
+            "thumbnail": {"url": "https://x/y.png", "width": 80, "height": 80}
+        }));
+        assert!(embed.image.is_none() && embed.thumbnail.is_some());
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "embeds": [{"type": "link", "title": "t"}]}),
+        );
+        assert_eq!(
+            stores.messages[&23][0].embeds[0].title.as_deref(),
+            Some("t")
+        );
+    }
 
     #[test]
     fn badges_follow_the_official_precedence() {

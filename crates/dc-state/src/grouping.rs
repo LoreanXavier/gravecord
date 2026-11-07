@@ -77,6 +77,7 @@ mod tests {
             edited: false,
             referenced: None,
             attachments: Vec::new(),
+            embeds: Vec::new(),
             reactions: Vec::new(),
             timestamp: Local
                 .with_ymd_and_hms(2026, 11, 7, 12, 0, 0)

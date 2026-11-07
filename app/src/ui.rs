@@ -29,6 +29,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod badge_paths;
+mod embed;
 mod home;
 mod menu;
 mod settings;
@@ -267,6 +268,9 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
         {
             users.extend(messages.iter().map(|message| message.author.clone()));
+            for message in messages.iter() {
+                media.extend(embed::wanted(message));
+            }
             for attachment in messages.iter().flat_map(|message| &message.attachments) {
                 if attachment.is_image() {
                     let (width, height) = fit_media(
@@ -500,7 +504,7 @@ impl Root {
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
         format!(
-            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={}",
+            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={}",
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
@@ -511,6 +515,12 @@ impl Root {
             self.selected_text(),
             self.hovered,
             self.editing.is_some(),
+            self.channel
+                .and_then(|channel| self.stores.messages.get(&channel))
+                .map_or(0, |messages| messages
+                    .iter()
+                    .map(|message| message.embeds.len())
+                    .sum::<usize>()),
         )
     }
 
@@ -1931,14 +1941,13 @@ impl Root {
                     None => div()
                         .child(self.content(message))
                         .children(self.attachments(message))
+                        .children(self.embeds(message))
                         .children(self.reactions(message, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
                 if !*head {
-                    return row
-                        .child(body.child(self.content(message)))
-                        .into_any_element();
+                    return row.child(body.child(content)).into_any_element();
                 }
                 let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
                 let reply_offset = if message.referenced.is_some() {
