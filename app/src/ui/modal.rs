@@ -104,15 +104,20 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
 }
 
 pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 480., cx)
+    render_sized(spec, 480., false, cx)
 }
 
 /// `size-sm_dvN-MP`: the same dialog 400 wide (Delete Channel).
 pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 400., cx)
+    render_sized(spec, 400., false, cx)
 }
 
-fn render_sized(spec: Spec, width: f32, cx: &mut Context<Root>) -> AnyElement {
+/// The small dialog with its buttons one above the other across the width (Sync permissions?).
+pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized(spec, 400., true, cx)
+}
+
+fn render_sized(spec: Spec, width: f32, stacked: bool, cx: &mut Context<Root>) -> AnyElement {
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
     let close_scrim = close.clone();
@@ -120,6 +125,13 @@ fn render_sized(spec: Spec, width: f32, cx: &mut Context<Root>) -> AnyElement {
         .buttons
         .into_iter()
         .map(|button| footer_button(button, cx))
+        .map(|button| {
+            if stacked {
+                div().w_full().flex().child(button).into_any_element()
+            } else {
+                button
+            }
+        })
         .collect();
     let modal = div()
         .parity_with_border(spec.id, 1.)
@@ -196,11 +208,13 @@ fn render_sized(spec: Spec, width: f32, cx: &mut Context<Root>) -> AnyElement {
         .when(!buttons.is_empty(), |this| {
             this.child(
                 div()
-                    .mt(px(8.))
+                    // The small dialog's action bar follows its header directly.
+                    .when(width > 400., |this| this.mt(px(8.)))
                     .pt(px(16.))
                     .px(px(24.))
                     .pb(px(8.))
                     .flex()
+                    .when(stacked, |this| this.flex_col())
                     .gap(px(8.))
                     .children(buttons),
             )

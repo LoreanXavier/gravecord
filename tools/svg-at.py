@@ -28,7 +28,12 @@ def main():
         if abs(left - x) > 1 or abs(top - y) > 1:
             continue
         parts = []
-        for child in children.get(node, []):
+        descendants, stack = [], list(children.get(node, []))
+        while stack:
+            child = stack.pop(0)
+            descendants.append(child)
+            stack.extend(children.get(child, []))
+        for child in descendants:
             shape = attrs(child)
             if strings[nodes['nodeName'][child]] == 'path' and 'd' in shape:
                 rule = ''

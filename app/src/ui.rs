@@ -57,6 +57,7 @@ mod links;
 mod menu;
 mod modal;
 mod notify;
+mod permission_spec;
 mod picker;
 mod pins;
 mod plaintext_extensions;
@@ -4113,6 +4114,7 @@ impl Render for Root {
             .children(self.channel_settings_layer(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
+            .children(self.sync_permissions_modal(cx))
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
             .children(self.profile_layer(cx))

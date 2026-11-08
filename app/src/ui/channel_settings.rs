@@ -65,6 +65,11 @@ pub(crate) struct ChannelSettings {
     saved: Values,
     open_select: Option<Select>,
     confirm_delete: bool,
+    /// Advanced permissions: the role or member shown, and overwrites changed but not saved (allow, deny, type).
+    pub(super) perm_target: Option<Id>,
+    pub(super) perm_edits: std::collections::HashMap<Id, (u64, u64, u64)>,
+    /// "Sync permissions?" is open.
+    pub(super) confirm_sync: bool,
     _events: [Subscription; 2],
 }
 
@@ -187,6 +192,9 @@ impl Root {
             saved,
             open_select: None,
             confirm_delete: false,
+            perm_target: None,
+            perm_edits: std::collections::HashMap::new(),
+            confirm_sync: false,
             _events: [name_events, topic_events],
         });
         self.request_image(OVERVIEW_ART.to_owned(), OVERVIEW_ART.to_owned());
@@ -206,6 +214,7 @@ impl Root {
         open.slowmode = saved.slowmode;
         open.spoiler = saved.spoiler;
         open.archive = saved.archive;
+        open.perm_edits.clear();
         cx.notify();
     }
 
@@ -216,6 +225,21 @@ impl Root {
         };
         let values = open.values(cx);
         let channel = open.channel;
+        // Advanced permissions: one PUT per changed overwrite.
+        for (target, (allow, deny, kind)) in &open.perm_edits {
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::PUT,
+                route: format!("/channels/{channel}/permissions/{target}"),
+                body: Some(serde_json::json!({
+                    "id": target.to_string(),
+                    "type": kind,
+                    "allow": allow.to_string(),
+                    "deny": deny.to_string(),
+                })),
+            });
+        }
+        let overview_dirty = values != open.saved;
         let flags = self
             .stores
             .guilds
@@ -229,6 +253,13 @@ impl Root {
             flags & !IS_SPOILER_CHANNEL
         };
         let name = super::create_channel::channel_slug(&values.name);
+        if let Some(open) = self.channel_settings.as_mut() {
+            open.perm_edits.clear();
+        }
+        if !overview_dirty {
+            cx.notify();
+            return;
+        }
         let _ = self.requests.send(Request::Rest {
             key: Some(SAVE_KEY.to_owned()),
             method: reqwest::Method::PATCH,
@@ -767,7 +798,7 @@ impl Root {
             .parent_id
             .and_then(|parent| guild.channels.iter().find(|known| known.id == parent))
             .map(|parent| parent.name.clone());
-        let dirty = open.values(cx) != open.saved;
+        let dirty = open.values(cx) != open.saved || !open.perm_edits.is_empty();
         let section = open.section;
         let header = div()
             .h(px(24.))

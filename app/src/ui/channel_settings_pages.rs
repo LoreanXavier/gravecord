@@ -51,6 +51,13 @@ pub(super) fn incident_body(
     })
 }
 
+/// `channelPermissionSettingsAdvancedModeOn` in local storage.
+const ADVANCED_KEY: &str = "channelPermissionSettingsAdvancedModeOn";
+/// The "+" over Roles/Members (`/assets/ef103ccb22234d89.svg`).
+const ADD_TARGET_ART: &str = "https://discordapp.com/assets/ef103ccb22234d89.svg";
+/// "Need help with permissions?"
+const PERMISSIONS_HELP: &str = "https://support.discord.com/hc/en-us/articles/206029707";
+
 /// Module 824953: a new webhook is one of these, at random.
 const WEBHOOK_NAMES: [&str; 2] = ["Spidey Bot", "Captain Hook"];
 
@@ -383,6 +390,49 @@ impl Root {
                     .text_color(color("--text-default"))
                     .child("Use permissions to customize who can do what in this channel."),
             )
+            .when_some(parent.filter(|_| !synced), |this, parent| {
+                // `OIhm0M` with Sync Now (module 336541): the category's overwrites after a confirmation.
+                this.child(
+                    card(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(icon("permissions_unsynced", 20., "--status-warning"))
+                            .child("Permissions not synced with category:")
+                            .child(div().flex_1().font_weight(FontWeight(600.)).child(parent.name.clone()))
+                            .child(
+                                div()
+                                    .id("channel-permissions-sync")
+                                    .h(px(32.))
+                                    .px(px(11.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--control-secondary-border-default"))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child("Sync Now")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(settings) = this.channel_settings.as_mut() {
+                                            settings.confirm_sync = true;
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element(),
+                    )
+                    .mb(px(16.)),
+                )
+            })
             .when_some(parent.filter(|_| synced), |this, parent| {
                 this.child(
                     card(
@@ -458,6 +508,7 @@ impl Root {
                     )
                     .into_any_element(),
             ))
+            .child(self.advanced_permissions(channel, cx))
             .into_any_element()
     }
 
@@ -801,6 +852,462 @@ impl Root {
                     .into_any_element(),
             ))
             .into_any_element()
+    }
+}
+
+impl Root {
+    /// "Advanced permissions" (`channelPermissionSettingsAdvancedModeOn`): the roles and members with an overwrite,
+    /// and for the chosen one every permission of module 558393's spec as deny / pass through / allow.
+    fn advanced_permissions(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
+        let open = crate::storage::get(ADVANCED_KEY)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let header = div()
+            .id("channel-permissions-advanced")
+            .mt(px(40.))
+            .pt(px(32.))
+            .border_t_1()
+            .border_color(color("--border-subtle"))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Advanced permissions"),
+            )
+            .child(
+                gpui::svg()
+                    .path("icons/chevron_right_20.svg")
+                    .size(px(20.))
+                    .text_color(color("--text-strong"))
+                    // The icon points left: turned half round when closed, three quarters when open.
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(if open {
+                        3. * std::f32::consts::FRAC_PI_2
+                    } else {
+                        std::f32::consts::PI
+                    }))),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                crate::storage::set(ADVANCED_KEY, serde_json::json!(!open));
+                if !open {
+                    this.request_image(ADD_TARGET_ART.to_owned(), ADD_TARGET_ART.to_owned());
+                }
+                cx.notify();
+            }));
+        if !open {
+            return header.into_any_element();
+        }
+        let Some(guild) = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel.id))
+        else {
+            return header.into_any_element();
+        };
+        let settings = self.channel_settings.as_ref();
+        let edits = settings
+            .map(|settings| settings.perm_edits.clone())
+            .unwrap_or_default();
+        // @everyone first, then roles by name, then members.
+        let mut targets: Vec<(Id, u64, String)> = vec![(guild.id, 0, "@everyone".to_owned())];
+        for entry in &channel.overwrites {
+            if entry.id == guild.id {
+                continue;
+            }
+            let name = if entry.kind == 0 {
+                guild.roles.get(&entry.id).cloned().unwrap_or_default()
+            } else {
+                self.stores
+                    .users
+                    .get(&entry.id)
+                    .map(|user| user.display_name().to_owned())
+                    .unwrap_or_default()
+            };
+            targets.push((entry.id, entry.kind, name));
+        }
+        let selected = settings
+            .and_then(|settings| settings.perm_target)
+            .unwrap_or(guild.id);
+        let kind_of = targets
+            .iter()
+            .find(|(id, _, _)| *id == selected)
+            .map_or(0, |(_, kind, _)| *kind);
+        let (allow, deny) = edits.get(&selected).map_or_else(
+            || {
+                channel
+                    .overwrites
+                    .iter()
+                    .find(|entry| entry.id == selected)
+                    .map_or((0, 0), |entry| (entry.allow, entry.deny))
+            },
+            |(allow, deny, _)| (*allow, *deny),
+        );
+        let list = div()
+            .w(px(232.))
+            .flex_none()
+            .pt(px(24.))
+            .pr(px(15.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.))
+                    .px(px(10.))
+                    .pb(px(6.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--channels-default"))
+                    .child(div().flex_1().child("Roles/Members"))
+                    .children(
+                        self.images
+                            .get(ADD_TARGET_ART)
+                            .cloned()
+                            .map(|art| img(art).size(px(16.))),
+                    ),
+            )
+            .children(targets.iter().map(|(id, _, name)| {
+                let id = *id;
+                let chosen = id == selected;
+                div()
+                    .id(SharedString::from(format!("permissions-target-{id}")))
+                    .h(px(32.))
+                    .px(px(10.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(if chosen {
+                        color("--text-strong")
+                    } else {
+                        color("--text-subtle")
+                    })
+                    .when(chosen, |this| this.bg(color("--background-mod-strong")))
+                    .when(!chosen, |this| {
+                        this.hover(|style| style.bg(color("--background-mod-subtle")))
+                    })
+                    .child(name.clone())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(settings) = this.channel_settings.as_mut() {
+                            settings.perm_target = Some(id);
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .child(
+                div()
+                    .mx(px(10.))
+                    .mt(px(20.))
+                    .mb(px(14.))
+                    .h(px(1.))
+                    .bg(color("--border-subtle")),
+            )
+            .child(
+                div()
+                    .id("permissions-help")
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-link"))
+                    .hover(|style| style.underline())
+                    .child("Need help with permissions?")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.follow_link(PERMISSIONS_HELP, "Need help with permissions?", cx);
+                    })),
+            );
+        let sections: &[super::permission_spec::Section] = match channel.kind {
+            dc_state::ChannelKind::Voice => super::permission_spec::VOICE,
+            dc_state::ChannelKind::Category => super::permission_spec::CATEGORY,
+            _ => super::permission_spec::TEXT,
+        };
+        let everyone = selected == guild.id;
+        let channel_id = channel.id;
+        let state_button = |flag: u64, state: u8, current: u8| {
+            let (glyph, tint, background) = match state {
+                0 => (
+                    "perm_deny",
+                    "--text-feedback-critical",
+                    "--control-critical-primary-background-default",
+                ),
+                1 => (
+                    "perm_passthrough",
+                    "--text-strong",
+                    "--background-mod-strong",
+                ),
+                _ => (
+                    "perm_allow",
+                    "--text-feedback-positive",
+                    "--control-connected-background-default",
+                ),
+            };
+            let on = state == current;
+            div()
+                .id(SharedString::from(format!("perm-{flag}-{state}")))
+                .w(px(31.))
+                .h(px(26.))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if on && state != 1 {
+                    color(background)
+                } else if on {
+                    color("--background-mod-strong")
+                } else {
+                    color("--background-base-low")
+                })
+                .child(icon(
+                    glyph,
+                    16.,
+                    if on && state != 1 { "--white" } else { tint },
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let Some(settings) = this.channel_settings.as_mut() else {
+                        return;
+                    };
+                    let (mut allow, mut deny) = (allow, deny);
+                    allow &= !flag;
+                    deny &= !flag;
+                    match state {
+                        0 => deny |= flag,
+                        2 => allow |= flag,
+                        _ => {}
+                    }
+                    settings.perm_edits.insert(selected, (allow, deny, kind_of));
+                    let _ = channel_id;
+                    cx.notify();
+                }))
+        };
+        let form =
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .pt(px(24.))
+                .pr(px(15.))
+                .flex()
+                .flex_col()
+                .children(sections.iter().map(|section| {
+                    let count = section.permissions.len();
+                    div()
+                        .mb(px(40.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .mb(px(12.))
+                                .text_size(px(20.))
+                                .line_height(px(24.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(section.title),
+                        )
+                        .children(section.description.map(|description| {
+                            div()
+                                .mb(px(12.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child(description)
+                        }))
+                        .children(section.permissions.iter().enumerate().map(
+                            |(index, permission)| {
+                                let current = if deny & permission.flag != 0 {
+                                    0
+                                } else if allow & permission.flag != 0 {
+                                    2
+                                } else {
+                                    1
+                                };
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(24.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(16.))
+                                                            .line_height(px(20.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(permission.title),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .line_height(px(18.))
+                                                            .text_color(color("--text-subtle"))
+                                                            .child(if everyone {
+                                                                permission.everyone_description
+                                                            } else {
+                                                                permission.description
+                                                            }),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .h(px(28.))
+                                                    .rounded(px(8.))
+                                                    .border_1()
+                                                    .border_color(color("--border-muted"))
+                                                    .overflow_hidden()
+                                                    .flex()
+                                                    .child(state_button(
+                                                        permission.flag,
+                                                        0,
+                                                        current,
+                                                    ))
+                                                    .child(state_button(
+                                                        permission.flag,
+                                                        1,
+                                                        current,
+                                                    ))
+                                                    .child(state_button(
+                                                        permission.flag,
+                                                        2,
+                                                        current,
+                                                    )),
+                                            ),
+                                    )
+                                    .when(index + 1 < count, |this| {
+                                        this.child(
+                                            div()
+                                                .my(px(24.))
+                                                .h(px(1.))
+                                                .bg(color("--border-subtle")),
+                                        )
+                                    })
+                            },
+                        ))
+                }));
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(div().flex().child(list).child(form))
+            .into_any_element()
+    }
+}
+
+impl Root {
+    /// "Sync permissions?" (module 544169): the channel takes its category's overwrites
+    /// (`PATCH /channels/{id}` with `permission_overwrites`).
+    pub(super) fn sync_permissions_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.channel_settings.as_ref()?;
+        if !open.confirm_sync {
+            return None;
+        }
+        let guild = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == open.channel))?;
+        let channel = guild
+            .channels
+            .iter()
+            .find(|known| known.id == open.channel)?
+            .clone();
+        let parent = guild
+            .channels
+            .iter()
+            .find(|known| Some(known.id) == channel.parent_id)?
+            .clone();
+        let overwrites: Vec<serde_json::Value> = parent
+            .overwrites
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "id": entry.id.to_string(),
+                    "type": entry.kind,
+                    "allow": entry.allow.to_string(),
+                    "deny": entry.deny.to_string(),
+                })
+            })
+            .collect();
+        let id = channel.id;
+        Some(super::modal::render_small_stacked(
+            super::modal::Spec {
+                id: "sync-permissions-modal",
+                title: "Sync permissions?".into(),
+                subtitle: Some(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .child("Would you like to sync\u{a0}")
+                        .child(
+                            div()
+                                .font_weight(FontWeight(600.))
+                                .child(format!("#{}", channel.name)),
+                        )
+                        .child("\u{a0}permissions with\u{a0}")
+                        .child(
+                            div()
+                                .font_weight(FontWeight(600.))
+                                .child(parent.name.clone()),
+                        )
+                        .child("?")
+                        .into_any_element(),
+                ),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "sync-permissions-keep",
+                        "Keep Current Permissions",
+                        super::modal::Tone::Secondary,
+                        |this, _, _| {
+                            if let Some(settings) = this.channel_settings.as_mut() {
+                                settings.confirm_sync = false;
+                            }
+                        },
+                    ),
+                    super::modal::button(
+                        "sync-permissions-confirm",
+                        "Sync Permissions",
+                        super::modal::Tone::Critical,
+                        move |this, _, _| {
+                            let _ = this.requests.send(Request::Rest {
+                                key: None,
+                                method: reqwest::Method::PATCH,
+                                route: format!("/channels/{id}"),
+                                body: Some(
+                                    serde_json::json!({"permission_overwrites": overwrites}),
+                                ),
+                            });
+                            if let Some(settings) = this.channel_settings.as_mut() {
+                                settings.confirm_sync = false;
+                                settings.perm_edits.clear();
+                            }
+                        },
+                    ),
+                ],
+                close: Box::new(|this, _, _| {
+                    if let Some(settings) = this.channel_settings.as_mut() {
+                        settings.confirm_sync = false;
+                    }
+                }),
+            },
+            cx,
+        ))
     }
 }
 
