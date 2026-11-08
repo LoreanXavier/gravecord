@@ -1033,13 +1033,15 @@ impl Root {
             super::modal::Spec {
                 id: "remove-friend-modal",
                 title: format!("Remove '{name}'").into(),
-                subtitle: div()
-                    .flex()
-                    .flex_wrap()
-                    .child("Are you sure you want to remove\u{a0}")
-                    .child(div().font_weight(FontWeight(600.)).child(name.clone()))
-                    .child("\u{a0}from your friends?")
-                    .into_any_element(),
+                subtitle: Some(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .child("Are you sure you want to remove\u{a0}")
+                        .child(div().font_weight(FontWeight(600.)).child(name.clone()))
+                        .child("\u{a0}from your friends?")
+                        .into_any_element(),
+                ),
                 body: None,
                 buttons: [
                     super::modal::button(

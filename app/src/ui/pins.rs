@@ -395,9 +395,11 @@ impl Root {
             super::modal::Spec {
                 id: "unpin-modal",
                 title: "Unpin Message".into(),
-                subtitle: div()
-                    .child("You sure you want to remove this pinned message?")
-                    .into_any_element(),
+                subtitle: Some(
+                    div()
+                        .child("You sure you want to remove this pinned message?")
+                        .into_any_element(),
+                ),
                 body: Some(body),
                 buttons: [
                     super::modal::button(

@@ -763,9 +763,11 @@ impl Root {
             super::modal::Spec {
                 id: "delete-modal",
                 title: "Delete Message".into(),
-                subtitle: div()
-                    .child("Are you sure you want to delete this message?")
-                    .into_any_element(),
+                subtitle: Some(
+                    div()
+                        .child("Are you sure you want to delete this message?")
+                        .into_any_element(),
+                ),
                 body: Some(body),
                 buttons: [
                     super::modal::button(

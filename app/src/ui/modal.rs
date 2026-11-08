@@ -16,6 +16,8 @@ use gpui::{
 pub(super) enum Tone {
     Secondary,
     Primary,
+    /// Primary while its form is incomplete: half opacity, and the click does nothing.
+    PrimaryDisabled,
     Critical,
 }
 
@@ -45,7 +47,8 @@ pub(super) fn button(
 pub(super) struct Spec {
     pub id: &'static str,
     pub title: SharedString,
-    pub subtitle: AnyElement,
+    /// Some dialogs (Create Channel) have none, and no gap for one.
+    pub subtitle: Option<AnyElement>,
     pub body: Option<AnyElement>,
     pub buttons: [Button; 2],
     /// Close button, scrim click and Escape.
@@ -59,7 +62,7 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
             color("--border-muted"),
             color("--control-secondary-text-default"),
         ),
-        Tone::Primary => (
+        Tone::Primary | Tone::PrimaryDisabled => (
             color("--control-primary-background-default"),
             color("--control-primary-border-default"),
             color("--white"),
@@ -71,8 +74,10 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
         ),
     };
     let run = spec.run;
+    let disabled = spec.tone == Tone::PrimaryDisabled;
     div()
         .id(spec.id)
+        .when(disabled, |this| this.opacity(0.5))
         .flex_1()
         .h(px(40.))
         .rounded(px(8.))
@@ -89,7 +94,9 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
         .text_color(text)
         .child(spec.label)
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            run(this, window, cx);
+            if !disabled {
+                run(this, window, cx);
+            }
             cx.notify();
         }))
         .into_any_element()
@@ -159,13 +166,13 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
                                 })),
                         ),
                 )
-                .child(
+                .children(spec.subtitle.map(|subtitle| {
                     div()
                         .text_size(px(16.))
                         .line_height(px(20.))
                         .text_color(color("--text-subtle"))
-                        .child(spec.subtitle),
-                ),
+                        .child(subtitle)
+                })),
         )
         .children(
             spec.body
@@ -287,7 +294,7 @@ impl Root {
             Spec {
                 id: "pin-modal",
                 title: "Pin It. Pin It Good.".into(),
-                subtitle: div().child(subtitle).into_any_element(),
+                subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(self.message_preview(&message)),
                 buttons: [
                     button("pin-cancel", "Cancel", Tone::Secondary, |this, _, _| {

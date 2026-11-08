@@ -183,7 +183,7 @@ impl Root {
             super::modal::Spec {
                 id: "custom-reminder-modal",
                 title: "Set Custom Reminder".into(),
-                subtitle: div().into_any_element(),
+                subtitle: Some(div().into_any_element()),
                 body: Some(body),
                 buttons: [
                     super::modal::button(

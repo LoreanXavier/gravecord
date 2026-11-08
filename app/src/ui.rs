@@ -32,6 +32,7 @@ mod actions;
 mod apps;
 mod badge_paths;
 mod blocked;
+mod create_channel;
 mod dm;
 mod dm_profile;
 mod embed;
@@ -163,6 +164,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    create_channel: Option<create_channel::CreateChannel>,
     guild_menu: bool,
     thread_browser: Option<threads::ThreadBrowser>,
     new_thread: Option<threads::NewThread>,
@@ -274,6 +276,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            create_channel: None,
             guild_menu: false,
             thread_browser: None,
             new_thread: None,
@@ -1183,6 +1186,7 @@ impl Root {
                 .map(|browser| browser.search.clone()),
         );
         list.extend(self.gifs.as_ref().map(|gifs| gifs.search.clone()));
+        list.extend(self.create_channel.as_ref().map(|form| form.name.clone()));
         list.push(self.active_editor());
         list
     }
@@ -3922,6 +3926,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.create_channel_modal(cx))
             .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))
             .children(self.inbox_popout(window, cx))

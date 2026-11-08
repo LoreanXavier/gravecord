@@ -960,10 +960,24 @@ impl Stores {
                     self.relationships.remove(&user);
                 }
             }
-            "CHANNEL_CREATE" => self.add_private_channel(data),
+            "CHANNEL_CREATE" | "CHANNEL_UPDATE" => match id(&data["guild_id"]) {
+                Some(guild) => {
+                    if let (Some(channel), Some(guild)) = (
+                        Channel::from_value(data),
+                        self.guilds.iter_mut().find(|known| known.id == guild),
+                    ) {
+                        guild.channels.retain(|known| known.id != channel.id);
+                        guild.channels.push(channel);
+                    }
+                }
+                None => self.add_private_channel(data),
+            },
             "CHANNEL_DELETE" => {
                 if let Some(channel) = id(&data["id"]) {
                     self.private_channels.retain(|known| known.id != channel);
+                    for guild in &mut self.guilds {
+                        guild.channels.retain(|known| known.id != channel);
+                    }
                 }
             }
             "MESSAGE_UPDATE" => self.update_message(data),
@@ -1465,6 +1479,20 @@ mod tests {
             &json!({"id": "40", "type": 1, "recipients": [{"id": "30", "username": "someone"}]}),
         );
         assert_eq!(stores.private_channels[0].recipients, vec![30]);
+        stores.dispatch(
+            "GUILD_CREATE",
+            &json!({"id": "1", "name": "g", "channels": []}),
+        );
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "50", "guild_id": "1", "type": 0, "name": "new-channel", "position": 3}),
+        );
+        assert_eq!(stores.guilds[0].channels.len(), 1);
+        stores.dispatch(
+            "CHANNEL_DELETE",
+            &json!({"id": "50", "guild_id": "1", "type": 0}),
+        );
+        assert!(stores.guilds[0].channels.is_empty());
         stores.dispatch("CHANNEL_DELETE", &json!({"id": "40", "type": 1}));
         assert!(stores.private_channels.is_empty());
     }

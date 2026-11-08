@@ -467,9 +467,11 @@ impl Root {
             modal::Spec {
                 id: "group-dm-modal",
                 title: "New Message".into(),
-                subtitle: div()
-                    .child(format!("Group DMs can have up to {GROUP_LIMIT} members."))
-                    .into_any_element(),
+                subtitle: Some(
+                    div()
+                        .child(format!("Group DMs can have up to {GROUP_LIMIT} members."))
+                        .into_any_element(),
+                ),
                 body: Some(body),
                 buttons: [
                     modal::button(
