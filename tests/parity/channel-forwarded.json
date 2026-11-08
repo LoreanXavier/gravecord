@@ -1,0 +1,14 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "rail": { "class": "wrapper_5dqHTG" },
+  "sidebar": { "class": "sidebarList_pog62O" },
+  "guild-header": { "class": "header_XH4OpX" },
+  "channel-selected": { "class": "link_TNyK-N", "tag": "A" },
+  "user-panel": { "class": "panels_pog62O" },
+  "chat": { "class": "chat_z_gUBg" },
+  "chat-header": { "class": "title_z_gUBg" },
+  "search": { "class": "searchBar_i16Ad0" },
+  "messages": { "class": "messagesWrapper_8AE1Qq" },
+  "composer": { "class": "channelTextArea_z_gUBg" },
+  "composer-text": { "class": "textArea_2x8-Qn" }
+}

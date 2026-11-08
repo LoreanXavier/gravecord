@@ -2223,6 +2223,107 @@ impl Root {
     }
 
     /// `container_YUQhib`: pictures, files and embeds in one grid, 2px above and below, 4px between them.
+    /// A forward (`container_4dy_KE`): a 4px quote bar, "Forwarded" in italic beside its arrow, the original's
+    /// content and files, and a footer naming where it came from, which jumps there.
+    fn forwarded_block(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let forwarded = message.forwarded.as_ref()?;
+        // The copy renders as a message of its own so content, files and embeds look the same.
+        let copy = Message {
+            content: forwarded.content.clone(),
+            attachments: forwarded.attachments.clone(),
+            embeds: forwarded.embeds.clone(),
+            reactions: Vec::new(),
+            edited: false,
+            forwarded: None,
+            ..message.clone()
+        };
+        let source = forwarded
+            .channel_id
+            .and_then(|channel| {
+                self.stores
+                    .guilds
+                    .iter()
+                    .flat_map(|guild| &guild.channels)
+                    .find(|known| known.id == channel)
+            })
+            .map(|channel| format!("#{}", channel.name));
+        // Only a guild channel this client knows gets the footer; a DM source shows none.
+        let time = header_time(forwarded.local_time(), chrono::Local::now());
+        let footer = source.map(|name| format!("{name}  \u{2022}  {time}"));
+        let (guild, channel) = (forwarded.guild_id, forwarded.channel_id);
+        Some(
+            div()
+                .py(px(2.))
+                .flex()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(4.))
+                        .rounded(px(2.))
+                        .bg(color("--border-subtle")),
+                )
+                .child(
+                    div()
+                        .pl(px(12.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .mt(px(2.))
+                                .h(px(18.))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(icon("forwarded_icon", 16., "--text-muted"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(600.))
+                                        .italic()
+                                        .text_color(color("--text-muted"))
+                                        .child("Forwarded"),
+                                ),
+                        )
+                        .when(!copy.content.is_empty(), |this| {
+                            this.child(self.content(&copy))
+                        })
+                        .children(self.accessories(&copy))
+                        .children(footer.map(|footer| {
+                            div()
+                                .id(SharedString::from(format!(
+                                    "forwarded-footer-{}",
+                                    message.id
+                                )))
+                                .mt(px(4.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    match (guild, channel) {
+                                        (Some(guild), Some(channel)) => {
+                                            this.select(guild, Some(channel))
+                                        }
+                                        (None, Some(channel)) => this.select_home(Some(channel)),
+                                        _ => {}
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(footer)
+                                .child(icon("forwarded_chevron", 12., "--text-muted"))
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn accessories(&self, message: &Message) -> Option<AnyElement> {
         let parts: Vec<AnyElement> = [
             self.attachments(message),
@@ -2444,6 +2545,7 @@ impl Root {
                     Some(editor) => self.edit_box(editor).into_any_element(),
                     None => div()
                         .child(self.content(message))
+                        .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message))
                         .children(self.reactions(message, cx))
                         .into_any_element(),

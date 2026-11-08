@@ -92,6 +92,7 @@ mod tests {
             mention_everyone: false,
             blocked: false,
             ignored: false,
+            forwarded: None,
         }
     }
 

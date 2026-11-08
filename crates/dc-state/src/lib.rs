@@ -473,6 +473,60 @@ pub struct Message {
     pub mention_everyone: bool,
     pub blocked: bool,
     pub ignored: bool,
+    /// A forwarded message's copy (`message_snapshots[0].message`) and where it came from.
+    pub forwarded: Option<Box<Forwarded>>,
+}
+
+/// What a forward carries: the original's content, files and embeds, and its `message_reference`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Forwarded {
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
+    pub attachments: Vec<Attachment>,
+    pub embeds: Vec<Embed>,
+    pub guild_id: Option<Id>,
+    pub channel_id: Option<Id>,
+    pub message_id: Option<Id>,
+}
+
+impl Forwarded {
+    fn from_value(message: &Value) -> Option<Self> {
+        // Only FORWARD references (`type: 1`) carry snapshots.
+        if message["message_reference"]["type"].as_u64() != Some(1) {
+            return None;
+        }
+        let snapshot = &message["message_snapshots"][0]["message"];
+        if !snapshot.is_object() {
+            return None;
+        }
+        Some(Self {
+            content: text(&snapshot["content"]).unwrap_or_default(),
+            timestamp: snapshot["timestamp"]
+                .as_str()
+                .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+                .map(|time| time.with_timezone(&Utc))
+                .unwrap_or_default(),
+            attachments: snapshot["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Attachment::from_value)
+                .collect(),
+            embeds: snapshot["embeds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(Embed::from_value)
+                .collect(),
+            guild_id: id(&message["message_reference"]["guild_id"]),
+            channel_id: id(&message["message_reference"]["channel_id"]),
+            message_id: id(&message["message_reference"]["message_id"]),
+        })
+    }
+
+    pub fn local_time(&self) -> DateTime<Local> {
+        self.timestamp.with_timezone(&Local)
+    }
 }
 
 impl Message {
@@ -514,6 +568,7 @@ impl Message {
             mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
             blocked: false,
             ignored: false,
+            forwarded: Forwarded::from_value(value).map(Box::new),
         })
     }
 
