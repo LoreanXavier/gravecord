@@ -75,6 +75,29 @@ impl Root {
         let _ = self.requests.send(Request::GuildSettings { body });
     }
 
+    /// Collapses or opens a category (`collapsed` in its channel override).
+    pub(super) fn toggle_category(&mut self, guild: Id, category: Id) {
+        let collapsed = self
+            .stores
+            .guild_settings
+            .channel(guild, category)
+            .collapsed;
+        self.stores
+            .guild_settings
+            .guilds
+            .entry(guild)
+            .or_default()
+            .channels
+            .entry(category)
+            .or_insert(dc_state::guild_settings::Override {
+                message_notifications: INHERIT,
+                ..Default::default()
+            })
+            .collapsed = !collapsed;
+        let body = json!({"guilds": {guild.to_string(): {"channel_overrides": {category.to_string(): {"collapsed": !collapsed}}}}});
+        let _ = self.requests.send(Request::GuildSettings { body });
+    }
+
     pub(super) fn channel_muted_now(&self) -> bool {
         self.channel_settings_target()
             .is_some_and(|(guild, channel, _)| {

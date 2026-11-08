@@ -1231,12 +1231,27 @@ impl Root {
 
     fn channel_row(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
         if channel.kind == ChannelKind::Category {
+            let collapsed = self.guild.is_some_and(|guild| {
+                self.stores
+                    .guild_settings
+                    .channel(guild, channel.id)
+                    .collapsed
+            });
+            let (guild, category) = (self.guild, channel.id);
             return div()
+                .id(SharedString::from(format!("category-{}", channel.id)))
                 .flex_none()
                 .pt(px(16.))
                 .h(px(40.))
                 .pl(px(16.))
                 .pr(px(17.))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(guild) = guild {
+                        this.toggle_category(guild, category);
+                    }
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .h(px(24.))
@@ -1248,7 +1263,18 @@ impl Root {
                         .font_weight(FontWeight(500.))
                         .text_color(color("--channels-default"))
                         .child(channel.name.clone())
-                        .child(icon("category_chevron", 12., "--channels-default"))
+                        .child(
+                            svg()
+                                .path("icons/category_chevron.svg")
+                                .size(px(12.))
+                                .flex_none()
+                                .text_color(color("--channels-default"))
+                                .when(collapsed, |this| {
+                                    this.with_transformation(gpui::Transformation::rotate(
+                                        gpui::radians(-std::f32::consts::FRAC_PI_2),
+                                    ))
+                                }),
+                        )
                         .child(div().flex_1())
                         .child(icon("plus_small", 16., "--channels-default")),
                 )
@@ -1417,9 +1443,27 @@ impl Root {
         };
         let rows: Vec<AnyElement> = guild
             .map(|guild| {
+                let collapsed = |category: Option<Id>| {
+                    category.is_some_and(|category| {
+                        self.stores
+                            .guild_settings
+                            .channel(guild.id, category)
+                            .collapsed
+                    })
+                };
                 guild
                     .sidebar_rows()
                     .into_iter()
+                    // A collapsed category keeps only the open channel and the call this client is in.
+                    .filter(|row| {
+                        row.kind == ChannelKind::Category
+                            || !collapsed(row.parent_id)
+                            || self.channel == Some(row.id)
+                            || self
+                                .call
+                                .as_ref()
+                                .is_some_and(|call| call.channel == row.id)
+                    })
                     .flat_map(|row| {
                         let mut rows = vec![self.channel_row(row, cx)];
                         if row.kind == ChannelKind::Voice {
