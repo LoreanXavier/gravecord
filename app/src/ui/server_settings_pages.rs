@@ -162,6 +162,7 @@ impl Root {
                 }
             }
             Page::Emoji => self.request_emojis(guild),
+            Page::Soundboard => self.request_sounds(guild),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
                 let _ = self.requests.send(Request::Fetch {

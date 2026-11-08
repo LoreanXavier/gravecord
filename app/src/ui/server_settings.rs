@@ -265,6 +265,8 @@ pub(crate) struct ServerSettings {
     pub(super) template: Option<super::server_template::TemplateState>,
     /// Integrations' webhook sub-page.
     pub(super) webhooks: super::server_webhooks::WebhooksState,
+    /// "Upload a Sound" while it is open.
+    pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     _events: Vec<Subscription>,
 }
 
@@ -392,6 +394,7 @@ impl Root {
             roles: None,
             template: None,
             webhooks: Default::default(),
+            sound_dialog: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -1084,7 +1087,7 @@ impl Root {
             Page::BoostPerks => Self::server_page_title("Boost Perks"),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => Self::server_page_title("Stickers"),
-            Page::Soundboard => Self::server_page_title("Soundboard"),
+            Page::Soundboard => self.server_sounds_page(open.guild, cx),
             Page::Members => Self::server_page_title("Server Members"),
             Page::Roles => self.server_roles_page(open.guild, cx),
             Page::Invites => self.server_invites_page(open.guild, cx),

@@ -78,6 +78,7 @@ mod server_role_editor;
 mod server_roles;
 mod server_settings;
 mod server_settings_pages;
+mod server_sounds;
 mod server_template;
 mod server_webhooks;
 mod settings;
@@ -505,6 +506,11 @@ impl Root {
                 if key.starts_with(server_settings_pages::WEBHOOKS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.webhooks_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_sounds::SOUNDS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.sounds_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_template::TEMPLATES_PREFIX) {
@@ -1385,6 +1391,12 @@ impl Root {
             list.push(settings.description.clone());
             list.extend(settings.traits.iter().cloned());
             list.push(settings.games_query.clone());
+            list.extend(
+                settings
+                    .sound_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.name.clone()),
+            );
             list.extend(
                 settings
                     .webhooks
@@ -4070,6 +4082,10 @@ impl Render for Root {
                     {
                         open.delete_name = None;
                     } else if let Some(open) = this.server_settings.as_mut()
+                        && open.sound_dialog.is_some()
+                    {
+                        open.sound_dialog = None;
+                    } else if let Some(open) = this.server_settings.as_mut()
                         && open.games_open
                     {
                         open.games_open = false;
@@ -4238,6 +4254,7 @@ impl Render for Root {
             .children(self.role_delete_modal(cx))
             .children(self.role_add_members_modal(cx))
             .children(self.template_delete_modal(cx))
+            .children(self.sound_dialog_modal(cx))
             .children(self.webhook_channel_select(cx))
             .children(self.webhook_delete_modal(cx))
             .children(self.channel_settings_select(window, cx))
