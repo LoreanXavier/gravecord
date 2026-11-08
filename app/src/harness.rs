@@ -195,6 +195,19 @@ pub async fn run(
                     cx.update(|cx| key(cx, window, parsed));
                 }
             }
+            // Lets a key go, for push to talk.
+            ["keyup", stroke] => {
+                let stroke: &'static str = Box::leak(stroke.to_string().into_boxed_str());
+                if let Ok(parsed) = Keystroke::parse(stroke) {
+                    cx.update(|cx| {
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: parsed }),
+                        )
+                    });
+                }
+            }
             ["type", ..] => {
                 let text = step.trim_start_matches("type").trim_start();
                 with_composer(cx, window, &root, |composer, window, cx| {

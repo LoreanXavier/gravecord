@@ -312,6 +312,8 @@ pub struct Root {
     settings: Option<settings::Open>,
     /// Settings the user changed in the settings pages, by key.
     setting_choices: HashMap<&'static str, settings::Choice>,
+    /// Voice & Video's stored choices, microphone preview, Mic Test, keybind recorder and slider drags.
+    voice: settings::VoiceState,
     /// Bodies of `Request::Fetch`, by key.
     fetched: HashMap<String, serde_json::Value>,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
@@ -321,6 +323,8 @@ pub struct Root {
 impl Root {
     pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
         audio_menu::restore_audio_prefs();
+        let voice = settings::VoiceState::restore();
+        let setting_choices = voice.choices();
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, _, event, _| match event {
             EditorEvent::Submit(content) => {
@@ -432,7 +436,8 @@ impl Root {
             revealed: HashSet::new(),
             weak: cx.weak_entity(),
             settings: None,
-            setting_choices: settings::restored_voice_choices(),
+            setting_choices,
+            voice,
             fetched: HashMap::new(),
             tip_anchors: Rc::default(),
             ready: false,
@@ -1245,7 +1250,7 @@ impl Root {
                 Some(_) => "connecting",
                 None => "none",
             },
-        )
+        ) + &format!(" voice_settings=[{}]", self.voice.describe())
     }
 
     fn begin_edit(&mut self, message: Id, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4131,6 +4136,7 @@ fn avatar_source(user: &User) -> (String, String) {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.onboarding_note_focus(window, cx);
+        self.sync_voice_page(cx);
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
             .current_dm()
@@ -4166,8 +4172,21 @@ impl Render for Root {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
+            // Push to talk and the keybind recorder see every key in the window first.
+            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                this.voice_key_up(&event.keystroke, cx);
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.voice_modifiers(event.modifiers, cx);
+                },
+            ))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
+                if !event.is_held && this.voice_key_down(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 // `QUICKSWITCHER_SHOW`: Ctrl+K anywhere.
                 if keys.key == "k"
                     && keys.modifiers.control

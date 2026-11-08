@@ -80,6 +80,17 @@ pub(super) struct Active {
     anchor: Bounds<Pixels>,
 }
 
+impl Active {
+    /// A tooltip placed by its owner rather than by hover, like a slider's value bubble.
+    pub fn new(key: SharedString, tip: Tip, anchor: Bounds<Pixels>) -> Self {
+        Self { key, tip, anchor }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
 /// `{tension:2400,friction:52}` with react-spring's default mass, clamped because opacity cannot pass 1.
 fn spring(delta: f32) -> f32 {
     if delta >= 1. {

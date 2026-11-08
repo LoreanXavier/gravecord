@@ -3,6 +3,7 @@
 //! radio group `group_oJuRbG`, select `selectField_vWC4bk`, slider `slider_OnqacX`, row `baseControlItem_FiiQ6I`.
 
 use super::model::{Choice, Node, RadioOption, Runs};
+use super::voice;
 use super::{Root, SANS, button, category_header, color, divider, info_notice, kerning, mask_icon};
 use crate::parity::Parity;
 use gpui::{
@@ -95,7 +96,7 @@ pub(super) fn label_track(available: f32, label: (Pixels, Pixels), control: f32)
     label_min + grow + free / 2.
 }
 
-fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
+pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
     let mut text = String::new();
     let mut links = Vec::new();
     for (part, link) in runs {
@@ -161,6 +162,7 @@ fn label_block_capped(
 fn switch(
     id: SharedString,
     on: bool,
+    disabled: bool,
     cx: &mut Context<Root>,
     key: &'static str,
 ) -> impl IntoElement {
@@ -178,12 +180,16 @@ fn switch(
         } else {
             color("--input-background-default")
         })
-        .cursor_pointer()
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.setting_choices.insert(key, Choice::On(!on));
-            this.voice_setting_changed(key);
-            cx.notify();
-        }))
+        // `disabled_9AraPt`: half opacity, no clicks.
+        .when(disabled, |this| this.opacity(0.5))
+        .when(!disabled, |this| {
+            this.cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.setting_choices.insert(key, Choice::On(!on));
+                    this.voice_setting_changed(key);
+                    cx.notify();
+                }))
+        })
         .child(
             div()
                 .absolute()
@@ -291,13 +297,8 @@ const NOISE_DESCRIPTION: Runs = &[
     (".", false),
 ];
 
-/// Where the three microphone choices are kept in storage.json, beside the user panel's devices and volumes.
-const NOISE_STORED: &str = "audio.noise_suppression";
-const ECHO_STORED: &str = "audio.echo_cancellation";
-const ROOM_ECHO_STORED: &str = "audio.room_echo";
-
 /// The select's option index as the processors take it: Krisp, Standard, None.
-fn suppression(index: usize) -> dc_voice::Suppression {
+pub(super) fn suppression(index: usize) -> dc_voice::Suppression {
     match index {
         0 => dc_voice::Suppression::DeepFilterNet,
         1 => dc_voice::Suppression::Standard,
@@ -305,31 +306,12 @@ fn suppression(index: usize) -> dc_voice::Suppression {
     }
 }
 
-/// At start: the stored microphone choices, given to the processors and returned as the settings page's choices.
-pub(in crate::ui) fn restored_voice_choices() -> std::collections::HashMap<&'static str, Choice> {
-    let processing = &dc_voice::prefs().processing;
-    let mut choices = std::collections::HashMap::new();
-    if let Some(index) = crate::storage::get(NOISE_STORED).and_then(|value| value.as_u64()) {
-        let index = index as usize;
-        processing.set_suppression(suppression(index));
-        choices.insert("voice_noise_suppression_setting", Choice::Index(index));
-    }
-    if let Some(on) = crate::storage::get(ECHO_STORED).and_then(|value| value.as_bool()) {
-        processing.set_echo_cancellation(on);
-        choices.insert("voice_echo_cancellation_setting", Choice::On(on));
-    }
-    if let Some(on) = crate::storage::get(ROOM_ECHO_STORED).and_then(|value| value.as_bool()) {
-        processing.set_room_echo(on);
-        choices.insert(ROOM_ECHO_KEY, Choice::On(on));
-    }
-    choices
-}
-
 /// gravecord's own switch under Echo Cancellation, not in the official client (`dc_voice`'s `dereverb.rs`,
 /// DECISIONS.md). The generated pages stay as captured; it is drawn after the row it follows.
 pub(in crate::ui) const ROOM_ECHO_KEY: &str = "gravecord_reduce_room_echo";
+#[cfg(test)]
 const ROOM_ECHO_AFTER: &str = "voice_echo_cancellation_setting";
-static ROOM_ECHO: Node = Node::Switch {
+pub(super) static ROOM_ECHO: Node = Node::Switch {
     key: ROOM_ECHO_KEY,
     label: "Reduce Room Echo",
     badge: false,
@@ -541,30 +523,6 @@ impl Root {
             .into_any_element()
     }
 
-    /// The Voice & Video choices the microphone processing follows (`setNoiseCancellation`/`setNoiseSuppression`
-    /// from the select, `setEchoCancellation`, and gravecord's Reduce Room Echo).
-    pub(in crate::ui) fn voice_setting_changed(&self, key: &'static str) {
-        let processing = &dc_voice::prefs().processing;
-        match key {
-            "voice_noise_suppression_setting" => {
-                let index = self.choice_index(key, 0);
-                processing.set_suppression(suppression(index));
-                crate::storage::set(NOISE_STORED, serde_json::json!(index));
-            }
-            "voice_echo_cancellation_setting" => {
-                let on = self.choice_on(key, true);
-                processing.set_echo_cancellation(on);
-                crate::storage::set(ECHO_STORED, serde_json::json!(on));
-            }
-            ROOM_ECHO_KEY => {
-                let on = self.choice_on(key, false);
-                processing.set_room_echo(on);
-                crate::storage::set(ROOM_ECHO_STORED, serde_json::json!(on));
-            }
-            _ => {}
-        }
-    }
-
     fn choice_on(&self, key: &'static str, captured: bool) -> bool {
         match self.setting_choices.get(key) {
             Some(Choice::On(on)) => *on,
@@ -600,20 +558,25 @@ impl Root {
             } => {
                 let column = if *split { (width - 16.) / 2. } else { width };
                 // Each row keeps its official key as its id, the anchor the subnav and search scroll to.
-                let rows: Vec<AnyElement> = children
-                    .iter()
-                    .flat_map(|child| {
-                        let after = (child.key() == ROOM_ECHO_AFTER).then_some(&ROOM_ECHO);
-                        std::iter::once(child).chain(after)
-                    })
+                // Rows the generated page lacks go after the row they follow; rows whose predicate fails are left out.
+                let mut shown: Vec<&'static Node> = Vec::new();
+                for child in children.iter() {
+                    shown.push(child);
+                    shown.extend(self.voice_rows_after(child.key()));
+                }
+                shown.retain(|child| self.voice_row_shown(child.key()));
+                let rows: Vec<AnyElement> = shown
+                    .into_iter()
                     .map(|child| {
+                        // The sensitivity row is drawn whole now; its captured height no longer holds its place.
+                        let padded = (child.key() != voice::SENSITIVITY)
+                            .then(|| super::pages::padded(child.key()))
+                            .flatten();
                         div()
                             .parity(child.key())
                             .id(SharedString::from(child.key()))
                             .when(*split, |this| this.flex_1().min_w(px(0.)))
-                            .when_some(super::pages::padded(child.key()), |this, height| {
-                                this.min_h(px(height))
-                            })
+                            .when_some(padded, |this, height| this.min_h(px(height)))
                             .flex()
                             .flex_col()
                             .child(self.render_node(child, column, window, cx))
@@ -658,6 +621,9 @@ impl Root {
                 .h(px(1.))
                 .bg(color("--border-subtle"))
                 .into_any_element(),
+            Node::Switch { key, .. } if *key == voice::SENSITIVITY => {
+                self.sensitivity_row(width, window, cx)
+            }
             Node::Switch {
                 key,
                 label,
@@ -665,32 +631,29 @@ impl Root {
                 description,
                 on,
             } => {
-                let extent = label_extent(window, label, *badge, description);
-                let label_width = label_track(width - COLUMN_GAP, extent, SWITCH_WIDTH);
                 let on = self.choice_on(key, *on);
+                let disabled = self.voice_disabled(key);
                 div()
                     .min_h(px(48.))
                     .py(px(8.))
-                    .flex()
-                    .when(description.is_empty(), |this| this.items_center())
-                    .justify_between()
-                    .gap(px(COLUMN_GAP))
-                    .child(
-                        label_block_capped(
-                            label,
-                            *badge,
-                            description,
-                            Some(description_max_width(window)),
-                        )
-                        .w(px(label_width)),
-                    )
-                    .child(switch(
-                        SharedString::from(format!("switch-{key}")),
-                        on,
-                        cx,
+                    .child(self.switch_row(
                         key,
+                        label,
+                        *badge,
+                        description,
+                        on,
+                        disabled,
+                        width,
+                        window,
+                        cx,
                     ))
+                    // The row keeps its content at the top of its 48px (`baseSettingWrapper`), not centred in it.
                     .into_any_element()
+            }
+            Node::Slider { key, label, .. }
+                if *key == voice::INPUT_VOLUME || *key == voice::OUTPUT_VOLUME =>
+            {
+                self.slider_row(key, label, width, cx)
             }
             Node::Slider {
                 label,
@@ -873,7 +836,18 @@ impl Root {
                         this.setting_choices.insert(key, Choice::On(!open));
                         cx.notify();
                     }))
-                    .child(label_block(label, false, description).flex_1())
+                    .child(if *key == voice::ADVANCED_ACCORDION {
+                        // `useCollapsedSubtitle`: the titles of the rows it holds now.
+                        label_block(label, false, &[]).flex_1().child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child(self.voice_accordion_subtitle(children)),
+                        )
+                    } else {
+                        label_block(label, false, description).flex_1()
+                    })
                     .child(
                         div()
                             .flex_none()
@@ -883,11 +857,13 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
+                            // `iconClosed_MdUQoo` turns the up chevron over (`rotateX(180deg)`): closed points down.
+                            // The file named `settings_accordion_open` holds the turned one.
                             .child(mask_icon(
                                 if open {
-                                    "settings_accordion_open"
-                                } else {
                                     "settings_accordion_closed"
+                                } else {
+                                    "settings_accordion_open"
                                 },
                                 24.,
                                 "--text-default",
@@ -896,6 +872,7 @@ impl Root {
                 let rows: Vec<AnyElement> = if open {
                     children
                         .iter()
+                        .filter(|child| self.voice_row_shown(child.key()))
                         .map(|child| self.render_node(child, width, window, cx))
                         .collect()
                 } else {
@@ -917,9 +894,52 @@ impl Root {
                 "appearance_default_themes" => self.default_themes(cx),
                 "appearance_custom_themes_upsell" => self.custom_theme_card(),
                 "appearance_client_themes" => self.color_themes(cx),
-                _ => div().h(px(*height)).into_any_element(),
+                _ => self
+                    .voice_custom(key, width, window, cx)
+                    .unwrap_or_else(|| div().h(px(*height)).into_any_element()),
             },
         }
+    }
+
+    /// A switch row (`container_VhFsFg`): the label and description in their grid track, the switch at the end.
+    /// Disabled, the label and switch are at half opacity and the switch takes no clicks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn switch_row(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        badge: bool,
+        description: Runs,
+        on: bool,
+        disabled: bool,
+        width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let extent = label_extent(window, label, badge, description);
+        let label_width = label_track(width - COLUMN_GAP, extent, SWITCH_WIDTH);
+        div()
+            .flex()
+            .when(description.is_empty(), |this| this.items_center())
+            .justify_between()
+            .gap(px(COLUMN_GAP))
+            .child(
+                label_block_capped(
+                    label,
+                    badge,
+                    description,
+                    Some(description_max_width(window)),
+                )
+                .w(px(label_width))
+                .when(disabled, |this| this.opacity(0.5)),
+            )
+            .child(switch(
+                SharedString::from(format!("switch-{key}")),
+                on,
+                disabled,
+                cx,
+                key,
+            ))
     }
 
     fn radio_option(
@@ -937,6 +957,7 @@ impl Root {
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.setting_choices.insert(key, Choice::Index(index));
+                this.voice_setting_changed(key);
                 cx.notify();
             }))
             .child(radio_dot(selected))

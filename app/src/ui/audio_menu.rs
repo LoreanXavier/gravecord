@@ -17,9 +17,8 @@ const INPUT_DEVICE: &str = "audio.input_device";
 const OUTPUT_DEVICE: &str = "audio.output_device";
 const INPUT_VOLUME: &str = "audio.input_volume";
 const OUTPUT_VOLUME: &str = "audio.output_volume";
+use super::settings::Profile;
 const INPUT_PROFILE: &str = "audio.input_profile";
-/// `ProfileType`: the three input profiles in the menu's order.
-const PROFILES: [&str; 3] = ["Voice Isolation", "Studio", "Custom"];
 const MENU_WIDTH: f32 = 222.;
 const SLIDER_WIDTH: f32 = 188.;
 
@@ -77,6 +76,21 @@ pub(super) fn restore_audio_prefs() {
     }
 }
 
+/// A volume from Voice & Video's sliders, as a linear gain, to the engine and storage.json.
+pub(super) fn store_gain(side: Side, gain: f32) {
+    let prefs = dc_voice::prefs();
+    match side {
+        Side::Input => {
+            prefs.set_input_gain(gain);
+            storage::set(INPUT_VOLUME, json!(prefs.input_gain()));
+        }
+        Side::Output => {
+            prefs.set_output_gain(gain);
+            storage::set(OUTPUT_VOLUME, json!(prefs.output_gain()));
+        }
+    }
+}
+
 impl Root {
     pub(super) fn toggle_audio_menu(&mut self, side: Side, cx: &mut Context<Self>) {
         let anchor = self
@@ -104,7 +118,12 @@ impl Root {
         cx.notify();
     }
 
-    fn set_device(&mut self, side: Side, device: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn set_device(
+        &mut self,
+        side: Side,
+        device: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let prefs = dc_voice::prefs();
         let key = match side {
             Side::Input => {
@@ -306,9 +325,16 @@ impl Root {
                     .unwrap_or_else(|| "Custom".to_owned());
                 (
                     52.,
-                    PROFILES
+                    Profile::ALL
                         .iter()
-                        .map(|profile| ((*profile).to_owned(), None, None, current == *profile))
+                        .map(|profile| {
+                            (
+                                profile.label().to_owned(),
+                                None,
+                                None,
+                                current == profile.label(),
+                            )
+                        })
                         .collect(),
                 )
             }
@@ -334,7 +360,8 @@ impl Root {
                         if device_row {
                             this.set_device(side, device.clone(), cx);
                         } else {
-                            storage::set(INPUT_PROFILE, json!(profile.clone()));
+                            // `setActiveInputProfile`: the same store as Voice & Video's radios.
+                            this.set_input_profile(Profile::from_label(&profile));
                         }
                         this.audio_menu = None;
                         cx.notify();
