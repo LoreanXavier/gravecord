@@ -31,6 +31,7 @@ use tokio::sync::mpsc::UnboundedSender;
 mod actions;
 mod apps;
 mod audio_menu;
+mod audit_spec;
 mod badge_paths;
 mod blocked;
 mod channel_settings;
@@ -73,6 +74,7 @@ mod report;
 mod saved;
 mod search;
 mod server_access;
+mod server_audit;
 mod server_emoji;
 mod server_engagement;
 mod server_games;
@@ -512,6 +514,13 @@ impl Root {
                     self.webhooks_fetched(&key, cx);
                     return;
                 }
+                if key.starts_with(server_audit::AUDIT_PREFIX)
+                    || key.starts_with("guild-audit-next:")
+                {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.audit_fetched(&key, cx);
+                    return;
+                }
                 if key.starts_with(server_access::ACCESS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.access_fetched(&key, cx);
@@ -914,7 +923,9 @@ impl Root {
                     .text_color(color("--channels-default"))
                     .child(format!("{} \u{2014} {count}", group_label(id)))
                     .into_any_element(),
-                MemberRow::Member { user, nick, status } => {
+                MemberRow::Member {
+                    user, nick, status, ..
+                } => {
                     let avatar = self.images.get(&avatar_source(user).0).cloned();
                     let name = nick
                         .clone()
@@ -4305,6 +4316,7 @@ impl Render for Root {
             .children(self.sound_dialog_modal(cx))
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
+            .children(self.audit_select_layer(cx))
             .children(self.access_menu_layer(cx))
             .children(
                 self.server_settings

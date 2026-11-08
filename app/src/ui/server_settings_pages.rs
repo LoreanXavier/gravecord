@@ -167,6 +167,7 @@ impl Root {
             Page::Soundboard => self.request_sounds(guild),
             Page::Stickers => self.request_stickers(guild),
             Page::Access => self.request_access(guild, cx),
+            Page::AuditLog => self.request_audit(guild),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
                 let _ = self.requests.send(Request::Fetch {

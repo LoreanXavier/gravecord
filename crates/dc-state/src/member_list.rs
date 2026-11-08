@@ -4,6 +4,8 @@ use crate::{Id, User};
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
+// Rows live in one list and are read by reference, so the member variant stays inline.
+#[allow(clippy::large_enum_variant)]
 pub enum Row {
     Group {
         id: String,
@@ -12,6 +14,8 @@ pub enum Row {
     Member {
         user: User,
         nick: Option<String>,
+        /// Their role ids; the audit log's user filter reads them.
+        roles: Vec<Id>,
         status: String,
     },
     /// A slot inside the list that the server has not sent yet.
@@ -48,6 +52,12 @@ impl Row {
                 bot: false,
             },
             nick: member["nick"].as_str().map(str::to_owned),
+            roles: member["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(id_of)
+                .collect(),
             status: member["presence"]["status"]
                 .as_str()
                 .unwrap_or("offline")

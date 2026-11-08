@@ -269,6 +269,7 @@ pub(crate) struct ServerSettings {
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
+    pub(super) audit: super::server_audit::AuditState,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -419,6 +420,7 @@ impl Root {
             sound_dialog: None,
             sticker_dialog: None,
             access: None,
+            audit: Default::default(),
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -1128,7 +1130,7 @@ impl Root {
             Page::Integrations => self.server_integrations_page(open.guild, cx),
             Page::AppDirectory => Self::server_page_title("App Directory"),
             Page::SafetySetup => Self::server_page_title("Safety Setup"),
-            Page::AuditLog => Self::server_page_title("Audit Log"),
+            Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
             Page::Community => Self::server_page_title("Enable Community"),
@@ -1141,7 +1143,7 @@ impl Root {
             _ => 740.,
         };
         // Custom pages (Invites) put ESC 32px higher: their scroller starts at the window's top.
-        let close_top = if matches!(page, Page::Invites | Page::Members) {
+        let close_top = if matches!(page, Page::Invites | Page::Members | Page::AuditLog) {
             0.
         } else {
             32.
