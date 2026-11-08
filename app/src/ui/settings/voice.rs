@@ -26,6 +26,9 @@ pub(super) const NOISE: &str = "voice_noise_suppression_setting";
 pub(super) const ECHO: &str = "voice_echo_cancellation_setting";
 /// `getArticleURL(VOICE_VIDEO_TROUBLESHOOTING)` with the page's own query (`oo` in module 158935).
 const TROUBLESHOOTING_GUIDE: &str = "https://support.discord.com/hc/en-us/articles/360045138471?utm_source=discord&utm_medium=blog&utm_campaign=2020-06_help-voice-video&utm_content=--t%3Apm";
+/// `getArticleURL(SOUNDBOARD)`: Soundboard Volume's and Entrance Sounds' links.
+pub(super) const SOUNDBOARD_GUIDE: &str =
+    "https://support.discord.com/hc/en-us/articles/12612888127767";
 /// `getArticleURL(NO_INPUT_DETECTED)`.
 const NO_INPUT_HELP: &str = "https://support.discord.com/hc/en-us/articles/214925018";
 
@@ -39,6 +42,8 @@ const INPUT_SELECT: &str = "voice_microphone_input_select";
 const OUTPUT_SELECT: &str = "voice_speakers_output_select";
 pub(super) const INPUT_VOLUME: &str = "voice_input_volume_setting";
 pub(super) const OUTPUT_VOLUME: &str = "voice_output_volume_setting";
+/// Soundboard Volume (`aU` in 158935): `soundboardSettings.volume`, 0 to 100, default 100.
+pub(super) const SOUNDBOARD_VOLUME: &str = "soundboard_volume_setting";
 const MIC_TEST: &str = "voice_microphone_test_setting";
 pub(super) const ADVANCED_ACCORDION: &str = "input_profile_voice_advanced_accordion";
 
@@ -55,6 +60,34 @@ const ADVANCED_STORED: &str = "audio.advanced_voice_activity";
 const DELAY_STORED: &str = "audio.push_to_talk_delay";
 const SHORTCUT_STORED: &str = "audio.push_to_talk_shortcut";
 const AGC_STORED: &str = "audio.automatic_gain_control";
+const SOUNDBOARD_VOLUME_STORED: &str = "audio.soundboard_volume";
+
+/// A stored soundboard volume as the setting reads it (`H()`: `volume ?? 100`), kept inside 0 to 100.
+fn soundboard_volume_from(stored: Option<&serde_json::Value>) -> f32 {
+    stored
+        .and_then(serde_json::Value::as_f64)
+        .map_or(100., |volume| (volume as f32).clamp(0., 100.))
+}
+
+/// The soundboard volume, 0 to 100 (default 100), as Soundboard Volume in Voice & Video keeps it. Sounds played from
+/// the soundboard scale by `volume / 100`.
+pub fn soundboard_volume() -> f32 {
+    soundboard_volume_from(storage::get(SOUNDBOARD_VOLUME_STORED).as_ref())
+}
+
+/// What the slider writes (`w` of 792251 over its 0 to 100 position): whole-percent steps on the volume curve.
+fn soundboard_volume_at(fraction: f32) -> f32 {
+    slider_to_volume((fraction * 100.).round())
+        .round()
+        .clamp(0., 100.)
+}
+
+fn store_soundboard_volume(fraction: f32) {
+    storage::set(
+        SOUNDBOARD_VOLUME_STORED,
+        json!(soundboard_volume_at(fraction)),
+    );
+}
 
 /// The rows module 158935 adds under Push to Talk while it is on (`ae`, `at`); the generated page has neither.
 static KEYBIND_ROW: Node = Node::Custom {
@@ -1264,27 +1297,56 @@ impl Root {
             MIC_TEST => self.mic_test_row(width, window, cx),
             KEYBIND => self.keybind_row(width, cx),
             RELEASE_DELAY => {
-                self.slider_row(RELEASE_DELAY, "Push to Talk Release Delay", width, cx)
+                self.slider_row(RELEASE_DELAY, "Push to Talk Release Delay", &[], width, cx)
             }
             _ => return None,
         })
     }
 
-    /// Microphone Volume, Speaker Volume, and the release delay: the generic slider (528689 `z`).
+    /// Microphone Volume, Speaker Volume, Soundboard Volume and the release delay: the generic slider (528689 `z`).
     pub(super) fn slider_row(
         &self,
         key: &'static str,
         label: &'static str,
+        description: Runs,
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let fraction = self.slider_fraction(key);
+        // The label block and the slider 8px under it (`labelContainer_VhFsFg`'s margin).
+        let head = if key == SOUNDBOARD_VOLUME {
+            // Its description ends in a link to the Soundboard article.
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(label_text(label))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-subtle"))
+                        .child(self.text_with_link(
+                            key,
+                            "Control how loud sounds are for you personally. ",
+                            "Learn more about Soundboard volume.",
+                            "",
+                            cx,
+                            |_, cx| cx.open_url(SOUNDBOARD_GUIDE),
+                        )),
+                )
+                .into_any_element()
+        } else if description.is_empty() {
+            label_text(label).into_any_element()
+        } else {
+            super::render::label_block(label, false, description).into_any_element()
+        };
         div()
             .min_h(px(48.))
             .py(px(8.))
             .flex()
             .flex_col()
-            .child(label_text(label).mb(px(8.)))
+            .child(div().mb(px(8.)).child(head))
             .child(self.slider(
                 key,
                 fraction,
@@ -1308,6 +1370,7 @@ impl Root {
             INPUT_VOLUME => volume_to_slider(prefs.input_gain() * 100.) / 100.,
             OUTPUT_VOLUME => volume_to_slider(prefs.output_gain() * 100.) / 200.,
             RELEASE_DELAY => self.voice.stored.delay / 2000.,
+            SOUNDBOARD_VOLUME => volume_to_slider(soundboard_volume()) / 100.,
             SENSITIVITY => (self.voice.stored.threshold + 100.) / 100.,
             extra::ATTENUATION => self.attenuation_fraction(),
             _ => 0.,
@@ -1321,6 +1384,7 @@ impl Root {
             INPUT_VOLUME => format!("{}%", to_fixed(fraction * 100., 0)),
             OUTPUT_VOLUME => format!("{}%", to_fixed((fraction * 200.).round(), 0)),
             RELEASE_DELAY => delay_bubble((fraction * 2000.).round()),
+            SOUNDBOARD_VOLUME => format!("{}%", to_fixed((fraction * 100.).round(), 0)),
             SENSITIVITY => sensitivity_bubble(fraction * 100.),
             // The default `formatValue`: the position as a percentage.
             extra::ATTENUATION => format!("{}%", to_fixed(fraction * 100., 0)),
@@ -2179,6 +2243,7 @@ fn store_slider_volume(key: &str, fraction: f32) {
         OUTPUT_VOLUME => {
             audio_menu::store_gain(Side::Output, slider_to_volume(fraction * 200.) / 100.)
         }
+        SOUNDBOARD_VOLUME => store_soundboard_volume(fraction),
         _ => {}
     }
 }
@@ -2207,6 +2272,42 @@ mod tests {
     use super::*;
 
     /// 754712 `e7` over the stored values: Custom shows them, the presets force theirs and keep the rest.
+    #[test]
+    fn the_soundboard_volume_reads_and_maps_like_the_setting() {
+        use serde_json::json;
+        // `H()`: the stored volume, 100 when none; kept in range.
+        assert_eq!(soundboard_volume_from(None), 100.);
+        assert_eq!(soundboard_volume_from(Some(&json!(37.))), 37.);
+        assert_eq!(soundboard_volume_from(Some(&json!(250))), 100.);
+        assert_eq!(soundboard_volume_from(Some(&json!(-4))), 0.);
+        assert_eq!(soundboard_volume_from(Some(&json!("loud"))), 100.);
+        // The slider's ends and the curve: position 50 is a volume of 2.8-th power of one half.
+        assert_eq!(soundboard_volume_at(0.), 0.);
+        assert_eq!(soundboard_volume_at(1.), 100.);
+        assert_eq!(soundboard_volume_at(0.5), (0.5f32.powf(2.8) * 100.).round());
+        // Position and volume round trip within a step.
+        for position in [40., 75., 100.] {
+            let volume = soundboard_volume_at(position / 100.);
+            assert!(
+                (volume_to_slider(volume) - position).abs() < 2.5,
+                "{position}"
+            );
+        }
+    }
+
+    /// What the slider stores reads back as the same volume (the file is JSON; the test leaves the owner's storage alone).
+    #[test]
+    fn the_soundboard_volume_survives_a_json_round_trip() {
+        for fraction in [0., 0.25, 0.5, 0.9, 1.] {
+            let written = json!(soundboard_volume_at(fraction));
+            let file: serde_json::Value = serde_json::from_str(&written.to_string()).unwrap();
+            assert_eq!(
+                soundboard_volume_from(Some(&file)),
+                soundboard_volume_at(fraction)
+            );
+        }
+    }
+
     #[test]
     fn presets_merge_over_the_stored_values() {
         let stored = Stored {

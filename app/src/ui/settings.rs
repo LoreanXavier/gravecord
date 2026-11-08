@@ -6,6 +6,7 @@ mod appearance;
 mod model;
 mod pages;
 mod render;
+mod soundboard;
 pub(crate) use render::radio_dot;
 mod swatches;
 mod voice;
@@ -22,6 +23,8 @@ use gpui::{
 };
 pub(super) use model::Choice;
 use model::{ButtonKind, Runs};
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -145,18 +148,25 @@ fn label_of(page: Page) -> &'static str {
 
 pub(super) struct Open {
     page: Page,
-    anchor: usize,
+    /// The subnav entry lit now: the content's scroll position moves it (`currentCategoryKey`).
+    anchor: Rc<Cell<usize>>,
     content: ScrollHandle,
     nav: ScrollHandle,
+    /// The sidebar still has to bring the subnav into view; it does once, when the page opens.
+    nav_pending: Rc<Cell<bool>>,
+    /// The content's scroll offset the scroll-spy last saw, and whether the next change is a click's own scroll.
+    spy: Rc<Cell<(f32, bool)>>,
 }
 
 impl Open {
     fn new(page: Page) -> Self {
         Self {
             page,
-            anchor: 0,
+            anchor: Rc::default(),
             content: ScrollHandle::new(),
             nav: ScrollHandle::new(),
+            nav_pending: Rc::new(Cell::new(true)),
+            spy: Rc::default(),
         }
     }
 }
@@ -501,7 +511,11 @@ fn tile(icon_name: &str, background: &str, tint: &str) -> impl IntoElement {
 }
 
 /// `heading-xl/medium` with its note 4px under it, 20px of space, then a 1px spacer before the rows.
-fn category_header(title: &'static str, description: Runs) -> impl IntoElement {
+fn category_header(
+    title: &'static str,
+    description: Runs,
+    marker: Option<AnyElement>,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -523,7 +537,8 @@ fn category_header(title: &'static str, description: Runs) -> impl IntoElement {
                     this.child(described(description, "--text-subtle"))
                 }),
         )
-        .child(div().h(px(1.)))
+        // The spacer carries `data-settings-category-key`: the scroll-spy watches it.
+        .child(div().relative().h(px(1.)).children(marker))
 }
 
 /// Heading `heading-xl/medium` with 20px under it, then the rows 8px apart.
@@ -531,7 +546,7 @@ fn category(title: Option<&'static str>, rows: Vec<Row>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .children(title.map(|title| category_header(title, &[])))
+        .children(title.map(|title| category_header(title, &[], None)))
         .child(
             div()
                 .flex()
@@ -646,7 +661,8 @@ impl Root {
                 .enumerate()
                 .find(|(_, anchor)| anchor.label == category)
             {
-                open.anchor = index;
+                open.anchor.set(index);
+                open.spy.set((0., true));
                 open.content.scroll_to_top_of_item(anchor.target);
             }
         }
@@ -766,7 +782,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let current = self.settings.as_ref().map_or(0, |open| open.anchor);
+        let current = self.settings.as_ref().map_or(0, |open| open.anchor.get());
         let heights: Vec<f32> = anchors
             .iter()
             .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge) as f32)
@@ -819,7 +835,9 @@ impl Root {
                     .hover(|style| style.text_color(color("--interactive-text-hover")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(open) = this.settings.as_mut() {
-                            open.anchor = index;
+                            open.anchor.set(index);
+                            // The click's own scroll does not move the lit entry (`isSidebarCategoryAutoSelectEnabled`).
+                            open.spy.set((open.spy.get().0, true));
                             open.content.scroll_to_top_of_item(target);
                         }
                         cx.notify();
@@ -829,9 +847,16 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let (nav, pending) = self
+            .settings
+            .as_ref()
+            .map(|open| (open.nav.clone(), open.nav_pending.clone()))
+            .unwrap_or_default();
         div()
+            .relative()
             .ml(px(17.))
             .py(px(8.))
+            .child(nav_into_view(nav, pending))
             .child(
                 div()
                     .relative()
@@ -911,8 +936,13 @@ impl Root {
                     .justify_center()
                     .child(mask_icon("settings_search", 16., "--icon-default")),
             )
+            // `input_0PLWhS` is 38 tall with 1px of top padding: the text centres on a half pixel, which Chromium rounds down to the lower line.
             .child(
                 div()
+                    .h(px(38.))
+                    .pt(px(2.))
+                    .flex()
+                    .items_center()
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .text_color(color("--input-placeholder-text-default"))
@@ -973,6 +1003,8 @@ impl Root {
             .as_ref()
             .map(|open| open.nav.clone())
             .unwrap_or_default();
+        let shadow = nav_scroll.offset().y < px(-12.);
+        let base: gpui::Hsla = color("--background-base-lower").into();
         let sections = SECTIONS
             .iter()
             .enumerate()
@@ -1008,7 +1040,7 @@ impl Root {
         div()
             .parity_right("settings-sidebar", 1.)
             .flex_none()
-            .w(px(253.))
+            .w(px(SETTINGS_SIDEBAR_WIDTH))
             .h_full()
             .pt(px(16.))
             .pl(px(12.))
@@ -1027,23 +1059,38 @@ impl Root {
             )
             .child(
                 div()
-                    .id("settings-nav")
+                    .relative()
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .track_scroll(&nav_scroll)
                     .child(
                         div()
-                            .pt(px(12.))
-                            .pb(px(16.))
-                            .pl(px(4.))
-                            .pr(px(16.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(24.))
-                            .child(div().flex().flex_col().gap(px(8.)).children(sections))
-                            .child(self.settings_footer()),
-                    ),
+                            .id("settings-nav")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&nav_scroll)
+                            .child(
+                                div()
+                                    .pt(px(12.))
+                                    .pb(px(16.))
+                                    .pl(px(4.))
+                                    .pr(px(16.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(24.))
+                                    .child(div().flex().flex_col().gap(px(8.)).children(sections))
+                                    .child(self.settings_footer()),
+                            ),
+                    )
+                    // `withShadow_cR4ic2::after`: once the list is scrolled past 12px, the fixed head fades into it.
+                    .when(shadow, |this| {
+                        this.child(div().absolute().top_0().left_0().w(px(224.)).h(px(40.)).bg(
+                            gpui::linear_gradient(
+                                180.,
+                                gpui::linear_color_stop(base, 0.),
+                                gpui::linear_color_stop(gpui::Hsla { a: 0., ..base }, 1.),
+                            ),
+                        ))
+                    }),
             )
             .into_any_element()
     }
@@ -1327,6 +1374,7 @@ impl Root {
                                         .parity("settings-panel")
                                         .w_full()
                                         .max_w(px(728.))
+                                        .ml(px(panel_nudge(window.viewport_size().width.into())))
                                         .my(px(64.))
                                         .px(px(16.))
                                         .flex()
@@ -1335,7 +1383,24 @@ impl Root {
                                 ),
                             ),
                     )
-                    .child(auto_scrollbar(open.content.clone())),
+                    .child(auto_scrollbar(open.content.clone()))
+                    .child(scroll_spy(
+                        open.content.clone(),
+                        open.anchor.clone(),
+                        open.spy.clone(),
+                        self.tip_anchors.clone(),
+                        pages::nodes(open.page)
+                            .iter()
+                            .filter_map(|node| match node {
+                                model::Node::Category {
+                                    key,
+                                    title: Some(_),
+                                    ..
+                                } => Some(*key),
+                                _ => None,
+                            })
+                            .collect(),
+                    )),
             )
             .into_any_element()
     }
@@ -1390,6 +1455,139 @@ impl Root {
         )
     }
 }
+
+/// `scrollSidebarNodeIntoView` (`block: "nearest"`, 12px of padding): the new scroll amount that brings a node, at
+/// `top`..`bottom` on screen, inside the scroller's `view_top`..`view_bottom`, moving as little as it can.
+fn nearest_scroll(
+    scroll: f32,
+    (view_top, view_bottom): (f32, f32),
+    (top, bottom): (f32, f32),
+    padding: f32,
+    max: f32,
+) -> f32 {
+    let delta = if top < view_top + padding {
+        top - (view_top + padding)
+    } else if bottom > view_bottom - padding {
+        // A node taller than the view keeps its top in sight.
+        (bottom - (view_bottom - padding)).min(top - (view_top + padding))
+    } else {
+        0.
+    };
+    (scroll + delta).clamp(0., max.max(0.))
+}
+
+/// Once, when a page opens: scrolls the sidebar so the page's subnav is in view. Fills its parent, the subnav.
+fn nav_into_view(nav: ScrollHandle, pending: Rc<Cell<bool>>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            if !pending.get() {
+                return;
+            }
+            let view = nav.bounds();
+            let max = f32::from(nav.max_offset().y);
+            if view.size.height <= px(0.) || max <= 0. || bounds.size.height <= px(0.) {
+                return;
+            }
+            pending.set(false);
+            let scroll = nearest_scroll(
+                -f32::from(nav.offset().y),
+                (f32::from(view.top()), f32::from(view.bottom())),
+                (f32::from(bounds.top()), f32::from(bounds.bottom())),
+                12.,
+                max,
+            );
+            nav.set_offset(point(nav.offset().x, px(-scroll)));
+            window.refresh();
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The scroll-spy (`IntersectionObserver` over the category markers, threshold 1): the first marker fully in view
+/// lights its entry, the last one when the content is scrolled to its end. `markers` are the viewport-relative
+/// `top`..`bottom` of each entry's marker, None when it is not on this page's screen.
+fn spy_choice(markers: &[Option<(f32, f32)>], view: (f32, f32), at_end: bool) -> Option<usize> {
+    let mut seen = markers.iter().enumerate().filter_map(|(index, marker)| {
+        marker
+            .filter(|(top, bottom)| *top >= view.0 && *bottom <= view.1)
+            .map(|_| index)
+    });
+    if at_end {
+        seen.next_back()
+    } else {
+        seen.next()
+    }
+}
+
+/// Paints nothing; every frame it reads where the markers are and moves the lit subnav entry. Fills its parent.
+fn scroll_spy(
+    content: ScrollHandle,
+    anchor: Rc<Cell<usize>>,
+    spy: Rc<Cell<(f32, bool)>>,
+    markers: Rc<std::cell::RefCell<std::collections::HashMap<SharedString, Bounds<gpui::Pixels>>>>,
+    keys: Vec<&'static str>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let offset = f32::from(content.offset().y);
+            let (seen, skip) = spy.get();
+            if (offset - seen).abs() < 0.01 {
+                return;
+            }
+            // The first change after a click is the click's own scroll.
+            spy.set((offset, false));
+            if skip {
+                return;
+            }
+            let view = content.bounds();
+            let at_end = f32::from(content.max_offset().y) + offset <= 0.5;
+            let found: Vec<Option<(f32, f32)>> = keys
+                .iter()
+                .map(|key| {
+                    markers
+                        .borrow()
+                        .get(&SharedString::from(format!("settings-marker:{key}")))
+                        .map(|bounds| (f32::from(bounds.top()), f32::from(bounds.bottom())))
+                })
+                .collect();
+            if let Some(index) = spy_choice(
+                &found,
+                (f32::from(view.top()), f32::from(view.bottom())),
+                at_end,
+            ) && anchor.get() != index
+            {
+                anchor.set(index);
+                window.refresh();
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The settings content column is `728` wide and centred in the area right of the sidebar. When the spare width is odd
+/// Chromium lays the panel on a half pixel and paints it at the next whole one; the layout here would round it down.
+/// A 1px left margin moves the centre by half a pixel, which makes it land on that whole pixel.
+fn panel_nudge(viewport_width: f32) -> f32 {
+    let modal = (viewport_width - 80.).min(1400.);
+    let content = modal - 2. - SETTINGS_SIDEBAR_WIDTH;
+    let spare = content - 728.;
+    if spare > 0. && spare.rem_euclid(2.) == 1. {
+        1.
+    } else {
+        0.
+    }
+}
+
+/// The settings sidebar's width, `sidebar_cR4ic2`: 253 inside the modal's border.
+const SETTINGS_SIDEBAR_WIDTH: f32 = 253.;
 
 /// `auto_tqapBM`: a 16px gutter whose thumb keeps 4px clear on every side, at least 40px tall.
 fn auto_scrollbar(handle: ScrollHandle) -> impl IntoElement {
@@ -1446,5 +1644,64 @@ mod tests {
     fn device_counts_use_the_plural_rule() {
         assert_eq!(devices(1), "1 device");
         assert_eq!(devices(3), "3 devices");
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    /// Voice & Video in `voice-video-advanced3`: the subnav ends at 887 unscrolled, the list's view is 169..679.
+    #[test]
+    fn the_sidebar_scrolls_just_enough_to_show_the_subnav() {
+        let scroll = nearest_scroll(0., (169., 679.), (671., 887.), 12., 748.);
+        assert_eq!(scroll, 220.);
+        // Already inside the padded view: no move.
+        assert_eq!(
+            nearest_scroll(0., (169., 679.), (300., 500.), 12., 748.),
+            0.
+        );
+        // Above the view: scrolls back up, never below zero.
+        assert_eq!(
+            nearest_scroll(100., (169., 679.), (150., 300.), 12., 748.),
+            69.
+        );
+        assert_eq!(
+            nearest_scroll(5., (169., 679.), (100., 300.), 12., 748.),
+            0.
+        );
+        // Past the end of the list.
+        assert_eq!(
+            nearest_scroll(0., (169., 679.), (671., 1500.), 12., 300.),
+            300.
+        );
+    }
+
+    #[test]
+    fn the_first_marker_in_view_is_lit_and_the_last_at_the_end() {
+        let view = (90., 679.);
+        // advanced3: Streaming and Sounds are in view.
+        let markers = [
+            None,
+            Some((-653., -652.)),
+            Some((277., 278.)),
+            Some((549., 550.)),
+            None,
+        ];
+        assert_eq!(spy_choice(&markers, view, false), Some(2));
+        // advanced: Advanced is in view at the end of the page.
+        let markers = [None, None, None, Some((-72., -71.)), Some((455., 456.))];
+        assert_eq!(spy_choice(&markers, view, true), Some(4));
+        assert_eq!(spy_choice(&[None, None], view, false), None);
+        // A marker half out of the view does not count.
+        assert_eq!(spy_choice(&[Some((89., 90.))], view, false), None);
+    }
+
+    #[test]
+    fn an_odd_spare_width_nudges_the_panel_to_the_next_pixel() {
+        // 1280 wide: 1200 modal, 945 content, 217 spare.
+        assert_eq!(panel_nudge(1280.), 1.);
+        assert_eq!(panel_nudge(1281.), 0.);
+        assert_eq!(panel_nudge(600.), 0.);
     }
 }

@@ -123,7 +123,7 @@ pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
         .child(StyledText::new(text).with_highlights(links))
 }
 
-fn label_block(label: &'static str, badge: bool, description: Runs) -> gpui::Div {
+pub(super) fn label_block(label: &'static str, badge: bool, description: Runs) -> gpui::Div {
     label_block_capped(label, badge, description, None)
 }
 
@@ -241,7 +241,7 @@ fn select_field(value: &'static str, width: Option<f32>) -> gpui::Div {
 }
 
 /// The field, its border brand and its chevron turned up while its list is open (`isOpen_vWC4bk`).
-fn select_field_open(value: &'static str, width: Option<f32>, open: bool) -> gpui::Div {
+fn select_field_open(value: impl Into<SharedString>, width: Option<f32>, open: bool) -> gpui::Div {
     div()
         .flex_none()
         .when_some(width, |this, width| this.w(px(width)))
@@ -265,7 +265,7 @@ fn select_field_open(value: &'static str, width: Option<f32>, open: bool) -> gpu
                 .text_size(px(16.))
                 .line_height(px(20.))
                 .text_color(color("--text-strong"))
-                .child(value),
+                .child(value.into()),
         )
         .child(
             div()
@@ -439,8 +439,28 @@ impl Root {
             .iter()
             .position(|option| *option == captured)
             .unwrap_or(0);
+        let labels: Vec<SharedString> = options.iter().map(|option| (*option).into()).collect();
+        self.select_with_list(key, open_key, &labels, current, captured, width, cx)
+    }
+
+    /// The field and its open list for any options: `key` holds the chosen index and `open_key` whether the list is
+    /// open, both in `setting_choices`. `current` is the index shown until one is chosen.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn select_with_list(
+        &self,
+        key: &'static str,
+        open_key: &'static str,
+        options: &[SharedString],
+        current: usize,
+        captured: &'static str,
+        width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let chosen = self.choice_index(key, current);
-        let label = options.get(chosen).copied().unwrap_or(captured);
+        let label = options
+            .get(chosen)
+            .cloned()
+            .unwrap_or_else(|| captured.into());
         let open = self.choice_on(open_key, false);
         let rows: Vec<AnyElement> = options
             .iter()
@@ -460,10 +480,13 @@ impl Root {
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-strong"))
-                            .child(*option),
+                            .child(option.clone()),
                     )
                     .when(index == chosen, |this| {
                         this.child(div().p(px(4.)).child(super::super::icon(
@@ -551,6 +574,7 @@ impl Root {
     ) -> AnyElement {
         match node {
             Node::Category {
+                key,
                 title,
                 group,
                 legend,
@@ -558,7 +582,6 @@ impl Root {
                 gap,
                 description,
                 children,
-                ..
             } => {
                 let column = if *split { (width - 16.) / 2. } else { width };
                 // Each row keeps its official key as its id, the anchor the subnav and search scroll to.
@@ -590,7 +613,16 @@ impl Root {
                 div()
                     .flex()
                     .flex_col()
-                    .children(title.map(|title| category_header(title, description)))
+                    .children(title.map(|title| {
+                        let marker = self
+                            .anchor_probe(format!("settings-marker:{key}"))
+                            .into_any_element();
+                        category_header(title, description, Some(marker))
+                    }))
+                    // A top-level category keeps its 1px spacer without a title too (the input profile rows).
+                    .when(*key == "voice_input_profile_category", |this| {
+                        this.child(div().h(px(1.)))
+                    })
                     .children(legend.map(|legend| {
                         div()
                             .pt(px(8.))
@@ -670,12 +702,17 @@ impl Root {
                     // The row keeps its content at the top of its 48px (`baseSettingWrapper`), not centred in it.
                     .into_any_element()
             }
-            Node::Slider { key, label, .. }
-                if *key == voice::INPUT_VOLUME
-                    || *key == voice::OUTPUT_VOLUME
-                    || *key == voice::extra::ATTENUATION =>
+            Node::Slider {
+                key,
+                label,
+                description,
+                ..
+            } if *key == voice::INPUT_VOLUME
+                || *key == voice::OUTPUT_VOLUME
+                || *key == voice::SOUNDBOARD_VOLUME
+                || *key == voice::extra::ATTENUATION =>
             {
-                self.slider_row(key, label, width, cx)
+                self.slider_row(key, label, description, width, cx)
             }
             Node::Slider {
                 label,
@@ -720,6 +757,10 @@ impl Root {
                             })),
                     )
                     .into_any_element()
+            }
+            // The generated page holds only the select; the fieldset around it is drawn whole.
+            Node::Select { key, .. } if *key == super::soundboard::ENTRANCE_SOUNDS => {
+                self.entrance_sounds_row(cx)
             }
             Node::Select {
                 key,
@@ -928,18 +969,23 @@ impl Root {
                     .iter()
                     .map(|child| self.render_node(child, width, window, cx))
                     .collect();
+                let has_shown = !shown_rows.is_empty();
                 div()
                     .flex()
                     .flex_col()
-                    .when(!shown_rows.is_empty(), |this| {
+                    .when(has_shown, |this| {
                         this.child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(16.))
-                                .pb(px(16.))
+                                .gap(px(8.))
+                                .pb(px(8.))
                                 .children(shown_rows),
                         )
+                    })
+                    // `hoverDivider_gdjnu7`: the sounds list's last rule sits on the accordion's own row.
+                    .when(has_shown, |this| {
+                        this.child(div().h(px(1.)).bg(color("--border-subtle")))
                     })
                     .child(header)
                     .child(
