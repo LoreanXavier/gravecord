@@ -103,6 +103,56 @@ impl Root {
         }
     }
 
+    /// Speak Message / Stop Speaking Message (`SPEAK_MESSAGE`, `STOP_SPEAKING`).
+    fn speak_message(&mut self, message: Message, cx: &mut Context<Self>) {
+        if self.speaking_message == Some(message.id) {
+            self.speech.stop();
+            self.speaking_message = None;
+            cx.notify();
+            return;
+        }
+        let users = &self.stores.users;
+        let text = crate::speech::utterance(
+            message.author.display_name(),
+            &message.content,
+            message
+                .referenced
+                .as_ref()
+                .map(|referenced| referenced.author.display_name()),
+            |id| {
+                id.parse::<u64>()
+                    .ok()
+                    .and_then(|id| users.get(&id))
+                    .map(|user| user.display_name().to_owned())
+            },
+        );
+        self.speech.speak(text);
+        self.speaking_message = Some(message.id);
+        // Back to Speak Message once the voice falls silent.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                let done = this
+                    .update(cx, |this, cx| {
+                        if this.speech.is_speaking() {
+                            return false;
+                        }
+                        this.speaking_message = None;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn run_message_action(
         &mut self,
         action: Action,
@@ -114,6 +164,7 @@ impl Root {
             Action::Pin => self.confirm_pin = Some(message),
             Action::MarkUnread => self.mark_unread(message.channel_id, message.id),
             Action::Bookmark => self.toggle_bookmark(message.channel_id, message.id, cx),
+            Action::Speak => self.speak_message(message, cx),
             Action::AddReaction => {
                 if let Some(super::menu::OpenMenu { anchor, .. }) = self.last_menu {
                     let at = match anchor {

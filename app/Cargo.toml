@@ -25,4 +25,5 @@ reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tts = "0.26"
 wuff = "0.2"

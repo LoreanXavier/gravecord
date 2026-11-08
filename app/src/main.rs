@@ -8,6 +8,7 @@ mod inline;
 mod net;
 mod palette;
 mod parity;
+mod speech;
 mod storage;
 mod text_buffer;
 mod ui;

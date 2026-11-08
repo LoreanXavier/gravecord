@@ -146,6 +146,9 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    speech: crate::speech::Speech,
+    /// The message Speak Message is reading.
+    speaking_message: Option<Id>,
     toast: Option<saved::Toast>,
     /// The open submenu of the message menu: the row it hangs off.
     submenu: Option<menu::Submenu>,
@@ -226,6 +229,8 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            speech: crate::speech::Speech::new(),
+            speaking_message: None,
             toast: None,
             submenu: None,
             custom_reminder: None,

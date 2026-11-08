@@ -57,6 +57,10 @@ pub(super) enum Item {
 pub(super) struct SavedState {
     pub bookmarked: bool,
     pub reminder: bool,
+    /// Speak Message is reading this message: the entry becomes Stop Speaking Message.
+    pub speaking: bool,
+    /// No text: Speak Message is left out.
+    pub empty: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,8 +147,19 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             Action::CopyLink,
             false,
         ),
-        Item::Entry("Speak Message", "menu_speak_message", Action::Speak, false),
     ]);
+    if !saved.empty {
+        items.push(Item::Entry(
+            if saved.speaking {
+                "Stop Speaking Message"
+            } else {
+                "Speak Message"
+            },
+            "menu_speak_message",
+            Action::Speak,
+            false,
+        ));
+    }
     if own {
         items.push(Item::Separator);
         items.push(Item::Danger(
@@ -176,9 +191,16 @@ impl Root {
         let state = self
             .channel
             .and_then(|channel| self.saved_state(channel, message));
+        let empty = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .and_then(|list| list.iter().find(|known| known.id == message))
+            .is_some_and(|known| known.content.is_empty());
         SavedState {
             bookmarked: state.is_some(),
             reminder: state.is_some_and(|due| due.is_some()),
+            speaking: self.speaking_message == Some(message),
+            empty,
         }
     }
 
