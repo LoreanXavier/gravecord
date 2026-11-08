@@ -423,6 +423,19 @@ impl Root {
         color_override: Option<[u8; 3]>,
         name_override: Option<String>,
         body: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.invite_preview_sized(guild, color_override, name_override, body, 300., cx)
+    }
+
+    /// The card at another width (Access shows it 314 and 282 wide), its banner across it.
+    pub(super) fn invite_preview_sized(
+        &self,
+        guild: Id,
+        color_override: Option<[u8; 3]>,
+        name_override: Option<String>,
+        body: Option<AnyElement>,
+        width: f32,
         _cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let known = self.stores.guilds.iter().find(|known| known.id == guild)?;
@@ -481,7 +494,7 @@ impl Root {
         let banner = self.banner_image(base, 298, 120);
         Some(
             div()
-                .w(px(300.))
+                .w(px(width))
                 .rounded(px(16.))
                 .border_1()
                 .border_color(color("--border-subtle"))
@@ -489,7 +502,7 @@ impl Root {
                 .overflow_hidden()
                 .flex()
                 .flex_col()
-                .child(img(banner).w(px(298.)).h(px(120.)).rounded_t(px(15.)))
+                .child(img(banner).w(px(width - 2.)).h(px(120.)).rounded_t(px(15.)))
                 .child(
                     div()
                         .mt(px(-34.))

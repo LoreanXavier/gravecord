@@ -268,6 +268,7 @@ pub(crate) struct ServerSettings {
     /// "Upload a Sound" while it is open.
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
+    pub(super) access: Option<super::server_access::AccessState>,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -331,6 +332,19 @@ pub(super) fn data_uri(path: &std::path::Path) -> Option<String> {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+impl ServerSettings {
+    /// The profile's visibility as the Server Profile page knows it.
+    pub(super) fn visibility_now(&self) -> u64 {
+        self.saved.visibility
+    }
+
+    /// A visibility saved from another page, so Server Profile does not count it as an edit.
+    pub(super) fn set_saved_visibility(&mut self, visibility: u64) {
+        self.saved.visibility = visibility;
+        self.visibility = visibility;
+    }
 }
 
 impl Root {
@@ -404,6 +418,7 @@ impl Root {
             webhooks: Default::default(),
             sound_dialog: None,
             sticker_dialog: None,
+            access: None,
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -971,6 +986,7 @@ impl Root {
             Page::Template => self.template_dirty(open.guild, cx),
             Page::Engagement => self.engagement_dirty(),
             Page::Integrations => self.webhook_dirty(open.guild, cx),
+            Page::Access => self.access_dirty(open.guild, cx),
             _ => false,
         };
         let mut nav = div()
@@ -1101,11 +1117,11 @@ impl Root {
             Page::BoostPerks => Self::server_page_title("Boost Perks"),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => self.server_stickers_page(open.guild, cx),
+            Page::Access => self.server_access_page(open.guild, cx),
             Page::Soundboard => self.server_sounds_page(open.guild, cx),
             Page::Members => self.server_members_page(open.guild, cx),
             Page::Roles => self.server_roles_page(open.guild, cx),
             Page::Invites => self.server_invites_page(open.guild, cx),
-            Page::Access => Self::server_page_title("Access"),
             Page::Integrations if open.webhooks.showing => {
                 self.server_webhooks_page(open.guild, cx)
             }
@@ -1199,7 +1215,9 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(gpui::white())
-                                .child("Careful \u{2014} you have unsaved changes!"),
+                                .child(self.access_error_text().unwrap_or_else(|| {
+                                    "Careful \u{2014} you have unsaved changes!".to_owned()
+                                })),
                         )
                         .child(
                             div()
@@ -1228,6 +1246,7 @@ impl Root {
                                             this.reset_webhook(guild, cx)
                                         }
                                         Some((Page::Engagement, _)) => this.reset_engagement(cx),
+                                        Some((Page::Access, guild)) => this.reset_access(guild, cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1263,6 +1282,7 @@ impl Root {
                                         Some((Page::Engagement, guild)) => {
                                             this.save_engagement(guild, cx)
                                         }
+                                        Some((Page::Access, guild)) => this.save_access(guild, cx),
                                         _ => this.save_server_settings(cx),
                                     }
                                 })),

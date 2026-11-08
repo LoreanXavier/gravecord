@@ -319,6 +319,42 @@ impl Guild {
         })
     }
 
+    /// `GUILD_UPDATE`: the guild's own properties, without its channels or the current user's member.
+    fn apply_update(&mut self, value: &Value) {
+        if let Some(name) = text(&value["name"]) {
+            self.name = name;
+        }
+        self.icon = text(&value["icon"]);
+        self.owner_id = id(&value["owner_id"]).or(self.owner_id);
+        self.mfa_level = value["mfa_level"].as_u64().unwrap_or(self.mfa_level);
+        self.vanity_url_code = text(&value["vanity_url_code"]);
+        if let Some(features) = value["features"].as_array() {
+            self.features = features.iter().filter_map(text).collect();
+        }
+        self.invites_disabled_until = text(&value["incidents_data"]["invites_disabled_until"]);
+        self.dms_disabled_until = text(&value["incidents_data"]["dms_disabled_until"]);
+        self.lockdown_duration_hours = value["incidents_data"]["lockdown_duration_hours"].as_u64();
+        self.premium_tier = value["premium_tier"].as_u64().unwrap_or(self.premium_tier);
+        self.premium_subscription_count = value["premium_subscription_count"]
+            .as_u64()
+            .unwrap_or(self.premium_subscription_count);
+        if let Some(roles) = value["roles"].as_array() {
+            self.roles = roles
+                .iter()
+                .filter_map(|role| Some((id(&role["id"])?, text(&role["name"])?)))
+                .collect();
+            self.role_permissions = roles
+                .iter()
+                .filter_map(|role| {
+                    Some((id(&role["id"])?, permissions::bits(&role["permissions"])))
+                })
+                .collect();
+        }
+        if value["emojis"].is_array() {
+            self.emojis = GuildEmoji::list(&value["emojis"]);
+        }
+    }
+
     /// The current user's member object: roles, screening and timeout.
     pub fn set_my_member(&mut self, member: &Value) {
         self.my_roles = member["roles"]
@@ -934,6 +970,13 @@ impl Stores {
                     self.sort_guilds();
                 }
             }
+            "GUILD_UPDATE" => {
+                if let Some(guild) = id(&data["id"])
+                    .and_then(|known| self.guilds.iter_mut().find(|guild| guild.id == known))
+                {
+                    guild.apply_update(data);
+                }
+            }
             "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
                 if let (Some(guild), Some(role)) = (
                     id(&data["guild_id"])
@@ -1502,6 +1545,29 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guild_update_changes_the_guilds_own_properties_only() {
+        let mut stores = super::Stores::default();
+        stores.dispatch(
+            "GUILD_CREATE",
+            &serde_json::json!({"id": "5", "name": "old", "channels": [{"id": "9", "type": 0, "name": "x"}]}),
+        );
+        stores.dispatch(
+            "GUILD_UPDATE",
+            &serde_json::json!({
+                "id": "5",
+                "name": "new",
+                "features": ["MEMBER_VERIFICATION_GATE_ENABLED"],
+                "premium_tier": 2,
+            }),
+        );
+        let guild = stores.guild(5).unwrap();
+        assert_eq!(guild.name, "new");
+        assert_eq!(guild.features, ["MEMBER_VERIFICATION_GATE_ENABLED"]);
+        assert_eq!(guild.premium_tier, 2);
+        assert_eq!(guild.channels.len(), 1);
+    }
+
     use super::*;
 
     #[test]

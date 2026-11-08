@@ -72,6 +72,7 @@ mod reminder_modal;
 mod report;
 mod saved;
 mod search;
+mod server_access;
 mod server_emoji;
 mod server_engagement;
 mod server_games;
@@ -509,6 +510,11 @@ impl Root {
                 if key.starts_with(server_settings_pages::WEBHOOKS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.webhooks_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_access::ACCESS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.access_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_stickers::STICKERS_PREFIX) {
@@ -1426,6 +1432,9 @@ impl Root {
             if let Some(dialog) = settings.sticker_dialog.as_ref() {
                 list.push(dialog.name.clone());
                 list.push(dialog.description.clone());
+            }
+            if let Some(access) = settings.access.as_ref() {
+                list.extend(access.editors());
             }
             list.extend(
                 settings
@@ -4119,6 +4128,8 @@ impl Render for Root {
                         && open.sticker_dialog.is_some()
                     {
                         open.sticker_dialog = None;
+                    } else if this.close_access_overlay() {
+                        cx.notify();
                     } else if let Some(open) = this.server_settings.as_mut()
                         && open.games_open
                     {
@@ -4293,6 +4304,14 @@ impl Render for Root {
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
             .children(self.sticker_dialog_modal(cx))
+            .children(self.access_dialog_modal(cx))
+            .children(self.access_menu_layer(cx))
+            .children(
+                self.server_settings
+                    .as_ref()
+                    .map(|open| open.guild)
+                    .and_then(|guild| self.access_preview_modal(guild, cx)),
+            )
             .children(self.webhook_channel_select(cx))
             .children(self.webhook_delete_modal(cx))
             .children(self.channel_settings_select(window, cx))
