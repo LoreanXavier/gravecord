@@ -72,6 +72,7 @@ mod reminder_modal;
 mod report;
 mod saved;
 mod search;
+mod server_emoji;
 mod server_games;
 mod server_settings;
 mod server_settings_pages;
@@ -496,6 +497,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_emoji::EMOJIS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.emojis_fetched(&key, cx);
+                    return;
                 }
                 if key.starts_with(server_settings_pages::INVITES_PREFIX)
                     || key.starts_with(server_settings_pages::BANS_PREFIX)
@@ -1356,6 +1362,13 @@ impl Root {
             list.extend(settings.traits.iter().cloned());
             list.push(settings.games_query.clone());
             list.extend(settings.bans.as_ref().map(|bans| bans.search.clone()));
+            list.extend(
+                settings
+                    .emoji
+                    .as_ref()
+                    .map(|emoji| emoji.fields())
+                    .unwrap_or_default(),
+            );
             list.extend(
                 settings
                     .delete_name

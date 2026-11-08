@@ -255,6 +255,8 @@ pub(crate) struct ServerSettings {
     delete_wrong: bool,
     /// The Bans page's search and open ban, made when the page first opens.
     pub(super) bans: Option<super::server_settings_pages::BansState>,
+    /// The Emoji page's name fields.
+    pub(super) emoji: Option<super::server_emoji::EmojiState>,
     _events: Vec<Subscription>,
 }
 
@@ -377,6 +379,7 @@ impl Root {
             delete_name: None,
             delete_wrong: false,
             bans: None,
+            emoji: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -1060,7 +1063,7 @@ impl Root {
             Page::Tag => Self::server_page_title("Server Tag"),
             Page::Engagement => Self::server_page_title("Engagement"),
             Page::BoostPerks => Self::server_page_title("Boost Perks"),
-            Page::Emoji => Self::server_page_title("Emoji"),
+            Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => Self::server_page_title("Stickers"),
             Page::Soundboard => Self::server_page_title("Soundboard"),
             Page::Members => Self::server_page_title("Server Members"),

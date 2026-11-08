@@ -202,6 +202,32 @@ pub async fn run(
                 let path = std::path::PathBuf::from(*path);
                 root.update(cx, |root, cx| root.attach_files(vec![path], cx));
             }
+            // Drops a file on the window at a point, as the platform does when files are dragged in.
+            ["drop", path, x, y] => {
+                if let Some(position) = at(x, y) {
+                    let paths = gpui::ExternalPaths(vec![PathBuf::from(*path)].into());
+                    cx.update(|cx| {
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Entered {
+                                position,
+                                paths,
+                            }),
+                        );
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Pending { position }),
+                        );
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Submit { position }),
+                        );
+                    });
+                }
+            }
             // Opens a settings page by its label in lower case with dashes, as the captures are named.
             ["settings", page] => {
                 let page = (*page).to_owned();

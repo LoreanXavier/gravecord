@@ -157,6 +157,7 @@ impl Root {
                     }
                 }
             }
+            Page::Emoji => self.request_emojis(guild),
             _ => {}
         }
     }
