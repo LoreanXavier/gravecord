@@ -11,13 +11,13 @@ use gpui::{
 };
 
 /// Colors of the card: background stops, overlay, and the text it carries.
-struct Palette {
-    top: Rgba,
-    bottom: Rgba,
-    overlay: Hsla,
-    text: Hsla,
-    subtle: Hsla,
-    themed: bool,
+pub(super) struct Palette {
+    pub top: Rgba,
+    pub bottom: Rgba,
+    pub overlay: Hsla,
+    pub text: Hsla,
+    pub subtle: Hsla,
+    pub themed: bool,
 }
 
 fn luminance(value: u32) -> f32 {
@@ -51,7 +51,7 @@ pub(super) fn member_since(user: Id) -> String {
 
 impl Root {
     /// The bio as markdown in `body-sm/normal`: 14px on 18px lines, links in `--text-link` and clickable.
-    fn bio(&self, bio: &str, text: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn bio(&self, bio: &str, text: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
         let blocks = dc_markdown::parse(bio);
         div().flex().flex_col().children(blocks.iter().map(|block| {
             let spans = super::block_spans(block).to_vec();
@@ -92,7 +92,7 @@ impl Root {
             }))
     }
 
-    fn dm_palette(&self, user: Id) -> Palette {
+    pub(super) fn dm_palette(&self, user: Id) -> Palette {
         let body = self.fetched.get(&format!("profile:{user}"));
         let colors: Option<(u32, u32)> = body.and_then(|body| {
             let list = body["user_profile"]["theme_colors"].as_array()?;
@@ -130,6 +130,7 @@ impl Root {
         let channel = self.current_dm()?;
         let user = self.stores.dm_recipient(channel)?.clone();
         let palette = self.dm_palette(user.id);
+        let user_id = user.id;
         let body = self.fetched.get(&format!("profile:{}", user.id));
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let banner: Rgba = if palette.themed {
@@ -175,7 +176,13 @@ impl Root {
                 .mb(px(8.))
                 .child(div().h(px(105.)).rounded_t(px(6.)).bg(banner))
                 .child(
+                    // `avatar_WRLIGC clickable`: "View Full Profile".
                     div()
+                        .id("dm-profile-avatar")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile(user_id, window, cx)
+                        }))
                         .absolute()
                         .left(px(8.))
                         .top(px(49.))
@@ -314,6 +321,11 @@ impl Root {
             );
         let footer = div().p(px(16.)).child(
             div()
+                .id("dm-profile-full")
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_full_profile(user_id, window, cx)
+                }))
                 .h(px(40.))
                 .rounded(px(8.))
                 .border_1()

@@ -41,6 +41,7 @@ mod file_actions;
 mod files;
 mod forward;
 mod friends;
+mod full_profile;
 mod gifs;
 mod group_dm;
 mod guild_menu;
@@ -217,6 +218,7 @@ pub struct Root {
     profile_menu_which: profile_menu::Which,
     remediation: Option<(Id, remediation::Remedy)>,
     report: Option<report::Report>,
+    full_profile: Option<full_profile::FullProfile>,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
     speech: crate::speech::Speech,
@@ -346,6 +348,7 @@ impl Root {
             profile_menu_which: profile_menu::Which::Overflow,
             remediation: None,
             report: None,
+            full_profile: None,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
             speaking_message: None,
@@ -444,6 +447,14 @@ impl Root {
             Update::Fetched { key, body } => {
                 if self.friends_fetched(&key, &body, cx) {
                     return;
+                }
+                if self.full_profile.is_some()
+                    && ["outbox:", "apps:", "note:", "profile:"]
+                        .iter()
+                        .any(|prefix| key.starts_with(prefix))
+                {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.full_profile_fetched(&key, cx);
                 }
                 if self.report_fetched(&key, &body, cx) {
                     return;
@@ -1265,6 +1276,7 @@ impl Root {
                 .as_ref()
                 .map(|switcher| switcher.search.clone()),
         );
+        list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
         if let Some(forward) = self.forward.as_ref() {
             list.push(forward.search.clone());
             list.push(forward.note.clone());
@@ -3553,6 +3565,7 @@ fn editor_style() -> EditorStyle {
         line_height: crate::editor::LINE_HEIGHT,
         text: hsla("--text-default"),
         placeholder: hsla("--channel-text-area-placeholder"),
+        placeholder_italic: false,
         selection: hsla_from(SELECTION),
         caret: hsla("--text-default"),
     }
@@ -4136,6 +4149,7 @@ impl Render for Root {
             .children(self.unpin_modal(cx))
             .children(self.pins_popout(window, cx))
             .children(self.forward_modal(window, cx))
+            .children(self.full_profile_modal(window, cx))
             .children(self.profile_menu_layer(cx))
             .children(self.profile_submenu_layer(window, cx))
             .children(self.remediation_modal(cx))
@@ -4245,12 +4259,6 @@ fn status_dot_40(status: &str, ring: &str) -> impl IntoElement {
 /// A status dot of `dot` px in a ring-colored hole reaching `out` px past the avatar corner; the dnd bar,
 /// offline hole and idle bite scale with the dot (masks `svg-mask-status-*`).
 fn status_dot_sized(status: &str, ring: &str, dot: f32, out: f32) -> impl IntoElement {
-    let tint = match status {
-        "dnd" => "--icon-status-dnd",
-        "idle" => "--icon-status-idle",
-        "invisible" | "offline" => "--icon-status-offline",
-        _ => "--icon-status-online",
-    };
     let hole = dot + if dot >= 12. { 4. } else { 6. };
     div()
         .absolute()
@@ -4262,41 +4270,50 @@ fn status_dot_sized(status: &str, ring: &str, dot: f32, out: f32) -> impl IntoEl
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            div()
-                .size(px(dot))
-                .rounded_full()
-                .bg(color(tint))
-                .flex()
-                .items_center()
-                .justify_center()
-                .relative()
-                .when(status == "dnd", |this| {
-                    this.child(
-                        div()
-                            .w(px(dot * 0.6))
-                            .h(px(dot * 0.2))
-                            .rounded(px(dot * 0.1))
-                            .bg(color(ring)),
-                    )
-                })
-                // `svg-mask-status-offline`: a hole of half the dot's size.
-                .when(matches!(status, "offline" | "invisible"), |this| {
-                    this.child(div().size(px(dot * 0.5)).rounded_full().bg(color(ring)))
-                })
-                // `svg-mask-status-idle`: the dot less a circle of radius 0.375 centred at a quarter.
-                .when(status == "idle", |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .left(px(-dot * 0.125))
-                            .top(px(-dot * 0.125))
-                            .size(px(dot * 0.75))
-                            .rounded_full()
-                            .bg(color(ring)),
-                    )
-                }),
-        )
+        .child(status_dot_inner(status, ring, dot))
+}
+
+/// The dot itself, `dot` px: the dnd bar, offline hole and idle bite cut in the ring colour.
+fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
+    let tint = match status {
+        "dnd" => "--icon-status-dnd",
+        "idle" => "--icon-status-idle",
+        "invisible" | "offline" => "--icon-status-offline",
+        _ => "--icon-status-online",
+    };
+    div()
+        .size(px(dot))
+        .rounded_full()
+        .bg(color(tint))
+        .flex()
+        .items_center()
+        .justify_center()
+        .relative()
+        .when(status == "dnd", |this| {
+            this.child(
+                div()
+                    .w(px(dot * 0.6))
+                    .h(px(dot * 0.2))
+                    .rounded(px(dot * 0.1))
+                    .bg(color(ring)),
+            )
+        })
+        // `svg-mask-status-offline`: a hole of half the dot's size.
+        .when(matches!(status, "offline" | "invisible"), |this| {
+            this.child(div().size(px(dot * 0.5)).rounded_full().bg(color(ring)))
+        })
+        // `svg-mask-status-idle`: the dot less a circle of radius 0.375 centred at a quarter.
+        .when(status == "idle", |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left(px(-dot * 0.125))
+                    .top(px(-dot * 0.125))
+                    .size(px(dot * 0.75))
+                    .rounded_full()
+                    .bg(color(ring)),
+            )
+        })
 }
 
 /// `C(timestamp, true)` in the bundle's date helpers: today is the time alone, yesterday "Yesterday at" the time, and

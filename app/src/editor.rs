@@ -31,6 +31,8 @@ pub struct EditorStyle {
     pub line_height: f32,
     pub text: Hsla,
     pub placeholder: Hsla,
+    /// The placeholder in italics (the profile note's "Click to add a note").
+    pub placeholder_italic: bool,
     pub selection: Hsla,
     pub caret: Hsla,
 }
@@ -540,9 +542,13 @@ impl Element for EditorElement {
         }
 
         if let Some(placeholder) = placeholder {
+            let mut placeholder_font = style.font.clone();
+            if style.placeholder_italic {
+                placeholder_font.style = gpui::FontStyle::Italic;
+            }
             let runs = [run(
                 placeholder.len(),
-                &style.font,
+                &placeholder_font,
                 style.placeholder,
                 false,
             )];

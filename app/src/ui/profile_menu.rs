@@ -31,6 +31,10 @@ pub(super) struct ProfileMenu {
     pub invite: bool,
     /// Servers whose invite went out from this menu.
     pub sent: HashSet<Id>,
+    /// The probe of the button it hangs off, and whether it opens to that button's right (the full profile) rather
+    /// than its left (the DM panel's banner).
+    pub anchor: &'static str,
+    pub right: bool,
 }
 
 /// Which menu hangs off a profile button.
@@ -122,15 +126,32 @@ impl Root {
     }
 
     pub(super) fn open_profile_menu(&mut self, user: Id, which: Which, cx: &mut Context<Self>) {
+        let anchor = match which {
+            Which::Overflow => "dm-profile-more",
+            Which::Friend => "dm-profile-friend",
+        };
+        self.open_profile_menu_at(user, which, anchor, false, cx);
+    }
+
+    pub(super) fn open_profile_menu_at(
+        &mut self,
+        user: Id,
+        which: Which,
+        anchor: &'static str,
+        right: bool,
+        cx: &mut Context<Self>,
+    ) {
         let open = self
             .profile_menu
             .as_ref()
-            .map(|menu| (menu.user, self.profile_menu_which));
-        if open == Some((user, which)) {
+            .map(|menu| (menu.user, self.profile_menu_which, menu.anchor));
+        if open == Some((user, which, anchor)) {
             self.profile_menu = None;
         } else {
             self.profile_menu = Some(ProfileMenu {
                 user,
+                anchor,
+                right,
                 ..ProfileMenu::default()
             });
             self.profile_menu_which = which;
@@ -229,7 +250,7 @@ impl Root {
                     ),
                     _ => None,
                 };
-                ("dm-profile-friend", row.into_iter().collect())
+                (menu.anchor, row.into_iter().collect())
             }
             Which::Overflow => {
                 let mut first: Vec<AnyElement> = vec![
@@ -329,7 +350,7 @@ impl Root {
                     );
                     rows.extend(second);
                 }
-                ("dm-profile-more", rows)
+                (menu.anchor, rows)
             }
         };
         if rows.is_empty() {
@@ -338,8 +359,16 @@ impl Root {
         let anchor = self.tip_anchors.borrow().get(probe).copied()?;
         let menu_layer = deferred(
             anchored()
-                .anchor(Anchor::TopRight)
-                .position(point(anchor.left() - px(8.), anchor.top()))
+                .anchor(if menu.right {
+                    Anchor::TopLeft
+                } else {
+                    Anchor::TopRight
+                })
+                .position(if menu.right {
+                    point(anchor.right() + px(8.), anchor.top())
+                } else {
+                    point(anchor.left() - px(8.), anchor.top())
+                })
                 .snap_to_window_with_margin(px(8.))
                 .child(
                     div()
@@ -370,8 +399,10 @@ impl Root {
                                 let keep =
                                     (this.profile_menu.as_ref().is_some_and(|menu| menu.invite)
                                         && inside("submenu"))
-                                        || inside("dm-profile-more")
-                                        || inside("dm-profile-friend");
+                                        || this
+                                            .profile_menu
+                                            .as_ref()
+                                            .is_some_and(|menu| inside(menu.anchor));
                                 drop(anchors);
                                 if !keep {
                                     this.profile_menu = None;
