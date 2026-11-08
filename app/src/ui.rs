@@ -162,6 +162,8 @@ pub struct Root {
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
     inbox: Option<inbox::InboxTab>,
+    inbox_read: HashSet<Id>,
+    inbox_collapsed: HashSet<Id>,
     gifs: Option<gifs::Gifs>,
     shown_blocked: HashSet<Id>,
     shown_blocked_profiles: HashSet<Id>,
@@ -267,6 +269,8 @@ impl Root {
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
             inbox: None,
+            inbox_read: HashSet::new(),
+            inbox_collapsed: HashSet::new(),
             gifs: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
@@ -392,6 +396,26 @@ impl Root {
                 self.fetched.insert(key.clone(), body);
                 if gif_answer {
                     self.request_gif_images(&key);
+                }
+                // Messages shown in the Inbox: their authors' avatars.
+                if key.starts_with("inbox-") || key == saved::SAVED_KEY {
+                    let body = &self.fetched[&key];
+                    let list = body.as_array().cloned().unwrap_or_else(|| {
+                        body["results"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|entry| entry["message"].clone())
+                            .collect()
+                    });
+                    let authors: Vec<User> = list
+                        .iter()
+                        .filter_map(|message| User::from_value(&message["author"]))
+                        .collect();
+                    for user in authors {
+                        let (image, url) = avatar_source(&user);
+                        self.request_image(image, url);
+                    }
                 }
                 if let Some(user) = profile {
                     self.request_profile_images(user);

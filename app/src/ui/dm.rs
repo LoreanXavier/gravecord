@@ -336,6 +336,28 @@ impl Root {
             .into_any_element()
     }
 
+    /// `getSystemMessageUserJoin` in module 779014: one of thirteen lines, picked by the message's snowflake time
+    /// modulo 13, as (before, after) around the name.
+    pub(super) fn join_line(message: &Message) -> (&'static str, &'static str) {
+        const LINES: [(&str, &str); 13] = [
+            ("", " joined the party."),
+            ("", " is here."),
+            ("Welcome, ", ". We hope you brought pizza."),
+            ("A wild ", " appeared."),
+            ("", " just landed."),
+            ("", " just slid into the server."),
+            ("", " just showed up!"),
+            ("Welcome ", ". Say hi!"),
+            ("", " hopped into the server."),
+            ("Everyone welcome ", "!"),
+            ("Glad you're here, ", "."),
+            ("Good to see you, ", "."),
+            ("Yay you made it, ", "!"),
+        ];
+        let timestamp = (message.id >> 22) + 1_420_070_400_000;
+        LINES[(timestamp % LINES.len() as u64) as usize]
+    }
+
     pub(super) fn system_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
         let (icon_name, tail, tint) = match message.kind {
             FRIEND_REQUEST_ACCEPTED => (

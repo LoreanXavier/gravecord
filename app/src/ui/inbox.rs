@@ -20,6 +20,13 @@ const SCHEDULED_PICTURE: &str = "https://cdn.discordapp.com/assets/content/c5582
 const WUMPUS_AVATAR: &str = "https://cdn.discordapp.com/assets/content/2532e8cd0600ccfbc61ff81c21959bde90a6645d0e71644a92f6cde5bfc48439.png";
 const MAX_HEIGHT: f32 = 576.;
 pub(super) const MENTIONS_KEY: &str = "inbox-mentions";
+const UNREAD_PREFIX: &str = "inbox-unread:";
+/// The Unreads tutorial card stays dismissed once "Got it!" is pressed.
+const TUTORIAL_SEEN: &str = "inbox-unreads-tutorial-seen";
+/// The join line's green arrow, a CSS background in the capture (`icon_bLMKT5`).
+const JOIN_ARROW: &str = "https://discordapp.com/assets/8b9de960da063cb9.svg";
+/// USER_JOIN.
+const USER_JOIN: u64 = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum InboxTab {
@@ -46,9 +53,53 @@ pub(super) fn saved_entries(body: &Value) -> Vec<(Message, Option<String>)> {
 }
 
 impl Root {
+    /// Unread, unmuted text channels in rail order, as the Unreads tab lists them.
+    fn unread_channels(&self) -> Vec<(Id, Id)> {
+        let now = chrono::Utc::now();
+        self.stores
+            .guilds
+            .iter()
+            .flat_map(|guild| {
+                // In the guild's own order: categories by position, channels by position inside them.
+                let place = |channel: &dc_state::Channel| {
+                    let parent = channel
+                        .parent_id
+                        .and_then(|parent| guild.channels.iter().find(|known| known.id == parent))
+                        .map_or(-1, |parent| parent.position);
+                    (parent, channel.position)
+                };
+                let mut channels: Vec<&dc_state::Channel> = guild.channels.iter().collect();
+                channels.sort_by_key(|channel| place(channel));
+                channels
+                    .into_iter()
+                    .filter(|channel| channel.kind == dc_state::ChannelKind::Text)
+                    .filter(move |channel| {
+                        !self
+                            .stores
+                            .guild_settings
+                            .channel_muted(guild.id, channel.id, now)
+                    })
+                    .filter(|channel| self.stores.is_unread(channel.id))
+                    .map(move |channel| (guild.id, channel.id))
+            })
+            .filter(|(_, channel)| !self.inbox_read.contains(channel))
+            .collect()
+    }
+
+    fn request_unreads(&mut self) {
+        for (_, channel) in self.unread_channels().into_iter().take(20) {
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key: format!("{UNREAD_PREFIX}{channel}"),
+                route: format!("/channels/{channel}/messages?limit=25"),
+            });
+        }
+    }
+
     pub(super) fn toggle_inbox(&mut self, cx: &mut Context<Self>) {
         if self.inbox.take().is_none() {
             self.inbox = Some(InboxTab::default());
+            self.request_unreads();
+            self.request_image("inbox:join".to_owned(), JOIN_ARROW.to_owned());
             self.request_saved();
             self.request_image("inbox:bookmarks".to_owned(), BOOKMARKS_PICTURE.to_owned());
             self.request_image("inbox:scheduled".to_owned(), SCHEDULED_PICTURE.to_owned());
@@ -59,6 +110,9 @@ impl Root {
 
     fn set_inbox_tab(&mut self, tab: InboxTab, cx: &mut Context<Self>) {
         self.inbox = Some(tab);
+        if tab == InboxTab::Unreads {
+            self.request_unreads();
+        }
         if tab == InboxTab::Mentions {
             let _ = self.requests.send(crate::net::Request::Fetch {
                 key: MENTIONS_KEY.to_owned(),
@@ -713,6 +767,278 @@ impl Root {
         )
     }
 
+    /// `tutorial_TqjWYy`: the Unreads introduction with its Got it! button.
+    fn unreads_tutorial(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .mt(px(16.))
+            .mb(px(16.))
+            .p(px(16.))
+            .rounded(px(8.))
+            .bg(color("--background-base-lowest"))
+            .flex()
+            .gap(px(16.))
+            .child(
+                div()
+                    .size(px(40.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(color("--background-base-low"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("inbox_tutorial", 24., "--text-subtle")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child("Stay up to date with latest messages!"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-default"))
+                            .child("Unread messages from all your unmuted channels will show up here. Time to get to that zero inbox!"),
+                    )
+                    .child(
+                        div().mt(px(8.)).flex().child(
+                            div()
+                                .id("inbox-tutorial-got-it")
+                                .h(px(32.))
+                                .px(px(11.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--control-primary-border-default"))
+                                .bg(color("--control-primary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--white"))
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    crate::storage::set(TUTORIAL_SEEN, serde_json::json!(true));
+                                    cx.notify();
+                                }))
+                                .child("Got it!"),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A message of an unread card: a join line with the green arrow, or the message as the list draws it.
+    fn unread_message(&self, message: &Message) -> AnyElement {
+        if message.kind == USER_JOIN {
+            let (before, after) = Self::join_line(message);
+            let arrow = self.images.get("inbox:join").cloned();
+            return div()
+                .relative()
+                .mt(px(17.))
+                .pl(px(72.))
+                .py(px(2.))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(28.))
+                        .top(px(7.))
+                        .size(px(16.))
+                        .children(arrow.map(|image| img(image).size(px(16.)))),
+                )
+                .child(
+                    div()
+                        .py(px(2.))
+                        .flex()
+                        .line_height(px(22.))
+                        .text_color(color("--text-muted"))
+                        .child(before)
+                        .child(
+                            div()
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(message.author.display_name().to_owned()),
+                        )
+                        .child(after)
+                        .child(
+                            div()
+                                .ml(px(4.))
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(super::header_time(
+                                    message.local_time(),
+                                    chrono::Local::now(),
+                                )),
+                        ),
+                )
+                .into_any_element();
+        }
+        self.inbox_message(message)
+    }
+
+    /// One unread channel: the header with Notification Settings, Mark As Read and Collapse, then its new messages
+    /// under their date line.
+    fn unread_card(&self, guild: Id, channel: Id, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let joined = self.stores.guild(guild).map_or(0, Guild::joined_snowflake);
+        let acked = self.stores.read_states.acked(channel, joined);
+        let mut messages: Vec<Message> = self
+            .fetched
+            .get(&format!("{UNREAD_PREFIX}{channel}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Message::from_value)
+            .filter(|message| message.id > acked)
+            .collect();
+        messages.sort_by_key(|message| message.id);
+        let first = messages.first()?.clone();
+        let last = messages
+            .last()
+            .map(|message| message.id)
+            .unwrap_or(first.id);
+        let collapsed = self.inbox_collapsed.contains(&channel);
+        let buttons = vec![
+            self.inbox_button(
+                format!("unread-bell-{channel}"),
+                "inbox_bell",
+                cx,
+                move |this, _| {
+                    this.inbox = None;
+                    this.select(guild, Some(channel));
+                    this.notify_open = true;
+                },
+            ),
+            self.inbox_button(
+                format!("unread-read-{channel}"),
+                "inbox_mark_read",
+                cx,
+                move |this, _| {
+                    this.ack_channel(channel, last);
+                },
+            ),
+            div()
+                .id(SharedString::from(format!("unread-collapse-{channel}")))
+                .size(px(24.))
+                .p(px(4.))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.inbox_collapsed.remove(&channel) {
+                        this.inbox_collapsed.insert(channel);
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    gpui::svg()
+                        .path("icons/inbox_collapse.svg")
+                        .size(px(16.))
+                        .text_color(color("--text-subtle"))
+                        // Folded, the chevron turns a quarter to the left.
+                        .when(collapsed, |this| {
+                            this.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                -std::f32::consts::FRAC_PI_2,
+                            )))
+                        }),
+                )
+                .into_any_element(),
+        ];
+        let date = first.local_time().format("%B %-d, %Y").to_string();
+        Some(
+            div()
+                .mb(px(16.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .overflow_hidden()
+                .child(self.inbox_channel_header(&first, buttons))
+                .when(!collapsed, |this| {
+                    this.child(
+                        div()
+                            .pr(px(16.))
+                            .pb(px(16.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .child(
+                                div()
+                                    .relative()
+                                    .ml(px(16.))
+                                    .mt(px(16.))
+                                    .h(px(1.))
+                                    .bg(color("--border-subtle"))
+                                    .flex()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(px(-8.))
+                                            .px(px(4.))
+                                            .py(px(2.))
+                                            .rounded(px(8.))
+                                            .bg(color("--background-surface-high"))
+                                            .text_size(px(12.))
+                                            .line_height(px(13.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-muted"))
+                                            .child(date),
+                                    ),
+                            )
+                            .children(messages.iter().map(|message| self.unread_message(message))),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Mark As Read on a card: ack its newest message, and drop the card.
+    fn ack_channel(&mut self, channel: Id, message: Id) {
+        self.stores.read_states.ack_local(channel, message, false);
+        self.inbox_read.insert(channel);
+        let _ = self.requests.send(crate::net::Request::Ack {
+            channel,
+            message,
+            manual: false,
+            mention_count: 0,
+            last_viewed: dc_state::read_state::days_since_epoch(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as u64)
+                    .unwrap_or_default(),
+            ),
+        });
+    }
+
+    /// Mark All as Read: every card's channel at once.
+    fn ack_all_unreads(&mut self) {
+        let listed: Vec<(Id, Id)> = self
+            .unread_channels()
+            .into_iter()
+            .filter_map(|(_, channel)| {
+                let newest = self
+                    .fetched
+                    .get(&format!("{UNREAD_PREFIX}{channel}"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Message::from_value)
+                    .map(|message| message.id)
+                    .max()?;
+                Some((channel, newest))
+            })
+            .collect();
+        for (channel, newest) in listed {
+            self.ack_channel(channel, newest);
+        }
+    }
+
     fn inbox_page(&self, tab: InboxTab, cx: &mut Context<Self>) -> Vec<AnyElement> {
         match tab {
             InboxTab::Reminders => {
@@ -777,10 +1103,18 @@ impl Root {
                     .collect()
             }
             InboxTab::Scheduled => vec![self.scheduled_empty()],
-            InboxTab::Unreads => vec![self.inbox_empty(
-                "Stay up to date with latest messages!",
-                "Unread messages from all your unmuted channels will show up here.",
-            )],
+            InboxTab::Unreads => {
+                let mut list = Vec::new();
+                if crate::storage::get(TUTORIAL_SEEN).is_none() {
+                    list.push(self.unreads_tutorial(cx));
+                }
+                list.extend(
+                    self.unread_channels()
+                        .into_iter()
+                        .filter_map(|(guild, channel)| self.unread_card(guild, channel, cx)),
+                );
+                list
+            }
         }
     }
 
@@ -895,6 +1229,14 @@ impl Root {
                                     .text_color(color("--text-strong"))
                                     .child("Inbox"),
                             )
+                            .when(tab == InboxTab::Unreads, |this| {
+                                this.child(div().mr(px(8.)).child(self.inbox_button(
+                                    "inbox-mark-all".to_owned(),
+                                    "inbox_mark_all",
+                                    cx,
+                                    |this, _| this.ack_all_unreads(),
+                                )))
+                            })
                             .child(
                                 // `friendRequestsButton_QwUPp6`: Friends, where requests wait.
                                 div()
