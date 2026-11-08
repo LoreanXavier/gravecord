@@ -88,9 +88,11 @@ mod server_settings;
 mod server_settings_pages;
 mod server_sounds;
 mod server_stickers;
+mod server_tag;
 mod server_template;
 mod server_webhooks;
 mod settings;
+mod tag_badges;
 mod threads;
 mod tooltip;
 mod unread;
@@ -522,6 +524,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.audit_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_tag::TAG_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.tag_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_boost::BOOST_PREFIX) {

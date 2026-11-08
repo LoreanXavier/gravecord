@@ -283,6 +283,7 @@ pub(crate) struct ServerSettings {
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
+    pub(super) tag: super::server_tag::TagState,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -438,6 +439,7 @@ impl Root {
             community: None,
             overview: None,
             boost: Default::default(),
+            tag: Default::default(),
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -1008,6 +1010,7 @@ impl Root {
             Page::Access => self.access_dirty(open.guild, cx),
             Page::Community => self.overview_dirty(),
             Page::BoostPerks => self.boost_dirty(),
+            Page::Tag => self.tag_dirty(),
             _ => false,
         };
         let mut nav = div()
@@ -1147,7 +1150,7 @@ impl Root {
         );
         let content: AnyElement = match page {
             Page::Profile => self.server_profile_page(open, cx),
-            Page::Tag => Self::server_page_title("Server Tag"),
+            Page::Tag => self.server_tag_page(open.guild, cx),
             Page::Engagement => self.server_engagement_page(open.guild, cx),
             Page::BoostPerks => self.server_boost_page(open.guild, cx),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
@@ -1295,6 +1298,7 @@ impl Root {
                                         Some((Page::Access, guild)) => this.reset_access(guild, cx),
                                         Some((Page::Community, _)) => this.reset_overview(cx),
                                         Some((Page::BoostPerks, _)) => this.reset_boost(cx),
+                                        Some((Page::Tag, _)) => this.reset_tag(cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1337,6 +1341,7 @@ impl Root {
                                         Some((Page::Community, guild)) => {
                                             this.save_overview(guild, cx)
                                         }
+                                        Some((Page::Tag, guild)) => this.save_tag(guild, cx),
                                         _ => this.save_server_settings(cx),
                                     }
                                 })),
