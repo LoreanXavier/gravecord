@@ -42,6 +42,7 @@ mod gifs;
 mod group_dm;
 mod history;
 mod home;
+mod inbox;
 mod links;
 mod menu;
 mod modal;
@@ -160,6 +161,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    inbox: Option<inbox::InboxTab>,
     gifs: Option<gifs::Gifs>,
     shown_blocked: HashSet<Id>,
     shown_blocked_profiles: HashSet<Id>,
@@ -264,6 +266,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            inbox: None,
             gifs: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
@@ -1191,6 +1194,7 @@ impl Root {
                         bar_button("inbox", "inbox")
                             .relative()
                             .mr(px(12.))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_inbox(cx)))
                             .child(self.anchor_probe("bar-inbox")),
                     )
                     .child(
@@ -3569,6 +3573,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key == "escape" && this.inbox.is_some() {
+                    this.inbox = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && (this.friend_menu.is_some() || this.confirm_remove_friend.is_some())
                 {
@@ -3756,6 +3766,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.inbox_popout(window, cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.group_dm_modal(window, cx))
