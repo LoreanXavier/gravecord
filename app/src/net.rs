@@ -103,6 +103,10 @@ pub enum Request {
         due_at: Option<String>,
         save: bool,
     },
+    /// `POST /interactions`: an application command run by hand.
+    Interaction {
+        body: Value,
+    },
     /// `PIN`/unpin: `PUT` or `DELETE /channels/{channel}/messages/pins/{message}`.
     Pin {
         channel: u64,
@@ -227,6 +231,14 @@ async fn upload_all(
         }));
     }
     Ok(attachments)
+}
+
+/// A fresh nonce: the snowflake of now, as the client stamps outgoing messages and interactions.
+pub(crate) fn nonce() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    pin::nonce_at(now)
 }
 
 fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> Value {
@@ -412,6 +424,16 @@ pub async fn run(
                     };
                     if let Err(error) = result {
                         warn!("saving failed: {error}");
+                    }
+                });
+            }
+            Request::Interaction { body } => {
+                tokio::spawn(async move {
+                    if let Err(error) = client
+                        .request(reqwest::Method::POST, "/interactions", Some(&body))
+                        .await
+                    {
+                        warn!("interaction failed: {error}");
                     }
                 });
             }

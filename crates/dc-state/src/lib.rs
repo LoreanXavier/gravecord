@@ -625,6 +625,8 @@ pub struct Stores {
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
+    /// READY's `session_id`, which interactions carry.
+    pub session_id: Option<String>,
     pub guild_order: Vec<Id>,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
@@ -760,6 +762,7 @@ impl Stores {
             .as_str()
             .and_then(settings::guild_order)
             .unwrap_or_default();
+        self.session_id = text(&data["session_id"]);
         self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
         for user in data["users"].as_array().into_iter().flatten() {
             if let Some(user) = User::from_value(user) {

@@ -8,8 +8,7 @@ use crate::net::Request;
 use chrono::{Datelike, Duration, Local, TimeZone, Timelike};
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, SharedString, Window, deferred, div, prelude::*,
-    px, svg,
+    AnyElement, Context, FontWeight, IntoElement, SharedString, deferred, div, prelude::*, px, svg,
 };
 use std::time::Instant;
 
@@ -196,14 +195,12 @@ impl Root {
 
     /// The reminder submenu: `Remind Me` and the five times plus Custom..., or for a reminder already set, its due
     /// time with Mark Complete, then `Edit Reminder` and the times.
-    pub(super) fn reminder_submenu(
+    pub(super) fn reminder_rows(
         &self,
         channel: Id,
         message: Id,
-        row: gpui::Bounds<gpui::Pixels>,
-        window: &Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<(AnyElement, f32)> {
         let due = self
             .saved_state(channel, message)
             .flatten()
@@ -238,7 +235,7 @@ impl Root {
                 .text_color(color("--text-strong"))
                 .child(text)
         };
-        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut rows: Vec<(AnyElement, f32)> = Vec::new();
         if let Some(due) = due {
             let left = due.timestamp_millis() - now.timestamp_millis();
             let text = if left >= 0 {
@@ -246,8 +243,8 @@ impl Root {
             } else {
                 format!("Due {} ago", humanize(left))
             };
-            rows.push(label(text));
-            rows.push(
+            rows.push((label(text), 36.));
+            rows.push((
                 item("reminder-complete".into(), "Mark Complete")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
@@ -255,13 +252,14 @@ impl Root {
                         this.complete_reminder(channel, message, cx);
                     }))
                     .into_any_element(),
-            );
-            rows.push(label("Edit Reminder".to_owned()));
+                34.,
+            ));
+            rows.push((label("Edit Reminder".to_owned()), 36.));
         } else {
-            rows.push(label("Remind Me".to_owned()));
+            rows.push((label("Remind Me".to_owned()), 36.));
         }
         for (index, (text, time)) in reminder_choices(now).into_iter().enumerate() {
-            rows.push(
+            rows.push((
                 item(SharedString::from(format!("reminder-choice-{index}")), text)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
@@ -269,9 +267,10 @@ impl Root {
                         this.set_reminder(channel, message, time, cx);
                     }))
                     .into_any_element(),
-            );
+                34.,
+            ));
         }
-        rows.push(
+        rows.push((
             item("reminder-custom".into(), "Custom...")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.menu = None;
@@ -281,49 +280,9 @@ impl Root {
                     cx.notify();
                 }))
                 .into_any_element(),
-        );
-        let height = 16. + 2. + rows.len() as f32 * 34. + 2.;
-        let viewport = window.viewport_size();
-        // Beside the row: to the right when it fits, else to the left, 4px off it; nudged 8px inside the window.
-        let width = 188.;
-        let right_side = f32::from(row.right()) + 4. + width <= f32::from(viewport.width) - 8.;
-        let left = if right_side {
-            f32::from(row.right()) + 4.
-        } else {
-            f32::from(row.left()) - 4. - width
-        };
-        let top = f32::from(row.top())
-            .min(f32::from(viewport.height) - 8. - height)
-            .max(8.);
-        deferred(
-            div()
-                .id("reminder-submenu")
-                .child(self.anchor_probe("reminder-submenu"))
-                .occlude()
-                .absolute()
-                .left(px(left))
-                .top(px(top))
-                .w(px(width))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-higher"))
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.24),
-                    offset: gpui::point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
-                .py(px(8.))
-                .pl(px(8.))
-                .pr(px(8.))
-                .flex()
-                .flex_col()
-                .children(rows),
-        )
-        .with_priority(2)
-        .into_any_element()
+            34.,
+        ));
+        rows
     }
 
     /// The toast under the Inbox button: a rich tooltip with its caret at the end, pointing up at the button.

@@ -29,6 +29,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod actions;
+mod apps;
 mod badge_paths;
 mod dm;
 mod dm_profile;

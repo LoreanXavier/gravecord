@@ -59,9 +59,17 @@ pub(super) struct SavedState {
     pub reminder: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SubmenuKind {
+    Reaction,
+    Reminder,
+    Apps,
+}
+
 /// The submenu hanging off a menu row.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Submenu {
+    pub kind: SubmenuKind,
     pub message: Id,
     pub row: gpui::Bounds<Pixels>,
 }
@@ -288,8 +296,18 @@ impl Root {
                 }
                 // Hovering the reminder row opens its submenu; any other row closes it.
                 let row = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
-                this.submenu = match (run, row) {
-                    (Action::Reminder, Some(row)) => Some(Submenu {
+                let kind = match run {
+                    Action::AddReaction => Some(SubmenuKind::Reaction),
+                    Action::Reminder => Some(SubmenuKind::Reminder),
+                    Action::Apps => Some(SubmenuKind::Apps),
+                    _ => None,
+                };
+                if kind == Some(SubmenuKind::Apps) {
+                    this.request_command_index();
+                }
+                this.submenu = match (kind, row) {
+                    (Some(kind), Some(row)) => Some(Submenu {
+                        kind,
                         message: target,
                         row,
                     }),
@@ -311,8 +329,8 @@ impl Root {
                     if event.modifiers().shift && matches!(run, Action::Delete | Action::Pin) {
                         this.run_unconfirmed(run, target, cx);
                     } else {
-                        if run == Action::Reminder {
-                            // The reminder row only opens its submenu.
+                        if matches!(run, Action::Reminder | Action::Apps) {
+                            // These rows only open their submenus.
                             return;
                         }
                         this.run_action(run, target, window, cx);
@@ -411,7 +429,7 @@ impl Root {
         let (position, margin) = match open.anchor {
             Anchor::Pointer(at) => (at, EDGE_MARGIN),
             Anchor::MoreButton(at) => {
-                let estimate = self.menu_height(open.own);
+                let estimate = self.menu_height(open.own, open.message);
                 let bottom_room = f32::from(window.viewport_size().height) - MORE_EDGE;
                 let top = f32::from(at.y).min(bottom_room - estimate).max(MORE_EDGE);
                 (
@@ -450,7 +468,7 @@ impl Root {
                                     && this
                                         .tip_anchors
                                         .borrow()
-                                        .get("reminder-submenu")
+                                        .get("submenu")
                                         .is_some_and(|bounds| bounds.contains(&event.position));
                                 if !in_submenu {
                                     this.menu = None;
@@ -483,13 +501,177 @@ impl Root {
         self.menu?;
         let submenu = self.submenu?;
         let channel = self.channel?;
-        Some(self.reminder_submenu(channel, submenu.message, submenu.row, window, cx))
+        let rows = match submenu.kind {
+            SubmenuKind::Reminder => self.reminder_rows(channel, submenu.message, cx),
+            SubmenuKind::Reaction => self.reaction_rows(channel, submenu.message, cx),
+            SubmenuKind::Apps => self.app_rows(channel, submenu.message, cx),
+        };
+        Some(self.submenu_frame(rows, submenu.row, window))
+    }
+
+    /// `submenu_M3qk4j`: 188 wide, its first row level with the row it hangs off (8px padding and the border
+    /// above it), to the right when it fits, else to the left, 4px off the row; nudged 8px inside the window.
+    fn submenu_frame(
+        &self,
+        rows: Vec<(AnyElement, f32)>,
+        row: gpui::Bounds<Pixels>,
+        window: &Window,
+    ) -> AnyElement {
+        let height = 2. + 16. + rows.iter().map(|(_, height)| height).sum::<f32>();
+        let viewport = window.viewport_size();
+        let width = 188.;
+        let right_side = f32::from(row.right()) + 4. + width <= f32::from(viewport.width) - 8.;
+        let left = if right_side {
+            f32::from(row.right()) + 4.
+        } else {
+            f32::from(row.left()) - 4. - width
+        };
+        let top = (f32::from(row.top()) - 9.)
+            .min(f32::from(viewport.height) - 8. - height)
+            .max(8.);
+        deferred(
+            div()
+                .id("submenu")
+                .child(self.anchor_probe("submenu"))
+                .occlude()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(12.)),
+                    blur_radius: px(24.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .p(px(8.))
+                .flex()
+                .flex_col()
+                .children(rows.into_iter().map(|(element, _)| element)),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
+
+    pub(super) fn submenu_item(
+        &self,
+        id: SharedString,
+        leading: Option<AnyElement>,
+        label: String,
+        height: f32,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .h(px(height))
+            .p(px(8.))
+            .rounded(px(2.))
+            .cursor_pointer()
+            .hover(|style| {
+                style
+                    .bg(color("--interactive-background-hover"))
+                    .rounded(px(4.))
+            })
+            .flex()
+            .items_center()
+            .children(leading.map(|leading| div().mr(px(8.)).child(leading)))
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(label),
+            )
+    }
+
+    /// Add Reaction's submenu (module 761304): up to twelve frecent reactions, then View More for the picker.
+    fn reaction_rows(
+        &self,
+        channel: Id,
+        message: Id,
+        cx: &mut Context<Self>,
+    ) -> Vec<(AnyElement, f32)> {
+        let mut rows: Vec<(AnyElement, f32)> = self
+            .frequent_reactions()
+            .into_iter()
+            .filter_map(|name| dc_tokens::emoji_by_name(&name))
+            .take(12)
+            .enumerate()
+            .map(|(index, emoji)| {
+                let picture = self
+                    .images
+                    .get(&format!("emoji:{}", emoji.surrogates))
+                    .cloned();
+                let leading = div()
+                    .size(px(20.))
+                    .children(picture.map(|picture| img(picture).size(px(20.))))
+                    .into_any_element();
+                (
+                    self.submenu_item(
+                        SharedString::from(format!("reaction-row-{index}")),
+                        Some(leading),
+                        format!(":{}:", emoji.names[0]),
+                        36.,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.submenu = None;
+                        this.react_from_menu(message, emoji.surrogates, cx);
+                    }))
+                    .into_any_element(),
+                    36.,
+                )
+            })
+            .collect();
+        rows.push((
+            div()
+                .my(px(8.))
+                .h(px(1.))
+                .bg(color("--border-subtle"))
+                .into_any_element(),
+            17.,
+        ));
+        let leading = svg()
+            .path("icons/menu_view_reactions.svg")
+            .size(px(20.))
+            .text_color(color("--interactive-text-default"))
+            .into_any_element();
+        rows.push((
+            self.submenu_item(
+                "reaction-view-more".into(),
+                Some(leading),
+                "View More".to_owned(),
+                36.,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let at = this.menu.map(|open| match open.anchor {
+                    Anchor::Pointer(at) | Anchor::MoreButton(at) => at,
+                });
+                this.menu = None;
+                this.submenu = None;
+                if let Some(at) = at {
+                    this.open_picker(
+                        super::picker::Target::Reaction { channel, message },
+                        at,
+                        window,
+                        cx,
+                    );
+                }
+            }))
+            .into_any_element(),
+            36.,
+        ));
+        rows
     }
 
     /// The menu's height before layout, for placing the hover bar's menu: rows of 36, separators of 17, the quick row
     /// of 60, 16 of padding and 2 of border.
-    fn menu_height(&self, own: bool) -> f32 {
-        let items = message_items_saved(own, SavedState::default());
+    fn menu_height(&self, own: bool, message: Id) -> f32 {
+        let items = message_items_saved(own, self.saved_flags(message));
         let rows = items
             .iter()
             .filter(|item| !matches!(item, Item::Separator))
