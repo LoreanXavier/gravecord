@@ -476,6 +476,8 @@ pub struct Message {
     /// A forwarded message's copy (`message_snapshots[0].message`) and where it came from.
     pub forwarded: Option<Box<Forwarded>>,
     pub pinned: bool,
+    /// `message_reference.message_id`: what a reply, a forward or a pin notice points at.
+    pub reference_id: Option<Id>,
 }
 
 /// What a forward carries: the original's content, files and embeds, and its `message_reference`.
@@ -571,6 +573,7 @@ impl Message {
             ignored: false,
             forwarded: Forwarded::from_value(value).map(Box::new),
             pinned: value["pinned"].as_bool().unwrap_or(false),
+            reference_id: id(&value["message_reference"]["message_id"]),
         })
     }
 

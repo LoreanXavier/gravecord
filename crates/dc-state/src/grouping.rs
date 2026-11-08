@@ -94,6 +94,7 @@ mod tests {
             ignored: false,
             forwarded: None,
             pinned: false,
+            reference_id: None,
         }
     }
 

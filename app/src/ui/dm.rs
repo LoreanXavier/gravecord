@@ -3,14 +3,19 @@
 
 use super::{Root, avatar_source, color, header_time, icon};
 use dc_state::Message;
-use gpui::{AnyElement, FontWeight, IntoElement, div, img, prelude::*, px};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
 /// `FRIEND_REQUEST_ACCEPTED` in the message type enum.
 pub(super) const FRIEND_REQUEST_ACCEPTED: u64 = 67;
+/// `CHANNEL_PINNED_MESSAGE`.
+pub(super) const CHANNEL_PINNED_MESSAGE: u64 = 6;
 
 /// System messages this client draws; the rest still render as ordinary messages.
 pub(super) fn is_system(message: &Message) -> bool {
-    message.kind == FRIEND_REQUEST_ACCEPTED
+    matches!(
+        message.kind,
+        FRIEND_REQUEST_ACCEPTED | CHANNEL_PINNED_MESSAGE
+    )
 }
 
 /// A `sm` secondary button: 32 tall, 11px inside a 1px border, 14px medium text.
@@ -158,10 +163,93 @@ impl Root {
     }
 
     /// A system line: an 18px icon centred in the 72px gutter, then who and what, and the time.
-    pub(super) fn system_message(&self, message: &Message) -> AnyElement {
-        let (icon_name, tail) = match message.kind {
-            FRIEND_REQUEST_ACCEPTED => ("system_friend_accepted", " accepted your friend request."),
-            _ => ("system_friend_accepted", ""),
+    /// `yIDvPL`: "{name} pinned **a message** to this channel. See all **pinned messages**.", each part a link:
+    /// the name to the profile, the message to jump to, the pins popout.
+    fn pin_notice(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let link = |id: String, text: String| {
+            div()
+                .id(SharedString::from(id))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .cursor_pointer()
+                .child(text)
+        };
+        let target = message.reference_id;
+        let channel = message.channel_id;
+        div()
+            .py(px(2.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .line_height(px(22.))
+            .text_color(color("--channels-default"))
+            .child(
+                self.profile_trigger(
+                    format!("pin-notice-name-{}", message.id),
+                    message.author.id,
+                    div()
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(message.author.display_name().to_owned()),
+                    cx,
+                ),
+            )
+            .child("\u{a0}pinned\u{a0}")
+            .child(
+                link(
+                    format!("pin-notice-message-{}", message.id),
+                    "a message".to_owned(),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let found = target.and_then(|target| {
+                        this.stores
+                            .messages
+                            .get(&channel)
+                            .and_then(|list| list.iter().find(|known| known.id == target))
+                            .cloned()
+                    });
+                    if let Some(found) = found {
+                        this.jump_to_message(&found, cx);
+                    }
+                })),
+            )
+            .child("\u{a0}to this channel. See all\u{a0}")
+            .child(
+                link(
+                    format!("pin-notice-pins-{}", message.id),
+                    "pinned messages".to_owned(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let key = if this.current_dm().is_some() {
+                        "dm-pins"
+                    } else {
+                        "pins"
+                    };
+                    if this.pins_open.is_none() {
+                        this.toggle_pins(key, cx);
+                    }
+                })),
+            )
+            .child(".")
+            .child(
+                div()
+                    .ml(px(4.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(500.))
+                    .child(header_time(message.local_time(), chrono::Local::now())),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn system_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let (icon_name, tail, tint) = match message.kind {
+            FRIEND_REQUEST_ACCEPTED => (
+                "system_friend_accepted",
+                " accepted your friend request.",
+                "--status-positive",
+            ),
+            CHANNEL_PINNED_MESSAGE => ("system_pinned", "", "--channels-default"),
+            _ => ("system_friend_accepted", "", "--status-positive"),
         };
         div()
             .pt(px(17.))
@@ -182,30 +270,38 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon(icon_name, 18., "--status-positive")),
+                            .child(icon(icon_name, 18., tint)),
                     )
-                    .child(
-                        div()
-                            .py(px(2.))
-                            .flex()
-                            .items_center()
-                            .line_height(px(22.))
-                            .text_color(color("--channels-default"))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
-                                    .child(message.author.display_name().to_owned()),
-                            )
-                            .child(tail)
-                            .child(
-                                div()
-                                    .ml(px(4.))
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight(500.))
-                                    .child(header_time(message.local_time(), chrono::Local::now())),
-                            ),
-                    ),
+                    .when(message.kind == CHANNEL_PINNED_MESSAGE, |this| {
+                        this.child(self.pin_notice(message, cx))
+                    })
+                    .when(message.kind != CHANNEL_PINNED_MESSAGE, |this| {
+                        this.child(
+                            div()
+                                .py(px(2.))
+                                .flex()
+                                .items_center()
+                                .line_height(px(22.))
+                                .text_color(color("--channels-default"))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(message.author.display_name().to_owned()),
+                                )
+                                .child(tail)
+                                .child(
+                                    div()
+                                        .ml(px(4.))
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(500.))
+                                        .child(header_time(
+                                            message.local_time(),
+                                            chrono::Local::now(),
+                                        )),
+                                ),
+                        )
+                    }),
             )
             .into_any_element()
     }

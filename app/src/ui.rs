@@ -2303,6 +2303,8 @@ impl Root {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.))
                         .pl(px(12.))
                         .flex()
                         .flex_col()
@@ -2539,7 +2541,7 @@ impl Root {
                     return div().into_any_element();
                 };
                 if dm::is_system(message) {
-                    return self.system_message(message);
+                    return self.system_message(message, cx);
                 }
                 // The 17px between groups is outside the hover box, and the box stops 16px short of the edge. Padding,
                 // not margin: gpui lists measure an item without its margins.
