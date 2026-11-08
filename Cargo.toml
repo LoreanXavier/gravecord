@@ -34,6 +34,18 @@ davey = { version = "=0.1.4", default-features = false }
 openmls = { version = "=0.8.1", default-features = false }
 opus2 = { version = "=0.4.0", default-features = false, features = ["backend-libopus", "static", "bundled"] }
 rtrb = "=0.4.0"
+# Microphone processing (crates/dc-voice/src/process.rs): Sonora, a pure Rust port of WebRTC audio processing
+# (BSD-3-Clause); DeepFilterNet 3 through libDF on tract (MIT OR Apache-2.0), with its bundled model; the FFT and
+# arrays libDF uses.
+sonora = { version = "=0.2.0", default-features = false }
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "d375b2d8309e0935d165700c91da9de862a99c31", default-features = false, features = ["tract", "default-model"] }
+ndarray = "0.15"
+# libDF builds against tract 0.21.4 (its own lockfile); 0.21.10 dropped `symbol_table` and moved to another ndarray.
+tract-core = "=0.21.4"
+tract-hir = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+realfft = "3"
 url = "2"
 zeroize = "1.8"
 dc-gateway = { path = "crates/dc-gateway" }
@@ -49,6 +61,40 @@ debug = "limited"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# The voice processors run in real time even in debug builds.
+[profile.dev.package.deep_filter]
+opt-level = 3
+[profile.dev.package.tract-core]
+opt-level = 3
+# tract-core's debug assertions reject DeepFilterNet 3's graph ("duplicate name /convt3/Conv.bias").
+debug-assertions = false
+[profile.dev.package.tract-linalg]
+opt-level = 3
+[profile.dev.package.tract-data]
+opt-level = 3
+[profile.dev.package.tract-nnef]
+opt-level = 3
+[profile.dev.package.tract-onnx]
+opt-level = 3
+[profile.dev.package.tract-onnx-opl]
+opt-level = 3
+[profile.dev.package.tract-hir]
+opt-level = 3
+[profile.dev.package.tract-pulse]
+opt-level = 3
+[profile.dev.package.tract-pulse-opl]
+opt-level = 3
+[profile.dev.package.sonora]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.ndarray]
+opt-level = 3
+[profile.dev.package.dc-voice]
+opt-level = 3
 
 # Same revisions as vendor/zed/Cargo.toml: gpui is built and tested against these forks.
 [patch.crates-io]

@@ -181,6 +181,7 @@ fn switch(
         .cursor_pointer()
         .on_click(cx.listener(move |this, _, _, cx| {
             this.setting_choices.insert(key, Choice::On(!on));
+            this.voice_setting_changed(key);
             cx.notify();
         }))
         .child(
@@ -225,7 +226,12 @@ pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
 }
 
 /// `selectField_vWC4bk`: 40 tall with a 1px border, the value 13px in, a 20px chevron 8px from the right.
-fn select_field(value: &'static str, width: Option<f32>) -> impl IntoElement {
+fn select_field(value: &'static str, width: Option<f32>) -> gpui::Div {
+    select_field_open(value, width, false)
+}
+
+/// The field, its border brand and its chevron turned up while its list is open (`isOpen_vWC4bk`).
+fn select_field_open(value: &'static str, width: Option<f32>, open: bool) -> gpui::Div {
     div()
         .flex_none()
         .when_some(width, |this, width| this.w(px(width)))
@@ -233,7 +239,11 @@ fn select_field(value: &'static str, width: Option<f32>) -> impl IntoElement {
         .h(px(40.))
         .rounded(px(8.))
         .border_1()
-        .border_color(color("--input-border-default"))
+        .border_color(if open {
+            color("--text-brand")
+        } else {
+            color("--input-border-default")
+        })
         .bg(color("--input-background-default"))
         .flex()
         .items_center()
@@ -255,9 +265,72 @@ fn select_field(value: &'static str, width: Option<f32>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(mask_icon("settings_select_chevron", 20., "--text-strong")),
+                .child(
+                    mask_icon("settings_select_chevron", 20., "--text-strong").when(open, |this| {
+                        this.with_transformation(gpui::Transformation::rotate(gpui::percentage(
+                            0.5,
+                        )))
+                    }),
+                ),
         )
 }
+
+/// Selects that open, as module 158935's `r2` lists its options: the key, the key its open state is kept under in
+/// `setting_choices`, and the labels in order. The rest still show the captured value only.
+const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[(
+    "voice_noise_suppression_setting",
+    "voice_noise_suppression_setting/open",
+    &["Krisp", "Standard", "None"],
+)];
+
+/// Where the three microphone choices are kept in storage.json, beside the user panel's devices and volumes.
+const NOISE_STORED: &str = "audio.noise_suppression";
+const ECHO_STORED: &str = "audio.echo_cancellation";
+const ROOM_ECHO_STORED: &str = "audio.room_echo";
+
+/// The select's option index as the processors take it: Krisp, Standard, None.
+fn suppression(index: usize) -> dc_voice::Suppression {
+    match index {
+        0 => dc_voice::Suppression::Krisp,
+        1 => dc_voice::Suppression::Standard,
+        _ => dc_voice::Suppression::None,
+    }
+}
+
+/// At start: the stored microphone choices, given to the processors and returned as the settings page's choices.
+pub(in crate::ui) fn restored_voice_choices() -> std::collections::HashMap<&'static str, Choice> {
+    let processing = &dc_voice::prefs().processing;
+    let mut choices = std::collections::HashMap::new();
+    if let Some(index) = crate::storage::get(NOISE_STORED).and_then(|value| value.as_u64()) {
+        let index = index as usize;
+        processing.set_suppression(suppression(index));
+        choices.insert("voice_noise_suppression_setting", Choice::Index(index));
+    }
+    if let Some(on) = crate::storage::get(ECHO_STORED).and_then(|value| value.as_bool()) {
+        processing.set_echo_cancellation(on);
+        choices.insert("voice_echo_cancellation_setting", Choice::On(on));
+    }
+    if let Some(on) = crate::storage::get(ROOM_ECHO_STORED).and_then(|value| value.as_bool()) {
+        processing.set_room_echo(on);
+        choices.insert(ROOM_ECHO_KEY, Choice::On(on));
+    }
+    choices
+}
+
+/// gravecord's own switch under Echo Cancellation, not in the official client (`dc_voice`'s `dereverb.rs`,
+/// DECISIONS.md). The generated pages stay as captured; it is drawn after the row it follows.
+pub(in crate::ui) const ROOM_ECHO_KEY: &str = "gravecord_reduce_room_echo";
+const ROOM_ECHO_AFTER: &str = "voice_echo_cancellation_setting";
+static ROOM_ECHO: Node = Node::Switch {
+    key: ROOM_ECHO_KEY,
+    label: "Reduce Room Echo",
+    badge: false,
+    description: &[(
+        "Takes the echo of your room off your voice, so you don't sound far away in a bare room.",
+        false,
+    )],
+    on: false,
+};
 
 /// `slider_OnqacX hasMarks_OnqacX`: marks above a 4px bar at 34px, the 16px grabber centred on the bar.
 fn slider(
@@ -352,6 +425,138 @@ fn slider(
 }
 
 impl Root {
+    /// A select that opens: the field, and under it while open, `selectDropdown_vWC4bk`'s list (rows 40 tall in 4px
+    /// of padding, the chosen one ticked), measured in `design/dom/settings/voice-video-noise-open-darker-cozy.json`.
+    fn settings_select(
+        &self,
+        key: &'static str,
+        captured: &'static str,
+        width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some((_, open_key, options)) =
+            SELECT_OPTIONS.iter().find(|(select, ..)| *select == key)
+        else {
+            return select_field(captured, width).into_any_element();
+        };
+        let open_key: &'static str = open_key;
+        let options: &'static [&'static str] = options;
+        let current = options
+            .iter()
+            .position(|option| *option == captured)
+            .unwrap_or(0);
+        let chosen = self.choice_index(key, current);
+        let label = options.get(chosen).copied().unwrap_or(captured);
+        let open = self.choice_on(open_key, false);
+        let rows: Vec<AnyElement> = options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                div()
+                    .id(SharedString::from(format!("{key}-option-{index}")))
+                    .flex_none()
+                    .h(px(40.))
+                    .pl(px(8.))
+                    .pr(px(4.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--background-mod-normal")))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-strong"))
+                            .child(*option),
+                    )
+                    .when(index == chosen, |this| {
+                        this.child(div().p(px(4.)).child(super::super::icon(
+                            "select_check",
+                            20.,
+                            "--text-strong",
+                        )))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.setting_choices.insert(key, Choice::Index(index));
+                        this.setting_choices.insert(open_key, Choice::On(false));
+                        this.voice_setting_changed(key);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                select_field_open(label, width, open)
+                    .id(SharedString::from(format!("{key}-field")))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.setting_choices.insert(open_key, Choice::On(!open));
+                        cx.notify();
+                    })),
+            )
+            .when(open, |this| {
+                this.child(
+                    gpui::deferred(
+                        div()
+                            .id(SharedString::from(format!("{key}-list")))
+                            .occlude()
+                            .absolute()
+                            .top(px(44.))
+                            .left_0()
+                            .right_0()
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.16),
+                                offset: gpui::point(px(0.), px(2.)),
+                                blur_radius: px(8.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                                this.setting_choices.insert(open_key, Choice::On(false));
+                                cx.notify();
+                            }))
+                            .child(div().flex().flex_col().children(rows)),
+                    )
+                    .with_priority(2),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The Voice & Video choices the microphone processing follows (`setNoiseCancellation`/`setNoiseSuppression`
+    /// from the select, `setEchoCancellation`, and gravecord's Reduce Room Echo).
+    pub(in crate::ui) fn voice_setting_changed(&self, key: &'static str) {
+        let processing = &dc_voice::prefs().processing;
+        match key {
+            "voice_noise_suppression_setting" => {
+                let index = self.choice_index(key, 0);
+                processing.set_suppression(suppression(index));
+                crate::storage::set(NOISE_STORED, serde_json::json!(index));
+            }
+            "voice_echo_cancellation_setting" => {
+                let on = self.choice_on(key, true);
+                processing.set_echo_cancellation(on);
+                crate::storage::set(ECHO_STORED, serde_json::json!(on));
+            }
+            ROOM_ECHO_KEY => {
+                let on = self.choice_on(key, false);
+                processing.set_room_echo(on);
+                crate::storage::set(ROOM_ECHO_STORED, serde_json::json!(on));
+            }
+            _ => {}
+        }
+    }
+
     fn choice_on(&self, key: &'static str, captured: bool) -> bool {
         match self.setting_choices.get(key) {
             Some(Choice::On(on)) => *on,
@@ -389,6 +594,10 @@ impl Root {
                 // Each row keeps its official key as its id, the anchor the subnav and search scroll to.
                 let rows: Vec<AnyElement> = children
                     .iter()
+                    .flat_map(|child| {
+                        let after = (child.key() == ROOM_ECHO_AFTER).then_some(&ROOM_ECHO);
+                        std::iter::once(child).chain(after)
+                    })
                     .map(|child| {
                         div()
                             .parity(child.key())
@@ -518,6 +727,44 @@ impl Root {
                             })),
                     )
                     .into_any_element()
+            }
+            Node::Select {
+                key,
+                label,
+                badge,
+                description,
+                value,
+                vertical,
+                width: field,
+            } if SELECT_OPTIONS.iter().any(|(select, ..)| select == key) => {
+                let field = if *vertical {
+                    (*field < width).then_some(*field)
+                } else {
+                    Some(*field)
+                };
+                let select = self.settings_select(key, value, field, cx);
+                if *vertical {
+                    div()
+                        .min_h(px(48.))
+                        .py(px(8.))
+                        .flex()
+                        .flex_col()
+                        .child(label_block(label, *badge, description).mb(px(8.)))
+                        .child(select)
+                        .into_any_element()
+                } else {
+                    div()
+                        .min_h(px(48.))
+                        .py(px(8.))
+                        .flex()
+                        .gap(px(COLUMN_GAP))
+                        .child(
+                            label_block(label, *badge, description)
+                                .w(px(width - COLUMN_GAP - field.unwrap_or(0.))),
+                        )
+                        .child(select)
+                        .into_any_element()
+                }
             }
             Node::Select {
                 label,
@@ -701,6 +948,38 @@ impl Root {
                     }),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod voice_tests {
+    use super::*;
+
+    /// The select's rows in module 158935's order become the processors' choices: `KRISP`, `STANDARD`, `NONE`.
+    #[test]
+    fn noise_suppression_rows_map_to_the_processors() {
+        let (_, _, options) = SELECT_OPTIONS
+            .iter()
+            .find(|(key, ..)| *key == "voice_noise_suppression_setting")
+            .expect("the select opens");
+        assert_eq!(*options, ["Krisp", "Standard", "None"]);
+        assert_eq!(suppression(0), dc_voice::Suppression::Krisp);
+        assert_eq!(suppression(1), dc_voice::Suppression::Standard);
+        assert_eq!(suppression(2), dc_voice::Suppression::None);
+    }
+
+    /// gravecord's switch sits right after Echo Cancellation, off unless turned on.
+    #[test]
+    fn room_echo_follows_echo_cancellation() {
+        assert_eq!(ROOM_ECHO_AFTER, "voice_echo_cancellation_setting");
+        assert!(matches!(
+            ROOM_ECHO,
+            Node::Switch {
+                key: ROOM_ECHO_KEY,
+                on: false,
+                ..
+            }
+        ));
     }
 }
 

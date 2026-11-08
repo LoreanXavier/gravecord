@@ -27,6 +27,8 @@ pub struct Prefs {
     output_gain: AtomicU32,
     /// Bumped when a device changes, so the worker reopens its streams.
     pub(crate) generation: AtomicU64,
+    /// Echo cancellation, Reduce Room Echo and Noise Suppression, read by the worker before every frame.
+    pub processing: crate::process::ProcessingPrefs,
 }
 
 pub fn prefs() -> &'static Prefs {
@@ -37,6 +39,7 @@ pub fn prefs() -> &'static Prefs {
         input_gain: AtomicU32::new(1.0f32.to_bits()),
         output_gain: AtomicU32::new(1.0f32.to_bits()),
         generation: AtomicU64::new(0),
+        processing: crate::process::ProcessingPrefs::new(),
     })
 }
 
@@ -194,6 +197,9 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
     let mut open_at = Instant::now();
     let mut input_retry_at = Instant::now();
     let mut devices = prefs().generation.load(Ordering::Acquire);
+    // Echo cancellation and noise suppression run here, between the device rings and the voice loop.
+    let mut processor = crate::process::Processor::new();
+    let mut capturing = false;
     // A live call keeps its place while a device is away: failures reopen, never end the call.
     while !gate.stopped.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -238,11 +244,20 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
                 Err(error) => debug!("voice microphone unavailable: {error}"),
             }
         }
+        // The microphone opening after a gap (mute, a new call) starts the processors afresh.
+        let open = gate.capture();
+        if open != capturing {
+            capturing = open;
+            if open {
+                processor.reset();
+            }
+        }
         for _ in 0..RING {
-            let Ok(frame) = active.input.pop() else {
+            let Ok(mut frame) = active.input.pop() else {
                 break;
             };
             if gate.capture() {
+                processor.capture(&mut frame, &prefs().processing);
                 // A full channel means the voice loop is behind; drop rather than block.
                 let _ = capture.try_send(frame);
             }
@@ -252,6 +267,8 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
                 break;
             };
             if gate.playback() {
+                // What the speakers play is the echo canceller's reference.
+                processor.render(&frame, &prefs().processing);
                 let _ = active.output.push(frame);
             }
         }

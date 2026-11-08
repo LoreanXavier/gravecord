@@ -7,6 +7,7 @@ mod model;
 mod pages;
 mod render;
 pub(crate) use render::radio_dot;
+pub(super) use render::restored_voice_choices;
 mod swatches;
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};

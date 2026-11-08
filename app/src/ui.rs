@@ -432,7 +432,7 @@ impl Root {
             revealed: HashSet::new(),
             weak: cx.weak_entity(),
             settings: None,
-            setting_choices: HashMap::new(),
+            setting_choices: settings::restored_voice_choices(),
             fetched: HashMap::new(),
             tip_anchors: Rc::default(),
             ready: false,

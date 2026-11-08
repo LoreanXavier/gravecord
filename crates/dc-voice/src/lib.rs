@@ -32,8 +32,10 @@ mod audio;
 mod capture;
 mod clock;
 mod dave;
+mod dereverb;
 mod jitter;
 mod mixer;
+mod process;
 mod rtp;
 mod session;
 mod signal;
@@ -41,6 +43,7 @@ mod signal;
 pub use audio::{
     Prefs, default_input_device, default_output_device, input_devices, output_devices, prefs,
 };
+pub use process::{ProcessingPrefs, Suppression};
 pub use rtp::Mode;
 
 use session::{ControlState, Credentials};
