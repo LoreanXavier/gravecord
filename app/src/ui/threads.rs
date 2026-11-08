@@ -750,7 +750,7 @@ impl Root {
                 .child(
                     div()
                         .px(px(16.))
-                        .pb(px(16.))
+                        .pb(px(6.))
                         .child(
                             div()
                                 .size(px(64.))
@@ -860,7 +860,12 @@ impl Root {
                                     .min_w(px(0.))
                                     .py(px(17.))
                                     .child(form.message.clone()),
-                            ),
+                            )
+                            .children(self.images.get("emoji_button").cloned().map(|image| {
+                                div()
+                                    .ml(px(8.))
+                                    .child(img(image).size(px(18.)).grayscale(true))
+                            })),
                     ),
                 )
                 .into_any_element(),
