@@ -475,6 +475,7 @@ pub struct Message {
     pub ignored: bool,
     /// A forwarded message's copy (`message_snapshots[0].message`) and where it came from.
     pub forwarded: Option<Box<Forwarded>>,
+    pub pinned: bool,
 }
 
 /// What a forward carries: the original's content, files and embeds, and its `message_reference`.
@@ -569,6 +570,7 @@ impl Message {
             blocked: false,
             ignored: false,
             forwarded: Forwarded::from_value(value).map(Box::new),
+            pinned: value["pinned"].as_bool().unwrap_or(false),
         })
     }
 
@@ -985,6 +987,9 @@ impl Stores {
         if let Some(content) = text(&data["content"]) {
             known.content = content;
             known.edited = data["edited_timestamp"].is_string();
+        }
+        if let Some(pinned) = data["pinned"].as_bool() {
+            known.pinned = pinned;
         }
         // Link previews arrive later, in an update that may carry only the embeds.
         if let Some(embeds) = data["embeds"].as_array() {

@@ -93,6 +93,7 @@ mod tests {
             blocked: false,
             ignored: false,
             forwarded: None,
+            pinned: false,
         }
     }
 

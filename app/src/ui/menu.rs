@@ -61,6 +61,8 @@ pub(super) struct SavedState {
     pub speaking: bool,
     /// No text: Speak Message is left out.
     pub empty: bool,
+    /// Pinned: Pin Message becomes Unpin Message.
+    pub pinned: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +111,11 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         Item::Entry("Create Thread", "menu_create_thread", Action::Thread, false),
         Item::Separator,
         Item::Entry("Copy Text", "menu_copy_text", Action::CopyText, false),
-        Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false),
+        if saved.pinned {
+            Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
+        } else {
+            Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
+        },
     ]);
     if !saved.reminder {
         items.push(if saved.bookmarked {
@@ -191,16 +197,18 @@ impl Root {
         let state = self
             .channel
             .and_then(|channel| self.saved_state(channel, message));
-        let empty = self
+        let found = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|list| list.iter().find(|known| known.id == message))
-            .is_some_and(|known| known.content.is_empty());
+            .and_then(|list| list.iter().find(|known| known.id == message));
+        let empty = found.is_some_and(|known| known.content.is_empty());
+        let pinned = found.is_some_and(|known| known.pinned);
         SavedState {
             bookmarked: state.is_some(),
             reminder: state.is_some_and(|due| due.is_some()),
             speaking: self.speaking_message == Some(message),
             empty,
+            pinned,
         }
     }
 
@@ -255,12 +263,18 @@ impl Root {
     fn run_unconfirmed(&mut self, action: Action, message: Id, cx: &mut Context<Self>) {
         self.menu = None;
         if let Some(channel) = self.channel {
+            let pinned = self
+                .stores
+                .messages
+                .get(&channel)
+                .and_then(|list| list.iter().find(|known| known.id == message))
+                .is_some_and(|known| known.pinned);
             let request = match action {
                 Action::Delete => Request::Delete { channel, message },
                 _ => Request::Pin {
                     channel,
                     message,
-                    pin: true,
+                    pin: !pinned,
                 },
             };
             let _ = self.requests.send(request);

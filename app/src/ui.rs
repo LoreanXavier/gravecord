@@ -42,6 +42,7 @@ mod links;
 mod menu;
 mod modal;
 mod picker;
+mod pins;
 mod plaintext_extensions;
 mod profile;
 mod reminder_modal;
@@ -147,6 +148,9 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    /// The open Pinned Messages popout, by the anchor key of the button that opened it.
+    pins_open: Option<&'static str>,
+    confirm_unpin: Option<Message>,
     forward: Option<forward::Forward>,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
@@ -234,6 +238,8 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            pins_open: None,
+            confirm_unpin: None,
             forward: None,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
@@ -663,6 +669,25 @@ impl Root {
         }
         self.rows.push(Row::Spacer);
         self.list.reset(self.rows.len());
+    }
+
+    /// Brings a loaded message of the open channel into view.
+    fn scroll_to_message(&mut self, message: Id) {
+        let messages = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel));
+        let Some(index) =
+            messages.and_then(|list| list.iter().position(|known| known.id == message))
+        else {
+            return;
+        };
+        let row = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::Message { index: at, .. } if *at == index));
+        if let Some(row) = row {
+            self.list.scroll_to_reveal_item(row);
+        }
     }
 
     fn current_guild(&self) -> Option<&Guild> {
@@ -1719,12 +1744,19 @@ impl Root {
                             tool("dm_video"),
                             cx,
                         ))
-                        .child(self.with_tip(
-                            "dm-pins",
-                            Tip::text("Pinned Messages", Side::Bottom),
-                            tool("pin"),
-                            cx,
-                        ))
+                        .child(
+                            self.with_tip(
+                                "dm-pins",
+                                Tip::text("Pinned Messages", Side::Bottom),
+                                tool("pin"),
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tip = None;
+                                this.toggle_pins("dm-pins", cx);
+                            })),
+                        )
                         .child(self.with_tip(
                             "dm-add",
                             Tip::text("Add to DM", Side::Bottom),
@@ -1784,12 +1816,19 @@ impl Root {
                             tool("bell"),
                             cx,
                         ))
-                        .child(self.with_tip(
-                            "pins",
-                            Tip::text("Pinned Messages", Side::Bottom),
-                            tool("pin"),
-                            cx,
-                        ))
+                        .child(
+                            self.with_tip(
+                                "pins",
+                                Tip::text("Pinned Messages", Side::Bottom),
+                                tool("pin"),
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tip = None;
+                                this.toggle_pins("pins", cx);
+                            })),
+                        )
                         .child(
                             div()
                                 .id("toggle-members")
@@ -3256,7 +3295,15 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "escape" && this.forward.is_some() {
+                if event.keystroke.key == "escape" && this.confirm_unpin.is_some() {
+                    this.confirm_unpin = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.pins_open.is_some() {
+                    this.pins_open = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.forward.is_some() {
                     this.forward = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -3399,6 +3446,8 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.unpin_modal(cx))
+            .children(self.pins_popout(window, cx))
             .children(self.forward_modal(window, cx))
             .children(self.custom_reminder_modal(cx))
             .children(self.toast_layer())
