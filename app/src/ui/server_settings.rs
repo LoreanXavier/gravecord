@@ -267,6 +267,8 @@ pub(crate) struct ServerSettings {
     pub(super) webhooks: super::server_webhooks::WebhooksState,
     /// "Upload a Sound" while it is open.
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
+    /// The Engagement page's values.
+    pub(super) engagement: super::server_engagement::EngagementState,
     _events: Vec<Subscription>,
 }
 
@@ -395,6 +397,7 @@ impl Root {
             template: None,
             webhooks: Default::default(),
             sound_dialog: None,
+            engagement: Default::default(),
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -956,6 +959,7 @@ impl Root {
             Page::Profile => open.values(cx) != open.saved,
             Page::Roles => self.roles_dirty(),
             Page::Template => self.template_dirty(open.guild, cx),
+            Page::Engagement => self.engagement_dirty(),
             Page::Integrations => self.webhook_dirty(open.guild, cx),
             _ => false,
         };
@@ -1083,7 +1087,7 @@ impl Root {
         let content: AnyElement = match page {
             Page::Profile => self.server_profile_page(open, cx),
             Page::Tag => Self::server_page_title("Server Tag"),
-            Page::Engagement => Self::server_page_title("Engagement"),
+            Page::Engagement => self.server_engagement_page(open.guild, cx),
             Page::BoostPerks => Self::server_page_title("Boost Perks"),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => Self::server_page_title("Stickers"),
@@ -1205,6 +1209,7 @@ impl Root {
                                         Some((Page::Integrations, guild)) => {
                                             this.reset_webhook(guild, cx)
                                         }
+                                        Some((Page::Engagement, _)) => this.reset_engagement(cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1236,6 +1241,9 @@ impl Root {
                                         }
                                         Some((Page::Integrations, guild)) => {
                                             this.save_webhook(guild, cx)
+                                        }
+                                        Some((Page::Engagement, guild)) => {
+                                            this.save_engagement(guild, cx)
                                         }
                                         _ => this.save_server_settings(cx),
                                     }
