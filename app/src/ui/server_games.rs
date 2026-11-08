@@ -106,7 +106,7 @@ fn excluded(id: &str) -> bool {
 }
 
 /// The 20px checkbox (`checkboxIndicator_vTUVyc`).
-fn checkbox(checked: bool) -> impl IntoElement {
+pub(super) fn checkbox(checked: bool) -> impl IntoElement {
     div()
         .size(px(20.))
         .rounded(px(4.))

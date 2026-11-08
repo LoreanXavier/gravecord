@@ -271,6 +271,7 @@ pub(crate) struct ServerSettings {
     pub(super) access: Option<super::server_access::AccessState>,
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
+    pub(super) community: Option<super::server_community::Wizard>,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -423,6 +424,7 @@ impl Root {
             access: None,
             audit: Default::default(),
             safety: Default::default(),
+            community: None,
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -1135,7 +1137,7 @@ impl Root {
             Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
-            Page::Community => Self::server_page_title("Enable Community"),
+            Page::Community => self.server_community_page(open.guild, cx),
             Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
