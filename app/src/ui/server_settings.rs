@@ -261,6 +261,8 @@ pub(crate) struct ServerSettings {
     pub(super) role: Option<Id>,
     /// The Roles pages' fields and unsaved edits.
     pub(super) roles: Option<super::server_role_editor::RolesState>,
+    /// The Server Template page's fields.
+    pub(super) template: Option<super::server_template::TemplateState>,
     _events: Vec<Subscription>,
 }
 
@@ -386,6 +388,7 @@ impl Root {
             emoji: None,
             role: None,
             roles: None,
+            template: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -946,6 +949,7 @@ impl Root {
         let dirty = match page {
             Page::Profile => open.values(cx) != open.saved,
             Page::Roles => self.roles_dirty(),
+            Page::Template => self.template_dirty(open.guild, cx),
             _ => false,
         };
         let mut nav = div()
@@ -1088,7 +1092,7 @@ impl Root {
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
             Page::Community => Self::server_page_title("Enable Community"),
-            Page::Template => Self::server_page_title("Server Template"),
+            Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
         let close_left = if page == Page::Profile { 835. } else { 740. };
@@ -1179,14 +1183,16 @@ impl Root {
                                 .text_color(color("--text-brand"))
                                 .child("Reset")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if this
+                                    match this
                                         .server_settings
                                         .as_ref()
-                                        .is_some_and(|open| open.page == Page::Roles)
+                                        .map(|open| (open.page, open.guild))
                                     {
-                                        this.reset_roles(cx);
-                                    } else {
-                                        this.reset_server_settings(cx);
+                                        Some((Page::Roles, _)) => this.reset_roles(cx),
+                                        Some((Page::Template, guild)) => {
+                                            this.reset_template(guild, cx)
+                                        }
+                                        _ => this.reset_server_settings(cx),
                                     }
                                 })),
                         )
@@ -1206,14 +1212,16 @@ impl Root {
                                 .text_color(gpui::white())
                                 .child("Save Changes")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if this
+                                    match this
                                         .server_settings
                                         .as_ref()
-                                        .is_some_and(|open| open.page == Page::Roles)
+                                        .map(|open| (open.page, open.guild))
                                     {
-                                        this.save_roles(cx);
-                                    } else {
-                                        this.save_server_settings(cx);
+                                        Some((Page::Roles, _)) => this.save_roles(cx),
+                                        Some((Page::Template, guild)) => {
+                                            this.save_template(guild, cx)
+                                        }
+                                        _ => this.save_server_settings(cx),
                                     }
                                 })),
                         ),

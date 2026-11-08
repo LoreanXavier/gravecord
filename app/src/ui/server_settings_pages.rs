@@ -158,6 +158,7 @@ impl Root {
                 }
             }
             Page::Emoji => self.request_emojis(guild),
+            Page::Template => self.request_template_page(guild, cx),
             Page::Roles => {
                 self.request_roles_page();
                 self.request_roles(guild, cx);
