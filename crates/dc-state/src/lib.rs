@@ -170,6 +170,10 @@ pub struct Guild {
     pub mfa_level: u64,
     pub vanity_url_code: Option<String>,
     pub features: Vec<String>,
+    /// `incidents_data`: invites and DMs paused until (ISO times) and the last lockdown length in hours.
+    pub invites_disabled_until: Option<String>,
+    pub dms_disabled_until: Option<String>,
+    pub lockdown_duration_hours: Option<u64>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
     pub emojis: Vec<GuildEmoji>,
@@ -302,6 +306,10 @@ impl Guild {
                 .flatten()
                 .filter_map(Thread::from_value)
                 .collect(),
+            invites_disabled_until: text(&properties["incidents_data"]["invites_disabled_until"]),
+            dms_disabled_until: text(&properties["incidents_data"]["dms_disabled_until"]),
+            lockdown_duration_hours: properties["incidents_data"]["lockdown_duration_hours"]
+                .as_u64(),
             premium_tier: properties["premium_tier"].as_u64().unwrap_or(0),
             premium_subscription_count: value["premium_subscription_count"]
                 .as_u64()
@@ -1570,6 +1578,9 @@ mod tests {
             my_timeout_until: None,
             mfa_level: 0,
             vanity_url_code: None,
+            invites_disabled_until: None,
+            dms_disabled_until: None,
+            lockdown_duration_hours: None,
             features: features
                 .iter()
                 .map(|feature| (*feature).to_owned())

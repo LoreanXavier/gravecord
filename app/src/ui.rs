@@ -233,6 +233,7 @@ pub struct Root {
     open_dm_after_send: bool,
     mention_filter: inbox::MentionFilter,
     channel_settings: Option<channel_settings::ChannelSettings>,
+    security_actions: Option<channel_settings_pages::SecurityActions>,
     mentions_filter_open: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
@@ -370,6 +371,7 @@ impl Root {
             open_dm_after_send: false,
             mention_filter: inbox::MentionFilter::stored(),
             channel_settings: None,
+            security_actions: None,
             mentions_filter_open: false,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
@@ -4111,6 +4113,8 @@ impl Render for Root {
             .children(self.channel_settings_layer(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
+            .children(self.security_actions_modal(cx))
+            .children(self.security_actions_select(cx))
             .children(self.profile_layer(cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))

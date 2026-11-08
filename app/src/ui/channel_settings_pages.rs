@@ -8,6 +8,49 @@ use dc_state::permissions::{Overwrite, VIEW_CHANNEL};
 use dc_state::{Channel, Id, User};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
+/// Module 218113 `aE`: how long Security Actions pause things, in hours.
+const LOCKDOWN_HOURS: [(u64, &str); 6] = [
+    (1, "1 hour"),
+    (2, "2 hours"),
+    (4, "4 hours"),
+    (6, "6 hours"),
+    (12, "12 hours"),
+    (24, "24 hours"),
+];
+
+/// "Security Actions" (module 671576): the pause length, Pause Invites, Pause DMs; Save puts them.
+pub(crate) struct SecurityActions {
+    pub guild: Id,
+    pub hours: u64,
+    pub invites: bool,
+    pub dms: bool,
+    was: (u64, bool, bool),
+    pub select_open: bool,
+}
+
+fn active(until: Option<&String>) -> bool {
+    until
+        .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+        .is_some_and(|until| until.timestamp_millis() > chrono::Utc::now().timestamp_millis())
+}
+
+/// Module 859706 `c`: the body of `PUT /guilds/{id}/incident-actions`.
+pub(super) fn incident_body(
+    invites: bool,
+    dms: bool,
+    hours: u64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    let any = invites || dms;
+    let until = (now + chrono::Duration::hours(hours as i64))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    serde_json::json!({
+        "invites_disabled_until": if invites { serde_json::json!(until) } else { serde_json::Value::Null },
+        "dms_disabled_until": if dms { serde_json::json!(until) } else { serde_json::Value::Null },
+        "lockdown_duration_hours": if any { serde_json::json!(hours) } else { serde_json::Value::Null },
+    })
+}
+
 /// Module 824953: a new webhook is one of these, at random.
 const WEBHOOK_NAMES: [&str; 2] = ["Spidey Bot", "Captain Hook"];
 
@@ -27,6 +70,256 @@ pub(super) fn expires_in(created_ms: i64, max_age_s: i64, now_ms: i64) -> String
 }
 
 impl Root {
+    pub(super) fn open_security_actions(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let Some(known) = self.stores.guilds.iter().find(|known| known.id == guild) else {
+            return;
+        };
+        let hours = known
+            .lockdown_duration_hours
+            .filter(|hours| LOCKDOWN_HOURS.iter().any(|(value, _)| value == hours))
+            .unwrap_or(2);
+        let invites = active(known.invites_disabled_until.as_ref())
+            || known.features.iter().any(|f| f == "INVITES_DISABLED");
+        let dms = active(known.dms_disabled_until.as_ref());
+        self.security_actions = Some(SecurityActions {
+            guild,
+            hours,
+            invites,
+            dms,
+            was: (hours, invites, dms),
+            select_open: false,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn security_actions_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.security_actions.as_ref()?;
+        let changed = (open.hours, open.invites, open.dms) != open.was;
+        let hours_label = LOCKDOWN_HOURS
+            .iter()
+            .find(|(value, _)| *value == open.hours)
+            .map_or("2 hours", |(_, label)| label);
+        let toggle = |id: &'static str,
+                      title: &'static str,
+                      detail: &'static str,
+                      on: bool,
+                      invites: bool| {
+            div()
+                .p(px(12.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-muted"))
+                                .child(detail),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(id)
+                        .flex_none()
+                        .w(px(53.))
+                        .flex()
+                        .justify_end()
+                        .cursor_pointer()
+                        .child(super::create_channel::switch(on))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(open) = this.security_actions.as_mut() {
+                                if invites {
+                                    open.invites = !open.invites;
+                                } else {
+                                    open.dms = !open.dms;
+                                }
+                            }
+                            cx.notify();
+                        })),
+                )
+        };
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(
+                div()
+                    .id("security-actions-time")
+                    .relative()
+                    .child(self.anchor_probe("security-actions-time"))
+                    .h(px(40.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(if open.select_open { color("--input-border-active") } else { color("--input-border-default") })
+                    .bg(color("--input-background-default"))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().pl(px(12.)).text_size(px(16.)).text_color(color("--text-default")).child(hours_label))
+                    .child(div().w(px(36.)).pr(px(4.)).flex().justify_center().child(icon("combo_chevron", 20., "--text-strong")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.security_actions.as_mut() {
+                            open.select_open = !open.select_open;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(toggle(
+                "security-actions-invites",
+                "Pause Invites",
+                "Temporarily stop new members from joining this server via invite or vanity links.",
+                open.invites,
+                true,
+            ))
+            .child(toggle(
+                "security-actions-dms",
+                "Pause DMs",
+                "Temporarily stop new direct messages from being sent between members in your server. Friends can still DM each other, moderators can still DM members, and your Apps can still DM members.",
+                open.dms,
+                false,
+            ))
+            .into_any_element();
+        Some(super::modal::render(
+            super::modal::Spec {
+                id: "security-actions-modal",
+                title: "Security Actions".into(),
+                subtitle: None,
+                body: Some(body),
+                buttons: vec![
+                    super::modal::button(
+                        "security-actions-cancel",
+                        "Cancel",
+                        super::modal::Tone::Secondary,
+                        |this, _, _| {
+                            this.security_actions = None;
+                        },
+                    ),
+                    super::modal::button(
+                        "security-actions-save",
+                        "Save",
+                        if changed {
+                            super::modal::Tone::Primary
+                        } else {
+                            super::modal::Tone::PrimaryDisabled
+                        },
+                        |this, _, _| {
+                            let Some(open) = this.security_actions.take() else {
+                                return;
+                            };
+                            let _ = this.requests.send(Request::Rest {
+                                key: None,
+                                method: reqwest::Method::PUT,
+                                route: format!("/guilds/{}/incident-actions", open.guild),
+                                body: Some(incident_body(
+                                    open.invites,
+                                    open.dms,
+                                    open.hours,
+                                    chrono::Utc::now(),
+                                )),
+                            });
+                        },
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.security_actions = None),
+            },
+            cx,
+        ))
+    }
+
+    /// The pause length's list under its field.
+    pub(super) fn security_actions_select(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.security_actions.as_ref()?;
+        if !open.select_open {
+            return None;
+        }
+        let field = self
+            .tip_anchors
+            .borrow()
+            .get("security-actions-time")
+            .copied()?;
+        let current = open.hours;
+        let rows = LOCKDOWN_HOURS.iter().map(|(hours, label)| {
+            let hours = *hours;
+            div()
+                .id(SharedString::from(format!(
+                    "security-actions-hours-{hours}"
+                )))
+                .flex_none()
+                .h(px(40.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|style| style.bg(color("--interactive-background-hover")))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .pl(px(8.))
+                        .text_size(px(16.))
+                        .text_color(color("--text-strong"))
+                        .child(*label),
+                )
+                .when(hours == current, |this| {
+                    this.child(
+                        div()
+                            .px(px(4.))
+                            .child(icon("select_check", 20., "--text-strong")),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(open) = this.security_actions.as_mut() {
+                        open.hours = hours;
+                        open.select_open = false;
+                    }
+                    cx.notify();
+                }))
+        });
+        Some(
+            gpui::deferred(
+                div()
+                    .id("security-actions-list")
+                    .occlude()
+                    .absolute()
+                    .left(field.left())
+                    .top(field.bottom() + px(4.))
+                    .w(field.size.width)
+                    .p(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.security_actions.as_mut() {
+                            open.select_open = false;
+                        }
+                        cx.notify();
+                    }))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
     fn page_title(text: &'static str) -> gpui::Div {
         div()
             .text_size(px(20.))
@@ -320,6 +613,38 @@ impl Root {
                     )
                     .child("."),
             )
+            .child(
+                // `inviteDisabledContainer`: Security Actions for the whole server.
+                div().mb(px(16.)).child(
+                    div()
+                        .id("channel-invites-pause")
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-critical-primary-border-default"))
+                        .bg(color("--control-critical-primary-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--white"))
+                        .child("Pause Invites")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let guild = this
+                                .stores
+                                .guilds
+                                .iter()
+                                .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+                                .map(|guild| guild.id);
+                            if let Some(guild) = guild {
+                                this.open_security_actions(guild, cx);
+                            }
+                        })),
+                ),
+            )
             .child(div().mb(px(20.)).h(px(1.)).bg(color("--border-subtle")))
             .child(
                 div()
@@ -481,7 +806,20 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::expires_in;
+    use super::{expires_in, incident_body};
+
+    #[test]
+    fn security_actions_put_both_times_or_none() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-08T05:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let body = incident_body(true, false, 2, now);
+        assert_eq!(body["invites_disabled_until"], "2026-11-08T07:00:00.000Z");
+        assert!(body["dms_disabled_until"].is_null());
+        assert_eq!(body["lockdown_duration_hours"], 2);
+        let off = incident_body(false, false, 2, now);
+        assert!(off["lockdown_duration_hours"].is_null());
+    }
 
     #[test]
     fn invite_countdowns_read_like_the_table() {
