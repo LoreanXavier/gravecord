@@ -24,6 +24,8 @@ pub enum Update {
         key: String,
         bytes: Vec<u8>,
     },
+    /// PNG images in bulk, such as the cells of the emoji sprite sheet.
+    Images(Vec<(String, Vec<u8>)>),
     /// An event of the voice connection.
     Voice(dc_voice::Event),
     /// The body of a `Request::Fetch`.
@@ -62,6 +64,8 @@ pub enum Request {
         add: bool,
         /// The `location` query: where the reaction was given (`qN` in the bundle), e.g. `Message`.
         location: &'static str,
+        /// A Super Reaction: `type=1` instead of `0`.
+        burst: bool,
     },
     LoadMessages {
         channel: u64,
@@ -101,9 +105,53 @@ pub enum Request {
         key: String,
         tint: u32,
     },
+    /// The picker's emoji sheet, cut into one PNG per `spriteIndex` (keys `sprite:<index>`).
+    EmojiSheet,
 }
 
 pub(crate) const MESSAGE_PAGE: u32 = 50;
+/// The picker's unicode emoji sheet (module 617057): 40px cells, 42 to a row, drawn at 1680 by 1560.
+const EMOJI_SHEET: &str = "https://cdn.discordapp.com/assets/content/c357d57faac49918709981e6fb30e526fa62b6d440f99fd8bd2b88f0542ad6c5.png";
+/// Emoji with skin tones come from their own sheet (`spritesheet--40.png`, module 125371), 10 to a row
+/// (`DiversityPerRow`, module 307731).
+const DIVERSITY_SHEET: &str = "https://cdn.discordapp.com/assets/content/2f1adbbeee210ebdfaf92e6cdb29be32af98df2f576a85c6f18515eecb49a628.png";
+const SHEET_COLUMNS: u32 = 42;
+const DIVERSITY_COLUMNS: u32 = 10;
+const SHEET_CELL: u32 = 40;
+
+/// Every cell of a sheet as a PNG under `<prefix>:<index>`, scaled to 40px when the sheet is stored larger.
+fn sheet_cells(
+    sheet: &[u8],
+    count: u32,
+    columns: u32,
+    prefix: &str,
+) -> image::ImageResult<Vec<(String, Vec<u8>)>> {
+    let sheet = image::load_from_memory_with_format(sheet, image::ImageFormat::Png)?.to_rgba8();
+    let scale = f64::from(sheet.width()) / f64::from(columns * SHEET_CELL);
+    let size = (f64::from(SHEET_CELL) * scale).round() as u32;
+    let mut out = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let (column, row) = (index % columns, index / columns);
+        let (x, y) = (column * size, row * size);
+        if x + size > sheet.width() || y + size > sheet.height() {
+            break;
+        }
+        let mut cell = image::imageops::crop_imm(&sheet, x, y, size, size).to_image();
+        if size != SHEET_CELL {
+            cell = image::imageops::resize(
+                &cell,
+                SHEET_CELL,
+                SHEET_CELL,
+                image::imageops::FilterType::Triangle,
+            );
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        cell.write_to(&mut bytes, image::ImageFormat::Png)?;
+        out.push((format!("{prefix}:{index}"), bytes.into_inner()));
+    }
+    Ok(out)
+}
+
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
 const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
 
@@ -328,12 +376,14 @@ pub async fn run(
                 emoji,
                 add,
                 location,
+                burst,
             } => {
                 tokio::spawn(async move {
                     let route = format!(
-                        "/channels/{channel}/messages/{message}/reactions/{}/@me?location={}&type=0",
+                        "/channels/{channel}/messages/{message}/reactions/{}/@me?location={}&type={}",
                         percent_encode(&emoji),
                         percent_encode(location),
+                        u8::from(burst),
                     );
                     let method = if add {
                         reqwest::Method::PUT
@@ -417,6 +467,42 @@ pub async fn run(
                         Err(error) => warn!("sprite failed: {error}"),
                     }
                 });
+            }
+            Request::EmojiSheet => {
+                let count = |diversity: bool| {
+                    dc_tokens::emoji_data::EMOJIS
+                        .iter()
+                        .filter(|emoji| emoji.has_diversity == diversity)
+                        .filter_map(|emoji| emoji.sprite)
+                        .max()
+                        .map_or(0, |last| u32::from(last) + 1)
+                };
+                let sheets = [
+                    (EMOJI_SHEET, count(false), SHEET_COLUMNS, "sprite"),
+                    (DIVERSITY_SHEET, count(true), DIVERSITY_COLUMNS, "dsprite"),
+                ];
+                for (url, count, columns, prefix) in sheets {
+                    let client = client.clone();
+                    let updates = updates.clone();
+                    tokio::spawn(async move {
+                        match client.fetch_public(url).await {
+                            Ok(bytes) => {
+                                let cut = tokio::task::spawn_blocking(move || {
+                                    sheet_cells(&bytes, count, columns, prefix)
+                                })
+                                .await;
+                                match cut {
+                                    Ok(Ok(cells)) => {
+                                        let _ = updates.send(Update::Images(cells));
+                                    }
+                                    Ok(Err(error)) => warn!("emoji sheet failed: {error}"),
+                                    Err(error) => warn!("emoji sheet failed: {error}"),
+                                }
+                            }
+                            Err(error) => warn!("emoji sheet failed: {error}"),
+                        }
+                    });
+                }
             }
             Request::Image { key, url } => {
                 tokio::spawn(async move {

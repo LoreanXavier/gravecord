@@ -112,6 +112,24 @@ impl Root {
     ) {
         match action {
             Action::Pin => self.confirm_pin = Some(message),
+            Action::AddReaction => {
+                if let Some(super::menu::OpenMenu { anchor, .. }) = self.last_menu {
+                    let at = match anchor {
+                        super::menu::Anchor::Pointer(at) | super::menu::Anchor::MoreButton(at) => {
+                            at
+                        }
+                    };
+                    self.open_picker(
+                        super::picker::Target::Reaction {
+                            channel: message.channel_id,
+                            message: message.id,
+                        },
+                        at,
+                        window,
+                        cx,
+                    );
+                }
+            }
             _ => {
                 let _ = (window, cx);
             }

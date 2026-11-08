@@ -39,6 +39,7 @@ mod home;
 mod links;
 mod menu;
 mod modal;
+mod picker;
 mod plaintext_extensions;
 mod profile;
 mod settings;
@@ -133,10 +134,16 @@ pub struct Root {
     /// The message the next send answers.
     replying: Option<Message>,
     menu: Option<menu::OpenMenu>,
+    /// The menu that ran the last action, for actions that open beside it.
+    last_menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    /// The expression picker, open from the composer or for a reaction.
+    picker: Option<picker::Picker>,
+    /// Emoji picked this session, for the frecency list until the stored settings catch up.
+    emoji_used: Vec<(String, u64)>,
     /// The message waiting in the "Pin It. Pin It Good." modal.
     confirm_pin: Option<Message>,
     /// Reactions given this session, for the frecency list until the stored settings catch up.
@@ -203,9 +210,12 @@ impl Root {
             editing: None,
             replying: None,
             menu: None,
+            last_menu: None,
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            picker: None,
+            emoji_used: Vec::new(),
             confirm_pin: None,
             reactions_used: Vec::new(),
             history: history::History::default(),
@@ -282,9 +292,20 @@ impl Root {
                 let profile = key
                     .strip_prefix("profile:")
                     .and_then(|user| user.parse::<Id>().ok());
+                let frecency = key == actions::FRECENCY_KEY;
                 self.fetched.insert(key, body);
                 if let Some(user) = profile {
                     self.request_profile_images(user);
+                }
+                if frecency {
+                    let wanted: Vec<&'static str> = self
+                        .quick_reactions()
+                        .into_iter()
+                        .map(|emoji| emoji.surrogates)
+                        .collect();
+                    for surrogates in wanted {
+                        self.request_emoji_image(surrogates);
+                    }
                 }
                 cx.notify();
             }
@@ -308,6 +329,12 @@ impl Root {
                 };
                 self.images
                     .insert(key, Arc::new(Image::from_bytes(format, bytes)));
+            }
+            Update::Images(images) => {
+                for (key, bytes) in images {
+                    self.images
+                        .insert(key, Arc::new(Image::from_bytes(ImageFormat::Png, bytes)));
+                }
             }
         }
         cx.notify();
@@ -892,6 +919,9 @@ impl Root {
     /// The field with focus: the inline editor while editing, else the composer.
     #[cfg(feature = "capture")]
     pub fn active_editor(&self) -> Entity<Editor> {
+        if let Some(search) = self.picker.as_ref().map(picker::Picker::search) {
+            return search;
+        }
         self.editing
             .as_ref()
             .map_or_else(|| self.composer.clone(), |(_, editor)| editor.clone())
@@ -1993,6 +2023,7 @@ impl Root {
                             emoji: emoji.clone(),
                             add,
                             location: "Message",
+                            burst: false,
                         });
                     }))
                     .child(
@@ -2028,6 +2059,7 @@ impl Root {
             // `forceShow` in module 367790: the add button always follows the pills.
             let add = div()
                 .id(SharedString::from(format!("reaction-add-{}", message.id)))
+                .relative()
                 .h(px(30.))
                 .w(px(34.))
                 .mb(px(4.))
@@ -2044,6 +2076,29 @@ impl Root {
                 .hover(|this| {
                     this.bg(color("--reaction-background-hover"))
                         .border_color(color("--reaction-border-hover"))
+                })
+                .child(self.anchor_probe(format!("reaction-add-{}", message.id)))
+                .on_click({
+                    let key = format!("reaction-add-{}", message.id);
+                    let channel = message.channel_id;
+                    let target = message.id;
+                    cx.listener(move |this, _, window, cx| {
+                        let anchor = this.tip_anchors.borrow().get(key.as_str()).copied();
+                        if let Some(bounds) = anchor {
+                            this.open_picker(
+                                picker::Target::Reaction {
+                                    channel,
+                                    message: target,
+                                },
+                                gpui::point(
+                                    bounds.right() + px(PICKER_REACTION_OFFSET),
+                                    bounds.top(),
+                                ),
+                                window,
+                                cx,
+                            );
+                        }
+                    })
                 })
                 .child(icon("msg_react", 18., "--reaction-text-default"));
             div()
@@ -2404,6 +2459,9 @@ impl Root {
     ) -> impl IntoElement {
         let id = message.id;
         let text = message.content.clone();
+        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
+            self.quick_reactions().into_iter().take(3).collect();
+        let has_quick = !quick.is_empty();
         let button = |name: &str| {
             div()
                 .size(px(28.))
@@ -2435,12 +2493,70 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .items_center()
-            .child(self.with_tip(
-                "toolbar-react",
-                Tip::text("Add Reaction", Side::Top),
-                button("msg_react"),
-                cx,
-            ))
+            // The three most frecent reactions, then a separator (`separator_DpHsW6`).
+            .children(quick.into_iter().enumerate().map(|(index, emoji)| {
+                let picture = self
+                    .images
+                    .get(&format!("emoji:{}", emoji.surrogates))
+                    .cloned();
+                let channel = message.channel_id;
+                div()
+                    .id(SharedString::from(format!("toolbar-quick-{index}")))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .children(picture.map(|picture| img(picture).size(px(20.))))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.track_reaction(emoji.surrogates);
+                        let _ = this.requests.send(Request::React {
+                            channel,
+                            message: id,
+                            emoji: emoji.surrogates.to_owned(),
+                            add: true,
+                            location: "Message Hover Bar",
+                            burst: false,
+                        });
+                        cx.notify();
+                    }))
+            }))
+            .when(has_quick, |this| {
+                this.child(
+                    div()
+                        .mx(px(4.))
+                        .w(px(1.))
+                        .h(px(24.))
+                        .rounded_full()
+                        .bg(color("--border-subtle")),
+                )
+            })
+            .child(
+                self.with_tip(
+                    "toolbar-react",
+                    Tip::text("Add Reaction", Side::Top),
+                    button("msg_react"),
+                    cx,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let anchor = this.tip_anchors.borrow().get("toolbar-react").copied();
+                    if let (Some(bounds), Some(channel)) = (anchor, this.channel) {
+                        this.tip = None;
+                        this.open_picker(
+                            picker::Target::Reaction {
+                                channel,
+                                message: id,
+                            },
+                            gpui::point(bounds.left(), bounds.top()),
+                            window,
+                            cx,
+                        );
+                    }
+                })),
+            )
             .when(own, |this| {
                 this.child(
                     div()
@@ -2559,10 +2675,24 @@ impl Root {
         });
         let emoji = self.images.get("emoji_button").cloned();
         let emoji_button = div()
+            .id("composer-emoji")
             .size(px(32.))
             .flex()
             .items_center()
             .justify_center()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, window, cx| {
+                let composer = this.tip_anchors.borrow().get("composer-box").copied();
+                if let Some(bounds) = composer {
+                    this.open_picker(
+                        picker::Target::Composer,
+                        // The probe sits inside the composer's 1px border.
+                        gpui::point(bounds.left(), bounds.top() - px(9.)),
+                        window,
+                        cx,
+                    );
+                }
+            }))
             .children(emoji.map(|image| img(image).size(px(18.))));
         let tool = |name: &str| {
             div()
@@ -2584,6 +2714,8 @@ impl Root {
             .child(
                 div()
                     .parity_with_border("composer", 1.)
+                    .relative()
+                    .child(self.anchor_probe("composer-box"))
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))
@@ -2926,7 +3058,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "escape"
+                if event.keystroke.key == "escape" && this.picker.is_some() {
+                    this.picker = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape"
                     && (this.confirm_pin.is_some()
                         || this.leaving.is_some()
                         || this.confirm_delete.is_some()
@@ -3050,6 +3186,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.picker_layer(window, cx))
     }
 }
 
@@ -3078,6 +3215,9 @@ fn status_label(status: &str) -> &'static str {
 }
 
 /// The presence dot in its cut-out ring. Do Not Disturb adds the bar across the dot.
+/// The reaction picker opens beside the add button, its right edge this far right of the button's.
+const PICKER_REACTION_OFFSET: f32 = picker::PICKER_WIDTH + 8.;
+
 /// `clickable_fErCLM`: a 24px top bar button, `--icon-muted`, on hover `--background-mod-normal` behind
 /// `--interactive-icon-hover`.
 fn bar_button(id: &'static str, name: &'static str) -> gpui::Stateful<gpui::Div> {

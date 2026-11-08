@@ -120,9 +120,15 @@ impl Editor {
         self.placeholder = placeholder.into();
     }
 
-    #[cfg(feature = "capture")]
     pub fn text(&self) -> &str {
         self.buffer.text()
+    }
+
+    /// Types `text` at the caret, replacing any selection, as a paste would.
+    pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.buffer.insert(text);
+        cx.emit(EditorEvent::Edited);
+        cx.notify();
     }
 
     /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.

@@ -144,7 +144,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = None;
+        self.last_menu = self.menu.take();
         let found = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
@@ -201,6 +201,7 @@ impl Root {
                 emoji: surrogates.to_owned(),
                 add: true,
                 location: "Message Context Menu",
+                burst: false,
             });
         }
         cx.notify();

@@ -341,6 +341,22 @@ fn badge_image(guild: &Guild) -> Option<Arc<Image>> {
 }
 
 impl Root {
+    /// Records the bounds of its parent (it fills it) under `key` in `tip_anchors`, for popouts that open beside it.
+    pub(super) fn anchor_probe(&self, key: impl Into<SharedString>) -> impl IntoElement {
+        let anchors = self.tip_anchors.clone();
+        let key: SharedString = key.into();
+        canvas(
+            move |bounds, _, _| {
+                anchors.borrow_mut().insert(key.clone(), bounds);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+
     /// Puts a tooltip on `target`: it opens on hover and closes on leave or any press, as module 402883 does.
     pub(super) fn with_tip(
         &self,
