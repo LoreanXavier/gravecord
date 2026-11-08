@@ -421,10 +421,13 @@ impl Root {
         &self,
         guild: Id,
         color_override: Option<[u8; 3]>,
+        name_override: Option<String>,
+        body: Option<AnyElement>,
         _cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let known = self.stores.guilds.iter().find(|known| known.id == guild)?;
-        let name = known.name.clone();
+        // The page's edits show on the card as they are typed.
+        let name = name_override.unwrap_or_else(|| known.name.clone());
         let picture = self.images.get(&format!("guild:{guild}")).cloned();
         let acronym = dc_state::Guild::acronym_of(&known.name);
         let members = self.stores.member_lists.get(&guild).map_or(1, |list| {
@@ -486,7 +489,7 @@ impl Root {
                 .overflow_hidden()
                 .flex()
                 .flex_col()
-                .child(img(banner).w(px(298.)).h(px(120.)))
+                .child(img(banner).w(px(298.)).h(px(120.)).rounded_t(px(15.)))
                 .child(
                     div()
                         .mt(px(-34.))
@@ -529,7 +532,8 @@ impl Root {
                                 .child(founded),
                         ),
                 )
-                .child(div().h(px(8.)))
+                // `emptyBody_Xweo-z` (8px) unless the description, games or traits fill `body_Xweo-z`.
+                .child(body.unwrap_or_else(|| div().h(px(8.)).into_any_element()))
                 .into_any_element(),
         )
     }

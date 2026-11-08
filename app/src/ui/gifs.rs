@@ -67,7 +67,7 @@ pub(crate) fn gifs_of(body: &Value) -> Vec<Gif> {
 }
 
 /// A query string value, percent-encoded byte by byte outside the unreserved set.
-fn encode_query(value: &str) -> String {
+pub(super) fn encode_query(value: &str) -> String {
     value
         .bytes()
         .map(|byte| match byte {

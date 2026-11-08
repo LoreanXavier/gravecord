@@ -44,6 +44,7 @@ mod files;
 mod forward;
 mod friends;
 mod full_profile;
+mod games_spec;
 mod gifs;
 mod group_dm;
 mod guild_menu;
@@ -71,6 +72,7 @@ mod reminder_modal;
 mod report;
 mod saved;
 mod search;
+mod server_games;
 mod server_settings;
 mod settings;
 mod threads;
@@ -236,6 +238,8 @@ pub struct Root {
     mention_filter: inbox::MentionFilter,
     channel_settings: Option<channel_settings::ChannelSettings>,
     server_settings: Option<server_settings::ServerSettings>,
+    /// Game records by application id (Server Profile's Games).
+    games: HashMap<String, server_games::Game>,
     security_actions: Option<channel_settings_pages::SecurityActions>,
     mentions_filter_open: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
@@ -375,6 +379,7 @@ impl Root {
             mention_filter: inbox::MentionFilter::stored(),
             channel_settings: None,
             server_settings: None,
+            games: HashMap::new(),
             security_actions: None,
             mentions_filter_open: false,
             channel_history: Vec::new(),
@@ -490,6 +495,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_games::GAMES_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.games_fetched(&key, cx);
+                    return;
                 }
                 if key.starts_with(server_settings::PROFILE_KEY) {
                     self.fetched.insert(key.clone(), body.clone());
@@ -1336,6 +1346,7 @@ impl Root {
             list.push(settings.name.clone());
             list.push(settings.description.clone());
             list.extend(settings.traits.iter().cloned());
+            list.push(settings.games_query.clone());
             list.extend(
                 settings
                     .delete_name
@@ -3994,6 +4005,10 @@ impl Render for Root {
                         && open.delete_name.is_some()
                     {
                         open.delete_name = None;
+                    } else if let Some(open) = this.server_settings.as_mut()
+                        && open.games_open
+                    {
+                        open.games_open = false;
                     } else {
                         this.server_settings = None;
                     }
@@ -4146,6 +4161,7 @@ impl Render for Root {
             .children(self.channel_settings_layer(cx))
             .children(self.server_settings_layer(cx))
             .children(self.delete_server_modal(cx))
+            .children(self.server_games_dropdown(window, cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))

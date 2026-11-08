@@ -241,7 +241,11 @@ pub(crate) struct ServerSettings {
     custom_banner: Option<String>,
     color: Option<String>,
     visibility: u64,
-    games: Vec<String>,
+    pub(super) games: Vec<String>,
+    /// The Games search field, whether its list is open, and the last query whose results arrived.
+    pub(super) games_query: Entity<Editor>,
+    pub(super) games_open: bool,
+    pub(super) games_shown_query: Option<String>,
     /// The profile as fetched (or last saved): Reset goes back to it, and the notice shows while the page differs.
     saved: Values,
     /// The profile has arrived; until then the page is empty, as the official one shows its spinner.
@@ -349,6 +353,8 @@ impl Root {
                 }),
             );
         }
+        let (games_query, games_events) = Self::new_games_query(cx);
+        events.push(games_events);
         self.server_settings = Some(ServerSettings {
             guild,
             page: Page::Profile,
@@ -361,6 +367,9 @@ impl Root {
             color: None,
             visibility: 0,
             games: Vec::new(),
+            games_query,
+            games_open: false,
+            games_shown_query: None,
             saved: Values::default(),
             loaded: false,
             delete_name: None,
@@ -371,6 +380,7 @@ impl Root {
             key: format!("{PROFILE_KEY}{guild}"),
             route: format!("/guilds/{guild}/profile"),
         });
+        self.request_profile_games(guild);
         cx.notify();
     }
 
@@ -410,6 +420,13 @@ impl Root {
         for surrogates in wanted {
             self.request_emoji_image(&surrogates);
         }
+        let picked = self
+            .server_settings
+            .as_ref()
+            .map(|open| open.saved.games.clone())
+            .unwrap_or_default();
+        self.request_games(&picked);
+        self.request_game_images();
         cx.notify();
     }
 
@@ -481,7 +498,10 @@ impl Root {
     }
 
     /// The trait emoji's picture: a unicode emoji's twemoji, a custom one's image.
-    fn trait_emoji_image(&self, emoji: &TraitEmoji) -> Option<std::sync::Arc<gpui::Image>> {
+    pub(super) fn trait_emoji_image(
+        &self,
+        emoji: &TraitEmoji,
+    ) -> Option<std::sync::Arc<gpui::Image>> {
         match (&emoji.id, &emoji.name) {
             (Some(id), _) => self.images.get(&format!("custom:{id}")).cloned(),
             (None, Some(name)) => {
@@ -693,11 +713,7 @@ impl Root {
                             div()
                                 .id(probe.clone())
                                 .relative()
-                                .child(
-                                    self.anchor_probe(Box::leak(
-                                        probe.to_string().into_boxed_str(),
-                                    )),
-                                )
+                                .child(self.anchor_probe(probe.clone()))
                                 .size(px(30.))
                                 .rounded(px(4.))
                                 .cursor_pointer()
@@ -839,6 +855,8 @@ impl Root {
                     .child(field(open.description.clone(), 89.)),
             )
             .child(divider())
+            .child(self.server_games_section(cx))
+            .child(divider())
             .child(private_row)
             .into_any_element()
     }
@@ -850,10 +868,10 @@ impl Root {
             .unwrap_or_else(|| self.guild_banner_base(guild));
         let banner = self.banner_image(base, 190, 120);
         let known = self.stores.guilds.iter().find(|known| known.id == guild);
-        let picture = self.images.get(&format!("guild:{guild}")).cloned();
-        let acronym = known
-            .map(|known| dc_state::Guild::acronym_of(&known.name))
-            .unwrap_or_default();
+        // Module 576055 is given `name: null` here: no picture, a "?" in its place, as captured.
+        let _ = known;
+        let picture = None;
+        let acronym = "?".to_owned();
         div()
             .w(px(192.))
             .rounded(px(16.))
@@ -863,7 +881,7 @@ impl Root {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .child(img(banner).w(px(190.)).h(px(120.)))
+            .child(img(banner).w(px(190.)).h(px(120.)).rounded_t(px(15.)))
             .child(
                 div()
                     .mt(px(-34.))
@@ -1055,9 +1073,13 @@ impl Root {
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
         let close_left = if page == Page::Profile { 835. } else { 740. };
         let preview = (page == Page::Profile).then(|| {
+            let name = open.name.read(cx).text().to_owned();
+            let body = self.server_preview_body(cx);
             div().w(px(300.)).flex_none().children(self.invite_preview(
                 open.guild,
                 open.color.as_deref().and_then(hex_rgb),
+                Some(name),
+                body,
                 cx,
             ))
         });
