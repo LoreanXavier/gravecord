@@ -33,6 +33,8 @@ pub(crate) struct GroupDm {
     pub selected: Vec<Id>,
     /// The keyboard-highlighted row.
     pub row: usize,
+    /// Add to DM (`PWkO7+`) or Invite to Group DM (`NB5DFD`): the open DM, whose people come along.
+    pub channel: Option<Id>,
 }
 
 /// The users of `USER_AFFINITIES_V2` (`/users/@me/affinities/v2/users`, module 404885) with their communication
@@ -112,6 +114,30 @@ pub(super) fn candidates(
 }
 
 impl Root {
+    /// The DM header's Add to DM: the picker with the open conversation's people already in it.
+    pub(super) fn open_add_to_dm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let channel = self.channel;
+        self.open_group_dm_picker(window, cx);
+        if let Some(picker) = self.group_dm.as_mut() {
+            picker.channel = channel;
+        }
+    }
+
+    /// The open DM's people, who count toward the limit and show checked.
+    fn group_dm_members(&self) -> Vec<Id> {
+        self.group_dm
+            .as_ref()
+            .and_then(|picker| picker.channel)
+            .and_then(|channel| {
+                self.stores
+                    .private_channels
+                    .iter()
+                    .find(|known| known.id == channel)
+            })
+            .map(|channel| channel.recipients.clone())
+            .unwrap_or_default()
+    }
+
     pub(super) fn open_group_dm_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.requests.send(Request::Fetch {
             key: AFFINITIES_KEY.to_owned(),
@@ -142,6 +168,7 @@ impl Root {
             query: String::new(),
             selected: Vec::new(),
             row: 0,
+            channel: None,
         });
         cx.notify();
     }
@@ -150,20 +177,33 @@ impl Root {
         let Some(picker) = self.group_dm.as_ref() else {
             return Vec::new();
         };
-        let affinity = self
+        let mut affinity = self
             .fetched
             .get(AFFINITIES_KEY)
             .map(affinities)
             .unwrap_or_default();
+        // The affinities route answers 404 for some accounts; the official list still offers the people of open
+        // DMs from its cached affinities, so those stand in, after any real ones.
+        for channel in &self.stores.private_channels {
+            if let Some(user) = self.stores.dm_recipient(channel)
+                && !affinity.iter().any(|(id, _)| *id == user.id)
+            {
+                affinity.push((user.id, 0.));
+            }
+        }
         let friends: Vec<User> = self.stores.friends().into_iter().cloned().collect();
-        candidates(
+        let members = self.group_dm_members();
+        let mut list = candidates(
             &friends,
             &affinity,
             &self.stores.relationships,
             &self.stores.users,
             self.stores.current_user.as_ref().map(|user| user.id),
             &picker.query,
-        )
+        );
+        // The people already in the conversation are not offered again.
+        list.retain(|user| !members.contains(&user.id));
+        list
     }
 
     fn group_dm_toggle(&mut self, user: Id, cx: &mut Context<Self>) {
@@ -216,6 +256,33 @@ impl Root {
         let Some(picker) = self.group_dm.as_ref() else {
             return;
         };
+        // Adding to a group DM puts each person in it (`PUT /channels/{id}/recipients/{user}`); adding to a 1:1 DM
+        // makes a new group with both.
+        if let Some(channel) = picker.channel {
+            if picker.selected.is_empty() {
+                return;
+            }
+            let group = self
+                .stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == channel)
+                .is_some_and(|known| known.kind == 3);
+            if group {
+                for user in picker.selected.clone() {
+                    let _ = self.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PUT,
+                        route: format!("/channels/{channel}/recipients/{user}"),
+                        body: Some(json!({})),
+                    });
+                }
+                self.group_dm = None;
+                cx.notify();
+                return;
+            }
+        }
+        let mut members = self.group_dm_members();
         let recipients: Vec<Id> = if picker.selected.is_empty() {
             // `l.length>s&&this.handleSelect(s)`: with nothing picked, Create takes the highlighted row.
             self.group_dm_rows()
@@ -228,6 +295,8 @@ impl Root {
         if recipients.is_empty() {
             return;
         }
+        members.extend(recipients.iter().copied());
+        let recipients = members;
         if let [user] = recipients[..]
             && let Some(channel) = self
                 .stores
@@ -294,8 +363,10 @@ impl Root {
             return div().into_any_element();
         };
         let id = user.id;
-        let checked = picker.selected.contains(&id);
-        let full = !checked && picker.selected.len() + 1 >= GROUP_LIMIT;
+        let members = self.group_dm_members();
+        let member = members.contains(&id);
+        let checked = member || picker.selected.contains(&id);
+        let full = member || (!checked && members.len() + picker.selected.len() + 1 >= GROUP_LIMIT);
         let highlighted = picker.row == index;
         let avatar = self.images.get(&avatar_source(user).0).cloned();
         let status = self.stores.status(user.id).to_owned();
@@ -388,7 +459,32 @@ impl Root {
             .iter()
             .filter_map(|id| self.stores.users.get(id).cloned())
             .collect();
-        let several = picker.selected.len() > 1;
+        let several = picker.selected.len() > 1 || picker.channel.is_some();
+        let members = self.group_dm_members();
+        let group = picker.channel.and_then(|channel| {
+            self.stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == channel)
+                .map(|known| known.kind == 3)
+        });
+        let title = match group {
+            None => "New Message",
+            Some(true) => "Invite to Group DM",
+            Some(false) => "Add to DM",
+        };
+        // `getSubtitle`: the room left, counting you and the people already there.
+        let remaining = GROUP_LIMIT as i64 - (members.len() + picker.selected.len() + 1) as i64;
+        let subtitle = if picker.channel.is_none() {
+            format!("Group DMs can have up to {GROUP_LIMIT} members.")
+        } else if remaining <= 0 {
+            format!("This group has a {GROUP_LIMIT} member limit.")
+        } else if remaining == 1 {
+            "You can add 1 more person.".to_owned()
+        } else {
+            format!("You can add {remaining} more people.")
+        };
+        let waiting = picker.channel.is_some() && picker.selected.is_empty();
         let rows = self.group_dm_rows();
         let tags: Vec<AnyElement> = picked
             .iter()
@@ -466,31 +562,45 @@ impl Root {
         Some(modal::render(
             modal::Spec {
                 id: "group-dm-modal",
-                title: "New Message".into(),
-                subtitle: Some(
-                    div()
-                        .child(format!("Group DMs can have up to {GROUP_LIMIT} members."))
-                        .into_any_element(),
-                ),
+                title: title.into(),
+                subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(body),
-                buttons: vec![
-                    modal::button(
-                        "group-dm-cancel",
-                        "Cancel",
-                        modal::Tone::Secondary,
-                        |this, _, _| this.group_dm = None,
-                    ),
-                    modal::button(
+                buttons: if picker.channel.is_some() {
+                    // Add to DM has the one button across the footer.
+                    vec![modal::button(
                         "group-dm-create",
-                        if several {
-                            "Create Group Message"
+                        "Create Group Message",
+                        if waiting {
+                            modal::Tone::PrimaryDisabled
                         } else {
-                            "Create Message"
+                            modal::Tone::Primary
                         },
-                        modal::Tone::Primary,
                         |this, _, cx| this.group_dm_create(cx),
-                    ),
-                ],
+                    )]
+                } else {
+                    vec![
+                        modal::button(
+                            "group-dm-cancel",
+                            "Cancel",
+                            modal::Tone::Secondary,
+                            |this, _, _| this.group_dm = None,
+                        ),
+                        modal::button(
+                            "group-dm-create",
+                            if several {
+                                "Create Group Message"
+                            } else {
+                                "Create Message"
+                            },
+                            if waiting {
+                                modal::Tone::PrimaryDisabled
+                            } else {
+                                modal::Tone::Primary
+                            },
+                            |this, _, cx| this.group_dm_create(cx),
+                        ),
+                    ]
+                },
                 close: Box::new(|this, _, _| this.group_dm = None),
             },
             cx,

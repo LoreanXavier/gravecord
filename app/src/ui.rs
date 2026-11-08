@@ -2108,12 +2108,21 @@ impl Root {
                                 this.toggle_pins("dm-pins", cx);
                             })),
                         )
-                        .child(self.with_tip(
-                            "dm-add",
-                            Tip::text("Add to DM", Side::Bottom),
-                            tool("dm_add"),
-                            cx,
-                        ))
+                        .child(
+                            self.with_tip(
+                                "dm-add",
+                                Tip::text("Add to DM", Side::Bottom),
+                                tool("dm_add"),
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.tip = None;
+                                    this.open_add_to_dm(window, cx);
+                                },
+                            )),
+                        )
                         .child(
                             self.with_tip(
                                 "dm-profile",
