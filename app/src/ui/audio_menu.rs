@@ -29,6 +29,9 @@ pub(crate) enum Side {
     Output,
 }
 
+/// A submenu row: title, the line under it, the device it picks (none for the default or a profile), picked.
+type SubRow = (String, Option<String>, Option<String>, bool);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sub {
     Devices,
@@ -270,47 +273,46 @@ impl Root {
         let side = menu.side;
         let radio = |picked: bool| super::create_channel::radio(picked);
         let mut rows: Vec<AnyElement> = Vec::new();
-        let (top_offset, entries): (f32, Vec<(String, Option<String>, Option<String>, bool)>) =
-            match sub {
-                Sub::Devices => {
-                    let (devices, default, chosen) = match side {
-                        Side::Input => (
-                            dc_voice::input_devices(),
-                            dc_voice::default_input_device(),
-                            dc_voice::prefs().input_device(),
-                        ),
-                        Side::Output => (
-                            dc_voice::output_devices(),
-                            dc_voice::default_output_device(),
-                            dc_voice::prefs().output_device(),
-                        ),
-                    };
-                    let mut list = vec![(
-                        "Windows Default".to_owned(),
-                        default.map(|name| split_device(&name).0),
-                        None,
-                        chosen.is_none(),
-                    )];
-                    for device in devices {
-                        let (name, kind) = split_device(&device);
-                        let picked = chosen.as_deref() == Some(device.as_str());
-                        list.push((name, kind, Some(device), picked));
-                    }
-                    (0., list)
+        let (top_offset, entries): (f32, Vec<SubRow>) = match sub {
+            Sub::Devices => {
+                let (devices, default, chosen) = match side {
+                    Side::Input => (
+                        dc_voice::input_devices(),
+                        dc_voice::default_input_device(),
+                        dc_voice::prefs().input_device(),
+                    ),
+                    Side::Output => (
+                        dc_voice::output_devices(),
+                        dc_voice::default_output_device(),
+                        dc_voice::prefs().output_device(),
+                    ),
+                };
+                let mut list = vec![(
+                    "Windows Default".to_owned(),
+                    default.map(|name| split_device(&name).0),
+                    None,
+                    chosen.is_none(),
+                )];
+                for device in devices {
+                    let (name, kind) = split_device(&device);
+                    let picked = chosen.as_deref() == Some(device.as_str());
+                    list.push((name, kind, Some(device), picked));
                 }
-                Sub::Profile => {
-                    let current = storage::get(INPUT_PROFILE)
-                        .and_then(|value| value.as_str().map(str::to_owned))
-                        .unwrap_or_else(|| "Custom".to_owned());
-                    (
-                        52.,
-                        PROFILES
-                            .iter()
-                            .map(|profile| ((*profile).to_owned(), None, None, current == *profile))
-                            .collect(),
-                    )
-                }
-            };
+                (0., list)
+            }
+            Sub::Profile => {
+                let current = storage::get(INPUT_PROFILE)
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "Custom".to_owned());
+                (
+                    52.,
+                    PROFILES
+                        .iter()
+                        .map(|profile| ((*profile).to_owned(), None, None, current == *profile))
+                        .collect(),
+                )
+            }
+        };
         for (index, (title, detail, device, picked)) in entries.into_iter().enumerate() {
             let device_row = sub == Sub::Devices;
             let profile = title.clone();
