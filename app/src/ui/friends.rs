@@ -325,24 +325,33 @@ impl Root {
         let avatar = self.images.get(&avatar_source(user).0).cloned();
         let status = self.stores.status(user.id).to_owned();
         let id = user.id;
-        let action = |name: &'static str, key: String, tint: &'static str| {
+        let group = SharedString::from(format!("friend-{}", user.id));
+        let menu_open = self.friend_menu.is_some_and(|menu| menu.user == id);
+        // `actionButton_5GqXgh`: surface-high, the lowest base while the row is hovered or its menu is open.
+        let action = |name: &'static str, key: String, _tint: &'static str| {
             div()
                 .id(SharedString::from(key))
                 .size(px(36.))
                 .rounded_full()
-                .bg(color("--background-base-lower"))
+                .bg(if menu_open {
+                    color("--background-base-lowest")
+                } else {
+                    color("--background-surface-high")
+                })
+                .group_hover(group.clone(), |style| {
+                    style.bg(color("--background-base-lowest"))
+                })
                 .cursor_pointer()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(name, 20., tint))
+                .child(icon(name, 20., "--text-subtle"))
         };
         let subtitle = match kind {
             RELATIONSHIP_INCOMING => "Incoming Friend Request".to_owned(),
             RELATIONSHIP_OUTGOING => "Outgoing Friend Request".to_owned(),
             _ => status_label(&status).to_owned(),
         };
-        let group = SharedString::from(format!("friend-{}", user.id));
         let actions: Vec<AnyElement> = match kind {
             RELATIONSHIP_INCOMING => vec![
                 action(
@@ -351,6 +360,7 @@ impl Root {
                     "--interactive-text-default",
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
                     this.relationship_action(id, true);
                     cx.notify();
                 }))
@@ -361,6 +371,7 @@ impl Root {
                     "--interactive-text-default",
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
                     this.relationship_action(id, false);
                     cx.notify();
                 }))
@@ -373,6 +384,7 @@ impl Root {
                     "--interactive-text-default",
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
                     this.relationship_action(id, false);
                     cx.notify();
                 }))
@@ -384,7 +396,10 @@ impl Root {
                     format!("message-{id}"),
                     "--interactive-text-default",
                 )
-                .on_click(cx.listener(move |this, _, _, cx| this.open_dm_with(id, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_dm_with(id, cx);
+                }))
                 .into_any_element(),
                 action(
                     "more_dots",
@@ -392,6 +407,7 @@ impl Root {
                     "--interactive-text-default",
                 )
                 .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                    cx.stop_propagation();
                     this.friend_menu = Some(FriendMenu {
                         user: id,
                         at: event.position(),
@@ -424,6 +440,7 @@ impl Root {
                     .cursor_pointer()
                     .flex()
                     .items_center()
+                    .when(menu_open, |this| this.bg(color("--background-mod-normal")))
                     .hover(|style| style.bg(color("--background-mod-subtle")))
                     .when(kind == RELATIONSHIP_FRIEND, |this| {
                         this.on_click(cx.listener(move |this, _, _, cx| this.open_dm_with(id, cx)))
@@ -879,7 +896,7 @@ impl Root {
         let row = |id: &'static str, label: &'static str, danger: bool| {
             div()
                 .id(id)
-                .h(px(32.))
+                .h(px(34.))
                 .px(px(8.))
                 .rounded(px(2.))
                 .cursor_pointer()
@@ -911,14 +928,23 @@ impl Root {
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()
+                            .parity_with_border("friend-menu", 1.)
                             .id("friend-menu")
                             .occlude()
-                            .w(px(188.))
+                            // `menu_M3qk4j`, 144 wide at the pointer, 8px inside; items 34 tall.
+                            .w(px(144.))
                             .p(px(8.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color("--border-subtle"))
                             .bg(color("--background-surface-higher"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.24),
+                                offset: gpui::point(px(0.), px(12.)),
+                                blur_radius: px(24.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.friend_menu = None;
                                 cx.notify();
