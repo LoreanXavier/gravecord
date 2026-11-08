@@ -14,8 +14,9 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
-const LINE_HEIGHT: f32 = 22.;
-const FONT_SIZE: f32 = 16.;
+/// The composer's text: 16px on 22px lines. Other fields (the quick switcher's 22px) set their own.
+pub const LINE_HEIGHT: f32 = 22.;
+pub const FONT_SIZE: f32 = 16.;
 
 pub enum EditorEvent {
     Submit(String),
@@ -26,6 +27,8 @@ pub enum EditorEvent {
 
 pub struct EditorStyle {
     pub font: Font,
+    pub size: f32,
+    pub line_height: f32,
     pub text: Hsla,
     pub placeholder: Hsla,
     pub selection: Hsla,
@@ -34,14 +37,19 @@ pub struct EditorStyle {
 
 #[derive(Default)]
 struct Laid {
+    line_height: Pixels,
     /// Each paragraph with the byte offset it starts at.
     lines: Vec<(WrappedLine, usize)>,
     bounds: Option<Bounds<Pixels>>,
 }
 
 impl Laid {
-    fn line_height() -> Pixels {
-        px(LINE_HEIGHT)
+    fn line_height(&self) -> Pixels {
+        if self.line_height > px(0.) {
+            self.line_height
+        } else {
+            px(LINE_HEIGHT)
+        }
     }
 
     fn paragraph_tops(&self) -> Vec<Pixels> {
@@ -50,10 +58,7 @@ impl Laid {
             .iter()
             .map(|(line, _)| {
                 let current = top;
-                top += line
-                    .size(Self::line_height())
-                    .height
-                    .max(Self::line_height());
+                top += line.size(self.line_height()).height.max(self.line_height());
                 current
             })
             .collect()
@@ -63,7 +68,7 @@ impl Laid {
         let tops = self.paragraph_tops();
         for (index, (line, start)) in self.lines.iter().enumerate().rev() {
             if offset >= *start {
-                let position = line.position_for_index(offset - start, Self::line_height())?;
+                let position = line.position_for_index(offset - start, self.line_height())?;
                 return Some(point(position.x, tops[index] + position.y));
             }
         }
@@ -77,7 +82,7 @@ impl Laid {
             return 0;
         };
         let local = point(position.x, position.y - tops[index]);
-        let found = line.closest_index_for_position(local, Self::line_height());
+        let found = line.closest_index_for_position(local, self.line_height());
         start + found.unwrap_or_else(|nearest| nearest)
     }
 }
@@ -317,7 +322,7 @@ impl EntityInputHandler for Editor {
         let position = self.laid.borrow().position(bytes.start)?;
         Some(Bounds::new(
             element_bounds.origin + position,
-            size(px(2.), px(LINE_HEIGHT)),
+            size(px(2.), px(self.style.line_height)),
         ))
     }
 
@@ -422,7 +427,7 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Wrappe
         let runs = runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style);
         let shaped = system.shape_text(
             SharedString::from(paragraph.to_owned()),
-            px(FONT_SIZE),
+            px(editor.style.size),
             &runs,
             width,
             None,
@@ -462,12 +467,13 @@ impl Element for EditorElement {
                 gpui::AvailableSpace::Definite(width) => Some(width),
                 _ => None,
             });
+            let line_height = px(editor.read(cx).style.line_height);
             let lines = shape(editor.read(cx), width, window);
             let height: Pixels = lines
                 .iter()
-                .map(|(line, _)| line.size(px(LINE_HEIGHT)).height.max(px(LINE_HEIGHT)))
+                .map(|(line, _)| line.size(line_height).height.max(line_height))
                 .fold(px(0.), |sum, height| sum + height);
-            let measured: Size<Pixels> = size(width.unwrap_or(px(0.)), height.max(px(LINE_HEIGHT)));
+            let measured: Size<Pixels> = size(width.unwrap_or(px(0.)), height.max(line_height));
             measured
         });
         (id, ())
@@ -516,6 +522,7 @@ impl Element for EditorElement {
             let mut laid = laid.borrow_mut();
             laid.lines = lines;
             laid.bounds = Some(bounds);
+            laid.line_height = px(style.line_height);
         }
         let laid = laid.borrow();
         if !selection.is_empty()
@@ -524,7 +531,10 @@ impl Element for EditorElement {
             && from.y == to.y
         {
             window.paint_quad(fill(
-                Bounds::new(bounds.origin + from, size(to.x - from.x, px(LINE_HEIGHT))),
+                Bounds::new(
+                    bounds.origin + from,
+                    size(to.x - from.x, px(style.line_height)),
+                ),
                 style.selection,
             ));
         }
@@ -538,10 +548,10 @@ impl Element for EditorElement {
             )];
             let shaped = window
                 .text_system()
-                .shape_line(placeholder, px(FONT_SIZE), &runs, None);
+                .shape_line(placeholder, px(style.size), &runs, None);
             let _ = shaped.paint(
                 bounds.origin,
-                px(LINE_HEIGHT),
+                px(style.line_height),
                 TextAlign::Left,
                 None,
                 window,
@@ -551,13 +561,23 @@ impl Element for EditorElement {
         let tops = laid.paragraph_tops();
         for (index, (line, _)) in laid.lines.iter().enumerate() {
             let origin = bounds.origin + point(px(0.), tops[index]);
-            let _ = line.paint(origin, px(LINE_HEIGHT), TextAlign::Left, None, window, cx);
+            let _ = line.paint(
+                origin,
+                px(style.line_height),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
         if focus.is_focused(window)
             && let Some(position) = laid.position(caret)
         {
             window.paint_quad(fill(
-                Bounds::new(bounds.origin + position, size(px(1.), px(LINE_HEIGHT))),
+                Bounds::new(
+                    bounds.origin + position,
+                    size(px(1.), px(style.line_height)),
+                ),
                 style.caret,
             ));
         }

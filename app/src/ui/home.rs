@@ -253,6 +253,11 @@ impl Root {
                     .child(
                         div()
                             .parity("find-button")
+                            .id("find-button")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_quick_switcher(window, cx);
+                            }))
                             .h(px(32.))
                             .rounded(px(8.))
                             .bg(color("--background-mod-subtle"))

@@ -46,6 +46,7 @@ mod picker;
 mod pins;
 mod plaintext_extensions;
 mod profile;
+mod quickswitcher;
 mod reminder_modal;
 mod saved;
 mod settings;
@@ -149,6 +150,7 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    quick_switcher: Option<quickswitcher::QuickSwitcher>,
     notify_open: bool,
     /// The Mute Channel row while its durations show.
     notify_submenu: Option<Bounds<Pixels>>,
@@ -242,6 +244,7 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            quick_switcher: None,
             notify_open: false,
             notify_submenu: None,
             pins_open: None,
@@ -3077,6 +3080,8 @@ fn editor_style() -> EditorStyle {
     text_font.features = kerning();
     EditorStyle {
         font: text_font,
+        size: crate::editor::FONT_SIZE,
+        line_height: crate::editor::LINE_HEIGHT,
         text: hsla("--text-default"),
         placeholder: hsla("--channel-text-area-placeholder"),
         selection: hsla_from(SELECTION),
@@ -3365,8 +3370,30 @@ impl Render for Root {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
+                // `QUICKSWITCHER_SHOW`: Ctrl+K anywhere.
+                if keys.key == "k"
+                    && keys.modifiers.control
+                    && !keys.modifiers.shift
+                    && !keys.modifiers.alt
+                {
+                    this.open_quick_switcher(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.quick_switcher.is_some() {
+                    if keys.key == "escape" {
+                        this.quick_switcher = None;
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.switcher_key(&keys.key, cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 // `NAVIGATE_BACK`/`NAVIGATE_FORWARD`: global combos, so they work from the composer too.
                 let alt_only = keys.modifiers.alt
                     && !keys.modifiers.control
@@ -3537,6 +3564,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.quick_switcher_modal(window, cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))
