@@ -73,13 +73,15 @@ impl Item {
         }
     }
 
-    /// Image key in `Root::images`.
-    fn image_key(&self) -> String {
+    /// Image key in `Root::images`, in the chosen skin tone (0 none, 1-5 the five tones).
+    fn image_key(&self, tone: u8) -> String {
         match self {
             Item::Unicode(index) => {
-                let emoji = &EMOJIS[usize::from(*index)];
+                let base = &EMOJIS[usize::from(*index)];
+                let emoji = toned(base, tone);
+                // Tone variants live on the diversity sheet with their base.
                 match emoji.sprite {
-                    Some(sprite) if emoji.has_diversity => format!("dsprite:{sprite}"),
+                    Some(sprite) if base.has_diversity => format!("dsprite:{sprite}"),
                     Some(sprite) => format!("sprite:{sprite}"),
                     None => format!("emoji:{}", emoji.surrogates),
                 }
@@ -87,6 +89,27 @@ impl Item {
             Item::Custom { id, .. } => format!("custom:{id}"),
         }
     }
+}
+
+/// `diversitySurrogate`: an emoji with skin tones shows the chosen one's variant.
+pub(super) fn toned(
+    emoji: &'static dc_tokens::emoji_data::Emoji,
+    tone: u8,
+) -> &'static dc_tokens::emoji_data::Emoji {
+    if tone == 0 || !emoji.has_diversity {
+        return emoji;
+    }
+    emoji
+        .diversity_children
+        .get(usize::from(tone) - 1)
+        .map_or(emoji, |child| &EMOJIS[usize::from(*child)])
+}
+
+/// The skin tone kept between sessions (`emoji.skin_tone` in storage.json).
+pub(super) fn stored_tone() -> u8 {
+    crate::storage::get("emoji.skin_tone")
+        .and_then(|value| value.as_u64())
+        .map_or(0, |tone| tone.min(5) as u8)
 }
 
 #[derive(Clone, Debug)]
@@ -498,8 +521,13 @@ impl Root {
                         format!("https://cdn.discordapp.com/emojis/{id}.{extension}?size=48"),
                     ));
                 }
-                Item::Unicode(index) if EMOJIS[usize::from(*index)].sprite.is_none() => {
-                    let surrogates = EMOJIS[usize::from(*index)].surrogates;
+                // Unsheeted emoji, and tone variants (which have no sheet cell), load as files.
+                Item::Unicode(index)
+                    if toned(&EMOJIS[usize::from(*index)], self.skin_tone)
+                        .sprite
+                        .is_none() =>
+                {
+                    let surrogates = toned(&EMOJIS[usize::from(*index)], self.skin_tone).surrogates;
                     if let Some(file) = dc_tokens::emoji_file(surrogates) {
                         wanted.push((
                             format!("emoji:{surrogates}"),
@@ -580,7 +608,7 @@ impl Root {
         };
         let (text, reaction) = match &item {
             Item::Unicode(index) => {
-                let surrogates = EMOJIS[usize::from(*index)].surrogates;
+                let surrogates = toned(&EMOJIS[usize::from(*index)], self.skin_tone).surrogates;
                 (surrogates.to_owned(), surrogates.to_owned())
             }
             Item::Custom { id, name, animated } => (
@@ -717,7 +745,7 @@ impl Root {
                     .items_start()
                     .children(items[start..end].iter().enumerate().map(|(offset, item)| {
                         let selected = picker.hovered.as_ref() == Some(item);
-                        let picture = self.images.get(&item.image_key()).cloned();
+                        let picture = self.images.get(&item.image_key(self.skin_tone)).cloned();
                         let hovered_item = item.clone();
                         let chosen = item.clone();
                         div()
@@ -855,10 +883,12 @@ impl Root {
                         let surrogates = EMOJIS[usize::from(*index)].surrogates;
                         self.images
                             .get(&format!("emoji:{surrogates}"))
-                            .or_else(|| self.images.get(&item.image_key()))
+                            .or_else(|| self.images.get(&item.image_key(self.skin_tone)))
                             .cloned()
                     }
-                    Item::Custom { .. } => self.images.get(&item.image_key()).cloned(),
+                    Item::Custom { .. } => {
+                        self.images.get(&item.image_key(self.skin_tone)).cloned()
+                    }
                 };
                 this.child(
                     div()
@@ -1019,14 +1049,97 @@ impl Root {
                         ),
                 )
             })
-            .child(
-                div().mt(px(1.)).size(px(38.)).p(px(7.)).children(
-                    dc_tokens::emoji_by_name("clap")
-                        .and_then(|emoji| emoji.sprite)
-                        .and_then(|sprite| self.images.get(&format!("dsprite:{sprite}")).cloned())
-                        .map(|picture| img(picture).size(px(24.))),
-                ),
-            )
+            .child({
+                // `diversitySelector_eHzdRB`: the clap in the current tone; open, the six tones drop below it.
+                let clap = dc_tokens::emoji_by_name("clap");
+                // The bare clap is a diversity sheet cell; its tones load as files (`emoji:` keys).
+                let tone_image = |tone: u8| {
+                    let emoji = clap.map(|emoji| toned(emoji, tone))?;
+                    match emoji.sprite {
+                        Some(sprite) => self.images.get(&format!("dsprite:{sprite}")).cloned(),
+                        None => self
+                            .images
+                            .get(&format!("emoji:{}", emoji.surrogates))
+                            .cloned(),
+                    }
+                };
+                let open = self.skin_menu;
+                div()
+                    .id("picker-skin-tone")
+                    .relative()
+                    .mt(px(1.))
+                    .size(px(38.))
+                    .p(px(7.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        // A button: the click takes focus from the search field.
+                        window.blur(cx);
+                        this.skin_menu = !this.skin_menu;
+                        if let Some(clap) = dc_tokens::emoji_by_name("clap") {
+                            for tone in 1..=5u8 {
+                                let surrogates = toned(clap, tone).surrogates;
+                                if let Some(file) = dc_tokens::emoji_file(surrogates) {
+                                    this.request_image(
+                                        format!("emoji:{surrogates}"),
+                                        format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+                                    );
+                                }
+                            }
+                        }
+                        cx.notify();
+                    }))
+                    .children(tone_image(self.skin_tone).map(|picture| img(picture).size(px(24.))))
+                    .when(open, |this| {
+                        this.child(
+                            deferred(
+                                div()
+                                    .id("picker-skin-tones")
+                                    .occlude()
+                                    .absolute()
+                                    .left(px(-1.))
+                                    .top(px(-1.))
+                                    .w(px(40.))
+                                    .rounded(px(4.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-surface-higher"))
+                                    .children((0..6u8).map(|tone| {
+                                        div()
+                                            .id(SharedString::from(format!("skin-tone-{tone}")))
+                                            .size(px(38.))
+                                            .p(px(7.))
+                                            .cursor_pointer()
+                                            .hover(|style| {
+                                                style.bg(color("--interactive-background-hover"))
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.skin_tone = tone;
+                                                this.skin_menu = false;
+                                                crate::storage::set(
+                                                    "emoji.skin_tone",
+                                                    serde_json::json!(tone),
+                                                );
+                                                // The visible emoji switch to their tone variants.
+                                                if let Some(sections) = this
+                                                    .picker
+                                                    .as_ref()
+                                                    .map(|picker| picker.all.clone())
+                                                {
+                                                    this.request_picker_images(&sections);
+                                                }
+                                                cx.notify();
+                                            }))
+                                            .children(
+                                                tone_image(tone)
+                                                    .map(|picture| img(picture).size(px(24.))),
+                                            )
+                                    })),
+                            )
+                            .with_priority(1),
+                        )
+                    })
+            })
             .child(
                 div()
                     .id("picker-add-emoji")

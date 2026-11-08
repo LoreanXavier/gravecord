@@ -170,6 +170,8 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    skin_tone: u8,
+    skin_menu: bool,
     search: Option<search::Search>,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
@@ -295,6 +297,8 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            skin_tone: picker::stored_tone(),
+            skin_menu: false,
             search: None,
             file_menu: None,
             file_wrap: HashSet::new(),
