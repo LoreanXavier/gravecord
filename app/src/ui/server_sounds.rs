@@ -116,7 +116,7 @@ impl Root {
             .unwrap_or_default()
     }
 
-    fn open_sound_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_sound_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = cx.new(|cx| {
             let mut editor = Editor::new(super::editor_style(), cx);
             editor.set_placeholder("Sound Name".to_owned());

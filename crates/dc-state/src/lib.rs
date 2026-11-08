@@ -826,6 +826,8 @@ pub struct Account {
     pub phone: Option<String>,
     pub mfa_enabled: bool,
     pub verified: bool,
+    /// `premium_type`: 1 Classic, 2 Nitro, 3 Basic; none without a subscription.
+    pub premium_type: Option<u64>,
 }
 
 impl Account {
@@ -835,6 +837,7 @@ impl Account {
             phone: text(&value["phone"]),
             mfa_enabled: value["mfa_enabled"].as_bool().unwrap_or(false),
             verified: value["verified"].as_bool().unwrap_or(false),
+            premium_type: value["premium_type"].as_u64().filter(|kind| *kind > 0),
         }
     }
 }
@@ -849,6 +852,8 @@ pub struct VoiceState {
     pub self_deaf: bool,
     pub mute: bool,
     pub deaf: bool,
+    /// Held back from speaking in a stage.
+    pub suppress: bool,
 }
 
 impl VoiceState {
@@ -861,6 +866,7 @@ impl VoiceState {
             self_deaf: value["self_deaf"].as_bool().unwrap_or(false),
             mute: value["mute"].as_bool().unwrap_or(false),
             deaf: value["deaf"].as_bool().unwrap_or(false),
+            suppress: value["suppress"].as_bool().unwrap_or(false),
         })
     }
 }

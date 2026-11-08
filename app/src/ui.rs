@@ -96,6 +96,7 @@ mod server_tag;
 mod server_template;
 mod server_webhooks;
 mod settings;
+mod soundboard;
 mod tag_badges;
 mod threads;
 mod tooltip;
@@ -300,6 +301,7 @@ pub struct Root {
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
     panel: voice_panel::PanelState,
+    soundboard: soundboard::Board,
     self_mute: bool,
     self_deaf: bool,
     /// Lets the system-wide push to talk hook (another thread) reach the window.
@@ -442,6 +444,7 @@ impl Root {
             profile: None,
             call: None,
             panel: voice_panel::PanelState::default(),
+            soundboard: soundboard::Board::new(),
             updates,
             ptt_hook: None,
             ptt_down: false,
@@ -466,6 +469,7 @@ impl Root {
             Update::Dispatch { name, data } => {
                 let voice_before = (name == "VOICE_STATE_UPDATE").then(|| self.others_in_call());
                 self.stores.dispatch(&name, &data);
+                self.soundboard_dispatch(&name, &data, cx);
                 if name == "VOICE_STATE_UPDATE" {
                     self.after_voice_state(voice_before.flatten(), &data);
                 }
@@ -538,6 +542,10 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::Fetched { key, body } => {
+                if key.starts_with("soundboard:") {
+                    self.soundboard_fetched(&key, &body, cx);
+                    return;
+                }
                 if key == "voice-logs-upload" {
                     self.voice_logs_uploaded(&body, cx);
                     return;

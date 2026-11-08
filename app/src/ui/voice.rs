@@ -85,6 +85,7 @@ impl Root {
             }
             call.controls.disconnect();
         }
+        self.soundboard_stop();
         info!("joining voice");
         let controls = dc_voice::Controls::new();
         controls.set_self_mute(self.self_mute);
@@ -112,6 +113,7 @@ impl Root {
     }
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
+        self.soundboard_stop();
         if let Some(call) = self.call.take() {
             if call.connected
                 && let Some(sound) =
@@ -146,6 +148,10 @@ impl Root {
     /// `before`/after: (effectively muted, deafened). Deafen and undeafen always sound; mute and unmute only inside a
     /// call (`inVoiceChannel` in `Sa`).
     fn after_voice_toggle(&mut self, before: (bool, bool), cx: &mut Context<Self>) {
+        // Deafened, nothing the soundboard plays is heard.
+        if self.self_deaf {
+            self.soundboard_stop();
+        }
         if let Some(sound) = super::voice_sounds::toggle_sound(
             before,
             (self.self_mute || self.self_deaf, self.self_deaf),
@@ -263,6 +269,7 @@ impl Root {
             dc_voice::Event::Disconnected { reason } => {
                 info!("voice disconnected: {reason:?}");
                 self.speaking.clear();
+                self.soundboard_stop();
                 let dropped = self
                     .call
                     .as_ref()
@@ -500,12 +507,31 @@ impl Root {
             wide("voice-activity", "voice_activity"),
             cx,
         );
-        let soundboard = self.with_tip(
-            "voice-soundboard-tip",
-            Tip::text("Open Soundboard", Side::Top),
-            wide("voice-soundboard", "voice_soundboard"),
-            cx,
-        );
+        // `greyButtonActive` while the picker is open, `disabled` (opacity .3) under a server mute, suppression or deafening.
+        let soundboard_reason = self.soundboard_disabled();
+        let soundboard_open = self.panel.popout == Some(Popout::Soundboard);
+        let soundboard = wide("voice-soundboard", "voice_soundboard")
+            .when(soundboard_open, |this| {
+                this.bg(color("--background-mod-strong"))
+            })
+            .when(soundboard_reason.is_some(), |this| this.opacity(0.3))
+            .when(soundboard_reason.is_none(), |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_soundboard(window, cx);
+                    }))
+            });
+        let soundboard: AnyElement = if soundboard_open {
+            soundboard.into_any_element()
+        } else {
+            self.with_tip(
+                "voice-soundboard-tip",
+                Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
+                soundboard,
+                cx,
+            )
+            .into_any_element()
+        };
         Some(
             div()
                 // `wrapper_9U6LUN`: a pixel into the panel's border on the left.
@@ -622,7 +648,8 @@ impl Root {
                     })
                     .unwrap_or_default();
                 let avatar = self.images.get(&avatar_source(&user).0).cloned();
-                let speaking = self.speaking.contains(&state.user_id);
+                let speaking = self.speaking.contains(&state.user_id)
+                    || self.soundboard.user_playing(state.user_id);
                 div()
                     .flex_none()
                     .h(px(32.))

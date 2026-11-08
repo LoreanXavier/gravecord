@@ -138,6 +138,11 @@ pub enum Request {
         route: String,
         body: Option<Value>,
     },
+    /// Op 31 `REQUEST_SOUNDBOARD_SOUNDS`: the soundboard sounds of these guilds, answered by `SOUNDBOARD_SOUNDS`
+    /// dispatches.
+    SoundboardSounds {
+        guilds: Vec<u64>,
+    },
     /// Saves a file (a CDN URL, no authorization) into the user's Downloads folder under a free name.
     Download {
         url: String,
@@ -731,6 +736,13 @@ pub async fn run(
                         }
                     }
                     let _ = task.await;
+                });
+            }
+            Request::SoundboardSounds { guilds } => {
+                let ids: Vec<String> = guilds.iter().map(u64::to_string).collect();
+                let _ = commands.send(Command::Send {
+                    op: Op::RequestSoundboardSounds,
+                    data: json!({"guild_ids": ids}),
                 });
             }
             Request::Subscribe { guild, channel } => {

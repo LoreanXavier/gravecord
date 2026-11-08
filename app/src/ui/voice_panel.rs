@@ -147,6 +147,7 @@ pub(crate) enum Tab {
 pub(crate) enum Popout {
     Connection(Tab),
     Noise,
+    Soundboard,
 }
 
 #[derive(Default)]
@@ -163,7 +164,9 @@ pub(crate) struct PanelState {
 fn same_kind(a: Popout, b: Popout) -> bool {
     matches!(
         (a, b),
-        (Popout::Connection(_), Popout::Connection(_)) | (Popout::Noise, Popout::Noise)
+        (Popout::Connection(_), Popout::Connection(_))
+            | (Popout::Noise, Popout::Noise)
+            | (Popout::Soundboard, Popout::Soundboard)
     )
 }
 
@@ -182,7 +185,7 @@ impl Root {
         cx.notify();
     }
 
-    fn close_panel_popout(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_panel_popout(&mut self, cx: &mut Context<Self>) {
         if let Some(open) = self.panel.popout.take() {
             self.panel.closed_at = Some((open, Instant::now()));
             cx.notify();
@@ -219,9 +222,13 @@ impl Root {
         if self.call.is_none() {
             self.panel.popout = None;
         }
+        if self.panel.popout == Some(Popout::Soundboard) && self.soundboard_disabled().is_some() {
+            self.close_panel_popout(cx);
+        }
         let body = match self.panel.popout? {
             Popout::Connection(tab) => self.connection_popout(tab, cx),
             Popout::Noise => self.noise_popout(window, cx),
+            Popout::Soundboard => return self.soundboard_picker(window, cx),
         };
         Some(deferred(body).with_priority(3).into_any_element())
     }

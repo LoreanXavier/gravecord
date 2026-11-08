@@ -18,8 +18,11 @@ pub const MANAGE_MESSAGES: u64 = 1 << 13;
 pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
 pub const CHANGE_NICKNAME: u64 = 1 << 26;
 pub const MANAGE_ROLES: u64 = 1 << 28;
+pub const MANAGE_GUILD_EXPRESSIONS: u64 = 1 << 30;
 pub const MANAGE_THREADS: u64 = 1 << 34;
 pub const MODERATE_MEMBERS: u64 = 1 << 40;
+pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
+pub const USE_EXTERNAL_SOUNDS: u64 = 1 << 45;
 
 /// Every bit: what the owner and administrators hold (`R`).
 pub const ALL: u64 = u64::MAX;

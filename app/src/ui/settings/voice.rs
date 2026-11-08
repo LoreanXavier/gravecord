@@ -75,6 +75,14 @@ pub fn soundboard_volume() -> f32 {
     soundboard_volume_from(storage::get(SOUNDBOARD_VOLUME_STORED).as_ref())
 }
 
+/// `USER_SOUNDBOARD_SET_VOLUME`: keeps a volume (0 to 100) as the setting; the picker's own slider writes it too.
+pub fn set_soundboard_volume(volume: f32) {
+    storage::set(
+        SOUNDBOARD_VOLUME_STORED,
+        json!(volume.clamp(0., 100.).round()),
+    );
+}
+
 /// What the slider writes (`w` of 792251 over its 0 to 100 position): whole-percent steps on the volume curve.
 fn soundboard_volume_at(fraction: f32) -> f32 {
     slider_to_volume((fraction * 100.).round())

@@ -10,7 +10,7 @@ mod soundboard;
 pub(crate) use render::radio_dot;
 mod swatches;
 mod voice;
-pub(super) use voice::{Profile, VoiceState};
+pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};
 use crate::net::Request;
@@ -228,7 +228,6 @@ fn wrapped_lines(window: &mut Window, label: &str, badge: bool) -> usize {
 }
 
 /// "Voice & Video" becomes "voice-video".
-#[cfg(any(test, feature = "capture"))]
 fn page_slug(label: &str) -> String {
     let mut slug = String::new();
     for word in label
@@ -670,7 +669,6 @@ impl Root {
     }
 
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
-    #[cfg(feature = "capture")]
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
         let page = SECTIONS
@@ -1590,7 +1588,7 @@ fn panel_nudge(viewport_width: f32) -> f32 {
 const SETTINGS_SIDEBAR_WIDTH: f32 = 253.;
 
 /// `auto_tqapBM`: a 16px gutter whose thumb keeps 4px clear on every side, at least 40px tall.
-fn auto_scrollbar(handle: ScrollHandle) -> impl IntoElement {
+pub(in crate::ui) fn auto_scrollbar(handle: ScrollHandle) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {

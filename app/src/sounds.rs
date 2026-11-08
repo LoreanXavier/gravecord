@@ -510,6 +510,11 @@ fn fetch(file: &str) -> Result<Vec<u8>, String> {
     if !is_asset_file(file) {
         return Err("not an asset file name".to_owned());
     }
+    fetch_url(&format!("{ASSET_ROOT}{file}"))
+}
+
+/// A sound file from a CDN URL, on a small runtime of its own (the caller is a plain thread).
+pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
@@ -521,7 +526,7 @@ fn fetch(file: &str) -> Result<Vec<u8>, String> {
         })
         .as_ref()
         .ok_or("no runtime")?;
-    let url = format!("{ASSET_ROOT}{file}");
+    let url = url.to_owned();
     runtime.block_on(async move {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
