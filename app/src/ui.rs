@@ -61,6 +61,7 @@ mod quickswitcher;
 mod reactions_modal;
 mod reminder_modal;
 mod saved;
+mod search;
 mod settings;
 mod threads;
 mod tooltip;
@@ -169,6 +170,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    search: Option<search::Search>,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
     file_language: HashMap<Id, String>,
@@ -293,6 +295,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            search: None,
             file_menu: None,
             file_wrap: HashSet::new(),
             file_language: HashMap::new(),
@@ -449,6 +452,20 @@ impl Root {
                 self.fetched.insert(key.clone(), body);
                 if gif_answer {
                     self.request_gif_images(&key);
+                }
+                // Search results: their authors' avatars.
+                if key == search::RESULTS_KEY {
+                    let users: Vec<User> = self.fetched[&key]["messages"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|group| group.as_array().and_then(|group| group.first()))
+                        .filter_map(|message| User::from_value(&message["author"]))
+                        .collect();
+                    for user in users {
+                        let (image, url) = avatar_source(&user);
+                        self.request_image(image, url);
+                    }
                 }
                 // Who reacted: their avatars.
                 if key.starts_with(reactions_modal::REACTORS_PREFIX) {
@@ -1236,6 +1253,7 @@ impl Root {
         );
         list.extend(self.gifs.as_ref().map(|gifs| gifs.search.clone()));
         list.extend(self.create_channel.as_ref().map(|form| form.name.clone()));
+        list.extend(self.search.as_ref().map(|search| search.field.clone()));
         list.push(self.active_editor());
         list
     }
@@ -2294,13 +2312,40 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--input-placeholder-text-default"))
-                    .child(search)
-                    .child(div().flex_1())
-                    .child(div().mr(px(5.)).child(icon(
-                        "search",
-                        16.,
-                        "--interactive-text-default",
-                    ))),
+                    .relative()
+                    .child(self.anchor_probe("header-search"))
+                    .id("header-search-box")
+                    .cursor_text()
+                    .on_click(cx.listener(|this, _, window, cx| this.focus_search(window, cx)))
+                    .children(
+                        self.search
+                            .as_ref()
+                            .map(|search| div().flex_1().min_w(px(0.)).child(search.field.clone())),
+                    )
+                    .when(self.search.is_none(), |this| {
+                        this.child(search).child(div().flex_1())
+                    })
+                    .child({
+                        // With text in the field the magnifier becomes Clear (`clear_v966Ys`).
+                        let typed = self.search.as_ref().is_some_and(|search| {
+                            !search.field.read(cx).text().is_empty() || search.shown.is_some()
+                        });
+                        div()
+                            .id("header-search-icon")
+                            .mr(px(5.))
+                            .when(typed, |this| {
+                                this.cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.clear_search(cx);
+                                    }))
+                            })
+                            .child(icon(
+                                if typed { "search_clear" } else { "search" },
+                                16.,
+                                "--interactive-text-default",
+                            ))
+                    }),
             )
     }
 
@@ -3734,6 +3779,18 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The header's search field keeps its own editor; its placeholder names the place.
+        let place = match self
+            .current_dm()
+            .and_then(|channel| self.stores.dm_recipient(channel))
+        {
+            Some(user) => user.username.clone(),
+            None => self
+                .current_guild()
+                .map(|guild| guild.name.clone())
+                .unwrap_or_default(),
+        };
+        self.search_field(format!("Search {place}"), cx);
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
         // The member list in a guild, the profile beside a DM.
         let members = if self.new_thread.is_some() {
@@ -3987,10 +4044,14 @@ impl Render for Root {
                                                         },
                                                     ),
                                             )
+                                            .children(self.search_panel(cx))
                                             .when(
                                                 self.show_members
                                                     && self.guild.is_some()
-                                                    && self.new_thread.is_none(),
+                                                    && self.new_thread.is_none()
+                                                    && self.search.as_ref().is_none_or(|search| {
+                                                        search.shown.is_none()
+                                                    }),
                                                 |this| {
                                                     this.child(
                                                         div()
@@ -4015,6 +4076,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))
             .children(self.view_reactions_modal(cx))
