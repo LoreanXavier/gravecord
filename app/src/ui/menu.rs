@@ -52,8 +52,28 @@ pub(super) enum Item {
     Separator,
 }
 
+/// What the saved-messages store says about the message the menu is for (module 880457).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SavedState {
+    pub bookmarked: bool,
+    pub reminder: bool,
+}
+
+/// The submenu hanging off a menu row.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Submenu {
+    pub message: Id,
+    pub row: gpui::Bounds<Pixels>,
+}
+
 /// `message` menu order from the capture; `own` adds the author's entries.
+#[cfg(test)]
 pub(super) fn message_items(own: bool) -> Vec<Item> {
+    message_items_saved(own, SavedState::default())
+}
+
+/// With the saved state: Remove Bookmark when bookmarked, no bookmark entry and Edit Reminder for a reminder.
+pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     let mut items = vec![
         Item::Entry(
             "Add Reaction",
@@ -78,18 +98,35 @@ pub(super) fn message_items(own: bool) -> Vec<Item> {
         Item::Separator,
         Item::Entry("Copy Text", "menu_copy_text", Action::CopyText, false),
         Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false),
-        Item::Entry(
-            "Bookmark Message",
-            "menu_bookmark_message",
-            Action::Bookmark,
-            false,
-        ),
-        Item::Entry(
-            "Create Reminder",
-            "menu_create_reminder",
-            Action::Reminder,
-            true,
-        ),
+    ]);
+    if !saved.reminder {
+        items.push(if saved.bookmarked {
+            Item::Entry(
+                "Remove Bookmark",
+                "menu_remove_bookmark",
+                Action::Bookmark,
+                false,
+            )
+        } else {
+            Item::Entry(
+                "Bookmark Message",
+                "menu_bookmark_message",
+                Action::Bookmark,
+                false,
+            )
+        });
+    }
+    items.push(Item::Entry(
+        if saved.reminder {
+            "Edit Reminder"
+        } else {
+            "Create Reminder"
+        },
+        "menu_create_reminder",
+        Action::Reminder,
+        true,
+    ));
+    items.extend([
         Item::Entry("Apps", "menu_apps", Action::Apps, true),
         Item::Entry("Mark Unread", "menu_mark_unread", Action::MarkUnread, false),
         Item::Entry(
@@ -127,6 +164,16 @@ pub(super) struct OpenMenu {
 }
 
 impl Root {
+    fn saved_flags(&self, message: Id) -> SavedState {
+        let state = self
+            .channel
+            .and_then(|channel| self.saved_state(channel, message));
+        SavedState {
+            bookmarked: state.is_some(),
+            reminder: state.is_some_and(|due| due.is_some()),
+        }
+    }
+
     /// The quick reaction row: the four most frecent reactions (`Z.D6`), unicode emoji from the dataset.
     pub(super) fn quick_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
         self.frequent_reactions()
@@ -229,8 +276,27 @@ impl Root {
         } else {
             color("--interactive-background-hover")
         };
+        let probe_key = format!("menu-row-{index}");
+        let hover_key = probe_key.clone();
         div()
             .id(SharedString::from(format!("menu-{index}")))
+            .relative()
+            .child(self.anchor_probe(probe_key))
+            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                if !*inside {
+                    return;
+                }
+                // Hovering the reminder row opens its submenu; any other row closes it.
+                let row = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
+                this.submenu = match (run, row) {
+                    (Action::Reminder, Some(row)) => Some(Submenu {
+                        message: target,
+                        row,
+                    }),
+                    _ => None,
+                };
+                cx.notify();
+            }))
             .group(group.clone())
             .h(px(36.))
             .p(px(8.))
@@ -245,6 +311,10 @@ impl Root {
                     if event.modifiers().shift && matches!(run, Action::Delete | Action::Pin) {
                         this.run_unconfirmed(run, target, cx);
                     } else {
+                        if run == Action::Reminder {
+                            // The reminder row only opens its submenu.
+                            return;
+                        }
                         this.run_action(run, target, window, cx);
                     }
                 }),
@@ -325,7 +395,10 @@ impl Root {
         let open = self.menu?;
         let mut rows: Vec<AnyElement> = Vec::new();
         rows.extend(self.quick_row(open.message, cx));
-        for (index, item) in message_items(open.own).into_iter().enumerate() {
+        for (index, item) in message_items_saved(open.own, self.saved_flags(open.message))
+            .into_iter()
+            .enumerate()
+        {
             rows.push(match item {
                 Item::Separator => div()
                     .my(px(8.))
@@ -370,10 +443,22 @@ impl Root {
                             spread_radius: px(0.),
                             inset: false,
                         }])
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.menu = None;
-                            cx.notify();
-                        }))
+                        .on_mouse_down_out(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, cx| {
+                                // A click in the submenu is not outside the menu.
+                                let in_submenu = this.submenu.is_some()
+                                    && this
+                                        .tip_anchors
+                                        .borrow()
+                                        .get("reminder-submenu")
+                                        .is_some_and(|bounds| bounds.contains(&event.position));
+                                if !in_submenu {
+                                    this.menu = None;
+                                    this.submenu = None;
+                                    cx.notify();
+                                }
+                            },
+                        ))
                         .child(
                             div()
                                 .id("context-menu-scroller")
@@ -389,10 +474,22 @@ impl Root {
         ))
     }
 
+    /// The submenu of the open menu, beside the row it hangs off.
+    pub(super) fn menu_submenu(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.menu?;
+        let submenu = self.submenu?;
+        let channel = self.channel?;
+        Some(self.reminder_submenu(channel, submenu.message, submenu.row, window, cx))
+    }
+
     /// The menu's height before layout, for placing the hover bar's menu: rows of 36, separators of 17, the quick row
     /// of 60, 16 of padding and 2 of border.
     fn menu_height(&self, own: bool) -> f32 {
-        let items = message_items(own);
+        let items = message_items_saved(own, SavedState::default());
         let rows = items
             .iter()
             .filter(|item| !matches!(item, Item::Separator))

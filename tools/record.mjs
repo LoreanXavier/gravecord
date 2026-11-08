@@ -14,6 +14,23 @@ const scriptIndex = args.indexOf('--script');
 const script = scriptIndex >= 0 ? readFileSync(args[scriptIndex + 1], 'utf8') : null;
 
 const SECRET_HEADERS = /^(authorization|cookie|set-cookie|x-fingerprint)$/i;
+// Request bodies can carry tokens too (the analytics token in /science): redact every token-like key.
+const SECRET_KEYS = /^(token|auth_token|analytics_token|session_token|password|mfa_ticket|ticket)$/i;
+const cleanBody = (body) => {
+  if (body == null) return null;
+  try {
+    const scrub = (v) => {
+      if (Array.isArray(v)) return v.map(scrub);
+      if (v && typeof v === 'object') {
+        return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_KEYS.test(k) ? '<redacted>' : scrub(x)]));
+      }
+      return v;
+    };
+    return JSON.stringify(scrub(JSON.parse(body)));
+  } catch {
+    return '<non-json body omitted>';
+  }
+};
 const cleanHeaders = (headers = {}) =>
   Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, SECRET_HEADERS.test(k) ? '<redacted>' : v]));
 
@@ -31,7 +48,7 @@ page.on('Network.requestWillBeSent', ({ requestId, request, type }) => {
     url: request.url,
     type,
     requestHeaders: cleanHeaders(request.headers),
-    postData: request.postData ?? null,
+    postData: cleanBody(request.postData ?? null),
   });
 });
 page.on('Network.requestWillBeSentExtraInfo', ({ requestId, headers }) => {
@@ -51,7 +68,7 @@ page.on('Network.loadingFinished', ({ requestId }) => {
     page
       .send('Network.getResponseBody', { requestId })
       .then(({ body, base64Encoded }) => {
-        if (!base64Encoded) entry.responseBody = body;
+        if (!base64Encoded) entry.responseBody = body ? (cleanBody(body) === '<non-json body omitted>' ? body : cleanBody(body)) : body;
       })
       .catch(() => {}),
   );

@@ -42,8 +42,11 @@ mod modal;
 mod picker;
 mod plaintext_extensions;
 mod profile;
+mod reminder_modal;
+mod saved;
 mod settings;
 mod tooltip;
+mod unread;
 mod uploads;
 mod voice;
 
@@ -109,6 +112,8 @@ enum Row {
     /// The start of a DM's history.
     Welcome,
     Divider(String),
+    /// The red line before the first unread message.
+    NewDivider,
     Spacer,
     Message {
         index: usize,
@@ -140,6 +145,12 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    toast: Option<saved::Toast>,
+    /// The open submenu of the message menu: the row it hangs off.
+    submenu: Option<menu::Submenu>,
+    custom_reminder: Option<reminder_modal::CustomReminder>,
+    /// The open channel and the ack its unread messages started after, for the NEW divider.
+    unread_from: Option<(Id, Id)>,
     /// The expression picker, open from the composer or for a reaction.
     picker: Option<picker::Picker>,
     /// Emoji picked this session, for the frecency list until the stored settings catch up.
@@ -214,6 +225,10 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            toast: None,
+            submenu: None,
+            custom_reminder: None,
+            unread_from: None,
             picker: None,
             emoji_used: Vec::new(),
             confirm_pin: None,
@@ -256,9 +271,16 @@ impl Root {
                     }
                     self.after_ready();
                 }
+                if name == "MESSAGE_CREATE"
+                    && data["channel_id"].as_str()
+                        == self.channel.map(|id| id.to_string()).as_deref()
+                {
+                    // A message in the open channel is read as it arrives.
+                    self.read_current_channel();
+                }
                 if matches!(
                     name.as_str(),
-                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE"
+                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
                 ) {
                     self.rebuild_rows();
                 }
@@ -283,6 +305,9 @@ impl Root {
                     self.complete_history.insert(channel);
                 }
                 self.stores.load_messages(channel, &page);
+                if Some(channel) == self.channel {
+                    self.read_current_channel();
+                }
                 self.rebuild_rows();
                 self.request_images();
                 self.ready = true;
@@ -293,6 +318,9 @@ impl Root {
                     .strip_prefix("profile:")
                     .and_then(|user| user.parse::<Id>().ok());
                 let frecency = key == actions::FRECENCY_KEY;
+                if key == saved::SAVED_KEY {
+                    self.stores.load_saved(&body);
+                }
                 self.fetched.insert(key, body);
                 if let Some(user) = profile {
                     self.request_profile_images(user);
@@ -356,6 +384,7 @@ impl Root {
         self.request_images();
         self.request_emoji_button();
         self.request_frecency();
+        self.request_saved();
     }
 
     /// The composer's emoji button is a sprite cell tinted with the theme's icon color, so it follows the theme.
@@ -378,6 +407,7 @@ impl Root {
         );
         self.guild = Some(guild);
         self.channel = channel;
+        self.unread_from = None;
         if let Some(channel) = channel {
             let _ = self.requests.send(Request::Subscribe { guild, channel });
             let _ = self.requests.send(Request::LoadMessages { channel });
@@ -594,6 +624,8 @@ impl Root {
         if complete && self.current_dm().is_some() {
             self.rows.push(Row::Welcome);
         }
+        let divider = self.divider_after();
+        let mut divided = false;
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -603,7 +635,13 @@ impl Root {
                     .push(Row::Divider(local.format("%B %-d, %Y").to_string()));
                 last_day = Some(day);
             }
-            let head = new_day || index == 0 || starts_group(&messages[index - 1], message);
+            let mut head = new_day || index == 0 || starts_group(&messages[index - 1], message);
+            if !divided && divider.is_some_and(|acked| message.id > acked) {
+                // The divider starts a new group, as the official list breaks one there.
+                self.rows.push(Row::NewDivider);
+                divided = true;
+                head = true;
+            }
             self.rows.push(Row::Message { index, head });
         }
         self.rows.push(Row::Spacer);
@@ -997,13 +1035,10 @@ impl Root {
                     .flex()
                     .items_center()
                     .child(
-                        div()
-                            .size(px(24.))
+                        bar_button("inbox", "inbox")
+                            .relative()
                             .mr(px(12.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("inbox", 18., "--text-muted")),
+                            .child(self.anchor_probe("bar-inbox")),
                     )
                     .child(
                         // `ar` in module 596339: an anchor to the Help Center (`tP.C`, https:// + support host).
@@ -1083,6 +1118,19 @@ impl Root {
                             .group_hover(group, |style| style.opacity(1.))
                     }),
             )
+            // `item__o8_Xq` unread: an 8px pill while a channel in the guild is unread.
+            .when(!selected && self.stores.guild_unread(guild), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(16.))
+                        .w(px(4.))
+                        .h(px(8.))
+                        .rounded_r(px(4.))
+                        .bg(color("--text-strong")),
+                )
+            })
             .child(self.with_tip(format!("guild-{id}"), Tip::rail(Body::Guild(id)), tile, cx))
     }
 
@@ -1175,7 +1223,9 @@ impl Root {
                 .call
                 .as_ref()
                 .is_some_and(|call| call.channel == channel.id);
-        let tint = if selected || in_call {
+        // `modeUnreadImportant`: an unread channel reads in `--text-strong`, with a pill at the sidebar's edge.
+        let unread = channel.kind == ChannelKind::Text && self.stores.is_unread(channel.id);
+        let tint = if selected || in_call || unread {
             "--text-strong"
         } else {
             "--channels-default"
@@ -1202,9 +1252,22 @@ impl Root {
         let target = channel.id;
         div()
             .flex_none()
+            .relative()
             .h(px(34.))
             .pt(px(1.))
             .pl(px(8.))
+            .when(unread, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(1.))
+                        .top(px(13.))
+                        .w(px(4.))
+                        .h(px(8.))
+                        .rounded_r(px(4.))
+                        .bg(color("--interactive-text-active")),
+                )
+            })
             .child(
                 div()
                     .id(SharedString::from(format!("channel-row-{}", channel.id)))
@@ -2291,6 +2354,7 @@ impl Root {
         };
         match row {
             Row::Spacer => div().h(px(40.)).into_any_element(),
+            Row::NewDivider => self.new_divider(),
             Row::Welcome => self
                 .dm_welcome()
                 .unwrap_or_else(|| div().into_any_element()),
@@ -3058,7 +3122,15 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "escape" && this.picker.is_some() {
+                if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
+                    this.custom_reminder = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.submenu.is_some() {
+                    this.submenu = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.picker.is_some() {
                     this.picker = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -3160,9 +3232,11 @@ impl Render for Root {
                                             .child(
                                                 div()
                                                     .parity("messages")
+                                                    .relative()
                                                     .flex_1()
                                                     .min_h(px(0.))
-                                                    .child(rows),
+                                                    .child(rows)
+                                                    .children(self.new_messages_bar(cx)),
                                             )
                                             .child(self.composer_bar(cx)),
                                     )
@@ -3183,9 +3257,12 @@ impl Render for Root {
             )
             .child(self.user_panel(cx))
             .children(self.context_menu(window, cx))
+            .children(self.menu_submenu(window, cx))
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.custom_reminder_modal(cx))
+            .children(self.toast_layer())
             .children(self.picker_layer(window, cx))
     }
 }

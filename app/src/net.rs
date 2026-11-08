@@ -87,6 +87,22 @@ pub enum Request {
         channel: u64,
         message: u64,
     },
+    /// `POST /channels/{channel}/messages/{message}/ack`: `{manual, mention_count}` for Mark Unread, else
+    /// `{token, last_viewed}` (days since 2015-01-01), as recorded in TRAFFIC/bookmark-unread and mark-read.
+    Ack {
+        channel: u64,
+        message: u64,
+        manual: bool,
+        mention_count: u64,
+        last_viewed: u64,
+    },
+    /// `PUT`/`DELETE /users/@me/saved-messages/{channel}/{message}`: a bookmark, or a reminder with `due_at`.
+    Save {
+        channel: u64,
+        message: u64,
+        due_at: Option<String>,
+        save: bool,
+    },
     /// `PIN`/unpin: `PUT` or `DELETE /channels/{channel}/messages/pins/{message}`.
     Pin {
         channel: u64,
@@ -350,6 +366,52 @@ pub async fn run(
                     if let Err(error) = client.request(reqwest::Method::DELETE, &route, None).await
                     {
                         warn!("deleting failed: {error}");
+                    }
+                });
+            }
+            Request::Ack {
+                channel,
+                message,
+                manual,
+                mention_count,
+                last_viewed,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{channel}/messages/{message}/ack");
+                    let body = if manual {
+                        json!({"manual": true, "mention_count": mention_count})
+                    } else {
+                        json!({"token": null, "last_viewed": last_viewed})
+                    };
+                    if let Err(error) = client
+                        .request(reqwest::Method::POST, &route, Some(&body))
+                        .await
+                    {
+                        warn!("ack failed: {error}");
+                    }
+                });
+            }
+            Request::Save {
+                channel,
+                message,
+                due_at,
+                save,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!("/users/@me/saved-messages/{channel}/{message}");
+                    let result = if save {
+                        let mut body = json!({"source": "context_menu"});
+                        if let Some(due_at) = due_at {
+                            body["due_at"] = json!(due_at);
+                        }
+                        client
+                            .request(reqwest::Method::PUT, &route, Some(&body))
+                            .await
+                    } else {
+                        client.request(reqwest::Method::DELETE, &route, None).await
+                    };
+                    if let Err(error) = result {
+                        warn!("saving failed: {error}");
                     }
                 });
             }

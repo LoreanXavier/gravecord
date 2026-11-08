@@ -20,6 +20,7 @@ impl Root {
         );
         self.guild = None;
         self.channel = channel;
+        self.unread_from = None;
         if let Some(channel) = channel {
             let _ = self
                 .requests

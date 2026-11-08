@@ -112,6 +112,8 @@ impl Root {
     ) {
         match action {
             Action::Pin => self.confirm_pin = Some(message),
+            Action::MarkUnread => self.mark_unread(message.channel_id, message.id),
+            Action::Bookmark => self.toggle_bookmark(message.channel_id, message.id, cx),
             Action::AddReaction => {
                 if let Some(super::menu::OpenMenu { anchor, .. }) = self.last_menu {
                     let at = match anchor {

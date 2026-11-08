@@ -4,6 +4,7 @@
 pub mod frecency;
 pub mod grouping;
 pub mod member_list;
+pub mod read_state;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
@@ -80,6 +81,8 @@ pub struct Channel {
     pub kind: ChannelKind,
     pub position: i64,
     pub parent_id: Option<Id>,
+    /// The newest message when the channel arrived; `read_states.latest` follows it after that.
+    pub last_message_id: Option<Id>,
 }
 
 impl Channel {
@@ -90,6 +93,7 @@ impl Channel {
             kind: ChannelKind::from_u64(value["type"].as_u64()?),
             position: value["position"].as_i64().unwrap_or(0),
             parent_id: id(&value["parent_id"]),
+            last_message_id: id(&value["last_message_id"]),
         })
     }
 }
@@ -184,6 +188,13 @@ impl Guild {
                 .unwrap_or(0),
             emojis: GuildEmoji::list(&value["emojis"]),
         })
+    }
+
+    /// The join date as a snowflake, so it compares with message ids.
+    pub fn joined_snowflake(&self) -> Id {
+        chrono::DateTime::parse_from_rfc3339(&self.joined_at)
+            .map(|time| read_state::snowflake_at(time.timestamp_millis().max(0) as u64))
+            .unwrap_or(0)
     }
 
     pub fn has_emoji(&self, emoji: Id) -> bool {
@@ -617,6 +628,10 @@ pub struct Stores {
     pub guild_order: Vec<Id>,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
+    pub read_states: read_state::ReadStates,
+    /// Bookmarks and reminders (`SavedMessagesStore`): (channel, message) to the reminder's `due_at`, `None` for a
+    /// plain bookmark.
+    pub saved: HashMap<(Id, Id), Option<String>>,
 }
 
 impl Stores {
@@ -659,6 +674,11 @@ impl Stores {
             }
             "GUILD_CREATE" => {
                 if let Some(guild) = Guild::from_value(data) {
+                    for channel in &guild.channels {
+                        if let Some(latest) = channel.last_message_id {
+                            self.read_states.latest.insert(channel.id, latest);
+                        }
+                    }
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
                     self.sort_guilds();
@@ -679,8 +699,35 @@ impl Stores {
                     list.push((user, Instant::now() + TYPING_DURATION));
                 }
             }
+            "MESSAGE_ACK" => self.read_states.ack(data),
+            "SAVED_MESSAGE_CREATE" => self.save(&data["save_data"]),
+            "SAVED_MESSAGE_DELETE" => {
+                let data = if data["save_data"].is_object() {
+                    &data["save_data"]
+                } else {
+                    data
+                };
+                if let (Some(channel), Some(message)) =
+                    (id(&data["channel_id"]), id(&data["message_id"]))
+                {
+                    self.saved.remove(&(channel, message));
+                }
+            }
             "MESSAGE_CREATE" => {
                 if let Some(message) = Message::from_value(data) {
+                    let me = self.current_user.as_ref().map(|user| user.id);
+                    let mentions_me = data["mention_everyone"].as_bool().unwrap_or(false)
+                        || data["mentions"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|user| id(&user["id"]).is_some_and(|user| Some(user) == me));
+                    self.read_states.message_created(
+                        message.channel_id,
+                        message.id,
+                        mentions_me,
+                        Some(message.author.id) == me,
+                    );
                     // A sent message ends its author's typing notice.
                     if let Some(list) = self.typing.get_mut(&message.channel_id) {
                         list.retain(|(user, _)| *user != message.author.id);
@@ -754,7 +801,57 @@ impl Stores {
                 Some((id(&guild["id"])?, states))
             })
             .collect();
+        self.read_states.load(&data["read_state"]);
+        let latest: Vec<(Id, Id)> = self
+            .guilds
+            .iter()
+            .flat_map(|guild| &guild.channels)
+            .filter_map(|channel| Some((channel.id, channel.last_message_id?)))
+            .chain(
+                self.private_channels
+                    .iter()
+                    .map(|channel| (channel.id, channel.last_message_id)),
+            )
+            .collect();
+        self.read_states.latest.extend(latest);
         self.sort_guilds();
+    }
+
+    fn save(&mut self, save_data: &Value) {
+        if let (Some(channel), Some(message)) =
+            (id(&save_data["channel_id"]), id(&save_data["message_id"]))
+        {
+            self.saved
+                .insert((channel, message), text(&save_data["due_at"]));
+        }
+    }
+
+    /// `GET /users/@me/saved-messages`: `{results: [{message, save_data}]}`.
+    pub fn load_saved(&mut self, body: &Value) {
+        self.saved.clear();
+        for entry in body["results"].as_array().into_iter().flatten() {
+            self.save(&entry["save_data"]);
+        }
+    }
+
+    /// Whether `channel` has messages past its ack. Guild channels never read count from the join date.
+    pub fn is_unread(&self, channel: Id) -> bool {
+        let joined = self
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+            .map_or(0, Guild::joined_snowflake);
+        self.read_states.is_unread(channel, joined)
+    }
+
+    /// A guild is unread when one of its text channels is.
+    pub fn guild_unread(&self, guild: &Guild) -> bool {
+        let joined = guild.joined_snowflake();
+        guild
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == ChannelKind::Text)
+            .any(|channel| self.read_states.is_unread(channel.id, joined))
     }
 
     /// The order from the settings proto. Guilds it does not list yet go on top, newest first.
