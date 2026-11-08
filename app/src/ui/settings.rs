@@ -611,6 +611,20 @@ impl Root {
         cx.notify();
     }
 
+    /// Opens settings on the page with this sidebar label ("Data & Privacy", "Server Boost").
+    pub(super) fn open_settings_section(&mut self, label: &str, cx: &mut Context<Self>) {
+        self.open_settings(cx);
+        let page = SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| entries.iter())
+            .find(|entry| entry.label == label)
+            .map(|entry| entry.page);
+        if let (Some(open), Some(page)) = (self.settings.as_mut(), page) {
+            *open = Open::new(page);
+        }
+        cx.notify();
+    }
+
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
     #[cfg(feature = "capture")]
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {

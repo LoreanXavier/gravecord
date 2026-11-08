@@ -27,6 +27,8 @@ pub struct GuildSettings {
     pub muted: bool,
     pub mute_end: Option<DateTime<Utc>>,
     pub channels: HashMap<Id, Override>,
+    /// The server menu's Hide Muted Channels.
+    pub hide_muted_channels: bool,
 }
 
 fn snowflake(value: &Value) -> Option<Id> {
@@ -71,6 +73,7 @@ impl GuildSettings {
             muted: entry["muted"].as_bool().unwrap_or(false),
             mute_end: end_time(&entry["mute_config"]),
             channels,
+            hide_muted_channels: entry["hide_muted_channels"].as_bool().unwrap_or(false),
         }
     }
 }

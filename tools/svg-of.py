@@ -37,7 +37,7 @@ def main():
 
     for node in range(len(parents)):
         found = attrs(node)
-        if needle in found.get('aria-label', '') or needle in found.get('class', ''):
+        if needle in found.get('aria-label', '') or needle in found.get('class', '') or needle == found.get('id'):
             svg = first_svg(node)
             if svg is None:
                 continue

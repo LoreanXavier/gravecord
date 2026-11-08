@@ -40,6 +40,7 @@ mod forward;
 mod friends;
 mod gifs;
 mod group_dm;
+mod guild_menu;
 mod history;
 mod home;
 mod inbox;
@@ -162,6 +163,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    guild_menu: bool,
     thread_browser: Option<threads::ThreadBrowser>,
     new_thread: Option<threads::NewThread>,
     pending_thread_message: Option<String>,
@@ -272,6 +274,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            guild_menu: false,
             thread_browser: None,
             new_thread: None,
             pending_thread_message: None,
@@ -1647,6 +1650,17 @@ impl Root {
                 guild
                     .sidebar_rows()
                     .into_iter()
+                    // Hide Muted Channels drops muted channels, except the open one.
+                    .filter(|row| {
+                        !self.hide_muted(guild.id)
+                            || row.kind == ChannelKind::Category
+                            || self.channel == Some(row.id)
+                            || !self.stores.guild_settings.channel_muted(
+                                guild.id,
+                                row.id,
+                                chrono::Utc::now(),
+                            )
+                    })
                     // A collapsed category keeps only the open channel and the call this client is in.
                     .filter(|row| {
                         row.kind == ChannelKind::Category
@@ -1712,17 +1726,38 @@ impl Root {
                             .pl(px(8.))
                             .child(
                                 div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(name),
+                                    .id("guild-name")
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_guild_menu(cx)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(name),
+                                    )
+                                    // Open, the chevron points up (`chevron_up` in the capture's header).
+                                    .child(
+                                        div().ml(px(2.)).child(
+                                            gpui::svg()
+                                                .path("icons/chevron_down.svg")
+                                                .size(px(16.))
+                                                .text_color(color("--text-strong"))
+                                                .when(self.guild_menu, |this| {
+                                                    this.with_transformation(
+                                                        gpui::Transformation::rotate(
+                                                            gpui::radians(std::f32::consts::PI),
+                                                        ),
+                                                    )
+                                                }),
+                                        ),
+                                    ),
                             )
-                            .child(div().ml(px(2.)).child(icon(
-                                "chevron_down",
-                                16.,
-                                "--text-strong",
-                            )))
                             .child(div().flex_1())
                             .child(
                                 div()
@@ -3887,6 +3922,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))
             .children(self.inbox_popout(window, cx))
             .children(self.friend_menu_layer(cx))
