@@ -145,6 +145,46 @@ pub struct Guild {
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
     pub emojis: Vec<GuildEmoji>,
+    /// Active threads this session knows (READY's `threads`, then THREAD_* events).
+    pub threads: Vec<Thread>,
+}
+
+/// A thread channel (types 10, 11, 12): `ThreadsStore` keeps the guild's active ones by parent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Thread {
+    pub id: Id,
+    pub parent_id: Id,
+    pub name: String,
+    pub kind: u64,
+    pub owner_id: Option<Id>,
+    pub message_count: u64,
+    pub last_message_id: Option<Id>,
+    pub archived: bool,
+    /// The current user is a member (`member` on READY threads, or THREAD_MEMBER_UPDATE).
+    pub joined: bool,
+}
+
+impl Thread {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let kind = value["type"].as_u64()?;
+        if !matches!(kind, 10..=12) {
+            return None;
+        }
+        Some(Self {
+            id: id(&value["id"])?,
+            parent_id: id(&value["parent_id"])?,
+            name: text(&value["name"]).unwrap_or_default(),
+            kind,
+            owner_id: id(&value["owner_id"]),
+            message_count: value["message_count"].as_u64().unwrap_or(0),
+            last_message_id: id(&value["last_message_id"]),
+            archived: value["thread_metadata"]["archived"]
+                .as_bool()
+                .unwrap_or(false),
+            joined: value["member"].is_object()
+                || value["newly_created"].as_bool().unwrap_or(false),
+        })
+    }
 }
 
 /// A guild's custom emoji (`emojis` in GUILD_CREATE and `GUILD_EMOJIS_UPDATE`).
@@ -214,6 +254,12 @@ impl Guild {
                 .into_iter()
                 .flatten()
                 .filter_map(text)
+                .collect(),
+            threads: value["threads"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Thread::from_value)
                 .collect(),
             premium_tier: properties["premium_tier"].as_u64().unwrap_or(0),
             premium_subscription_count: value["premium_subscription_count"]
@@ -518,6 +564,8 @@ pub struct Message {
     pub pinned: bool,
     /// `message_reference.message_id`: what a reply, a forward or a pin notice points at.
     pub reference_id: Option<Id>,
+    /// `message_reference.channel_id`: for THREAD_CREATED, the thread.
+    pub reference_channel_id: Option<Id>,
 }
 
 /// What a forward carries: the original's content, files and embeds, and its `message_reference`.
@@ -625,6 +673,7 @@ impl Message {
             forwarded: Forwarded::from_value(value).map(Box::new),
             pinned: value["pinned"].as_bool().unwrap_or(false),
             reference_id: id(&value["message_reference"]["message_id"]),
+            reference_channel_id: id(&value["message_reference"]["channel_id"]),
         })
     }
 
@@ -852,6 +901,50 @@ impl Stores {
                         list.retain(|(user, _)| *user != message.author.id);
                     }
                     self.insert_message(message);
+                }
+            }
+            "THREAD_CREATE" | "THREAD_UPDATE" => {
+                if let (Some(guild), Some(mut thread)) =
+                    (id(&data["guild_id"]), Thread::from_value(data))
+                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
+                {
+                    if let Some(known) = guild.threads.iter().find(|known| known.id == thread.id) {
+                        thread.joined |= known.joined;
+                    }
+                    guild.threads.retain(|known| known.id != thread.id);
+                    if !thread.archived {
+                        guild.threads.push(thread);
+                    }
+                }
+            }
+            "THREAD_DELETE" => {
+                if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
+                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
+                {
+                    guild.threads.retain(|known| known.id != thread);
+                }
+            }
+            "THREAD_MEMBER_UPDATE" => {
+                if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
+                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
+                    && let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread)
+                {
+                    known.joined = true;
+                }
+            }
+            "THREAD_LIST_SYNC" => {
+                if let Some(guild) = id(&data["guild_id"])
+                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
+                {
+                    for thread in data["threads"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Thread::from_value)
+                    {
+                        guild.threads.retain(|known| known.id != thread.id);
+                        guild.threads.push(thread);
+                    }
                 }
             }
             "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
@@ -1269,6 +1362,7 @@ mod tests {
             premium_tier: 0,
             premium_subscription_count: 0,
             emojis: Vec::new(),
+            threads: Vec::new(),
         };
         assert_eq!(guild(&[]).badge(), Badge::None);
         assert_eq!(guild(&["COMMUNITY"]).badge(), Badge::Community);
@@ -1333,6 +1427,26 @@ mod tests {
                 {"id": "32", "type": 3, "recipient_ids": ["20", "21"], "last_message_id": null},
             ],
         })
+    }
+
+    #[test]
+    fn thread_events_keep_the_active_list() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "GUILD_CREATE",
+            &json!({"id": "1", "name": "g", "channels": [], "threads": []}),
+        );
+        // As recorded in TRAFFIC/thread-create.json.
+        stores.dispatch(
+            "THREAD_CREATE",
+            &json!({"guild_id": "1", "id": "9", "parent_id": "5", "name": "t", "type": 11, "newly_created": true,
+                "owner_id": "3", "thread_metadata": {"archived": false}}),
+        );
+        let guild = stores.guilds.iter().find(|guild| guild.id == 1).unwrap();
+        assert_eq!(guild.threads.len(), 1);
+        assert!(guild.threads[0].joined);
+        stores.dispatch("THREAD_DELETE", &json!({"guild_id": "1", "id": "9"}));
+        assert!(stores.guilds[0].threads.is_empty());
     }
 
     #[test]

@@ -11,11 +11,17 @@ pub(super) const FRIEND_REQUEST_ACCEPTED: u64 = 67;
 /// `CHANNEL_PINNED_MESSAGE`.
 pub(super) const CHANNEL_PINNED_MESSAGE: u64 = 6;
 
+/// `USER_JOIN` and `THREAD_CREATED`.
+pub(super) const USER_JOIN: u64 = 7;
+pub(super) const THREAD_CREATED: u64 = 18;
+/// The join line's green arrow (`icon_bLMKT5`, a CSS background).
+pub(super) const JOIN_ARROW: &str = "https://discordapp.com/assets/8b9de960da063cb9.svg";
+
 /// System messages this client draws; the rest still render as ordinary messages.
 pub(super) fn is_system(message: &Message) -> bool {
     matches!(
         message.kind,
-        FRIEND_REQUEST_ACCEPTED | CHANNEL_PINNED_MESSAGE
+        FRIEND_REQUEST_ACCEPTED | CHANNEL_PINNED_MESSAGE | USER_JOIN | THREAD_CREATED
     )
 }
 
@@ -358,6 +364,163 @@ impl Root {
         LINES[(timestamp % LINES.len() as u64) as usize]
     }
 
+    /// THREAD_CREATED: "name started a thread: **thread**. See all **threads**." and the thread's card
+    /// (`container_g2fiji`): its name, the message count in the link colour, and the latest message.
+    fn thread_created_line(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let thread_id = message.reference_channel_id;
+        let thread = thread_id.and_then(|thread| {
+            self.current_guild()?
+                .threads
+                .iter()
+                .find(|known| known.id == thread)
+                .cloned()
+        });
+        let latest = thread_id
+            .and_then(|thread| self.stores.messages.get(&thread))
+            .and_then(|list| list.last())
+            .cloned();
+        let count = thread
+            .as_ref()
+            .map(|thread| thread.message_count)
+            .unwrap_or(0)
+            .max(u64::from(latest.is_some()));
+        let guild = self.guild;
+        let bold = |text: String| {
+            div()
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .child(text)
+        };
+        let card =
+            thread_id.map(|thread| {
+                let avatar = latest.as_ref().and_then(|message| {
+                    self.images.get(&avatar_source(&message.author).0).cloned()
+                });
+                div()
+                    .id(SharedString::from(format!("thread-card-{thread}")))
+                    .mt(px(4.))
+                    .w(px(322.))
+                    .p(px(8.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(guild) = guild {
+                            this.select(guild, Some(thread));
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .child(
+                                div()
+                                    .text_color(color("--text-strong"))
+                                    .child(message.content.clone()),
+                            )
+                            .child(div().text_color(color("--text-link")).child(if count == 1 {
+                                "1 Message \u{203a}".to_owned()
+                            } else {
+                                format!("{count} Messages \u{203a}")
+                            })),
+                    )
+                    .children(latest.map(|latest| {
+                        div()
+                            .mt(px(2.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .child(div().size(px(16.)).children(
+                                avatar.map(|image| img(image).size(px(16.)).rounded_full()),
+                            ))
+                            .child(
+                                div()
+                                    .ml(px(8.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(latest.author.display_name().to_owned()),
+                            )
+                            .child(
+                                div()
+                                    .ml(px(4.))
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(color("--text-default"))
+                                    .child(latest.content.clone()),
+                            )
+                            .child(div().ml(px(8.)).text_color(color("--text-muted")).child(
+                                super::threads::short_ago(
+                                    chrono::Utc::now().timestamp_millis()
+                                        - latest.timestamp.timestamp_millis(),
+                                ),
+                            ))
+                    }))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .py(px(2.))
+                    .flex()
+                    .flex_wrap()
+                    .line_height(px(22.))
+                    .text_color(color("--text-muted"))
+                    .child(bold(message.author.display_name().to_owned()))
+                    .child("\u{a0}started a thread:\u{a0}")
+                    .child(bold(message.content.clone()))
+                    .child(".\u{a0}See all\u{a0}")
+                    .child(bold("threads".to_owned()))
+                    .child(".")
+                    .child(
+                        div()
+                            .ml(px(4.))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(500.))
+                            .child(header_time(message.local_time(), chrono::Local::now())),
+                    ),
+            )
+            .children(card)
+            .into_any_element()
+    }
+
+    /// USER_JOIN's line with the green arrow in the gutter.
+    fn join_message_line(&self, message: &Message) -> AnyElement {
+        let (before, after) = Self::join_line(message);
+        div()
+            .py(px(2.))
+            .flex()
+            .flex_wrap()
+            .line_height(px(22.))
+            .text_color(color("--text-muted"))
+            .child(before)
+            .child(
+                div()
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(message.author.display_name().to_owned()),
+            )
+            .child(after)
+            .child(
+                div()
+                    .ml(px(4.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(500.))
+                    .child(header_time(message.local_time(), chrono::Local::now())),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn system_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
         let (icon_name, tail, tint) = match message.kind {
             FRIEND_REQUEST_ACCEPTED => (
@@ -366,6 +529,7 @@ impl Root {
                 "--status-positive",
             ),
             CHANNEL_PINNED_MESSAGE => ("system_pinned", "", "--channels-default"),
+            THREAD_CREATED => ("system_thread", "", "--text-muted"),
             _ => ("system_friend_accepted", "", "--status-positive"),
         };
         div()
@@ -387,38 +551,60 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon(icon_name, 18., tint)),
+                            .when(message.kind != USER_JOIN, |this| {
+                                this.child(icon(icon_name, 18., tint))
+                            })
+                            .when(message.kind == USER_JOIN, |this| {
+                                this.children(
+                                    self.images
+                                        .get("inbox:join")
+                                        .cloned()
+                                        .map(|image| img(image).size(px(16.))),
+                                )
+                            }),
                     )
                     .when(message.kind == CHANNEL_PINNED_MESSAGE, |this| {
                         this.child(self.pin_notice(message, cx))
                     })
-                    .when(message.kind != CHANNEL_PINNED_MESSAGE, |this| {
-                        this.child(
-                            div()
-                                .py(px(2.))
-                                .flex()
-                                .items_center()
-                                .line_height(px(22.))
-                                .text_color(color("--channels-default"))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--text-strong"))
-                                        .child(message.author.display_name().to_owned()),
-                                )
-                                .child(tail)
-                                .child(
-                                    div()
-                                        .ml(px(4.))
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight(500.))
-                                        .child(header_time(
-                                            message.local_time(),
-                                            chrono::Local::now(),
-                                        )),
-                                ),
-                        )
-                    }),
+                    .when(message.kind == THREAD_CREATED, |this| {
+                        this.child(self.thread_created_line(message, cx))
+                    })
+                    .when(message.kind == USER_JOIN, |this| {
+                        this.child(self.join_message_line(message))
+                    })
+                    .when(
+                        !matches!(
+                            message.kind,
+                            CHANNEL_PINNED_MESSAGE | THREAD_CREATED | USER_JOIN
+                        ),
+                        |this| {
+                            this.child(
+                                div()
+                                    .py(px(2.))
+                                    .flex()
+                                    .items_center()
+                                    .line_height(px(22.))
+                                    .text_color(color("--channels-default"))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child(message.author.display_name().to_owned()),
+                                    )
+                                    .child(tail)
+                                    .child(
+                                        div()
+                                            .ml(px(4.))
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(500.))
+                                            .child(header_time(
+                                                message.local_time(),
+                                                chrono::Local::now(),
+                                            )),
+                                    ),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
     }

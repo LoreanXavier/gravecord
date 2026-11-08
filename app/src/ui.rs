@@ -55,6 +55,7 @@ mod quickswitcher;
 mod reminder_modal;
 mod saved;
 mod settings;
+mod threads;
 mod tooltip;
 mod unread;
 mod uploads;
@@ -161,6 +162,9 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    thread_browser: Option<threads::ThreadBrowser>,
+    new_thread: Option<threads::NewThread>,
+    pending_thread_message: Option<String>,
     inbox: Option<inbox::InboxTab>,
     inbox_read: HashSet<Id>,
     inbox_collapsed: HashSet<Id>,
@@ -268,6 +272,9 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            thread_browser: None,
+            new_thread: None,
+            pending_thread_message: None,
             inbox: None,
             inbox_read: HashSet::new(),
             inbox_collapsed: HashSet::new(),
@@ -383,6 +390,10 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
                 if self.friends_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key == threads::CREATE_KEY {
+                    self.thread_created(&body, cx);
                     return;
                 }
                 let gif_answer = key.starts_with("gifs:");
@@ -547,6 +558,22 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
         {
             users.extend(messages.iter().map(|message| message.author.clone()));
+            if messages.iter().any(|message| message.kind == dm::USER_JOIN) {
+                media.push(("inbox:join".to_owned(), dm::JOIN_ARROW.to_owned()));
+            }
+            // A thread's card shows its latest message: load each started thread once.
+            let threads: Vec<Id> = messages
+                .iter()
+                .filter(|message| message.kind == dm::THREAD_CREATED)
+                .filter_map(|message| message.reference_channel_id)
+                .collect();
+            for thread in threads {
+                if self.requested.insert(format!("thread-load:{thread}")) {
+                    let _ = self
+                        .requests
+                        .send(Request::LoadMessages { channel: thread });
+                }
+            }
             for message in messages.iter() {
                 media.extend(embed::wanted(message));
                 media.extend(files::wanted(message));
@@ -806,6 +833,16 @@ impl Root {
         }
     }
 
+    /// The open channel when it is one of the guild's threads.
+    fn current_thread(&self) -> Option<dc_state::Thread> {
+        let channel = self.channel?;
+        self.current_guild()?
+            .threads
+            .iter()
+            .find(|thread| thread.id == channel)
+            .cloned()
+    }
+
     fn current_guild(&self) -> Option<&Guild> {
         self.guild.and_then(|guild| self.stores.guild(guild))
     }
@@ -814,6 +851,9 @@ impl Root {
     fn channel_title(&self) -> String {
         if let Some(channel) = self.current_channel() {
             return channel.name.clone();
+        }
+        if let Some(thread) = self.current_thread() {
+            return thread.name;
         }
         self.current_dm()
             .and_then(|channel| self.stores.dm_recipient(channel))
@@ -1130,6 +1170,16 @@ impl Root {
                 .as_ref()
                 .map(|search| search.field.clone()),
         );
+        if let Some(form) = self.new_thread.as_ref() {
+            list.push(form.name.clone());
+            list.push(form.message.clone());
+        }
+        list.extend(
+            self.thread_browser
+                .as_ref()
+                .map(|browser| browser.search.clone()),
+        );
+        list.extend(self.gifs.as_ref().map(|gifs| gifs.search.clone()));
         list.push(self.active_editor());
         list
     }
@@ -1609,6 +1659,9 @@ impl Root {
                     })
                     .flat_map(|row| {
                         let mut rows = vec![self.channel_row(row, cx)];
+                        if row.kind == ChannelKind::Text {
+                            rows.extend(self.thread_rows(row.id, cx));
+                        }
                         if row.kind == ChannelKind::Voice {
                             if self
                                 .call
@@ -1876,6 +1929,7 @@ impl Root {
         let open_popout = |name: &str| match name {
             "bell" | "bell_muted" => self.notify_open,
             "pin" => self.pins_open.is_some(),
+            "threads" => self.thread_browser.is_some(),
             _ => false,
         };
         let tool = |name: &str| {
@@ -2022,12 +2076,23 @@ impl Root {
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(self.with_tip(
-                            "threads",
-                            Tip::text("Threads", Side::Bottom),
-                            tool("threads"),
-                            cx,
-                        ))
+                        .child(
+                            self.with_tip(
+                                "threads",
+                                Tip::text("Threads", Side::Bottom),
+                                tool("threads")
+                                    .relative()
+                                    .child(self.anchor_probe("header-threads")),
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.tip = None;
+                                    this.toggle_thread_browser(window, cx);
+                                },
+                            )),
+                        )
                         .child(
                             self.with_tip(
                                 "notifications",
@@ -2087,7 +2152,8 @@ impl Root {
                 div()
                     .ml(px(12.))
                     .parity_with_border("search", 1.)
-                    .w(px(244.))
+                    // Narrowed by the New Thread panel, the search keeps 72px (`Se…` in the capture).
+                    .w(px(if self.new_thread.is_some() { 72. } else { 244. }))
                     .h(px(32.))
                     .rounded(px(8.))
                     .bg(color("--input-background-default"))
@@ -3114,8 +3180,13 @@ impl Root {
     }
 
     fn composer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let prefix = if self.guild.is_some() { "#" } else { "@" };
-        let placeholder = format!("Message {prefix}{}", self.channel_title());
+        // A thread's composer quotes its name: Message "name".
+        let placeholder = if self.current_thread().is_some() {
+            format!("Message \"{}\"", self.channel_title())
+        } else {
+            let prefix = if self.guild.is_some() { "#" } else { "@" };
+            format!("Message {prefix}{}", self.channel_title())
+        };
         self.composer
             .update(cx, |composer, _| composer.set_placeholder(placeholder));
         let reply_bar = self.replying.as_ref().map(|message| {
@@ -3537,7 +3608,10 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
         // The member list in a guild, the profile beside a DM.
-        let members = if self.current_dm().is_some() && self.show_dm_profile {
+        let members = if self.new_thread.is_some() {
+            // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
+            480.
+        } else if self.current_dm().is_some() && self.show_dm_profile {
             320.
         } else if self.show_members && self.guild.is_some() {
             264.
@@ -3594,6 +3668,12 @@ impl Render for Root {
                     } else {
                         this.go_forward(cx);
                     }
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape" && this.thread_browser.is_some() {
+                    this.thread_browser = None;
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -3712,75 +3792,92 @@ impl Render for Root {
                     .child(if self.guild.is_none() && self.channel.is_none() {
                         self.friends_panel(cx).into_any_element()
                     } else {
+                        // The New Thread panel sits beside the whole chat column, header included.
                         div()
-                            .parity("chat")
                             .flex()
-                            .flex_col()
                             .flex_1()
                             .min_w(px(0.))
                             .h_full()
-                            .pt(px(1.))
-                            .child(self.header(cx))
                             .child(
                                 div()
+                                    .parity("chat")
                                     .flex()
                                     .flex_col()
                                     .flex_1()
-                                    .min_h(px(0.))
-                                    .bg(color("--background-base-lower"))
-                                    .flex_row()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .pt(px(1.))
+                                    .overflow_hidden()
+                                    .child(self.header(cx))
                                     .child(
                                         div()
                                             .flex()
                                             .flex_col()
                                             .flex_1()
-                                            .min_w(px(0.))
-                                            .h_full()
+                                            .min_h(px(0.))
+                                            .bg(color("--background-base-lower"))
+                                            .flex_row()
                                             .child(
                                                 div()
-                                                    .parity("messages")
-                                                    .relative()
+                                                    .flex()
+                                                    .flex_col()
                                                     .flex_1()
-                                                    .min_h(px(0.))
-                                                    .child(rows)
-                                                    .children(self.new_messages_bar(cx)),
+                                                    .min_w(px(0.))
+                                                    .h_full()
+                                                    .child(
+                                                        div()
+                                                            .parity("messages")
+                                                            .relative()
+                                                            .flex_1()
+                                                            .min_h(px(0.))
+                                                            .child(rows)
+                                                            .children(self.new_messages_bar(cx)),
+                                                    )
+                                                    .child(
+                                                        match self
+                                                            .current_dm()
+                                                            .and_then(|channel| {
+                                                                self.stores.dm_recipient(channel)
+                                                            })
+                                                            .map(|user| user.id)
+                                                            .filter(|user| self.is_blocked(*user))
+                                                        {
+                                                            // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                            // and over the list's last 16px.
+                                                            Some(user) => div()
+                                                                .flex_none()
+                                                                .mt(px(-16.))
+                                                                .px(px(8.))
+                                                                .pb(px(8.))
+                                                                .child(
+                                                                    self.blocked_composer(user, cx),
+                                                                )
+                                                                .into_any_element(),
+                                                            None => self
+                                                                .composer_bar(cx)
+                                                                .into_any_element(),
+                                                        },
+                                                    ),
                                             )
-                                            .child(
-                                                match self
-                                                    .current_dm()
-                                                    .and_then(|channel| {
-                                                        self.stores.dm_recipient(channel)
-                                                    })
-                                                    .map(|user| user.id)
-                                                    .filter(|user| self.is_blocked(*user))
-                                                {
-                                                    // `wrapper_ST_Y69` sits where the composer's form does: 8px in
-                                                    // and over the list's last 16px.
-                                                    Some(user) => div()
-                                                        .flex_none()
-                                                        .mt(px(-16.))
-                                                        .px(px(8.))
-                                                        .pb(px(8.))
-                                                        .child(self.blocked_composer(user, cx))
-                                                        .into_any_element(),
-                                                    None => {
-                                                        self.composer_bar(cx).into_any_element()
-                                                    }
+                                            .when(
+                                                self.show_members
+                                                    && self.guild.is_some()
+                                                    && self.new_thread.is_none(),
+                                                |this| {
+                                                    this.child(
+                                                        div()
+                                                            .flex_none()
+                                                            .w(px(1.))
+                                                            .h_full()
+                                                            .bg(color("--background-mod-subtle")),
+                                                    )
+                                                    .child(self.member_panel(cx))
                                                 },
-                                            ),
-                                    )
-                                    .when(self.show_members && self.guild.is_some(), |this| {
-                                        this.child(
-                                            div()
-                                                .flex_none()
-                                                .w(px(1.))
-                                                .h_full()
-                                                .bg(color("--background-mod-subtle")),
-                                        )
-                                        .child(self.member_panel(cx))
-                                    })
-                                    .children(self.dm_profile(cx)),
+                                            )
+                                            .children(self.dm_profile(cx)),
+                                    ),
                             )
+                            .children(self.new_thread_panel(cx))
                             .into_any_element()
                     }),
             )
@@ -3790,6 +3887,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.thread_browser_popout(window, cx))
             .children(self.inbox_popout(window, cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))

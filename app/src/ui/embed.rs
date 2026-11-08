@@ -117,7 +117,9 @@ impl Root {
     fn inline_media(&self, message: Id, index: usize, embed: &Embed) -> Option<AnyElement> {
         let image = embed.image.as_ref()?;
         let (width, height) = Embed::fitted(image);
-        let size = (px(width as f32), px(height as f32));
+        // A narrow chat scales the media down to its width.
+        let shown = (width as f32).min(self.content_width.max(1.));
+        let size = (px(shown), px(height as f32 * shown / width as f32));
         let picture = self
             .images
             .get(&image_key(message, index, "image"))
