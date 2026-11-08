@@ -438,10 +438,10 @@ impl Embed {
                 .or_else(|| text(&value["footer"]["icon_url"])),
             ..Self::default()
         };
-        // Articles and images show their thumbnail as the large image.
+        // Articles, images and GIFs (`gifv`, drawn from the thumbnail's still frame) show it as the large image.
         if let Some(thumbnail) = EmbedMedia::from_value(&value["thumbnail"]) {
             match kind.as_str() {
-                "article" | "image" => embed.image = Some(thumbnail),
+                "article" | "image" | "gifv" => embed.image = Some(thumbnail),
                 _ => embed.thumbnail = Some(thumbnail),
             }
         }
@@ -476,6 +476,12 @@ impl Embed {
         let (width, height) = (f64::from(media.width), f64::from(media.height));
         let scale = (max_width / width).min(max_height / height).min(1.);
         (width * scale, height * scale)
+    }
+
+    /// `gifv` and `image` embeds whose URL is the whole message draw as bare media and hide the link text
+    /// (`inlineMediaEmbed_XyW1ZT` in `design/dom/channel/gifv-darker-cozy.json`).
+    pub fn is_inline_media(&self) -> bool {
+        matches!(self.kind.as_str(), "gifv" | "image") && self.image.is_some()
     }
 
     /// `getMaxWidth`: an embed whose media is at least 300 wide is that wide plus 32.
@@ -567,6 +573,17 @@ impl Forwarded {
 }
 
 impl Message {
+    /// The content is only the link its inline media embed shows, so the text is not drawn.
+    pub fn content_is_inline_media(&self) -> bool {
+        let content = self.content.trim();
+        !content.is_empty()
+            && !content.contains(char::is_whitespace)
+            && self
+                .embeds
+                .iter()
+                .any(|embed| embed.is_inline_media() && embed.url.as_deref() == Some(content))
+    }
+
     pub fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             id: id(&value["id"])?,

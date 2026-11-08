@@ -38,6 +38,7 @@ mod embed;
 mod files;
 mod forward;
 mod friends;
+mod gifs;
 mod group_dm;
 mod history;
 mod home;
@@ -159,6 +160,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    gifs: Option<gifs::Gifs>,
     shown_blocked: HashSet<Id>,
     shown_blocked_profiles: HashSet<Id>,
     hovered_dm: Option<Id>,
@@ -262,6 +264,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            gifs: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
             hovered_dm: None,
@@ -375,6 +378,7 @@ impl Root {
                 if self.friends_fetched(&key, &body, cx) {
                     return;
                 }
+                let gif_answer = key.starts_with("gifs:");
                 let profile = key
                     .strip_prefix("profile:")
                     .and_then(|user| user.parse::<Id>().ok());
@@ -382,7 +386,10 @@ impl Root {
                 if key == saved::SAVED_KEY {
                     self.stores.load_saved(&body);
                 }
-                self.fetched.insert(key, body);
+                self.fetched.insert(key.clone(), body);
+                if gif_answer {
+                    self.request_gif_images(&key);
+                }
                 if let Some(user) = profile {
                     self.request_profile_images(user);
                 }
@@ -2778,7 +2785,9 @@ impl Root {
                 let content = match editing {
                     Some(editor) => self.edit_box(editor).into_any_element(),
                     None => div()
-                        .child(self.content(message))
+                        .when(!message.content_is_inline_media(), |this| {
+                            this.child(self.content(message))
+                        })
                         .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message))
                         .children(self.reactions(message, cx))
@@ -3136,15 +3145,32 @@ impl Root {
                 }
             }))
             .children(emoji.map(|image| img(image).size(px(18.))));
-        let tool = |name: &str| {
+        let tool = |name: &'static str| {
             div()
+                .id(name)
                 .size(px(32.))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
+                .cursor_pointer()
                 .child(icon(name, 20., "--interactive-text-default"))
         };
+        // GIF opens the expression picker on its tab, from the same place as the emoji button.
+        let gif_button = tool("gif").on_click(cx.listener(move |this, _, window, cx| {
+            let composer = this.tip_anchors.borrow().get("composer-box").copied();
+            if let Some(bounds) = composer {
+                this.open_picker_tab(
+                    picker::Tab::Gifs,
+                    gpui::point(bounds.left(), bounds.top() - px(9.)),
+                    window,
+                    cx,
+                );
+            }
+        }));
+        let gift_button = tool("gift");
+        let sticker_button = tool("sticker");
+        let apps_button = tool("apps");
         // The form overlaps the list by 16px, as the official layout does.
         div()
             .relative()
@@ -3195,11 +3221,11 @@ impl Root {
                                     .pt(px(12.))
                                     .flex()
                                     .gap(px(8.))
-                                    .child(tool("gift"))
-                                    .child(tool("gif"))
-                                    .child(tool("sticker"))
+                                    .child(gift_button)
+                                    .child(gif_button)
+                                    .child(sticker_button)
                                     .child(emoji_button)
-                                    .child(tool("apps")),
+                                    .child(apps_button),
                             ),
                     ),
             )

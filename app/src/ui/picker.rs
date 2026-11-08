@@ -113,8 +113,18 @@ enum Row {
     },
 }
 
+/// The expression picker's tabs (`navList_58b0l2`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Tab {
+    Gifs,
+    Stickers,
+    #[default]
+    Emoji,
+}
+
 pub(crate) struct Picker {
     pub target: Target,
+    pub tab: Tab,
     /// The window position the picker opens from: the composer's emoji button, or the hover bar's react button.
     pub anchor: Point<Pixels>,
     search: Entity<Editor>,
@@ -416,6 +426,7 @@ impl Root {
         self.request_picker_images(&sections);
         self.picker = Some(Picker {
             target,
+            tab: Tab::Emoji,
             anchor,
             search: search.clone(),
             _search_events: events,
@@ -428,6 +439,51 @@ impl Root {
             burst: false,
         });
         window.focus(&search.read(cx).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// The composer's GIF and sticker buttons, and the tab bar: open the picker on `tab`, or close it when that tab
+    /// is already showing.
+    pub(super) fn open_picker_tab(
+        &mut self,
+        tab: Tab,
+        anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(picker) = self.picker.as_ref()
+            && picker.target == Target::Composer
+        {
+            if picker.tab == tab {
+                self.picker = None;
+                cx.notify();
+            } else {
+                self.set_picker_tab(tab, window, cx);
+            }
+            return;
+        }
+        self.open_picker(Target::Composer, anchor, window, cx);
+        self.set_picker_tab(tab, window, cx);
+    }
+
+    pub(super) fn set_picker_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        // Sticker art is Lottie, which nothing here draws yet: the tab keeps the emoji page.
+        let tab = if tab == Tab::Stickers {
+            Tab::Emoji
+        } else {
+            tab
+        };
+        if let Some(picker) = self.picker.as_mut() {
+            picker.tab = tab;
+        }
+        match tab {
+            Tab::Gifs => self.ensure_gifs(window, cx),
+            Tab::Stickers | Tab::Emoji => {
+                if let Some(picker) = self.picker.as_ref() {
+                    window.focus(&picker.search.read(cx).focus_handle(cx), cx);
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -856,9 +912,18 @@ impl Root {
         );
         let top = top.max(EDGE);
         let rows = self.picker_rows(cx);
-        let tab = |id: &'static str, label: &'static str, selected: bool| {
+        let current = self
+            .picker
+            .as_ref()
+            .map(|picker| picker.tab)
+            .unwrap_or_default();
+        let tab = |id: &'static str, label: &'static str, which: Tab| {
+            let selected = current == which;
             div()
                 .id(id)
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_picker_tab(which, window, cx)),
+                )
                 .h(px(30.))
                 .px(px(12.))
                 .rounded(px(8.))
@@ -879,6 +944,12 @@ impl Root {
                 })
                 .child(label)
         };
+        // Stickers stays on the emoji page until sticker art (Lottie) can be drawn.
+        let tabs = [
+            tab("picker-tab-gifs", "GIFs", Tab::Gifs),
+            tab("picker-tab-stickers", "Stickers", Tab::Stickers),
+            tab("picker-tab-emoji", "Emoji", Tab::Emoji),
+        ];
         let search = picker.search.clone();
         let focused = search.read(cx).focus_handle(cx).is_focused(window);
         let header = div()
@@ -1054,17 +1125,12 @@ impl Root {
                         cx.notify();
                     }))
                     .when(!reaction, |this| {
-                        this.child(
-                            div()
-                                .px(px(16.))
-                                .flex()
-                                .gap(px(8.))
-                                .child(tab("picker-tab-gifs", "GIFs", false))
-                                .child(tab("picker-tab-stickers", "Stickers", false))
-                                .child(tab("picker-tab-emoji", "Emoji", true)),
-                        )
+                        this.child(div().px(px(16.)).flex().gap(px(8.)).children(tabs))
                     })
-                    .child(panel),
+                    .child(match current {
+                        Tab::Gifs => self.gif_panel(cx),
+                        Tab::Stickers | Tab::Emoji => panel.into_any_element(),
+                    }),
             )
             .with_priority(1)
             .into_any_element(),

@@ -113,7 +113,39 @@ impl Root {
         })
     }
 
+    /// `inlineMediaEmbed_XyW1ZT`: the media alone, fitted into 400x300, radius 4, 2px under the line above.
+    fn inline_media(&self, message: Id, index: usize, embed: &Embed) -> Option<AnyElement> {
+        let image = embed.image.as_ref()?;
+        let (width, height) = Embed::fitted(image);
+        let size = (px(width as f32), px(height as f32));
+        let picture = self
+            .images
+            .get(&image_key(message, index, "image"))
+            .cloned();
+        Some(
+            div()
+                .pt(px(2.))
+                .child(
+                    div()
+                        .w(size.0)
+                        .h(size.1)
+                        .rounded(px(4.))
+                        .overflow_hidden()
+                        .bg(color("--background-base-low"))
+                        .children(
+                            picture.map(|picture| img(picture).w(size.0).h(size.1).rounded(px(4.))),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn embed(&self, message: Id, index: usize, embed: &Embed) -> AnyElement {
+        if embed.is_inline_media()
+            && let Some(media) = self.inline_media(message, index, embed)
+        {
+            return media;
+        }
         let max_width = embed
             .max_width()
             .map_or(GRID_MAX + BORDERS, |width| width as f32);
