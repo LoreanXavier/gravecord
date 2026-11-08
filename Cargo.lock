@@ -1650,6 +1650,7 @@ dependencies = [
  "cpal",
  "davey",
  "dc-proto",
+ "dc-winaudio",
  "deep_filter",
  "futures-util",
  "ndarray",
@@ -1673,6 +1674,14 @@ dependencies = [
  "tract-pulse",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "dc-winaudio"
+version = "0.0.0"
+dependencies = [
+ "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]

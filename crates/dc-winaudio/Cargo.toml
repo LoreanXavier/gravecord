@@ -1,0 +1,28 @@
+[package]
+name = "dc-winaudio"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+# Windows audio session volumes (global attenuation) and qWAVE packet priority (quality of service).
+# The only unsafe code in the voice stack lives here, so dc-voice keeps `unsafe_code = "forbid"`.
+
+[dependencies]
+tracing.workspace = true
+
+# The same features cpal 0.18 already turns on, so this adds no build work.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_Foundation",
+    "Win32_Devices_Properties",
+    "Win32_Media_KernelStreaming",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Performance",
+    "Win32_Security",
+    "Win32_System_SystemServices",
+    "Win32_System_Variant",
+    "Win32_Media_Multimedia",
+    "Win32_UI_Shell_PropertiesSystem",
+] }

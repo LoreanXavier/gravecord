@@ -33,10 +33,13 @@ mod capture;
 mod clock;
 mod dave;
 mod dereverb;
+pub mod devices;
 mod gate;
+pub mod input_watch;
 mod jitter;
 mod mixer;
 mod process;
+pub mod recorder;
 mod rtp;
 mod session;
 mod signal;
@@ -130,6 +133,11 @@ pub enum Event {
         user_id: u64,
         speaking: bool,
     },
+    /// `inputDetected` changed (module 754712 `InputWatcher`): the microphone delivers input (true), has been
+    /// silent for five seconds (false), or is unknown again (None, after an unmute or a new call).
+    InputDetected {
+        detected: Option<bool>,
+    },
     ClientConnected {
         user_id: u64,
     },
@@ -152,6 +160,22 @@ pub enum DisconnectReason {
     Closed(u16),
     /// A local or protocol failure; the text never contains secrets or ids.
     Failed(&'static str),
+}
+
+/// At quit (or a panic): other applications' volumes go back and the attenuation thread stops.
+pub fn shutdown() {
+    dc_winaudio::shutdown();
+    prefs().flush_recording();
+}
+
+/// Global Attenuation exists on Windows only (`supports(ATTENUATION)`).
+pub fn attenuation_supported() -> bool {
+    dc_winaudio::attenuation_supported()
+}
+
+/// At start: puts back what a killed run left lowered, from the journal the attenuation keeps.
+pub fn recover_attenuation(journal: &std::path::Path) -> usize {
+    dc_winaudio::recover_attenuation(journal)
 }
 
 /// Start a voice connection on the current tokio runtime. Media runs on its own threads; no

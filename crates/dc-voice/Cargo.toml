@@ -12,6 +12,7 @@ cpal.workspace = true
 davey.workspace = true
 deep_filter.workspace = true
 dc-proto.workspace = true
+dc-winaudio.workspace = true
 futures-util.workspace = true
 ndarray.workspace = true
 openmls.workspace = true

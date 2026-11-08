@@ -9374,7 +9374,7 @@ mod tests {
         assert_eq!(wire["resource_channels"], json!([]));
         let back = Home::from_wire(&wire, &channel);
         assert_eq!(back.tasks.as_ref().unwrap()[0].title, "Say hello");
-        assert_eq!(back.enabled, true);
+        assert!(back.enabled);
         assert_eq!(Home::from_wire(&Value::Null, &channel), Home::default());
     }
 

@@ -193,6 +193,50 @@ impl Client {
         })
     }
 
+    /// `POST` several files as one `multipart/form-data` body, each as a part named after its file (the official
+    /// debug log upload, `attachments` of `uploadDebugFiles`). One attempt: a rate limited upload fails, as there.
+    pub async fn post_files(
+        &self,
+        route: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<Value, Error> {
+        let url = format!("{}{route}", pin::API_BASE);
+        let mut body = reqwest::multipart::Form::new();
+        for (name, bytes) in files {
+            let part = reqwest::multipart::Part::bytes(bytes.clone())
+                .file_name(name.clone())
+                .mime_str("application/octet-stream")?;
+            body = body.part(name.clone(), part);
+        }
+        let response = self
+            .http
+            .post(&url)
+            .header("authorization", self.token.expose())
+            .header(
+                "x-super-properties",
+                self.identity.super_properties_header(true),
+            )
+            .multipart(body)
+            .send()
+            .await?;
+        let status = response.status();
+        debug!("POST {route}: {status}");
+        let text = response.text().await?;
+        let value = if text.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
+        if status.is_success() {
+            return Ok(value);
+        }
+        Err(Error::Status {
+            route: route.to_owned(),
+            status,
+            body: value,
+        })
+    }
+
     /// A public asset: no authorization, so tokens never reach a CDN.
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
         let response = self.http.get(url).send().await?.error_for_status()?;

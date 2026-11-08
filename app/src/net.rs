@@ -57,6 +57,13 @@ pub enum Request {
         route: String,
         form: dc_http::Form,
     },
+    /// Upload Logs (Voice & Video > Advanced): the log files and a `media_engine_state.json` as one multipart body to
+    /// `/debug-logs/multi/1` (`uploadDebugFiles`, category RTC). The outcome comes back under `voice-logs-upload` as
+    /// `{"ok", "status", "body", "count"}`, `count` being the parts sent.
+    UploadLogs {
+        files: Vec<std::path::PathBuf>,
+        state: Value,
+    },
     /// GET a route and hand its JSON back under `key`.
     Fetch {
         key: String,
@@ -532,6 +539,50 @@ pub async fn run(
                     if let Some(key) = key {
                         let _ = updates.send(Update::Fetched { key, body: report });
                     }
+                });
+            }
+            Request::UploadLogs { files, state } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+                    for path in &files {
+                        let Some(name) = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                        else {
+                            continue;
+                        };
+                        if let Ok(bytes) = std::fs::read(path) {
+                            parts.push((name, bytes));
+                        }
+                    }
+                    let count = parts.len() + 1;
+                    parts.push((
+                        "media_engine_state.json".to_owned(),
+                        serde_json::to_vec_pretty(&state).unwrap_or_default(),
+                    ));
+                    let report = if parts.len() == 1 {
+                        // `UploadErrorCodes.NO_FILE`: nothing to send.
+                        json!({"ok": false, "status": 0, "body": null, "count": 0})
+                    } else {
+                        match client.post_files("/debug-logs/multi/1", &parts).await {
+                            Ok(value) => {
+                                json!({"ok": true, "status": 200, "body": value, "count": count})
+                            }
+                            Err(dc_http::Error::Status { status, body, .. }) => {
+                                warn!("debug log upload failed: {status}");
+                                json!({"ok": false, "status": status.as_u16(), "body": body, "count": count})
+                            }
+                            Err(error) => {
+                                warn!("debug log upload failed: {error}");
+                                json!({"ok": false, "status": 0, "body": null, "count": count})
+                            }
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched {
+                        key: "voice-logs-upload".to_owned(),
+                        body: report,
+                    });
                 });
             }
             Request::RestForm { key, route, form } => {

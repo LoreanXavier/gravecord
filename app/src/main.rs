@@ -5,6 +5,7 @@ mod fonts;
 #[cfg(feature = "capture")]
 mod harness;
 mod inline;
+mod logging;
 mod net;
 mod palette;
 mod parity;
@@ -113,21 +114,12 @@ const TEXT_GAMMA: &str = "2.2";
 /// nothing is logged. Debug events may name user ids, so the file belongs in a scratch folder, never in the repo.
 fn record_log() {
     let args: Vec<String> = std::env::args().collect();
-    let Some(path) = args
+    let file = args
         .iter()
         .position(|arg| arg == "--log")
         .and_then(|at| args.get(at + 1))
-    else {
-        return;
-    };
-    let Ok(file) = std::fs::File::create(path) else {
-        return;
-    };
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::sync::Mutex::new(file))
-        .with_ansi(false)
-        .with_max_level(tracing::Level::DEBUG)
-        .try_init();
+        .and_then(|path| std::fs::File::create(path).ok());
+    logging::init(file);
 }
 
 /// A panic on the UI thread aborts the process with nothing on screen, so it is written down first:
@@ -154,8 +146,20 @@ fn record_panics() {
                 );
             }
         }
+        restore_audio_in_time();
         previous(info);
     }));
+}
+
+/// A panic aborts the process: other applications' volumes lowered by Global Attenuation are put back first. On
+/// another thread and with a deadline, so a panic that happened while the attenuation lock was held cannot hang it.
+fn restore_audio_in_time() {
+    let (done, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        dc_voice::shutdown();
+        let _ = done.send(());
+    });
+    let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
 }
 
 fn main() -> Result<()> {
@@ -280,6 +284,8 @@ fn main() -> Result<()> {
                 .detach();
             }
         });
+    // The window closed: whatever Global Attenuation lowered goes back, and the call's recordings are written.
+    dc_voice::shutdown();
     Ok(())
 }
 

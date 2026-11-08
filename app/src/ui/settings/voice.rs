@@ -3,6 +3,8 @@
 //! selects, volume sliders, Mic Test, input sensitivity, push to talk with its keybind and release delay). Measured in
 //! `design/dom/settings/voice-video*-darker-cozy.json`; strings from `STRINGS/en-US.json` by the hashes the spec names.
 
+pub(super) mod extra;
+
 use super::model::{Choice, Node, Runs};
 use super::{Page, Root, color, mask_icon};
 use crate::storage;
@@ -645,6 +647,8 @@ pub(in crate::ui) struct VoiceState {
     device_open: Option<Side>,
     devices: Devices,
     page_shown: bool,
+    /// The switches, slider and buttons that act on a call or the machine (`extra.rs`).
+    extra: extra::Extra,
 }
 
 impl VoiceState {
@@ -668,7 +672,33 @@ impl VoiceState {
             device_open: None,
             devices: Devices::default(),
             page_shown: false,
+            extra: extra::Extra::restore(),
         }
+    }
+
+    /// Reset all Voice & Video settings: the stored choices are the defaults again, given to the processors.
+    fn reset_stored(&mut self) {
+        self.stored = Stored::default();
+        push(&self.stored.effective());
+        self.held.clear();
+    }
+
+    /// The voice settings as the upload's `mediaEngineState` carries them.
+    fn stored_json(&self) -> serde_json::Value {
+        let stored = &self.stored;
+        json!({
+            "inputProfile": stored.profile.label(),
+            "pushToTalk": stored.push_to_talk,
+            "threshold": stored.threshold,
+            "autoThreshold": stored.auto_threshold,
+            "advancedVoiceActivity": stored.advanced_voice_activity,
+            "delay": stored.delay,
+            "echoCancellation": stored.echo,
+            "noiseSuppression": stored.suppression,
+            "automaticGainControl": stored.agc,
+            "inputVolume": dc_voice::prefs().input_gain(),
+            "outputVolume": dc_voice::prefs().output_gain(),
+        })
     }
 
     /// The page's choices for the stored values: what the generated switches, radio and select read.
@@ -685,6 +715,7 @@ impl VoiceState {
             (ADVANCED, Choice::On(stored.advanced_voice_activity)),
         ]
         .into_iter()
+        .chain(self.extra.choices())
         .collect()
     }
 
@@ -788,6 +819,7 @@ impl Root {
             key if key == super::render::ROOM_ECHO_KEY => self.voice_custom_profile(),
             PUSH_TO_TALK => self.voice.stored.profile != Profile::Studio,
             KEYBIND | RELEASE_DELAY => self.voice.stored.effective().push_to_talk,
+            extra::ATTENUATION_SET => extra::attenuation_shown(),
             _ => true,
         }
     }
@@ -833,6 +865,9 @@ impl Root {
         };
         // The Sounds lists (Voice & Video, Notifications) are the notification store's switches.
         if crate::sounds::set_switch(key, on) {
+            return;
+        }
+        if self.extra_setting_changed(key, on) {
             return;
         }
         let effective_mode = self.voice.stored.effective().push_to_talk;
@@ -1274,6 +1309,7 @@ impl Root {
             OUTPUT_VOLUME => volume_to_slider(prefs.output_gain() * 100.) / 200.,
             RELEASE_DELAY => self.voice.stored.delay / 2000.,
             SENSITIVITY => (self.voice.stored.threshold + 100.) / 100.,
+            extra::ATTENUATION => self.attenuation_fraction(),
             _ => 0.,
         }
         .clamp(0., 1.)
@@ -1286,6 +1322,8 @@ impl Root {
             OUTPUT_VOLUME => format!("{}%", to_fixed((fraction * 200.).round(), 0)),
             RELEASE_DELAY => delay_bubble((fraction * 2000.).round()),
             SENSITIVITY => sensitivity_bubble(fraction * 100.),
+            // The default `formatValue`: the position as a percentage.
+            extra::ATTENUATION => format!("{}%", to_fixed(fraction * 100., 0)),
             _ => String::new(),
         }
     }
@@ -1547,6 +1585,7 @@ impl Root {
                     .set_mode(mode, |stored| stored.threshold = threshold);
                 self.voice_commit();
             }
+            extra::ATTENUATION => self.commit_attenuation(fraction),
             _ => {}
         }
     }

@@ -2,7 +2,7 @@
 //! switch row `baseSettingWrapper_4Z2WJy` + `container_VhFsFg` (grid of label and control), switch `container_9AraPt`,
 //! radio group `group_oJuRbG`, select `selectField_vWC4bk`, slider `slider_OnqacX`, row `baseControlItem_FiiQ6I`.
 
-use super::model::{Choice, Node, RadioOption, Runs};
+use super::model::{ButtonKind, Choice, Node, RadioOption, Runs};
 use super::voice;
 use super::{Root, SANS, button, category_header, color, divider, info_notice, kerning, mask_icon};
 use crate::parity::Parity;
@@ -641,25 +641,39 @@ impl Root {
                 let disabled = self.voice_disabled(key)
                     || (*key == crate::sounds::SELECTED_CHANNEL
                         && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));
+                let row = self.switch_row(
+                    key,
+                    label,
+                    *badge,
+                    description,
+                    on,
+                    disabled,
+                    width,
+                    window,
+                    cx,
+                );
                 div()
                     .min_h(px(48.))
                     .py(px(8.))
-                    .child(self.switch_row(
-                        key,
-                        label,
-                        *badge,
-                        description,
-                        on,
-                        disabled,
-                        width,
-                        window,
-                        cx,
-                    ))
+                    // Debug Logging's fieldset: the switch, then Upload Logs and Show Folder 4px under it.
+                    .child(if *key == voice::extra::DEBUG_LOGGING {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(row)
+                            .child(self.debug_log_buttons(cx))
+                            .into_any_element()
+                    } else {
+                        row.into_any_element()
+                    })
                     // The row keeps its content at the top of its 48px (`baseSettingWrapper`), not centred in it.
                     .into_any_element()
             }
             Node::Slider { key, label, .. }
-                if *key == voice::INPUT_VOLUME || *key == voice::OUTPUT_VOLUME =>
+                if *key == voice::INPUT_VOLUME
+                    || *key == voice::OUTPUT_VOLUME
+                    || *key == voice::extra::ATTENUATION =>
             {
                 self.slider_row(key, label, width, cx)
             }
@@ -812,11 +826,18 @@ impl Root {
                             .gap(px(16.))
                             .when(!value.is_empty(), |this| this.child(super::value(*value)))
                             .children(buttons.iter().enumerate().map(|(index, (text, kind))| {
-                                button(
-                                    SharedString::from(format!("button-{key}-{index}")),
-                                    text,
-                                    *kind,
-                                )
+                                let id = SharedString::from(format!("button-{key}-{index}"));
+                                let reset = *key == voice::extra::RESET;
+                                // Reset all Voice & Video settings asks first (`rA`).
+                                div()
+                                    .id(SharedString::from(format!("{id}-click")))
+                                    .when(reset, |this| {
+                                        this.on_click(cx.listener(|this, _, _, cx| {
+                                            this.voice.ask_reset();
+                                            cx.notify();
+                                        }))
+                                    })
+                                    .child(button(id, text, *kind))
                             })),
                     );
                 }
@@ -938,6 +959,40 @@ impl Root {
                     .unwrap_or_else(|| div().h(px(*height)).into_any_element()),
             },
         }
+    }
+
+    /// `s5.e`: Upload Logs and Show Folder, secondary buttons 8px apart. Upload Logs is spent after one try (`isDisabled`)
+    /// and shows as busy while it runs (`loading`).
+    fn debug_log_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (uploading, spent) = self.upload_state();
+        let busy = uploading || spent;
+        div()
+            .flex()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("voice-upload-logs")
+                    .when(busy, |this| this.opacity(0.5))
+                    .when(!busy, |this| {
+                        this.on_click(cx.listener(|this, _, _, cx| this.voice_upload_logs(cx)))
+                    })
+                    .child(button(
+                        "voice-upload-logs-button",
+                        "Upload Logs",
+                        ButtonKind::Secondary,
+                    )),
+            )
+            .child(
+                div()
+                    .id("voice-show-folder")
+                    .on_click(cx.listener(|this, _, _, cx| this.voice_show_folder(cx)))
+                    .child(button(
+                        "voice-show-folder-button",
+                        "Show Folder",
+                        ButtonKind::Secondary,
+                    )),
+            )
+            .into_any_element()
     }
 
     /// A switch row (`container_VhFsFg`): the label and description in their grid track, the switch at the end.

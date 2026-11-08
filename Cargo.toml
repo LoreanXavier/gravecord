@@ -62,6 +62,7 @@ dc-tokens = { path = "crates/dc-tokens" }
 dc-http = { path = "crates/dc-http" }
 dc-proto = { path = "crates/dc-proto" }
 dc-voice = { path = "crates/dc-voice" }
+dc-winaudio = { path = "crates/dc-winaudio" }
 
 [profile.dev]
 debug = "limited"

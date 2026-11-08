@@ -109,6 +109,7 @@ impl Root {
             }
             call.controls.disconnect();
             self.send_voice_state(call.guild, None);
+            self.voice_call_ended();
         }
         self.sync_ptt_hook();
         cx.notify();
@@ -207,6 +208,7 @@ impl Root {
                 {
                     crate::sounds::play_event(sound);
                 }
+                self.voice_connection_started(cx);
                 self.rtc_step();
                 self.sync_ptt_hook();
             }
@@ -249,6 +251,7 @@ impl Root {
                 {
                     crate::sounds::play_event(sound);
                 }
+                self.voice_call_ended();
                 self.rtc_step();
                 self.sync_ptt_hook();
             }

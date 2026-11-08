@@ -59,6 +59,11 @@ pub(super) struct Spec {
 }
 
 pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
+    footer_button_sized(spec, true, cx)
+}
+
+/// `fill`: the button takes its share of the footer; else it is as wide as its text (beside an action bar input).
+fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyElement {
     let (background, border, text) = match spec.tone {
         Tone::Secondary => (
             color("--control-secondary-background-default"),
@@ -86,7 +91,8 @@ pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement 
     div()
         .id(spec.id)
         .when(disabled, |this| this.opacity(0.5))
-        .flex_1()
+        .when(fill, |this| this.flex_1())
+        .when(!fill, |this| this.px(px(15.)))
         .h(px(40.))
         .rounded(px(8.))
         .border_1()
@@ -111,27 +117,44 @@ pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement 
 }
 
 pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 480., false, cx)
+    render_sized(spec, 480., false, None, cx)
+}
+
+/// The dialog with an input in its action bar (`actionBarInput`): a checkbox or a text button on the left, the
+/// buttons as wide as their text on the right (`actionBarLeading` grows, `actionBarTrailing` sits at the end).
+pub(super) fn render_with_input(
+    spec: Spec,
+    input: AnyElement,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized(spec, 480., false, Some(input), cx)
 }
 
 /// `size-sm_dvN-MP`: the same dialog 400 wide (Delete Channel).
 pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 400., false, cx)
+    render_sized(spec, 400., false, None, cx)
 }
 
 /// The small dialog with its buttons one above the other across the width (Sync permissions?).
 pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 400., true, cx)
+    render_sized(spec, 400., true, None, cx)
 }
 
-fn render_sized(spec: Spec, width: f32, stacked: bool, cx: &mut Context<Root>) -> AnyElement {
+fn render_sized(
+    spec: Spec,
+    width: f32,
+    stacked: bool,
+    input: Option<AnyElement>,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let fill = input.is_none();
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
     let close_scrim = close.clone();
     let buttons: Vec<AnyElement> = spec
         .buttons
         .into_iter()
-        .map(|button| footer_button(button, cx))
+        .map(|button| footer_button_sized(button, fill, cx))
         .map(|button| {
             if stacked {
                 div().w_full().flex().child(button).into_any_element()
@@ -213,18 +236,22 @@ fn render_sized(spec: Spec, width: f32, stacked: bool, cx: &mut Context<Root>) -
         )
         // A dialog without buttons (Invite) ends with its body.
         .when(!buttons.is_empty(), |this| {
-            this.child(
-                div()
-                    // The small dialog's action bar follows its header directly.
-                    .when(width > 400., |this| this.mt(px(8.)))
-                    .pt(px(16.))
-                    .px(px(24.))
-                    .pb(px(8.))
-                    .flex()
-                    .when(stacked, |this| this.flex_col())
-                    .gap(px(8.))
-                    .children(buttons),
-            )
+            let bar = div()
+                // The small dialog's action bar follows its header directly.
+                .when(width > 400., |this| this.mt(px(8.)))
+                .pt(px(16.))
+                .px(px(24.))
+                .pb(px(8.))
+                .flex()
+                .when(stacked, |this| this.flex_col())
+                .gap(px(8.));
+            this.child(match input {
+                None => bar.children(buttons),
+                Some(input) => bar
+                    .items_center()
+                    .child(div().flex_1().min_w(px(0.)).child(input))
+                    .child(div().flex().gap(px(8.)).children(buttons)),
+            })
         });
     deferred(
         div()

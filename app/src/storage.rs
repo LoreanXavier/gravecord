@@ -57,13 +57,27 @@ pub fn set(key: &str, value: Value) {
         return;
     };
     map.insert(key.to_owned(), value);
+    save(&map);
+}
+
+/// `Storage.remove`: forgets a key, and writes the file through.
+pub fn remove(key: &str) {
+    let Ok(mut map) = cell().lock() else {
+        return;
+    };
+    if map.remove(key).is_some() {
+        save(&map);
+    }
+}
+
+fn save(map: &Map<String, Value>) {
     let Some(path) = path() else {
         return;
     };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(bytes) = serde_json::to_vec_pretty(&*map) {
+    if let Ok(bytes) = serde_json::to_vec_pretty(map) {
         // Write beside and rename, so a crash mid-write never leaves half a file.
         let temporary = path.with_extension("json.tmp");
         if std::fs::write(&temporary, bytes).is_ok() {

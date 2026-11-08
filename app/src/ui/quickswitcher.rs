@@ -328,7 +328,7 @@ impl Root {
                     .any(|known| known.id == channel && known.kind == ChannelKind::Voice);
                 if let Some(guild) = guild {
                     if voice {
-                        self.join_voice(guild, channel, cx);
+                        self.request_join_voice(guild, channel, cx);
                     } else {
                         self.select(guild, Some(channel));
                     }

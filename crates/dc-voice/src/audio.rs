@@ -9,9 +9,10 @@
 //! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
 use crate::Frame;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
@@ -29,6 +30,16 @@ pub struct Prefs {
     pub(crate) generation: AtomicU64,
     /// Echo cancellation, Reduce Room Echo and Noise Suppression, read by the worker before every frame.
     pub processing: crate::process::ProcessingPrefs,
+    /// `qos`: mark the voice UDP packets high priority.
+    qos: AtomicBool,
+    /// `inputDetected` of the call's microphone: 0 unknown, 1 input, 2 silence.
+    input_detected: AtomicU8,
+    input_detected_this_connection: AtomicBool,
+    /// Diagnostic Audio Recording: the folder the last five minutes are written to, while it is on.
+    recording: Mutex<Option<PathBuf>>,
+    recording_generation: AtomicU64,
+    /// A recorder holds audio the worker has yet to write.
+    recorder_alive: AtomicBool,
 }
 
 pub fn prefs() -> &'static Prefs {
@@ -40,6 +51,12 @@ pub fn prefs() -> &'static Prefs {
         output_gain: AtomicU32::new(1.0f32.to_bits()),
         generation: AtomicU64::new(0),
         processing: crate::process::ProcessingPrefs::new(),
+        qos: AtomicBool::new(false),
+        input_detected: AtomicU8::new(0),
+        input_detected_this_connection: AtomicBool::new(false),
+        recording: Mutex::new(None),
+        recording_generation: AtomicU64::new(0),
+        recorder_alive: AtomicBool::new(false),
     })
 }
 
@@ -61,6 +78,73 @@ impl Prefs {
             *slot = device;
         }
         self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+    pub fn qos(&self) -> bool {
+        self.qos.load(Ordering::Acquire)
+    }
+    /// Takes effect on the running call within a tick, and on every later one.
+    pub fn set_qos(&self, on: bool) {
+        self.qos.store(on, Ordering::Release);
+    }
+    /// `setAttenuation(percent, self, others)`: other applications' audio is lowered by `percent` (0 disables) while
+    /// this client (`on_self`) or anyone else (`on_others`) speaks. Windows only; elsewhere it does nothing.
+    pub fn set_attenuation(&self, percent: u8, on_self: bool, on_others: bool) {
+        dc_winaudio::attenuation().configure(dc_winaudio::Settings {
+            percent: percent.min(100),
+            on_self,
+            on_others,
+        });
+    }
+    /// Where the journal of lowered sessions is kept, so a killed run can be put right at the next start.
+    pub fn set_attenuation_journal(&self, path: Option<PathBuf>) {
+        dc_winaudio::attenuation().set_journal(path);
+    }
+    /// `getInputDetected()`: None until the watcher has confirmed input or silence.
+    pub fn input_detected(&self) -> Option<bool> {
+        match self.input_detected.load(Ordering::Acquire) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+    /// `getInputDetectedThisConnection()`.
+    pub fn input_detected_this_connection(&self) -> bool {
+        self.input_detected_this_connection.load(Ordering::Acquire)
+    }
+    fn store_input(&self, detected: Option<bool>, this_connection: bool) {
+        self.input_detected.store(
+            match detected {
+                None => 0,
+                Some(true) => 1,
+                Some(false) => 2,
+            },
+            Ordering::Release,
+        );
+        self.input_detected_this_connection
+            .store(this_connection, Ordering::Release);
+    }
+    /// Diagnostic Audio Recording: `Some(folder)` keeps the last five minutes of a call and writes WAV files there
+    /// when the recording ends; `None` ends it.
+    pub fn set_recording(&self, folder: Option<PathBuf>) {
+        if let Ok(mut slot) = self.recording.lock() {
+            *slot = folder;
+        }
+        self.recording_generation.fetch_add(1, Ordering::AcqRel);
+    }
+    /// Ends the recording and waits (a few seconds at most) for the worker to write it: at quit, where the process
+    /// would otherwise end with the last five minutes still in memory.
+    pub(crate) fn flush_recording(&self) {
+        if !self.recorder_alive.load(Ordering::Acquire) {
+            return;
+        }
+        self.set_recording(None);
+        let give_up = Instant::now() + Duration::from_secs(5);
+        while self.recorder_alive.load(Ordering::Acquire) && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn recording_folder(&self) -> Option<PathBuf> {
+        self.recording.lock().ok().and_then(|slot| slot.clone())
     }
     pub fn input_gain(&self) -> f32 {
         f32::from_bits(self.input_gain.load(Ordering::Relaxed))
@@ -155,11 +239,22 @@ impl Audio {
         capture: mpsc::SyncSender<Frame>,
         playback: mpsc::Receiver<Frame>,
     ) -> Result<Self, &'static str> {
+        Self::start_as(capture, playback, true)
+    }
+    /// `call` is false for the settings page's microphone preview: it records nothing and reports no input state.
+    pub(crate) fn start_as(
+        capture: mpsc::SyncSender<Frame>,
+        playback: mpsc::Receiver<Frame>,
+        call: bool,
+    ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
         let worker = gate.clone();
+        if call {
+            prefs().store_input(None, false);
+        }
         let thread = std::thread::Builder::new()
             .name("dc-voice-audio".into())
-            .spawn(move || run(&worker, &capture, &playback))
+            .spawn(move || run(&worker, &capture, &playback, call))
             .map_err(|_| "Could not start audio device worker")?;
         Ok(Self {
             gate,
@@ -192,7 +287,12 @@ impl Drop for Audio {
     }
 }
 
-fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Receiver<Frame>) {
+fn run(
+    gate: &Arc<Gate>,
+    capture: &mpsc::SyncSender<Frame>,
+    playback: &mpsc::Receiver<Frame>,
+    call: bool,
+) {
     let mut streams: Option<Streams> = None;
     let mut open_at = Instant::now();
     let mut input_retry_at = Instant::now();
@@ -202,6 +302,11 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
     // What goes out: voice activity or push to talk, and the level for the meters.
     let mut voice = crate::gate::Gate::new();
     let mut capturing = false;
+    // Whether the microphone delivers input at all, and the last five minutes for Diagnostic Audio Recording. Both
+    // belong to a call, not to the settings page's preview.
+    let mut watcher = crate::input_watch::InputWatcher::new();
+    let mut recorder: Option<crate::recorder::Recorder> = None;
+    let mut recording_generation = u64::MAX;
     // Every five seconds the debug log gets how many microphone frames came and how loud, and how many were played.
     let mut tally_at = Instant::now() + Duration::from_secs(5);
     let (mut captured, mut played, mut loudest) = (0u32, 0u32, 0f32);
@@ -256,18 +361,49 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
             if open {
                 processor.reset();
             }
+            watcher.reset();
+            if call {
+                prefs().store_input(None, watcher.detected_this_connection());
+            }
+        }
+        if call {
+            let wanted = prefs().recording_generation.load(Ordering::Acquire);
+            if wanted != recording_generation {
+                recording_generation = wanted;
+                if let Some(done) = recorder.take() {
+                    done.finish();
+                }
+                recorder = prefs()
+                    .recording_folder()
+                    .map(crate::recorder::Recorder::new);
+                prefs()
+                    .recorder_alive
+                    .store(recorder.is_some(), Ordering::Release);
+            }
+            if let Some(change) = watcher.tick(now) {
+                prefs().store_input(Some(change), watcher.detected_this_connection());
+            }
         }
         for _ in 0..RING {
             let Ok(mut frame) = active.input.pop() else {
                 break;
             };
             captured += 1;
-            loudest = loudest.max(
-                frame
-                    .iter()
-                    .fold(0f32, |peak, sample| peak.max(sample.abs())),
-            );
-            if gate.capture() && process_frame(&mut frame, &mut processor, &mut voice) {
+            let peak = frame
+                .iter()
+                .fold(0f32, |peak, sample| peak.max(sample.abs()));
+            loudest = loudest.max(peak);
+            if call {
+                watcher.frame(peak, now);
+            }
+            if let Some(recorder) = &mut recorder {
+                recorder.record(crate::recorder::Track::Microphone, &frame);
+            }
+            let sent = gate.capture() && process_frame(&mut frame, &mut processor, &mut voice);
+            if let Some(recorder) = &mut recorder {
+                recorder.record(crate::recorder::Track::Sent, &frame);
+            }
+            if sent {
                 // A full channel means the voice loop is behind; drop rather than block.
                 let _ = capture.try_send(frame);
             }
@@ -279,6 +415,9 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
             if gate.playback() {
                 // What the speakers play is the echo canceller's reference.
                 processor.render(&frame, &prefs().processing);
+                if let Some(recorder) = &mut recorder {
+                    recorder.record(crate::recorder::Track::Speaker, &frame);
+                }
                 played += 1;
                 let _ = active.output.push(frame);
             }
@@ -297,6 +436,12 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
         }
         std::thread::park_timeout(Duration::from_millis(5));
     }
+    // The call is over: whatever the last five minutes held is written.
+    if let Some(done) = recorder.take() {
+        let files = done.finish();
+        debug!(files = files.len(), "diagnostic audio recording written");
+    }
+    prefs().recorder_alive.store(false, Ordering::Release);
 }
 
 /// One microphone frame through the processors and the voice gate; the meter follows. True when it goes out.
@@ -674,7 +819,7 @@ pub struct Preview {
 pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
     let (capture_send, capture) = mpsc::sync_channel::<Frame>(8);
     let (playback, playback_receive) = mpsc::sync_channel::<Frame>(8);
-    let audio = Audio::start(capture_send, playback_receive)?;
+    let audio = Audio::start_as(capture_send, playback_receive, false)?;
     audio.set_ready(true);
     audio.set_controls(false, false);
     let loopback = Arc::new(AtomicBool::new(loopback));

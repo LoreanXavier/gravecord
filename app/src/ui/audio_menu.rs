@@ -172,6 +172,7 @@ impl Root {
             key,
             device.map_or(serde_json::Value::Null, |device| json!(device)),
         );
+        self.voice_device_chosen();
         // `setInputDevice` / `setOutputDevice` end with `mention3` on the voice output (module 827343).
         crate::sounds::play_device_changed();
         cx.notify();

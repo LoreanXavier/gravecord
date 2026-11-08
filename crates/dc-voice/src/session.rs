@@ -7,6 +7,7 @@
 //! READY on server version 6+, a 20 s HELLO timeout, AES-256-GCM preferred over XChaCha20,
 //! Origin/User-Agent of the pinned build on the socket, audio devices owned by the session,
 //! and app-facing events in place of Serein's `Status`.
+use crate::prefs;
 use crate::{
     DisconnectReason, Event, Frame,
     activity::{self, LOCAL_THRESHOLD_DB},
@@ -36,7 +37,7 @@ use tokio_tungstenite::{
         protocol::{WebSocketConfig, frame::coding::CloseCode},
     },
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -192,6 +193,23 @@ fn encoder() -> Result<Encoder, &'static str> {
     Ok(encoder)
 }
 
+/// While a call is up, global attenuation may hold other applications down; this is its end. Dropping it (the call
+/// ended, an error, an abort) puts them back.
+struct Presence;
+
+impl Presence {
+    fn begin() -> Self {
+        dc_winaudio::attenuation().set_in_call(true);
+        Self
+    }
+}
+
+impl Drop for Presence {
+    fn drop(&mut self) {
+        dc_winaudio::attenuation().set_in_call(false);
+    }
+}
+
 fn emit(events: &mpsc::UnboundedSender<Event>, event: Event) {
     // A dropped receiver is the app not listening; the call itself is ended through Controls.
     let _ = events.send(event);
@@ -220,6 +238,12 @@ pub(crate) async fn run(
     let mut tally = [0u32; 5];
     let mut tally_at = Instant::now() + Duration::from_secs(5);
     let mut udp: Option<UdpSocket> = None;
+    // Declared after `udp`, so the flow is taken out of qWAVE before the socket closes.
+    let mut qos_flow: Option<dc_winaudio::QosFlow> = None;
+    let mut qos_wanted: Option<bool> = None;
+    let mut presence: Option<Presence> = None;
+    let mut attenuating = (false, false);
+    let mut input_reported: Option<bool> = None;
     let mut next_udp_ping = Instant::now();
     let mut udp_ping_sequence = 0u32;
     let mut udp_failures = UdpFailures::default();
@@ -360,9 +384,43 @@ pub(crate) async fn run(
                 if (enabled || waiting) && !connected {
                     connected = true;
                     emit(&events, Event::Connected);
+                    presence = Some(Presence::begin());
                 }
                 if (enabled || waiting) && audio.is_none() && let Some((capture_send, playback_receive)) = device_ends.take() {
                     audio = Some(Audio::start(capture_send, playback_receive)?);
+                }
+                // Quality of Service follows the setting while the call runs.
+                let wanted = prefs().qos();
+                if qos_wanted != Some(wanted) && let Some(socket) = &udp {
+                    qos_wanted = Some(wanted);
+                    match dc_winaudio::qos::plan(wanted, qos_flow.is_some()) {
+                        dc_winaudio::Plan::Add => {
+                            #[cfg(windows)]
+                            {
+                                use std::os::windows::io::AsRawSocket;
+                                match dc_winaudio::QosFlow::voice(socket.as_raw_socket()) {
+                                    Ok(flow) => {
+                                        debug!("voice packets marked as high priority");
+                                        qos_flow = Some(flow);
+                                    }
+                                    Err(error) => warn!("voice packet priority not set: {error}"),
+                                }
+                            }
+                            #[cfg(not(windows))]
+                            let _ = socket;
+                        }
+                        dc_winaudio::Plan::Remove => {
+                            qos_flow = None;
+                            debug!("voice packets back to normal priority");
+                        }
+                        dc_winaudio::Plan::Keep => {}
+                    }
+                }
+                // Whether the microphone delivers any input, for the "No Audio Detected" warning.
+                let detected = prefs().input_detected();
+                if detected != input_reported {
+                    input_reported = detected;
+                    emit(&events, Event::InputDetected { detected });
                 }
                 let control = *controls.borrow();
                 if let Some(audio) = &audio {
@@ -460,6 +518,12 @@ pub(crate) async fn run(
                     }
                     for user in current.difference(&last_speakers) {
                         emit(&events, Event::SpeakingChanged { user_id: *user, speaking: true });
+                    }
+                    // Global attenuation follows who speaks: this client, and anyone else.
+                    let now_attenuating = (current.contains(&own), current.iter().any(|user| *user != own));
+                    if presence.is_some() && now_attenuating != attenuating {
+                        attenuating = now_attenuating;
+                        dc_winaudio::attenuation().set_speaking(attenuating.0, attenuating.1);
                     }
                     last_speakers = current;
                     speakers_at = now + Duration::from_millis(100);

@@ -535,6 +535,10 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::Fetched { key, body } => {
+                if key == "voice-logs-upload" {
+                    self.voice_logs_uploaded(&body, cx);
+                    return;
+                }
                 if self.friends_fetched(&key, &body, cx) {
                     return;
                 }
@@ -1966,7 +1970,7 @@ impl Root {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if voice {
                             if let Some(guild) = this.guild {
-                                this.join_voice(guild, target, cx);
+                                this.request_join_voice(guild, target, cx);
                             }
                         } else {
                             let guild = this.guild;
@@ -4314,6 +4318,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key == "escape" && this.voice_dialog_close(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.thread_browser.is_some() {
                     this.thread_browser = None;
                     cx.notify();
@@ -4467,118 +4475,115 @@ impl Render for Root {
             .children(self.profile_layer(cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(self.rail(cx))
-                    .child(if self.guild.is_some() {
-                        self.sidebar(cx).into_any_element()
-                    } else {
-                        self.home_sidebar(cx).into_any_element()
-                    })
-                    .child(if self.guild.is_none() && self.channel.is_none() {
-                        self.friends_panel(cx).into_any_element()
-                    } else {
-                        // The New Thread panel sits beside the whole chat column, header included.
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
-                            .child(
-                                div()
-                                    .parity("chat")
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .h_full()
-                                    .pt(px(1.))
-                                    .overflow_hidden()
-                                    .child(self.header(cx))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .flex_1()
-                                            .min_h(px(0.))
-                                            .bg(color("--background-base-lower"))
-                                            .flex_row()
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .flex_1()
-                                                    .min_w(px(0.))
-                                                    .h_full()
-                                                    .child(
-                                                        div()
-                                                            .parity("messages")
-                                                            .relative()
-                                                            .flex_1()
-                                                            .min_h(px(0.))
-                                                            .child(rows)
-                                                            .children(self.new_messages_bar(cx)),
-                                                    )
-                                                    .child(
-                                                        match self
-                                                            .current_dm()
-                                                            .and_then(|channel| {
-                                                                self.stores.dm_recipient(channel)
-                                                            })
-                                                            .map(|user| user.id)
-                                                            .filter(|user| self.is_blocked(*user))
-                                                        {
-                                                            // `wrapper_ST_Y69` sits where the composer's form does: 8px in
-                                                            // and over the list's last 16px.
-                                                            Some(user) => div()
-                                                                .flex_none()
-                                                                .mt(px(-16.))
-                                                                .px(px(8.))
-                                                                .pb(px(8.))
-                                                                .child(
-                                                                    self.blocked_composer(user, cx),
-                                                                )
-                                                                .into_any_element(),
-                                                            None => self
-                                                                .composer_bar(cx)
-                                                                .into_any_element(),
-                                                        },
-                                                    ),
-                                            )
-                                            .children(self.search_panel(cx))
-                                            .when(
-                                                self.show_members
-                                                    && self.guild.is_some()
-                                                    && self.new_thread.is_none()
-                                                    && self.search.as_ref().is_none_or(|search| {
-                                                        search.shown.is_none()
-                                                    }),
-                                                |this| {
-                                                    this.child(
-                                                        div()
+            .child({
+                let rail = self.rail(cx).into_any_element();
+                let sidebar = if self.guild.is_some() {
+                    self.sidebar(cx).into_any_element()
+                } else {
+                    self.home_sidebar(cx).into_any_element()
+                };
+                let content = if self.guild.is_none() && self.channel.is_none() {
+                    self.friends_panel(cx).into_any_element()
+                } else {
+                    // The New Thread panel sits beside the whole chat column, header included.
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .child(
+                            div()
+                                .parity("chat")
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h_full()
+                                .pt(px(1.))
+                                .overflow_hidden()
+                                .child(self.header(cx))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .bg(color("--background-base-lower"))
+                                        .flex_row()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .h_full()
+                                                .child(
+                                                    div()
+                                                        .parity("messages")
+                                                        .relative()
+                                                        .flex_1()
+                                                        .min_h(px(0.))
+                                                        .child(rows)
+                                                        .children(self.new_messages_bar(cx)),
+                                                )
+                                                .child(
+                                                    match self
+                                                        .current_dm()
+                                                        .and_then(|channel| {
+                                                            self.stores.dm_recipient(channel)
+                                                        })
+                                                        .map(|user| user.id)
+                                                        .filter(|user| self.is_blocked(*user))
+                                                    {
+                                                        // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                        // and over the list's last 16px.
+                                                        Some(user) => div()
                                                             .flex_none()
-                                                            .w(px(1.))
-                                                            .h_full()
-                                                            .bg(color("--background-mod-subtle")),
-                                                    )
-                                                    .child(self.member_panel(cx))
-                                                },
-                                            )
-                                            .children(self.dm_profile(cx)),
-                                    ),
-                            )
-                            .children(self.new_thread_panel(cx))
-                            .into_any_element()
-                    }),
-            )
+                                                            .mt(px(-16.))
+                                                            .px(px(8.))
+                                                            .pb(px(8.))
+                                                            .child(self.blocked_composer(user, cx))
+                                                            .into_any_element(),
+                                                        None => {
+                                                            self.composer_bar(cx).into_any_element()
+                                                        }
+                                                    },
+                                                ),
+                                        )
+                                        .children(self.search_panel(cx))
+                                        .when(
+                                            self.show_members
+                                                && self.guild.is_some()
+                                                && self.new_thread.is_none()
+                                                && self
+                                                    .search
+                                                    .as_ref()
+                                                    .is_none_or(|search| search.shown.is_none()),
+                                            |this| {
+                                                this.child(
+                                                    div()
+                                                        .flex_none()
+                                                        .w(px(1.))
+                                                        .h_full()
+                                                        .bg(color("--background-mod-subtle")),
+                                                )
+                                                .child(self.member_panel(cx))
+                                            },
+                                        )
+                                        .children(self.dm_profile(cx)),
+                                ),
+                        )
+                        .children(self.new_thread_panel(cx))
+                        .into_any_element()
+                };
+                self.main_row(rail, sidebar, content, cx)
+            })
             .child(self.user_panel(cx))
             .children(self.context_menu(window, cx))
             .children(self.menu_submenu(window, cx))
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
+            .children(self.voice_dialog_layer(cx))
             .children(self.pin_modal(cx))
             .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
