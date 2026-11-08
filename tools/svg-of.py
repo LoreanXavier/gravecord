@@ -1,8 +1,9 @@
 """Write the first svg under a capture node as an icon file.
 
-python tools/svg-of.py design/dom/<screen>/<variant>.json <aria-label or class substring> app/assets/icons/<name>.svg
+python tools/svg-of.py design/dom/<screen>/<variant>.json <aria-label or class substring> app/assets/icons/<name>.svg [keep]
 
-Paths keep their geometry and fill rules; fills become #000 so the icon can be tinted.
+Paths keep their geometry and fill rules; fills become #000 so the icon can be tinted, unless `keep` is given, which
+keeps literal colours (for illustrations).
 """
 import json
 import sys
@@ -10,6 +11,7 @@ import sys
 
 def main():
     path, needle, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    keep = len(sys.argv) > 4 and sys.argv[4] == 'keep'
     capture = json.load(open(path, encoding='utf8'))
     strings = capture['snapshot']['strings']
     nodes = capture['snapshot']['documents'][0]['nodes']
@@ -49,6 +51,8 @@ def main():
                     if shape.get('fill-rule'):
                         rule = f' fill-rule="{shape["fill-rule"]}" clip-rule="{shape.get("clip-rule", shape["fill-rule"])}"'
                     fill = 'none' if shape.get('fill') in ('none', 'transparent') else '#000'
+                    if keep and shape.get('fill', '').startswith('#'):
+                        fill = shape['fill']
                     parts.append(f'<path fill="{fill}"{rule} d="{shape["d"]}"/>')
                 elif kind == 'circle' and shape.get('fill') not in ('transparent', 'none'):
                     parts.append(f'<circle fill="#000" cx="{shape["cx"]}" cy="{shape["cy"]}" r="{shape["r"]}"/>')

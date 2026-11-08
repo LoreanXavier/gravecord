@@ -14,6 +14,10 @@ use gpui::{
 use serde_json::Value;
 
 const WIDTH: f32 = 560.;
+/// `upsellImage_jMz1Ee` and `upsellImage_XzStbz`, and the demo message's Wumpus.
+const BOOKMARKS_PICTURE: &str = "https://cdn.discordapp.com/assets/content/bd0327359da757ec3765798e53afa43e172da33e2255bf985c3667f9ff57c8cb.svg";
+const SCHEDULED_PICTURE: &str = "https://cdn.discordapp.com/assets/content/c5582c3bbb97001b8a0f4686a09a93c734eef416f3d0e3c83eba4b6e8bbee2c2.svg";
+const WUMPUS_AVATAR: &str = "https://cdn.discordapp.com/assets/content/2532e8cd0600ccfbc61ff81c21959bde90a6645d0e71644a92f6cde5bfc48439.png";
 const MAX_HEIGHT: f32 = 576.;
 pub(super) const MENTIONS_KEY: &str = "inbox-mentions";
 
@@ -46,6 +50,9 @@ impl Root {
         if self.inbox.take().is_none() {
             self.inbox = Some(InboxTab::default());
             self.request_saved();
+            self.request_image("inbox:bookmarks".to_owned(), BOOKMARKS_PICTURE.to_owned());
+            self.request_image("inbox:scheduled".to_owned(), SCHEDULED_PICTURE.to_owned());
+            self.request_image("inbox:wumpus".to_owned(), WUMPUS_AVATAR.to_owned());
         }
         cx.notify();
     }
@@ -384,6 +391,328 @@ impl Root {
             .into_any_element()
     }
 
+    /// `container_FgrH4y`: the @ in an 80px circle with its stars, the title, and the green "Protip:".
+    fn mentions_empty(&self) -> AnyElement {
+        // `container_FgrH4y` starts at the page's top edge: no 16px above it.
+        div()
+            .mt(px(-16.))
+            .h(px(360.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .relative()
+                    .mb(px(16.))
+                    .w(px(80.))
+                    .h(px(83.))
+                    .child(
+                        div()
+                            .size(px(80.))
+                            .rounded_full()
+                            .bg(color("--background-base-low"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("inbox_at", 36., "--text-muted")),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-10.))
+                            .top(px(0.))
+                            .child(img("icons/inbox_stars.svg").w(px(104.)).h(px(80.))),
+                    ),
+            )
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(24.))
+                    .line_height(px(32.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("You made it through everything!"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.67))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-feedback-positive"))
+                            .child("Protip:"),
+                    )
+                    .child(
+                        div()
+                            .ml(px(3.5))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-default"))
+                            .child(
+                                "Whenever someone mentions you it will be saved here for 7 days.",
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// `menu_jMz1Ee` / `menu_XzStbz`: the demo menu, rows 30 tall, the highlighted one on `--background-mod-subtle`.
+    fn demo_menu(rows: [(&'static str, &'static str, bool); 2]) -> AnyElement {
+        div()
+            .p(px(4.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-highest"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.24),
+                offset: gpui::point(px(0.), px(12.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .children(rows.into_iter().map(|(name, label, lit)| {
+                div()
+                    .h(px(30.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(lit, |this| this.bg(color("--background-mod-subtle")))
+                    .child(icon(
+                        name,
+                        16.,
+                        if lit {
+                            "--text-strong"
+                        } else {
+                            "--text-subtle"
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(label),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    /// The upsell column shared by Bookmarks and Scheduled: picture, title, the line with its bold action, demo.
+    fn upsell(
+        &self,
+        picture: &str,
+        title: &'static str,
+        before: &'static str,
+        action: &'static str,
+        after: &'static str,
+        demo: AnyElement,
+    ) -> AnyElement {
+        let image = self.images.get(picture).cloned();
+        // The upsell pages keep no scrollbar gutter: 528 wide, 16px from both sides.
+        div()
+            .mr(px(-8.))
+            .h(px(458.4))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .mb(px(24.))
+                    .w(px(140.))
+                    .h(px(93.33))
+                    .children(image.map(|image| img(image).w(px(140.)).h(px(93.33)))),
+            )
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(24.))
+                    .line_height(px(32.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-default"))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .mb(px(16.))
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .justify_center()
+                    .text_center()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-subtle"))
+                    .child(before)
+                    .child(div().font_weight(FontWeight(600.)).child(action))
+                    .child(after),
+            )
+            .child(div().w_full().child(demo))
+            .into_any_element()
+    }
+
+    fn bookmarks_empty(&self) -> AnyElement {
+        let wumpus = self.images.get("inbox:wumpus").cloned();
+        let line = |text: &'static str| {
+            div()
+                .h(px(26.))
+                .pl(px(72.))
+                .py(px(2.))
+                .line_height(px(22.))
+                .text_color(color("--text-default"))
+                .child(text)
+        };
+        let demo = div()
+            .relative()
+            .h(px(150.))
+            .child(
+                div()
+                    .mt(px(16.))
+                    .py(px(8.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lowest"))
+                    .child(
+                        div()
+                            .relative()
+                            .h(px(48.))
+                            .pl(px(72.))
+                            .pt(px(2.))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(16.))
+                                    .top(px(4.))
+                                    .size(px(40.))
+                                    .children(
+                                        wumpus.map(|image| img(image).size(px(40.)).rounded_full()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child("Wumpus"),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(8.))
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-muted"))
+                                            .child(
+                                                chrono::Local::now()
+                                                    .format("%-I:%M %p")
+                                                    .to_string(),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .line_height(px(22.))
+                                    .text_color(color("--text-default"))
+                                    .child("Concert tickets go on sale Friday at 10am!"),
+                            ),
+                    )
+                    .child(line("wait, did you see this"))
+                    .child(line("the setlist for tonight looks unreal")),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(301.))
+                    .top(px(52.))
+                    .child(Self::demo_menu([
+                        ("inbox_bookmark", "Bookmark Message", true),
+                        ("menu_create_reminder", "Create Reminder", false),
+                    ])),
+            )
+            .into_any_element();
+        self.upsell(
+            "inbox:bookmarks",
+            "Collect your favorite memories",
+            "Right-click any message and pick\u{a0}",
+            "Bookmark Message",
+            ". Find it here, for your eyes only.",
+            demo,
+        )
+    }
+
+    fn scheduled_empty(&self) -> AnyElement {
+        let channel = self
+            .current_channel()
+            .map(|channel| format!("Message #{}", channel.name))
+            .unwrap_or_else(|| "Message".to_owned());
+        let demo = div()
+            .mt(px(16.))
+            .h(px(107.))
+            .child(
+                div()
+                    .ml(px(12.))
+                    .mb(px(-5.))
+                    .w(px(161.44))
+                    .child(Self::demo_menu([
+                        ("inbox_upload", "Upload a File", false),
+                        ("inbox_schedule", "Schedule Message", true),
+                    ])),
+            )
+            .child(
+                div()
+                    .h(px(42.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .rounded_full()
+                            .bg(color("--background-mod-strong"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("inbox_plus", 16., "--text-strong")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-muted"))
+                            .child(channel),
+                    ),
+            )
+            .into_any_element();
+        self.upsell(
+            "inbox:scheduled",
+            "Send it at the perfect moment",
+            "Draft your message then click the plus button and pick\u{a0}",
+            "Schedule Message",
+            "\u{a0}to choose when to send. We'll handle the rest.",
+            demo,
+        )
+    }
+
     fn inbox_page(&self, tab: InboxTab, cx: &mut Context<Self>) -> Vec<AnyElement> {
         match tab {
             InboxTab::Reminders => {
@@ -396,18 +725,19 @@ impl Root {
                     )];
                 }
                 list.iter()
-                    .map(|(message, due)| self.reminder_card(message, due.as_deref().unwrap_or_default(), cx))
+                    .map(|(message, due)| {
+                        self.reminder_card(message, due.as_deref().unwrap_or_default(), cx)
+                    })
                     .collect()
             }
             InboxTab::Bookmarks => {
                 let list = self.inbox_saved(false);
                 if list.is_empty() {
-                    return vec![self.inbox_empty(
-                        "Collect your favorite memories",
-                        "Right-click any message and pick Bookmark Message. Find it here, for your eyes only.",
-                    )];
+                    return vec![self.bookmarks_empty()];
                 }
-                list.iter().map(|(message, _)| self.bookmark_card(message, cx)).collect()
+                list.iter()
+                    .map(|(message, _)| self.bookmark_card(message, cx))
+                    .collect()
             }
             InboxTab::Mentions => {
                 let list: Vec<Message> = self
@@ -419,10 +749,7 @@ impl Root {
                     .filter_map(Message::from_value)
                     .collect();
                 if list.is_empty() {
-                    return vec![self.inbox_empty(
-                        "You made it through everything!",
-                        "Protip: Whenever someone mentions you it will be saved here for 7 days.",
-                    )];
+                    return vec![self.mentions_empty()];
                 }
                 list.iter()
                     .map(|message| {
@@ -449,10 +776,7 @@ impl Root {
                     })
                     .collect()
             }
-            InboxTab::Scheduled => vec![self.inbox_empty(
-                "Send it at the perfect moment",
-                "Draft your message then click the plus button and pick Schedule Message to choose when to send.",
-            )],
+            InboxTab::Scheduled => vec![self.scheduled_empty()],
             InboxTab::Unreads => vec![self.inbox_empty(
                 "Stay up to date with latest messages!",
                 "Unread messages from all your unmuted channels will show up here.",
