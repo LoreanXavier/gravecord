@@ -81,6 +81,7 @@ mod server_games;
 mod server_members;
 mod server_role_editor;
 mod server_roles;
+mod server_safety;
 mod server_settings;
 mod server_settings_pages;
 mod server_sounds;
@@ -519,6 +520,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.audit_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_safety::SAFETY_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.safety_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_access::ACCESS_PREFIX) {
@@ -4317,6 +4323,7 @@ impl Render for Root {
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
             .children(self.audit_select_layer(cx))
+            .children(self.safety_select_layer(cx))
             .children(self.access_menu_layer(cx))
             .children(
                 self.server_settings

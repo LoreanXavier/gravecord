@@ -82,15 +82,30 @@ impl Root {
         cx: &mut Context<Self>,
         run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
     ) -> AnyElement {
-        let text = format!("{before}{link}{after}");
-        let range = before.len()..before.len() + link.len();
-        let styled = gpui::StyledText::new(text).with_highlights([(
-            range.clone(),
+        self.text_with_styled_link(
+            id,
+            (before, link, after),
             gpui::HighlightStyle {
                 color: Some(color("--text-link").into()),
                 ..Default::default()
             },
-        )]);
+            cx,
+            run,
+        )
+    }
+
+    /// The same with its own look for the link: an inline notice's is underlined in the text's color.
+    pub(super) fn text_with_styled_link(
+        &self,
+        id: &'static str,
+        (before, link, after): (&str, &str, &str),
+        style: gpui::HighlightStyle,
+        cx: &mut Context<Self>,
+        run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+    ) -> AnyElement {
+        let text = format!("{before}{link}{after}");
+        let range = before.len()..before.len() + link.len();
+        let styled = gpui::StyledText::new(text).with_highlights([(range.clone(), style)]);
         let root = cx.entity().downgrade();
         gpui::InteractiveText::new(id, styled)
             .on_click(vec![range], move |_, _, cx| {
@@ -168,6 +183,7 @@ impl Root {
             Page::Stickers => self.request_stickers(guild),
             Page::Access => self.request_access(guild, cx),
             Page::AuditLog => self.request_audit(guild),
+            Page::SafetySetup => self.request_safety(guild),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
                 let _ = self.requests.send(Request::Fetch {

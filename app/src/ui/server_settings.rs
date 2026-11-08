@@ -270,6 +270,7 @@ pub(crate) struct ServerSettings {
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
     pub(super) audit: super::server_audit::AuditState,
+    pub(super) safety: super::server_safety::SafetyState,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -421,6 +422,7 @@ impl Root {
             sticker_dialog: None,
             access: None,
             audit: Default::default(),
+            safety: Default::default(),
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -1129,7 +1131,7 @@ impl Root {
             }
             Page::Integrations => self.server_integrations_page(open.guild, cx),
             Page::AppDirectory => Self::server_page_title("App Directory"),
-            Page::SafetySetup => Self::server_page_title("Safety Setup"),
+            Page::SafetySetup => self.server_safety_page(open.guild, cx),
             Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
