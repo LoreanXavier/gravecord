@@ -231,28 +231,38 @@ impl Root {
                                     recipient.tag.as_ref().map(|tag| self.server_tag_chip(tag)),
                                 ),
                         )
-                        .child(
-                            // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
-                            // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it
-                            // was open.
-                            div()
-                                .id(SharedString::from(format!("dm-close-{id}")))
-                                .mr(px(8.))
-                                .size(px(18.))
-                                .flex_none()
-                                .rounded_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .opacity(0.)
-                                .group_hover(group, |style| style.opacity(0.7))
-                                .hover(|style| style.opacity(1.))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.close_dm(id, cx);
-                                }))
-                                .child(icon("friend_ignore", 16., "--text-strong")),
-                        ),
+                        .when(self.is_blocked(recipient.id), |this| {
+                            // `favoriteIcon_zln_tS`: the blocked mark, 16px with 8px after it.
+                            this.child(div().mr(px(8.)).child(icon(
+                                "blocked",
+                                16.,
+                                "--text-default",
+                            )))
+                        })
+                        .when(!self.is_blocked(recipient.id), |this| {
+                            this.child(
+                                // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
+                                // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it
+                                // was open.
+                                div()
+                                    .id(SharedString::from(format!("dm-close-{id}")))
+                                    .mr(px(8.))
+                                    .size(px(18.))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .opacity(0.)
+                                    .group_hover(group, |style| style.opacity(0.7))
+                                    .hover(|style| style.opacity(1.))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.close_dm(id, cx);
+                                    }))
+                                    .child(icon("friend_ignore", 16., "--text-strong")),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )

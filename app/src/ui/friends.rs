@@ -246,6 +246,46 @@ impl Root {
         cx.notify();
     }
 
+    /// `addRelationship` / `blockUser` / `removeRelationship` of module 49229: `PUT /users/@me/relationships/{id}`
+    /// with `{}` (a friend request, or accepting one) or `{type: 2}` (block), `DELETE` for `None`. The store
+    /// changes at once; the gateway's RELATIONSHIP events confirm it.
+    pub(super) fn set_relationship(&mut self, user: Id, kind: Option<u64>, cx: &mut Context<Self>) {
+        let body = match kind {
+            Some(2) => Some(json!({"type": 2})),
+            Some(_) => Some(json!({})),
+            None => None,
+        };
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: if kind.is_some() {
+                reqwest::Method::PUT
+            } else {
+                reqwest::Method::DELETE
+            },
+            route: format!("/users/@me/relationships/{user}"),
+            body,
+        });
+        match kind {
+            Some(2) => {
+                self.stores.relationships.insert(user, 2);
+            }
+            // Accepting makes a friend; otherwise the request waits.
+            Some(_) => {
+                let next = if self.stores.relationships.get(&user) == Some(&RELATIONSHIP_INCOMING) {
+                    RELATIONSHIP_FRIEND
+                } else {
+                    RELATIONSHIP_OUTGOING
+                };
+                self.stores.relationships.insert(user, next);
+            }
+            None => {
+                self.stores.relationships.remove(&user);
+            }
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
     /// Accept is `PUT {}` on the relationship; ignore, cancel and remove are `DELETE`.
     fn relationship_action(&mut self, user: Id, accept: bool) {
         let _ = self.requests.send(Request::Rest {

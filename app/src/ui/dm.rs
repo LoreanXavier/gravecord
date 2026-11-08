@@ -2,6 +2,7 @@
 //! (`container_bLMKT5`). Measured in `design/dom/dm/loreanxavier-darker-cozy.json`.
 
 use super::{Root, avatar_source, color, header_time, icon};
+use crate::parity::Parity;
 use dc_state::Message;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
@@ -19,26 +20,59 @@ pub(super) fn is_system(message: &Message) -> bool {
 }
 
 /// A `sm` secondary button: 32 tall, 11px inside a 1px border, 14px medium text.
-fn small_button(label: &'static str) -> impl IntoElement {
+#[derive(Clone, Copy, PartialEq)]
+enum Tone {
+    Secondary,
+    Primary,
+    CriticalPrimary,
+}
+
+/// The `sm` design-system button of the DM welcome, in the variant the relationship asks for.
+fn small_button(
+    id: &'static str,
+    label: &'static str,
+    tone: Tone,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let (background, border, text) = match tone {
+        Tone::Secondary => (
+            "--control-secondary-background-default",
+            "--control-secondary-border-default",
+            "--control-secondary-text-default",
+        ),
+        Tone::Primary => (
+            "--control-primary-background-default",
+            "--control-primary-border-default",
+            "--white",
+        ),
+        Tone::CriticalPrimary => (
+            "--control-critical-primary-background-default",
+            "--control-critical-primary-border-default",
+            "--white",
+        ),
+    };
     div()
+        .id(id)
         .h(px(32.))
         .px(px(11.))
         .rounded(px(8.))
         .border_1()
-        .border_color(color("--control-secondary-border-default"))
-        .bg(color("--control-secondary-background-default"))
+        .border_color(color(border))
+        .bg(color(background))
         .flex()
         .items_center()
         .text_size(px(14.))
         .line_height(px(18.))
         .font_weight(FontWeight(500.))
-        .text_color(color("--control-secondary-text-default"))
+        .text_color(color(text))
+        .when(enabled, |this| this.cursor_pointer())
+        .when(!enabled, |this| this.opacity(0.5))
         .child(label)
 }
 
 impl Root {
     /// The start of a DM: the other person large, the opening line, mutual servers and the friend buttons.
-    pub(super) fn dm_welcome(&self) -> Option<AnyElement> {
+    pub(super) fn dm_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.current_dm()?;
         let user = self.stores.dm_recipient(channel)?.clone();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
@@ -47,11 +81,13 @@ impl Root {
             .get(&format!("profile:{}", user.id))
             .and_then(|body| body["mutual_guilds"].as_array().map(Vec::len))
             .unwrap_or(0);
-        let friend = self
+        let relationship = self
             .stores
             .relationships
             .get(&user.id)
-            .is_some_and(|kind| *kind == 1);
+            .copied()
+            .unwrap_or(0);
+        let buttons = self.welcome_buttons(channel.id, &user, relationship, cx);
         let first_mutual = self
             .fetched
             .get(&format!("profile:{}", user.id))
@@ -63,10 +99,12 @@ impl Root {
             .and_then(|guild| self.images.get(&format!("guild:{guild}")).cloned());
         let name = user.display_name().to_owned();
         Some(
+            // A list row's own margin is not measured, so the 16px above `container_w6h4R2` is padding on a wrapper.
+            div().pt(px(16.)).child(
             div()
-                .mt(px(16.))
+                .parity("dm-welcome")
                 .ml(px(16.))
-                .mr(px(16.))
+                .mr(px(32.))
                 .flex()
                 .flex_col()
                 .child(
@@ -95,7 +133,7 @@ impl Root {
                 )
                 .child(
                     div()
-                        .mt(px(19.))
+                        .mt(px(20.))
                         .flex()
                         .text_size(px(16.))
                         .line_height(px(20.))
@@ -147,19 +185,76 @@ impl Root {
                                     ),
                             )
                         })
-                        .when(friend, |this| {
-                            this.child(
-                                div()
-                                    .ml(px(4.))
-                                    .flex()
-                                    .gap(px(8.))
-                                    .child(small_button("Remove Friend"))
-                                    .child(small_button("Block")),
-                            )
-                        }),
+                        .child(div().ml(px(4.)).flex().gap(px(8.)).children(buttons)),
                 )
-                .into_any_element(),
+                ).into_any_element(),
         )
+    }
+
+    /// Function `ap` of module 891522 by relationship: Remove Friend for a friend, Add Friend (or Accept for an
+    /// incoming request) for nobody, "Friend Request Sent" disabled while one waits, Unblock once blocked; Block
+    /// unless blocked; Report Spam (`s4`) while they are not a friend and have a message here. Each acts at
+    /// once, as the official buttons do; Block shows `XXPrIs` "{name} blocked".
+    fn welcome_buttons(
+        &self,
+        channel: dc_state::Id,
+        user: &dc_state::User,
+        relationship: u64,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let id = user.id;
+        let name = user.display_name().to_owned();
+        let mut list = Vec::new();
+        match relationship {
+            1 => list.push(
+                small_button("welcome-remove", "Remove Friend", Tone::Secondary, true)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)),
+                    )
+                    .into_any_element(),
+            ),
+            2 => list.push(
+                small_button("welcome-unblock", "Unblock", Tone::Secondary, true)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)),
+                    )
+                    .into_any_element(),
+            ),
+            4 => list.push(
+                small_button("welcome-sent", "Friend Request Sent", Tone::Primary, false)
+                    .into_any_element(),
+            ),
+            _ => list.push(
+                small_button("welcome-add", "Add Friend", Tone::Primary, true)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_relationship(id, Some(0), cx)),
+                    )
+                    .into_any_element(),
+            ),
+        }
+        if relationship != 2 {
+            list.push(
+                small_button("welcome-block", "Block", Tone::Secondary, true)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_relationship(id, Some(2), cx);
+                        this.show_success_toast(format!("{name} blocked"), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        // `s2.I`: a message of theirs in this DM to report (a system line counts: it is theirs too).
+        let wrote_here = self
+            .stores
+            .messages
+            .get(&channel)
+            .is_some_and(|messages| messages.iter().any(|message| message.author.id == id));
+        if matches!(relationship, 0 | 2 | 3) && wrote_here {
+            list.push(
+                small_button("welcome-report", "Report Spam", Tone::CriticalPrimary, true)
+                    .into_any_element(),
+            );
+        }
+        list
     }
 
     /// A system line: an 18px icon centred in the 72px gutter, then who and what, and the time.

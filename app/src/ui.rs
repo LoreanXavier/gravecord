@@ -31,6 +31,7 @@ use tokio::sync::mpsc::UnboundedSender;
 mod actions;
 mod apps;
 mod badge_paths;
+mod blocked;
 mod dm;
 mod dm_profile;
 mod embed;
@@ -126,6 +127,11 @@ enum Row {
         index: usize,
         head: bool,
     },
+    /// A run of messages from blocked people, folded; `first` is the first one's id.
+    Blocked {
+        first: Id,
+        count: usize,
+    },
 }
 
 pub struct Root {
@@ -153,6 +159,8 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    shown_blocked: HashSet<Id>,
+    shown_blocked_profiles: HashSet<Id>,
     hovered_dm: Option<Id>,
     group_dm: Option<group_dm::GroupDm>,
     add_friend: Option<friends::AddFriend>,
@@ -254,6 +262,8 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            shown_blocked: HashSet::new(),
+            shown_blocked_profiles: HashSet::new(),
             hovered_dm: None,
             group_dm: None,
             add_friend: None,
@@ -305,6 +315,9 @@ impl Root {
         match update {
             Update::Dispatch { name, data } => {
                 self.stores.dispatch(&name, &data);
+                if name.starts_with("RELATIONSHIP_") {
+                    self.rebuild_rows();
+                }
                 if name == "READY" {
                     // The account's saved theme; unset keeps the default.
                     match self.stores.theme {
@@ -680,6 +693,15 @@ impl Root {
         }
         let divider = self.divider_after();
         let mut divided = false;
+        let blocked: HashSet<Id> = self
+            .stores
+            .relationships
+            .iter()
+            .filter(|(_, kind)| **kind == blocked::RELATIONSHIP_BLOCKED)
+            .map(|(user, _)| *user)
+            .collect();
+        // The run of blocked messages being folded: its first id, and whether it is open.
+        let mut run: Option<(Id, bool)> = None;
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -689,6 +711,35 @@ impl Root {
                     .push(Row::Divider(local.format("%B %-d, %Y").to_string()));
                 last_day = Some(day);
             }
+            if blocked.contains(&message.author.id) {
+                let open = match run {
+                    Some((first, open)) if !new_day => {
+                        if let Some(Row::Blocked { count, .. }) = self
+                            .rows
+                            .iter_mut()
+                            .rev()
+                            .find(|row| matches!(row, Row::Blocked { first: known, .. } if *known == first))
+                        {
+                            *count += 1;
+                        }
+                        open
+                    }
+                    _ => {
+                        let open = self.shown_blocked.contains(&message.id);
+                        self.rows.push(Row::Blocked {
+                            first: message.id,
+                            count: 1,
+                        });
+                        run = Some((message.id, open));
+                        open
+                    }
+                };
+                if open {
+                    self.rows.push(Row::Message { index, head: true });
+                }
+                continue;
+            }
+            run = None;
             let mut head = new_day || index == 0 || starts_group(&messages[index - 1], message);
             if !divided && divider.is_some_and(|acked| message.id > acked) {
                 // The divider starts a new group, as the official list breaks one there.
@@ -2645,8 +2696,9 @@ impl Root {
         match row {
             Row::Spacer => div().h(px(40.)).into_any_element(),
             Row::NewDivider => self.new_divider(),
+            Row::Blocked { first, count } => self.blocked_row(*first, *count, cx),
             Row::Welcome => self
-                .dm_welcome()
+                .dm_welcome(cx)
                 .unwrap_or_else(|| div().into_any_element()),
             Row::Divider(date) => div()
                 .pt(px(24.))
@@ -3633,7 +3685,29 @@ impl Render for Root {
                                                     .child(rows)
                                                     .children(self.new_messages_bar(cx)),
                                             )
-                                            .child(self.composer_bar(cx)),
+                                            .child(
+                                                match self
+                                                    .current_dm()
+                                                    .and_then(|channel| {
+                                                        self.stores.dm_recipient(channel)
+                                                    })
+                                                    .map(|user| user.id)
+                                                    .filter(|user| self.is_blocked(*user))
+                                                {
+                                                    // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                    // and over the list's last 16px.
+                                                    Some(user) => div()
+                                                        .flex_none()
+                                                        .mt(px(-16.))
+                                                        .px(px(8.))
+                                                        .pb(px(8.))
+                                                        .child(self.blocked_composer(user, cx))
+                                                        .into_any_element(),
+                                                    None => {
+                                                        self.composer_bar(cx).into_any_element()
+                                                    }
+                                                },
+                                            ),
                                     )
                                     .when(self.show_members && self.guild.is_some(), |this| {
                                         this.child(

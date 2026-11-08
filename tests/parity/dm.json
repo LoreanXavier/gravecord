@@ -1,9 +1,26 @@
 {
-  "titlebar": { "class": "bar_3zSH5d" },
-  "rail": { "class": "wrapper_5dqHTG" },
-  "user-panel": { "class": "panels_pog62O" },
-  "chat-header": { "class": "title_z_gUBg" },
-  "search": { "class": "searchBar_i16Ad0" },
-  "composer": { "class": "channelTextArea_z_gUBg" },
-  "dm-profile": { "class": "aside_HbUF2J" }
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "chat-header": {
+    "class": "title_z_gUBg"
+  },
+  "search": {
+    "class": "searchBar_i16Ad0"
+  },
+  "composer": {
+    "class": "channelTextArea_z_gUBg"
+  },
+  "dm-profile": {
+    "class": "aside_HbUF2J"
+  },
+  "dm-welcome": {
+    "class": "container_w6h4R2"
+  }
 }

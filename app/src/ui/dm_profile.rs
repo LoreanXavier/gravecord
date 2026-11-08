@@ -351,6 +351,7 @@ impl Root {
                     .child(div().flex_1().child(header).child(sections))
                     .child(footer),
             );
+        let gated = self.is_blocked(user.id) && !self.shown_blocked_profiles.contains(&user.id);
         Some(
             div()
                 .parity("dm-profile")
@@ -361,7 +362,16 @@ impl Root {
                 .bg(color("--background-base-lower"))
                 .flex()
                 .flex_col()
-                .child(card)
+                .when(!gated, |this| this.child(card))
+                .when(gated, |this| {
+                    this.child(
+                        div()
+                            .size_full()
+                            .rounded(px(8.))
+                            .bg(color("--background-base-lowest"))
+                            .child(self.blocked_profile_gate(&user, cx)),
+                    )
+                })
                 .into_any_element(),
         )
     }

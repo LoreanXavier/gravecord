@@ -28,7 +28,9 @@ pub(crate) struct Toast {
 
 /// The app-wide toast (`toast_W6gbBa`): top centre, three seconds.
 pub(crate) struct AppToast {
-    pub message: &'static str,
+    pub message: String,
+    /// `success_O41c2-` (green edge, a check, 90px down) rather than `default_O41c2-` (the forward arrow, 40px).
+    pub success: bool,
     pub until: Instant,
 }
 
@@ -141,9 +143,19 @@ impl Root {
     }
 
     pub(super) fn show_app_toast(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.put_app_toast(message.to_owned(), false, cx);
+    }
+
+    /// `showBlockSuccessToast` and the other `P0({variant: "success"})` toasts.
+    pub(super) fn show_success_toast(&mut self, message: String, cx: &mut Context<Self>) {
+        self.put_app_toast(message, true, cx);
+    }
+
+    fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
         let duration = std::time::Duration::from_millis(3000);
         self.app_toast = Some(AppToast {
             message,
+            success,
             until: Instant::now() + duration,
         });
         cx.spawn(async move |this, cx| {
@@ -171,7 +183,7 @@ impl Root {
             deferred(
                 div()
                     .absolute()
-                    .top(px(40.))
+                    .top(px(if toast.success { 90. } else { 40. }))
                     .left(px(0.))
                     .right(px(0.))
                     .flex()
@@ -181,8 +193,15 @@ impl Root {
                             .p(px(12.))
                             .rounded(px(12.))
                             .border_1()
-                            .border_color(color("--border-normal"))
-                            .bg(color("--background-surface-highest"))
+                            .when(!toast.success, |this| {
+                                this.border_color(color("--border-normal"))
+                                    .bg(color("--background-surface-highest"))
+                            })
+                            // `baselayer_O41c2- success`: a green edge and a 12% green wash over the base.
+                            .when(toast.success, |this| {
+                                this.border_color(color("--green-new-42"))
+                                    .bg(color("--background-base-low"))
+                            })
                             .shadow(vec![gpui::BoxShadow {
                                 color: gpui::hsla(0., 0., 0., 0.24),
                                 offset: gpui::point(px(0.), px(12.)),
@@ -193,9 +212,23 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap(px(8.))
+                            .when(toast.success, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .rounded(px(12.))
+                                        .bg(color("--opacity-green-12")),
+                                )
+                            })
+                            .relative()
                             .child(
                                 svg()
-                                    .path("icons/toast_forwarded.svg")
+                                    .path(if toast.success {
+                                        "icons/toast_success.svg"
+                                    } else {
+                                        "icons/toast_forwarded.svg"
+                                    })
                                     .size(px(18.))
                                     .text_color(color("--icon-feedback-positive")),
                             )
@@ -204,7 +237,7 @@ impl Root {
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .text_color(color("--text-strong"))
-                                    .child(toast.message),
+                                    .child(toast.message.clone()),
                             ),
                     ),
             )
