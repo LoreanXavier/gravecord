@@ -1403,10 +1403,10 @@ impl Root {
         let mut members: Vec<User> = self.stores.current_user.iter().cloned().collect();
         if let Some(list) = self.stores.member_lists.get(&guild.id) {
             for row in &list.rows {
-                if let dc_state::member_list::Row::Member { user, .. } = row {
-                    if !members.iter().any(|known| known.id == user.id) {
-                        members.push(user.clone());
-                    }
+                if let dc_state::member_list::Row::Member { user, .. } = row
+                    && !members.iter().any(|known| known.id == user.id)
+                {
+                    members.push(user.clone());
                 }
             }
         }
