@@ -102,6 +102,7 @@ mod tooltip;
 mod unread;
 mod uploads;
 mod voice;
+mod voice_panel;
 mod voice_sounds;
 
 use tooltip::{Body, Side, Tip};
@@ -298,6 +299,7 @@ pub struct Root {
     profile: Option<profile::Popout>,
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
+    panel: voice_panel::PanelState,
     self_mute: bool,
     self_deaf: bool,
     /// Lets the system-wide push to talk hook (another thread) reach the window.
@@ -439,6 +441,7 @@ impl Root {
             content_width: 793.,
             profile: None,
             call: None,
+            panel: voice_panel::PanelState::default(),
             updates,
             ptt_hook: None,
             ptt_down: false,
@@ -2260,6 +2263,7 @@ impl Root {
     fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        let in_voice = self.call.as_ref().is_some_and(|call| call.connected);
         // Muted and deafened buttons turn red with their chevron: `redGlow_Y-8oZW`.
         let tint = |muted: bool| {
             if muted {
@@ -2345,7 +2349,21 @@ impl Root {
                             .line_height(px(13.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--interactive-text-default"))
-                            .child(status_label(&self.stores.status)),
+                            // `activityStatus`: in voice, this replaces the status line.
+                            .when(!in_voice, |this| {
+                                this.child(status_label(&self.stores.status))
+                            })
+                            .when(in_voice, |this| {
+                                this.flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(icon(
+                                        "voice_status_in_voice",
+                                        12.,
+                                        "--text-feedback-positive",
+                                    ))
+                                    .child("In voice")
+                            }),
                     ),
             )
             .child(
@@ -4590,6 +4608,7 @@ impl Render for Root {
             .children(self.file_expanded_layer(cx))
             .children(self.view_reactions_modal(cx))
             .children(self.audio_menu_layer(cx))
+            .children(self.voice_panel_layer(window, cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))

@@ -938,9 +938,67 @@ impl Root {
     }
 
     fn voice_page_visible(&self) -> bool {
-        self.settings
-            .as_ref()
-            .is_some_and(|open| open.page == Page::VoiceVideo)
+        self.noise_popout_open()
+            || self
+                .settings
+                .as_ref()
+                .is_some_and(|open| open.page == Page::VoiceVideo)
+    }
+
+    /// `getNoiseCancellation()`: DeepFilterNet is what suppresses noise, under the input profile's choice.
+    pub(in crate::ui) fn noise_cancellation(&self) -> bool {
+        self.voice.stored.effective().suppression == 0
+    }
+
+    /// The input profile decides, so the voice panel's switch is locked (`r` in the official popout).
+    pub(in crate::ui) fn noise_cancellation_locked(&self) -> bool {
+        self.voice.stored.profile != Profile::Custom
+    }
+
+    pub(in crate::ui) fn voice_profile_label(&self) -> Option<&'static str> {
+        (self.voice.stored.profile != Profile::Custom).then(|| self.voice.stored.profile.label())
+    }
+
+    /// `setNoiseCancellation`: off falls back to the standard suppressor, as the store's default does.
+    pub(in crate::ui) fn set_noise_cancellation(&mut self, on: bool) {
+        self.voice.stored.suppression = if on { 0 } else { 1 };
+        self.voice_commit();
+    }
+
+    pub(in crate::ui) fn voice_mic_testing(&self) -> bool {
+        self.voice.mic_test.is_some()
+    }
+
+    /// The meter's fill while Mic Test runs, 0 to 100.
+    pub(in crate::ui) fn voice_mic_progress(&self) -> f32 {
+        if self.voice.mic_test.is_none() {
+            return 0.;
+        }
+        let (level, _) = dc_voice::prefs().processing.meter();
+        (level + 100.).clamp(0., 100.)
+    }
+
+    pub(in crate::ui) fn toggle_mic_test(&mut self, cx: &mut Context<Self>) {
+        if self.voice.mic_test.is_some() {
+            self.stop_mic_test(cx);
+        } else {
+            self.start_mic_test(cx);
+        }
+    }
+
+    /// The meter's notches on the voice panel popout's colour.
+    pub(in crate::ui) fn small_notches(&self, width: u32, height: u32) -> Arc<Image> {
+        let fill = hex(color("--background-surface-higher"));
+        let key = format!("voice-notches:{width}:{height}:{fill}");
+        if let Some(found) = self.generated_images.borrow().get(&key) {
+            return found.clone();
+        }
+        let made = Arc::new(Image::from_bytes(
+            ImageFormat::Svg,
+            notch_svg(width, height, &fill).into_bytes(),
+        ));
+        self.generated_images.borrow_mut().insert(key, made.clone());
+        made
     }
 
     /// Called every frame: while the page shows, the microphone preview runs (outside a call, or for Mic Test) and

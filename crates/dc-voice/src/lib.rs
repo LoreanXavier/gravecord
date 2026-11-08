@@ -121,7 +121,7 @@ impl Controls {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// Transport and DAVE are up: media flows, or we are alone and waiting for a peer.
     /// Sent once per connection.
@@ -137,6 +137,14 @@ pub enum Event {
     /// silent for five seconds (false), or is unknown again (None, after an unmute or a new call).
     InputDetected {
         detected: Option<bool>,
+    },
+    /// A round trip of the voice control socket, ms (`_handleControlPing`, the official fallback without native pings).
+    Ping {
+        ms: f64,
+    },
+    /// What the server reports losing of what this client sends, in percent (`OutboundLossRate`).
+    OutboundLoss {
+        percent: f32,
     },
     ClientConnected {
         user_id: u64,

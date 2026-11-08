@@ -258,6 +258,7 @@ pub(crate) async fn run(
     let mut hello_deadline = Instant::now() + HELLO_TIMEOUT;
     let mut awaiting_ack = None;
     let mut heartbeat_nonce = 0u64;
+    let mut heartbeat_sent = Instant::now();
     let mut missed_acks = 0u8;
     // Set when the socket died or went silent; the next loop turn resumes it.
     let mut reconnect: Option<&'static str> = None;
@@ -357,6 +358,7 @@ pub(crate) async fn run(
                         }
                     }
                     heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
+                    heartbeat_sent = Instant::now();
                     text(&mut ws, signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
                     awaiting_ack = Some(heartbeat_nonce);
                     heartbeat_at = now + Duration::from_millis(interval);
@@ -550,6 +552,15 @@ pub(crate) async fn run(
                     debug!(length, first = packet[0], second = packet[1], "voice packet received");
                 }
                 let Some(crypto) = &transport else { continue };
+                if rtp::is_rtcp(&packet[..length]) {
+                    if let Some(percent) = crypto
+                        .open_rtcp(&packet[..length])
+                        .and_then(|compound| rtp::outbound_loss(&compound, ssrc))
+                    {
+                        emit(&events, Event::OutboundLoss { percent });
+                    }
+                    continue;
+                }
                 let Some(rtp) = crypto.open(&packet[..length]) else { continue };
                 tally[1] += 1;
                 let Some(user) = mixer.user(rtp.ssrc) else { continue };
@@ -598,6 +609,10 @@ pub(crate) async fn run(
                             }
                             Some(VoiceOp::HeartbeatAck) => {
                                 if signal::acknowledges(awaiting_ack, missed_acks, data["t"].as_u64()) {
+                                    if missed_acks == 0 {
+                                        let ms = heartbeat_sent.elapsed().as_secs_f64() * 1000.;
+                                        emit(&events, Event::Ping { ms });
+                                    }
                                     awaiting_ack = None;
                                     missed_acks = 0;
                                     // A healthy resumed socket renews the consecutive resume budget.

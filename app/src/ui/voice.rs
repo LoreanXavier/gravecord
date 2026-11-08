@@ -2,6 +2,8 @@
 //! voice channel. The join flow is `selectVoiceChannel` / `voiceStateUpdate` in the bundle; flags from
 //! `computeVoiceFlags` (CLIPS_ENABLED 1, ALLOW_VOICE_RECORDING 2).
 
+use super::tooltip::{Body, Side, Tip};
+use super::voice_panel::{Popout, Tab};
 use super::{Root, avatar_source, color};
 use crate::net::Request;
 use dc_state::Id;
@@ -22,6 +24,15 @@ pub(crate) struct Call {
     /// `rtcConnectionJoinSounds` experiment.
     rtc_users: Vec<u64>,
     tracker: super::voice_sounds::RtcTracker,
+    /// `RTCConnection`'s measurements, for the panel.
+    pub stats: super::voice_panel::CallStats,
+}
+
+impl Call {
+    /// `getUserIds()` is more than this client (module 83942 `c`).
+    pub fn has_others(&self, me: Option<Id>) -> bool {
+        self.rtc_users.iter().any(|user| Some(*user) != me)
+    }
 }
 
 /// `linkBottom_TNyK-N`: under the channel this client is in, "Set a channel status" with a pencil, 12/16 medium.
@@ -79,6 +90,7 @@ impl Root {
         controls.set_self_mute(self.self_mute);
         controls.set_self_deaf(self.self_deaf);
         self.call = Some(Call {
+            stats: Default::default(),
             guild,
             channel,
             controls,
@@ -217,6 +229,21 @@ impl Root {
                     self.speaking.insert(user_id);
                 } else {
                     self.speaking.remove(&user_id);
+                }
+            }
+            dc_voice::Event::Ping { ms } => {
+                if let Some(call) = self.call.as_mut() {
+                    call.stats.ping(ms);
+                }
+            }
+            dc_voice::Event::OutboundLoss { percent } => {
+                if let Some(call) = self.call.as_mut() {
+                    call.stats.set_loss(percent);
+                }
+            }
+            dc_voice::Event::PrivacyCode(code) => {
+                if let Some(call) = self.call.as_mut() {
+                    call.stats.set_privacy_code(code);
                 }
             }
             dc_voice::Event::ClientConnected { user_id } => {
@@ -373,6 +400,11 @@ impl Root {
         } else {
             ("Connecting", "--text-feedback-warning")
         };
+        let quality = call.stats.quality(call.connected);
+        let last_ping = call.stats.last();
+        let (guild_id, channel_id) = (call.guild, call.channel);
+        let noise_on = self.noise_cancellation();
+        let noise_open = self.panel.popout == Some(Popout::Noise);
         let round = |id: &'static str, name: &'static str| {
             div()
                 .id(id)
@@ -383,11 +415,12 @@ impl Root {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(color("--interactive-background-hover")))
-                .child(super::icon(name, 20., "--interactive-text-default"))
+                .child(super::icon(name, 20., "--text-subtle"))
         };
-        let wide = |name: &'static str| {
+        let wide = |id: &'static str, name: &'static str| {
             div()
-                .flex_1()
+                .id(id)
+                .w_full()
                 .h(px(32.))
                 .rounded(px(8.))
                 .border_1()
@@ -398,8 +431,85 @@ impl Root {
                 .justify_center()
                 .child(super::icon(name, 20., "--control-secondary-text-default"))
         };
+        let ping = div()
+            .id("voice-ping")
+            .size(px(32.))
+            .rounded(px(8.))
+            .bg(color(quality.background()))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_panel_popout(Popout::Connection(Tab::Connection), cx);
+            }))
+            .child(super::icon("voice_ping", 18., quality.text()));
+        let ping: AnyElement = match last_ping {
+            Some(ms) if !matches!(self.panel.popout, Some(Popout::Connection(_))) => self
+                .with_tip(
+                    "voice-ping-tip",
+                    Tip::body(Body::Text(format!("{ms:.0} ms").into()), Side::Top),
+                    ping,
+                    cx,
+                )
+                .into_any_element(),
+            _ => ping.into_any_element(),
+        };
+        let noise = round(
+            "voice-krisp",
+            if noise_on {
+                "voice_krisp"
+            } else {
+                "voice_krisp_off"
+            },
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_panel_popout(Popout::Noise, cx)));
+        let noise: AnyElement = if noise_open {
+            noise.into_any_element()
+        } else {
+            self.with_tip(
+                "voice-krisp-tip",
+                Tip::text("Noise Suppression powered by DeepFilterNet", Side::Top),
+                noise,
+                cx,
+            )
+            .into_any_element()
+        };
+        let disconnect = self.with_tip(
+            "voice-disconnect-tip",
+            Tip::text("Disconnect", Side::Top),
+            round("voice-disconnect", "voice_disconnect")
+                .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx))),
+            cx,
+        );
+        let camera = self.with_tip(
+            "voice-camera-tip",
+            Tip::text("Turn On Camera", Side::Top),
+            wide("voice-camera", "voice_camera"),
+            cx,
+        );
+        let screen = self.with_tip(
+            "voice-screen-tip",
+            Tip::text("Share Your Screen", Side::Top),
+            wide("voice-screen", "voice_screen"),
+            cx,
+        );
+        let activity = self.with_tip(
+            "voice-activity-tip",
+            Tip::text("Start An Activity", Side::Top),
+            wide("voice-activity", "voice_activity"),
+            cx,
+        );
+        let soundboard = self.with_tip(
+            "voice-soundboard-tip",
+            Tip::text("Open Soundboard", Side::Top),
+            wide("voice-soundboard", "voice_soundboard"),
+            cx,
+        );
         Some(
             div()
+                // `wrapper_9U6LUN`: a pixel into the panel's border on the left.
+                .ml(px(-1.))
                 .p(px(12.))
                 .flex()
                 .flex_col()
@@ -411,16 +521,7 @@ impl Root {
                         .h(px(32.))
                         .flex()
                         .items_center()
-                        .child(
-                            div()
-                                .size(px(32.))
-                                .rounded(px(8.))
-                                .bg(color("--background-feedback-mod-positive"))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(super::icon("voice_ping", 18., "--text-feedback-positive")),
-                        )
+                        .child(ping)
                         .child(
                             div()
                                 .ml(px(8.))
@@ -428,19 +529,55 @@ impl Root {
                                 .min_w(px(0.))
                                 .flex()
                                 .flex_col()
+                                // `hoverRoll_Dq3ch1`: over the words, the state gives way to Voice Details.
                                 .child(
                                     div()
+                                        .id("voice-status")
+                                        .group("voice-status")
+                                        .relative()
+                                        .h(px(20.))
+                                        .cursor_pointer()
                                         .text_size(px(16.))
-                                        .line_height(px(19.))
-                                        .font_weight(FontWeight(600.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
                                         .text_color(color(status_color))
-                                        .child(status),
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_panel_popout(
+                                                Popout::Connection(Tab::Connection),
+                                                cx,
+                                            );
+                                        }))
+                                        .child(
+                                            div()
+                                                .group_hover("voice-status", |style| {
+                                                    style.opacity(0.)
+                                                })
+                                                .child(status),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .opacity(0.)
+                                                .group_hover("voice-status", |style| {
+                                                    style.opacity(1.)
+                                                })
+                                                .underline()
+                                                .child("Voice Details"),
+                                        ),
                                 )
                                 .child(
                                     div()
+                                        .id("voice-panel-channel")
+                                        .cursor_pointer()
                                         .text_size(px(12.))
                                         .line_height(px(16.))
-                                        .text_color(color("--text-default"))
+                                        .text_color(color("--text-subtle"))
+                                        .hover(|style| style.underline())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.panel_channel_clicked(guild_id, channel_id, cx);
+                                        }))
                                         .child(format!("{channel} / {}", guild.name)),
                                 ),
                         )
@@ -449,22 +586,18 @@ impl Root {
                                 .ml(px(10.))
                                 .flex()
                                 .gap(px(4.))
-                                .child(round("voice-krisp", "voice_krisp"))
-                                .child(
-                                    round("voice-disconnect", "voice_disconnect").on_click(
-                                        cx.listener(|this, _, _, cx| this.leave_voice(cx)),
-                                    ),
-                                ),
+                                .child(noise)
+                                .child(disconnect),
                         ),
                 )
                 .child(
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(wide("voice_camera"))
-                        .child(wide("voice_screen"))
-                        .child(wide("voice_activity"))
-                        .child(wide("voice_soundboard")),
+                        .child(div().flex_1().child(camera))
+                        .child(div().flex_1().child(screen))
+                        .child(div().flex_1().child(activity))
+                        .child(div().flex_1().child(soundboard)),
                 )
                 .into_any_element(),
         )

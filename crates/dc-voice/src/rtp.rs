@@ -83,6 +83,48 @@ impl Cipher {
     }
 }
 
+/// RTCP packet types run from 192 to 223 in the second byte; RTP payload types with their marker bit never land there
+/// for the types Discord uses (RFC 5761).
+pub(crate) fn is_rtcp(packet: &[u8]) -> bool {
+    packet.len() >= 2 && packet[0] >> 6 == 2 && (192..=223).contains(&packet[1])
+}
+
+/// The share of our packets the server reports lost, in percent, from a compound RTCP packet's sender and receiver
+/// reports (RFC 3550: fraction lost is the byte after the block's SSRC, over 256). The worst report wins. A malformed
+/// compound packet counts for nothing.
+// Serein (MIT OR Apache-2.0): `parse_feedback` in discord-voice/src/crypto.rs.
+pub(crate) fn outbound_loss(mut remaining: &[u8], ssrc: u32) -> Option<f32> {
+    let mut lost: Option<u8> = None;
+    while !remaining.is_empty() {
+        if remaining.len() < 4 || !is_rtcp(remaining) {
+            return None;
+        }
+        let size = (usize::from(u16::from_be_bytes([remaining[2], remaining[3]])) + 1) * 4;
+        if size > remaining.len() {
+            return None;
+        }
+        let packet = &remaining[..size];
+        let start = match packet[1] {
+            200 => Some(28),
+            201 => Some(8),
+            _ => None,
+        };
+        if let Some(start) = start {
+            let end = start + usize::from(packet[0] & 0x1f) * 24;
+            if packet.len() < end {
+                return None;
+            }
+            for report in packet[start..end].as_chunks::<24>().0 {
+                if report[..4] == ssrc.to_be_bytes() {
+                    lost = Some(lost.map_or(report[4], |known| known.max(report[4])));
+                }
+            }
+        }
+        remaining = &remaining[size..];
+    }
+    lost.map(|fraction| f32::from(fraction) * 100. / 256.)
+}
+
 /// One authenticated, transport-decrypted RTP packet; the payload is still DAVE ciphertext.
 #[derive(Debug)]
 pub(crate) struct Rtp {
@@ -126,6 +168,24 @@ impl Transport {
         packet.extend_from_slice(&sealed);
         packet.extend_from_slice(&suffix);
         Ok(packet)
+    }
+    /// Authenticate one control datagram: the first eight bytes stay clear as associated data, the rest is sealed
+    /// and the four-byte nonce trails, as in `rtpsize` RTP. Returns the whole compound packet.
+    // Serein (MIT OR Apache-2.0): `open_rtcp` in discord-voice/src/crypto.rs.
+    pub fn open_rtcp(&self, packet: &[u8]) -> Option<Vec<u8>> {
+        if packet.len() < 8 + TAG + NONCE_SUFFIX || packet.len() > MAX_PACKET || !is_rtcp(packet) {
+            return None;
+        }
+        let suffix: [u8; 4] = packet[packet.len() - NONCE_SUFFIX..].try_into().ok()?;
+        let body = self.cipher.open(
+            suffix,
+            &packet[..8],
+            &packet[8..packet.len() - NONCE_SUFFIX],
+        )?;
+        let mut compound = Vec::with_capacity(8 + body.len());
+        compound.extend_from_slice(&packet[..8]);
+        compound.extend_from_slice(&body);
+        Some(compound)
     }
     /// Authenticate and decrypt one Opus RTP packet. Anything else (RTCP, video, malformed or
     /// forged datagrams) is `None`.
@@ -353,6 +413,37 @@ mod tests {
                 "nonce reuse refused"
             );
         }
+    }
+
+    #[test]
+    fn a_receiver_report_gives_the_loss_of_our_own_ssrc() {
+        let mut report = vec![0x81, 201, 0, 7];
+        report.extend(9u32.to_be_bytes());
+        report.extend(77u32.to_be_bytes());
+        report.push(64);
+        report.extend([0; 19]);
+        assert_eq!(outbound_loss(&report, 77), Some(25.));
+        assert_eq!(outbound_loss(&report, 78), None);
+        // Cut short, or followed by garbage: nothing is believed.
+        assert_eq!(outbound_loss(&report[..20], 77), None);
+        let mut trailing = report.clone();
+        trailing.extend([0x80, 201, 0]);
+        assert_eq!(outbound_loss(&trailing, 77), None);
+    }
+
+    #[test]
+    fn rtcp_is_sealed_after_its_eight_byte_header() {
+        let key = [7; 32];
+        let transport = Transport::new(Mode::XChaCha20Poly1305RtpSize, &key);
+        let header = [0x80, 201, 0, 1, 0, 0, 0, 9];
+        let suffix = 5u32.to_be_bytes();
+        let sealed = transport.cipher.seal(suffix, &header, &[0; 4]).unwrap();
+        let mut packet = header.to_vec();
+        packet.extend(&sealed);
+        packet.extend(suffix);
+        assert_eq!(transport.open_rtcp(&packet).unwrap()[..8], header);
+        packet[1] = 120;
+        assert!(transport.open_rtcp(&packet).is_none());
     }
 
     #[test]

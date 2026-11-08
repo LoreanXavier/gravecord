@@ -697,6 +697,7 @@ impl Root {
 
     /// The upload finished (`Update::Fetched` under `voice-logs-upload`).
     pub(in crate::ui) fn voice_logs_uploaded(&mut self, body: &Value, cx: &mut Context<Self>) {
+        self.panel_logs_uploaded(cx);
         let extra = &mut self.voice.extra;
         extra.uploading = false;
         // `onUploadFinish`: spent for the session whatever happened.
