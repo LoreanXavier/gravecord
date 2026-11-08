@@ -70,7 +70,7 @@ impl Root {
     }
 
     /// `avatars_NbMTpy` at size 16: up to three mutual friends, each overlapping the next by 3px (module 791556).
-    fn mutual_avatars(&self, body: Option<&serde_json::Value>) -> impl IntoElement {
+    pub(super) fn mutual_avatars(&self, body: Option<&serde_json::Value>) -> impl IntoElement {
         let users: Vec<dc_state::User> = body
             .and_then(|body| body["mutual_friends"].as_array())
             .into_iter()

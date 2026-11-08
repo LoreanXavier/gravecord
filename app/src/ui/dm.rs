@@ -586,10 +586,16 @@ impl Root {
                                     .line_height(px(22.))
                                     .text_color(color("--channels-default"))
                                     .child(
-                                        div()
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-strong"))
-                                            .child(message.author.display_name().to_owned()),
+                                        self.profile_trigger(
+                                            format!("system-name-{}", message.id),
+                                            message.author.id,
+                                            div()
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .hover(|style| style.underline())
+                                                .child(message.author.display_name().to_owned()),
+                                            cx,
+                                        ),
                                     )
                                     .child(tail)
                                     .child(

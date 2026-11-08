@@ -7,8 +7,8 @@ use crate::net::Request;
 use crate::palette::avatar_palette;
 use dc_state::{Id, User};
 use gpui::{
-    AnyElement, BoxShadow, Context, FontWeight, IntoElement, Pixels, Point, Rgba, SharedString,
-    anchored, canvas, deferred, div, hsla, img, point, prelude::*, px, rgba,
+    AnyElement, BoxShadow, Context, Focusable, FontWeight, IntoElement, Pixels, Point, Rgba,
+    SharedString, anchored, canvas, deferred, div, hsla, img, point, prelude::*, px, rgba,
 };
 
 pub(crate) struct Popout {
@@ -17,6 +17,8 @@ pub(crate) struct Popout {
     pub anchor: gpui::Bounds<Pixels>,
     /// Members in the member list open their popout to the left; messages open it to the right.
     pub left: bool,
+    /// "Message @name" on someone else's popout.
+    pub message: Option<super::profile_other::PopoutMessage>,
 }
 
 fn profile_key(user: Id) -> String {
@@ -63,10 +65,19 @@ impl Root {
                 .left_0()
                 .size_full(),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
                 let anchor = this.tip_anchors.borrow().get(&lookup).copied();
                 if let Some(anchor) = anchor {
                     this.open_profile(user, anchor, left, cx);
+                    // `disableAutoFocus: false`: someone else's popout puts the caret in "Message @name".
+                    if let Some(message) = this
+                        .profile
+                        .as_ref()
+                        .and_then(|popout| popout.message.as_ref())
+                    {
+                        let handle = message.editor.read(cx).focus_handle(cx);
+                        window.focus(&handle, cx);
+                    }
                 }
             }))
             .into_any_element()
@@ -91,7 +102,13 @@ impl Root {
             key: profile_key(user),
             route,
         });
-        self.profile = Some(Popout { user, anchor, left });
+        let message = other.then(|| self.popout_message(user, cx));
+        self.profile = Some(Popout {
+            user,
+            anchor,
+            left,
+            message,
+        });
         cx.notify();
     }
 
@@ -110,7 +127,7 @@ impl Root {
     }
 
     /// `banner_color` or `accent_color` from the profile, else the first avatar palette color.
-    fn banner_color(&self, user: &User) -> Rgba {
+    pub(super) fn banner_color(&self, user: &User) -> Rgba {
         let body = self.fetched.get(&profile_key(user.id));
         let explicit = body.and_then(|body| {
             body["user_profile"]["accent_color"]
@@ -189,6 +206,9 @@ impl Root {
             .current_user
             .as_ref()
             .is_some_and(|current| current.id == user.id);
+        if !own {
+            return self.other_popout(popout, cx);
+        }
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let banner = self.banner_color(&user);
         let badges = self.badges(user.id);

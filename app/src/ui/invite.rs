@@ -154,6 +154,9 @@ impl Root {
                 reply: None,
             });
         }
+        if std::mem::take(&mut self.open_dm_after_send) {
+            self.select_home(Some(channel));
+        }
     }
 
     fn invite_row(&self, user: &User, cx: &mut Context<Self>) -> AnyElement {

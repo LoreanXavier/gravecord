@@ -352,8 +352,12 @@ impl Guild {
 
     /// The official server acronym: the first letter of each word.
     pub fn acronym(&self) -> String {
-        self.name
-            .split_whitespace()
+        Self::acronym_of(&self.name)
+    }
+
+    /// The acronym of any server name (an invite's guild need not be joined).
+    pub fn acronym_of(name: &str) -> String {
+        name.split_whitespace()
             .filter_map(|word| word.chars().next())
             .collect()
     }

@@ -50,6 +50,7 @@ mod history;
 mod home;
 mod inbox;
 mod invite;
+mod invite_embed;
 mod links;
 mod menu;
 mod modal;
@@ -59,6 +60,7 @@ mod pins;
 mod plaintext_extensions;
 mod profile;
 mod profile_menu;
+mod profile_other;
 mod quickswitcher;
 mod reactions_modal;
 mod remediation;
@@ -219,6 +221,14 @@ pub struct Root {
     remediation: Option<(Id, remediation::Remedy)>,
     report: Option<report::Report>,
     full_profile: Option<full_profile::FullProfile>,
+    /// Invite codes already resolved or on their way.
+    requested_invites: HashSet<String>,
+    /// Images this client draws itself (invite banners), by key.
+    generated_images: std::cell::RefCell<HashMap<String, std::sync::Arc<gpui::Image>>>,
+    /// A server joined from an invite card, opened once its GUILD_CREATE arrives.
+    pending_join: Option<Id>,
+    /// A message sent from a popout to someone without a DM yet: open the DM once it exists.
+    open_dm_after_send: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
     speech: crate::speech::Speech,
@@ -349,6 +359,10 @@ impl Root {
             remediation: None,
             report: None,
             full_profile: None,
+            requested_invites: HashSet::new(),
+            generated_images: std::cell::RefCell::new(HashMap::new()),
+            pending_join: None,
+            open_dm_after_send: false,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
             speaking_message: None,
@@ -421,6 +435,13 @@ impl Root {
                 if name == "GUILD_MEMBER_LIST_UPDATE" {
                     self.request_member_images();
                 }
+                if name == "GUILD_CREATE"
+                    && let Some(joined) = self.pending_join
+                    && self.stores.guilds.iter().any(|guild| guild.id == joined)
+                {
+                    self.pending_join = None;
+                    self.select(joined, None);
+                }
                 if name == "TYPING_START" {
                     // Redraw when the notice runs out.
                     cx.spawn(async move |this, cx| {
@@ -484,6 +505,9 @@ impl Root {
                     self.stores.load_saved(&body);
                 }
                 self.fetched.insert(key.clone(), body);
+                if key.starts_with("invite:") {
+                    self.invite_fetched(&key);
+                }
                 if gif_answer {
                     self.request_gif_images(&key);
                 }
@@ -845,6 +869,7 @@ impl Root {
     }
 
     fn rebuild_rows(&mut self) {
+        self.request_invites();
         self.rows.clear();
         let empty = Vec::new();
         let messages = self
@@ -1277,6 +1302,12 @@ impl Root {
                 .map(|switcher| switcher.search.clone()),
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
+        list.extend(
+            self.profile
+                .as_ref()
+                .and_then(|popout| popout.message.as_ref())
+                .map(|message| message.editor.clone()),
+        );
         if let Some(forward) = self.forward.as_ref() {
             list.push(forward.search.clone());
             list.push(forward.note.clone());
@@ -2884,6 +2915,7 @@ impl Root {
             self.attachments(message),
             self.files(message, cx),
             self.embeds(message),
+            self.invite_cards(message, cx),
         ]
         .into_iter()
         .flatten()
@@ -4350,7 +4382,7 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(
+        .child(if status == "dnd" {
             div()
                 .size(px(16.))
                 .rounded_full()
@@ -4358,10 +4390,11 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(status == "dnd", |this| {
-                    this.child(div().w(px(10.)).h(px(3.)).rounded(px(1.5)).bg(color(ring)))
-                }),
-        )
+                .child(div().w(px(10.)).h(px(3.)).rounded(px(1.5)).bg(color(ring)))
+        } else {
+            // Offline keeps a hole and idle its bite, as the smaller dots do.
+            status_dot_inner(status, ring, 16.)
+        })
 }
 
 #[cfg(test)]
