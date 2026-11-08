@@ -57,6 +57,7 @@ mod pins;
 mod plaintext_extensions;
 mod profile;
 mod quickswitcher;
+mod reactions_modal;
 mod reminder_modal;
 mod saved;
 mod settings;
@@ -167,6 +168,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    view_reactions: Option<reactions_modal::ViewReactions>,
     audio_menu: Option<audio_menu::AudioMenu>,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
@@ -286,6 +288,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            view_reactions: None,
             audio_menu: None,
             invite: None,
             invite_codes: HashMap::new(),
@@ -437,6 +440,19 @@ impl Root {
                 self.fetched.insert(key.clone(), body);
                 if gif_answer {
                     self.request_gif_images(&key);
+                }
+                // Who reacted: their avatars.
+                if key.starts_with(reactions_modal::REACTORS_PREFIX) {
+                    let users: Vec<User> = self.fetched[&key]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(User::from_value)
+                        .collect();
+                    for user in users {
+                        let (image, url) = avatar_source(&user);
+                        self.request_image(image, url);
+                    }
                 }
                 // Messages shown in the Inbox: their authors' avatars.
                 if key.starts_with("inbox-") || key == saved::SAVED_KEY {
@@ -3990,6 +4006,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.view_reactions_modal(cx))
             .children(self.audio_menu_layer(cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))

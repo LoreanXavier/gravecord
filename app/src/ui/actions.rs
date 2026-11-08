@@ -168,6 +168,7 @@ impl Root {
             Action::Speak => self.speak_message(message, cx),
             Action::Forward => self.open_forward(message, window, cx),
             Action::Thread => self.open_new_thread_from(message, window, cx),
+            Action::ViewReactions => self.open_view_reactions(message, cx),
             Action::AddReaction => {
                 if let Some(super::menu::OpenMenu { anchor, .. }) = self.last_menu {
                     let at = match anchor {

@@ -29,6 +29,7 @@ const NOT_QUICK: [&str; 5] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     AddReaction,
+    ViewReactions,
     Edit,
     Reply,
     Forward,
@@ -63,6 +64,8 @@ pub(super) struct SavedState {
     pub empty: bool,
     /// Pinned: Pin Message becomes Unpin Message.
     pub pinned: bool,
+    /// Has reactions: View Reactions follows Add Reaction (`message-reactions` in the capture).
+    pub reacted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,15 +91,21 @@ pub(super) fn message_items(own: bool) -> Vec<Item> {
 
 /// With the saved state: Remove Bookmark when bookmarked, no bookmark entry and Edit Reminder for a reminder.
 pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
-    let mut items = vec![
-        Item::Entry(
-            "Add Reaction",
-            "menu_add_reaction",
-            Action::AddReaction,
-            true,
-        ),
-        Item::Separator,
-    ];
+    let mut items = vec![Item::Entry(
+        "Add Reaction",
+        "menu_add_reaction",
+        Action::AddReaction,
+        true,
+    )];
+    if saved.reacted {
+        items.push(Item::Entry(
+            "View Reactions",
+            "menu_view_reactions",
+            Action::ViewReactions,
+            false,
+        ));
+    }
+    items.push(Item::Separator);
     if own {
         items.push(Item::Entry(
             "Edit Message",
@@ -203,12 +212,14 @@ impl Root {
             .and_then(|list| list.iter().find(|known| known.id == message));
         let empty = found.is_some_and(|known| known.content.is_empty());
         let pinned = found.is_some_and(|known| known.pinned);
+        let reacted = found.is_some_and(|known| !known.reactions.is_empty());
         SavedState {
             bookmarked: state.is_some(),
             reminder: state.is_some_and(|due| due.is_some()),
             speaking: self.speaking_message == Some(message),
             empty,
             pinned,
+            reacted,
         }
     }
 
