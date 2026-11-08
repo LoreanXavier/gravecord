@@ -302,7 +302,7 @@ impl Root {
         cx.notify();
     }
 
-    fn sidebar_item(
+    pub(super) fn sidebar_item(
         &self,
         id: &'static str,
         label: &'static str,
@@ -349,7 +349,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn field_label(text: &'static str) -> gpui::Div {
+    pub(super) fn field_label(text: &'static str) -> gpui::Div {
         div()
             .mb(px(8.))
             .h(px(20.))
@@ -1048,6 +1048,8 @@ impl Root {
                     .h_full()
                     .overflow_y_scroll()
                     .flex()
+                    // Stretched, the page would be exactly as tall as the scroller and never scroll.
+                    .items_start()
                     .child(
                         div()
                             .w(px(740.))
@@ -1055,9 +1057,10 @@ impl Root {
                             .px(px(40.))
                             .pb(px(80.))
                             .child(page),
-                    )
-                    .child(close),
+                    ),
             )
+            // ESC holds its place while the page scrolls.
+            .child(div().absolute().left(px(740.)).top(px(32.)).child(close))
             .children(notice);
         Some(
             deferred(

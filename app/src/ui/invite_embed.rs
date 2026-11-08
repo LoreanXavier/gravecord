@@ -178,33 +178,43 @@ impl Root {
     }
 
     /// The banner image for a guild, made once per color.
-    fn invite_banner(&self, guild: Id) -> Option<Arc<gpui::Image>> {
+    /// The banner color a server gets by default: its icon's main color, else `--guild-profile-banner-background-default`
+    /// (module 649640 `aG`, `b2`).
+    pub(super) fn guild_banner_base(&self, guild: Id) -> [u8; 3] {
         let base = self
             .images
             .get(&format!("guild:{guild}"))
             .and_then(|picture| image::load_from_memory(picture.bytes()).ok())
             .map(|decoded| crate::palette::avatar_palette(decoded.to_rgba8().as_raw())[0]);
-        let base = base.unwrap_or_else(|| {
+        base.unwrap_or_else(|| {
             let token = color("--guild-profile-banner-background-default");
             [
                 (token.r * 255.) as u8,
                 (token.g * 255.) as u8,
                 (token.b * 255.) as u8,
             ]
-        });
+        })
+    }
+
+    /// Module 649640 `n6`'s gradient for `base` at a size, made once.
+    pub(super) fn banner_image(&self, base: [u8; 3], width: u32, height: u32) -> Arc<gpui::Image> {
         let key = format!(
-            "invite-banner:{:02x}{:02x}{:02x}",
+            "banner:{:02x}{:02x}{:02x}:{width}x{height}",
             base[0], base[1], base[2]
         );
         if let Some(found) = self.generated_images.borrow().get(&key) {
-            return Some(found.clone());
+            return found.clone();
         }
         let made = Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Png,
-            banner_png(base, 300, 72),
+            banner_png(base, width, height),
         ));
         self.generated_images.borrow_mut().insert(key, made.clone());
-        Some(made)
+        made
+    }
+
+    fn invite_banner(&self, guild: Id) -> Option<Arc<gpui::Image>> {
+        Some(self.banner_image(self.guild_banner_base(guild), 300, 72))
     }
 
     fn invite_card(&self, code: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -368,6 +378,158 @@ impl Root {
                 .child(header)
                 .child(div().h(px(8.)))
                 .child(div().px(px(16.)).pb(px(16.)).child(button))
+                .into_any_element(),
+        )
+    }
+
+    /// The 70px squircle-backed server picture on profile cards; the acronym measures 14px in the capture.
+    pub(super) fn profile_card_avatar(
+        &self,
+        picture: Option<Arc<gpui::Image>>,
+        acronym: String,
+    ) -> AnyElement {
+        div()
+            .size(px(70.))
+            .rounded(px(22.))
+            .bg(color("--background-surface-highest"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .size(px(64.))
+                    .rounded(px(18.))
+                    .overflow_hidden()
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .when_some(picture.clone(), |this, picture| {
+                        this.child(img(picture).size(px(64.)).rounded(px(18.)))
+                    })
+                    .when(picture.is_none(), |this| this.child(acronym)),
+            )
+            .into_any_element()
+    }
+
+    /// Server Profile's preview (`container_Xweo-z`): the invite card's top for a joined server, counts from the store,
+    /// no button; `color` is a banner preset picked on the page.
+    pub(super) fn invite_preview(
+        &self,
+        guild: Id,
+        color_override: Option<[u8; 3]>,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let known = self.stores.guilds.iter().find(|known| known.id == guild)?;
+        let name = known.name.clone();
+        let picture = self.images.get(&format!("guild:{guild}")).cloned();
+        let acronym = dc_state::Guild::acronym_of(&known.name);
+        let members = self.stores.member_lists.get(&guild).map_or(1, |list| {
+            list.rows
+                .iter()
+                .filter(|row| matches!(row, dc_state::member_list::Row::Member { .. }))
+                .count()
+                .max(1) as u64
+        });
+        let online = self
+            .stores
+            .member_lists
+            .get(&guild)
+            .and_then(|list| {
+                list.groups
+                    .iter()
+                    .find(|(id, _)| id != "offline")
+                    .map(|(_, count)| *count)
+            })
+            .unwrap_or(1);
+        let founded =
+            chrono::DateTime::from_timestamp_millis((guild >> 22) as i64 + 1_420_070_400_000)
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("Est. %b %Y")
+                        .to_string()
+                })
+                .unwrap_or_default();
+        let count = |n: u64, one: &str, many: &str| {
+            if n == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{n} {many}")
+            }
+        };
+        let stat = |dot: &str, text: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(div().size(px(8.)).rounded_full().bg(color(dot)))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-subtle"))
+                        .child(text),
+                )
+        };
+        let base = color_override.unwrap_or_else(|| self.guild_banner_base(guild));
+        let banner = self.banner_image(base, 298, 120);
+        Some(
+            div()
+                .w(px(300.))
+                .rounded(px(16.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-highest"))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(img(banner).w(px(298.)).h(px(120.)))
+                .child(
+                    div()
+                        .mt(px(-34.))
+                        .px(px(16.))
+                        .child(self.profile_card_avatar(picture, acronym)),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .mb(px(8.))
+                        .px(px(16.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(stat(
+                                    "--icon-status-online",
+                                    count(online, "Online", "Online"),
+                                ))
+                                .child(stat(
+                                    "--icon-status-offline",
+                                    count(members, "Member", "Members"),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child(founded),
+                        ),
+                )
+                .child(div().h(px(8.)))
                 .into_any_element(),
         )
     }

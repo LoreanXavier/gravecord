@@ -71,6 +71,7 @@ mod reminder_modal;
 mod report;
 mod saved;
 mod search;
+mod server_settings;
 mod settings;
 mod threads;
 mod tooltip;
@@ -234,6 +235,7 @@ pub struct Root {
     open_dm_after_send: bool,
     mention_filter: inbox::MentionFilter,
     channel_settings: Option<channel_settings::ChannelSettings>,
+    server_settings: Option<server_settings::ServerSettings>,
     security_actions: Option<channel_settings_pages::SecurityActions>,
     mentions_filter_open: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
@@ -372,6 +374,7 @@ impl Root {
             open_dm_after_send: false,
             mention_filter: inbox::MentionFilter::stored(),
             channel_settings: None,
+            server_settings: None,
             security_actions: None,
             mentions_filter_open: false,
             channel_history: Vec::new(),
@@ -487,6 +490,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_settings::PROFILE_KEY) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.server_profile_fetched(&key, cx);
+                    return;
                 }
                 if key == channel_settings::SAVE_KEY {
                     self.channel_settings_saved(&body, cx);
@@ -1324,6 +1332,17 @@ impl Root {
                 .map(|switcher| switcher.search.clone()),
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
+        if let Some(settings) = self.server_settings.as_ref() {
+            list.push(settings.name.clone());
+            list.push(settings.description.clone());
+            list.extend(settings.traits.iter().cloned());
+            list.extend(
+                settings
+                    .delete_name
+                    .as_ref()
+                    .map(|(field, _)| field.clone()),
+            );
+        }
         if let Some(settings) = self.channel_settings.as_ref() {
             list.push(settings.name.clone());
             list.push(settings.topic.clone());
@@ -3970,6 +3989,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if this.server_settings.is_some() && keys.key == "escape" {
+                    if let Some(open) = this.server_settings.as_mut()
+                        && open.delete_name.is_some()
+                    {
+                        open.delete_name = None;
+                    } else {
+                        this.server_settings = None;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.channel_settings.is_some() && keys.key == "escape" {
                     if let Some(settings) = this.channel_settings.as_mut()
                         && settings.confirm_delete_open()
@@ -4113,6 +4144,8 @@ impl Render for Root {
             .bg(color("--background-base-lowest"))
             .children(self.settings_layer(window, cx))
             .children(self.channel_settings_layer(cx))
+            .children(self.server_settings_layer(cx))
+            .children(self.delete_server_modal(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))

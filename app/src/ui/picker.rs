@@ -52,6 +52,8 @@ pub(crate) enum Target {
         channel: Id,
         message: Id,
     },
+    /// Server Profile's trait emoji button, by trait index.
+    Trait(u8),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -409,7 +411,9 @@ impl Root {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_placeholder(
                 match target {
-                    Target::Composer | Target::ForwardNote => "Find the perfect emoji",
+                    Target::Composer | Target::ForwardNote | Target::Trait(_) => {
+                        "Find the perfect emoji"
+                    }
                     Target::Reaction { .. } => "Find the perfect reaction",
                 }
                 .to_owned(),
@@ -631,6 +635,22 @@ impl Root {
                 if let Some(note) = self.forward.as_ref().map(super::forward::Forward::note) {
                     note.update(cx, |editor, cx| editor.insert(&text, cx));
                 }
+            }
+            Target::Trait(index) => {
+                self.emoji_used.push((usage_key, now_ms()));
+                let emoji = match &item {
+                    Item::Unicode(index) => super::server_settings::TraitEmoji {
+                        id: None,
+                        name: Some(EMOJIS[usize::from(*index)].names[0].to_owned()),
+                        animated: false,
+                    },
+                    Item::Custom { id, name, animated } => super::server_settings::TraitEmoji {
+                        id: Some(id.to_string()),
+                        name: Some(name.clone()),
+                        animated: *animated,
+                    },
+                };
+                self.set_trait_emoji(usize::from(index), emoji, cx);
             }
             Target::Reaction { channel, message } => {
                 self.reactions_used.push((usage_key, now_ms()));
@@ -918,14 +938,22 @@ impl Root {
         // Composer: the right edge 32px in from the window's, the bottom 8px above the composer.
         // Reactions: beside the hover bar, kept inside the window.
         let reaction = matches!(picker.target, Target::Reaction { .. });
-        let height = if reaction {
+        let trait_target = matches!(picker.target, Target::Trait(_));
+        // Neither the reaction picker nor a trait's has the tab bar (`design/dom/popouts/trait-emoji-darker-cozy.json`).
+        let tabless = reaction || trait_target;
+        let height = if tabless {
             REACTION_HEIGHT
         } else {
             PICKER_HEIGHT
         };
         // Composer: the right edge 32px in from the window's, the bottom at the anchor (8px above the composer).
         // Reactions: 8px left of the button, top-aligned, then nudged up to stay 12px inside the window.
-        let (left, top) = if reaction {
+        let (left, top) = if trait_target {
+            // Trait emoji: the left edge at the button's, above it, held inside the window (0 in the capture).
+            let top = (f32::from(picker.anchor.y) - 8. - height)
+                .clamp(0., (f32::from(viewport.height) - height).max(0.));
+            (f32::from(picker.anchor.x), top)
+        } else if reaction {
             (
                 f32::from(picker.anchor.x) - PICKER_WIDTH - 8.,
                 f32::from(picker.anchor.y).min(f32::from(viewport.height) - EDGE - height),
@@ -940,7 +968,7 @@ impl Root {
             EDGE,
             (f32::from(viewport.width) - PICKER_WIDTH - EDGE).max(EDGE),
         );
-        let top = top.max(EDGE);
+        let top = if trait_target { top } else { top.max(EDGE) };
         let rows = self.picker_rows(cx);
         let current = self
             .picker
@@ -1237,7 +1265,7 @@ impl Root {
                         this.picker = None;
                         cx.notify();
                     }))
-                    .when(!reaction, |this| {
+                    .when(!tabless, |this| {
                         this.child(div().px(px(16.)).flex().gap(px(8.)).children(tabs))
                     })
                     .child(match current {
