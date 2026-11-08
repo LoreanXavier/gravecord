@@ -21,6 +21,8 @@ realfft.workspace = true
 rtrb.workspace = true
 rustls.workspace = true
 sonora.workspace = true
+sonora-agc2.workspace = true
+sonora-simd.workspace = true
 # Not used directly: pins libDF's tract to the version it builds with.
 tract-core.workspace = true
 tract-hir.workspace = true

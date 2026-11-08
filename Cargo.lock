@@ -1654,6 +1654,8 @@ dependencies = [
  "rustls",
  "serde_json",
  "sonora",
+ "sonora-agc2",
+ "sonora-simd",
  "tokio",
  "tokio-tungstenite",
  "tracing",

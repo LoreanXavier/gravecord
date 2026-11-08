@@ -13,14 +13,17 @@
 //! run on a thread of its own (`Deep`).
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
 
 use sonora::{
     AudioProcessing, Config, StreamConfig,
-    config::{EchoCanceller, NoiseSuppression, NoiseSuppressionLevel},
+    config::{
+        AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, NoiseSuppression,
+        NoiseSuppressionLevel,
+    },
 };
 use tracing::{debug, warn};
 
@@ -62,6 +65,23 @@ pub struct ProcessingPrefs {
     suppression: AtomicU8,
     echo: AtomicBool,
     room_echo: AtomicBool,
+    /// `automaticGainControl`.
+    agc: AtomicBool,
+    /// `mode`: push to talk rather than voice activity.
+    push_to_talk: AtomicBool,
+    /// The push to talk keybind is down.
+    push_to_talk_held: AtomicBool,
+    /// `modeOptions.delay`, ms.
+    push_to_talk_delay: AtomicU32,
+    /// `modeOptions.threshold`, dB, as f32 bits.
+    threshold: AtomicU32,
+    /// `modeOptions.autoThreshold`.
+    auto_threshold: AtomicBool,
+    /// `modeOptions.vadUseKrisp`: Advanced Voice Activity.
+    advanced_voice_activity: AtomicBool,
+    /// What the gate last measured, for the meters: the level in dB as f32 bits, and whether it is open.
+    level: AtomicU32,
+    voice: AtomicBool,
 }
 
 impl ProcessingPrefs {
@@ -71,6 +91,17 @@ impl ProcessingPrefs {
             suppression: AtomicU8::new(0),
             echo: AtomicBool::new(true),
             room_echo: AtomicBool::new(false),
+            agc: AtomicBool::new(true),
+            push_to_talk: AtomicBool::new(false),
+            push_to_talk_held: AtomicBool::new(false),
+            push_to_talk_delay: AtomicU32::new(20),
+            // -60.0f32: the official default threshold.
+            threshold: AtomicU32::new(0xC270_0000),
+            auto_threshold: AtomicBool::new(true),
+            advanced_voice_activity: AtomicBool::new(true),
+            // -100.0f32: the meters' floor.
+            level: AtomicU32::new(0xC2C8_0000),
+            voice: AtomicBool::new(false),
         }
     }
     pub fn suppression(&self) -> Suppression {
@@ -93,6 +124,63 @@ impl ProcessingPrefs {
     pub fn set_room_echo(&self, on: bool) {
         self.room_echo.store(on, Ordering::Release);
     }
+    pub fn automatic_gain_control(&self) -> bool {
+        self.agc.load(Ordering::Acquire)
+    }
+    pub fn set_automatic_gain_control(&self, on: bool) {
+        self.agc.store(on, Ordering::Release);
+    }
+    pub fn push_to_talk(&self) -> bool {
+        self.push_to_talk.load(Ordering::Acquire)
+    }
+    pub fn set_push_to_talk(&self, on: bool) {
+        self.push_to_talk.store(on, Ordering::Release);
+    }
+    pub fn push_to_talk_held(&self) -> bool {
+        self.push_to_talk_held.load(Ordering::Acquire)
+    }
+    /// The keybind went down or up (`PUSH_TO_TALK_STATE_CHANGE`).
+    pub fn set_push_to_talk_held(&self, held: bool) {
+        self.push_to_talk_held.store(held, Ordering::Release);
+    }
+    pub fn push_to_talk_delay_ms(&self) -> u32 {
+        self.push_to_talk_delay.load(Ordering::Acquire)
+    }
+    pub fn set_push_to_talk_delay_ms(&self, ms: u32) {
+        self.push_to_talk_delay
+            .store(ms.min(2_000), Ordering::Release);
+    }
+    pub fn threshold_db(&self) -> f32 {
+        f32::from_bits(self.threshold.load(Ordering::Acquire))
+    }
+    pub fn set_threshold_db(&self, db: f32) {
+        self.threshold
+            .store(db.clamp(-100.0, 0.0).to_bits(), Ordering::Release);
+    }
+    pub fn auto_threshold(&self) -> bool {
+        self.auto_threshold.load(Ordering::Acquire)
+    }
+    pub fn set_auto_threshold(&self, on: bool) {
+        self.auto_threshold.store(on, Ordering::Release);
+    }
+    pub fn advanced_voice_activity(&self) -> bool {
+        self.advanced_voice_activity.load(Ordering::Acquire)
+    }
+    pub fn set_advanced_voice_activity(&self, on: bool) {
+        self.advanced_voice_activity.store(on, Ordering::Release);
+    }
+    /// The microphone's level in dB (-100 when silent) and whether it is being sent: the official `VoiceActivity`
+    /// event's level and `VOICE` flag.
+    pub fn meter(&self) -> (f32, bool) {
+        (
+            f32::from_bits(self.level.load(Ordering::Acquire)),
+            self.voice.load(Ordering::Acquire),
+        )
+    }
+    pub(crate) fn set_meter(&self, level: f32, voice: bool) {
+        self.level.store(level.to_bits(), Ordering::Release);
+        self.voice.store(voice, Ordering::Release);
+    }
 }
 
 /// What the processor is set to, compared each frame with the prefs.
@@ -101,6 +189,7 @@ struct Settings {
     suppression: Suppression,
     echo: bool,
     room_echo: bool,
+    agc: bool,
 }
 
 /// What the worker sends DeepFilterNet's thread. A frame goes by value through the bounded channel; boxing it would
@@ -235,6 +324,8 @@ pub(crate) struct Processor {
     webrtc: AudioProcessing,
     room: Option<crate::dereverb::Dereverb>,
     deep: Option<Deep>,
+    /// WebRTC's AGC2, adaptive digital only, last in the chain.
+    gain: Option<AudioProcessing>,
     settings: Option<Settings>,
 }
 
@@ -244,6 +335,25 @@ fn webrtc(config: Config) -> AudioProcessing {
         .capture_config(StreamConfig::new(48_000, 1))
         .render_config(StreamConfig::new(48_000, 1))
         .build()
+}
+
+/// The official `automaticGainControlConfig` when on (754712 `eQ`): AGC2, digital only, 5 dB headroom, at most 50 dB
+/// of gain starting at 15, changing at most 6 dB a second, noise kept under -50 dBFS, no fixed gain.
+fn gain_config() -> Config {
+    Config {
+        gain_controller2: Some(GainController2 {
+            input_volume_controller: false,
+            adaptive_digital: Some(AdaptiveDigital {
+                headroom_db: 5.0,
+                max_gain_db: 50.0,
+                initial_gain_db: 15.0,
+                max_gain_change_db_per_second: 6.0,
+                max_output_noise_level_dbfs: -50.0,
+            }),
+            fixed_digital: FixedDigital { gain_db: 0.0 },
+        }),
+        ..Default::default()
+    }
 }
 
 fn webrtc_config(settings: Settings) -> Config {
@@ -273,6 +383,7 @@ impl Processor {
             webrtc: webrtc(Config::default()),
             room: None,
             deep: None,
+            gain: None,
             settings: None,
         }
     }
@@ -284,6 +395,7 @@ impl Processor {
             suppression: prefs.suppression(),
             echo: prefs.echo_cancellation(),
             room_echo: prefs.room_echo(),
+            agc: prefs.automatic_gain_control(),
         };
         if self.settings == Some(settings) {
             return;
@@ -296,6 +408,11 @@ impl Processor {
         });
         if webrtc_changed {
             self.webrtc.apply_config(webrtc_config(settings));
+        }
+        if !settings.agc {
+            self.gain = None;
+        } else if self.gain.is_none() {
+            self.gain = Some(webrtc(gain_config()));
         }
         if !settings.room_echo {
             self.room = None;
@@ -369,6 +486,17 @@ impl Processor {
         }
         if let Some(deep) = &mut self.deep {
             deep.process(frame);
+        }
+        if let Some(gain) = &mut self.gain {
+            for block in frame.as_chunks_mut::<BLOCK>().0 {
+                let mut output = [0.0; BLOCK];
+                if gain
+                    .process_capture_f32(&[&block[..]], &mut [&mut output])
+                    .is_ok()
+                {
+                    block.copy_from_slice(&output);
+                }
+            }
         }
         frame.iter_mut().for_each(clean);
     }

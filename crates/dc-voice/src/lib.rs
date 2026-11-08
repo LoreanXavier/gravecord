@@ -33,6 +33,7 @@ mod capture;
 mod clock;
 mod dave;
 mod dereverb;
+mod gate;
 mod jitter;
 mod mixer;
 mod process;
@@ -41,8 +42,10 @@ mod session;
 mod signal;
 
 pub use audio::{
-    Prefs, default_input_device, default_output_device, input_devices, output_devices, prefs,
+    Prefs, Preview, default_input_device, default_output_device, input_devices, output_devices,
+    prefs, preview,
 };
+pub use gate::FLOOR_DB;
 pub use process::{ProcessingPrefs, Suppression};
 pub use rtp::Mode;
 

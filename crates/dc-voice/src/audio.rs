@@ -199,6 +199,8 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
     let mut devices = prefs().generation.load(Ordering::Acquire);
     // Echo cancellation and noise suppression run here, between the device rings and the voice loop.
     let mut processor = crate::process::Processor::new();
+    // What goes out: voice activity or push to talk, and the level for the meters.
+    let mut voice = crate::gate::Gate::new();
     let mut capturing = false;
     // Every five seconds the debug log gets how many microphone frames came and how loud, and how many were played.
     let mut tally_at = Instant::now() + Duration::from_secs(5);
@@ -265,8 +267,7 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
                     .iter()
                     .fold(0f32, |peak, sample| peak.max(sample.abs())),
             );
-            if gate.capture() {
-                processor.capture(&mut frame, &prefs().processing);
+            if gate.capture() && process_frame(&mut frame, &mut processor, &mut voice) {
                 // A full channel means the voice loop is behind; drop rather than block.
                 let _ = capture.try_send(frame);
             }
@@ -296,6 +297,19 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
         }
         std::thread::park_timeout(Duration::from_millis(5));
     }
+}
+
+/// One microphone frame through the processors and the voice gate; the meter follows. True when it goes out.
+fn process_frame(
+    frame: &mut Frame,
+    processor: &mut crate::process::Processor,
+    voice: &mut crate::gate::Gate,
+) -> bool {
+    let processing = &prefs().processing;
+    processor.capture(frame, processing);
+    let (level, open) = voice.update(frame, processing);
+    processing.set_meter(level, open);
+    open
 }
 
 struct Streams {
@@ -643,6 +657,58 @@ impl Playback {
         let value = self.previous + (self.next - self.previous) * self.phase as f32;
         self.phase += self.step;
         value
+    }
+}
+
+/// The microphone outside a call: the settings page's meters, and Mic Test's playback of what would be sent. The same
+/// processors and gate as a call run on the same worker; nothing goes to the network. Dropping it closes the devices.
+pub struct Preview {
+    _audio: Audio,
+    loopback: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+/// Opens the microphone (and the speaker, for `loopback`).
+pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
+    let (capture_send, capture) = mpsc::sync_channel::<Frame>(8);
+    let (playback, playback_receive) = mpsc::sync_channel::<Frame>(8);
+    let audio = Audio::start(capture_send, playback_receive)?;
+    audio.set_ready(true);
+    audio.set_controls(false, false);
+    let loopback = Arc::new(AtomicBool::new(loopback));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (forward_loopback, forward_stop) = (loopback.clone(), stop.clone());
+    std::thread::Builder::new()
+        .name("dc-voice-preview".into())
+        .spawn(move || {
+            while !forward_stop.load(Ordering::Acquire) {
+                match capture.recv_timeout(Duration::from_millis(100)) {
+                    Ok(frame) if forward_loopback.load(Ordering::Acquire) => {
+                        let _ = playback.try_send(frame);
+                    }
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })
+        .map_err(|_| "Could not start the microphone preview")?;
+    Ok(Preview {
+        _audio: audio,
+        loopback,
+        stop,
+    })
+}
+
+impl Preview {
+    /// Mic Test: hear what would be sent (`setLoopback("mic_test", …)`).
+    pub fn set_loopback(&self, on: bool) {
+        self.loopback.store(on, Ordering::Release);
+    }
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 
