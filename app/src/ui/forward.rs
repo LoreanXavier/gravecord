@@ -37,8 +37,8 @@ impl Destination {
 
 pub(crate) struct Forward {
     pub message: Message,
-    search: Entity<Editor>,
-    note: Entity<Editor>,
+    pub(super) search: Entity<Editor>,
+    pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
     query: String,
     selected: Vec<Destination>,

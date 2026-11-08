@@ -202,14 +202,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         .join(screen)
         .join(format!("{variant}.json"));
     let maps = repo.join("tests").join("parity");
-    // A variant can have its own map: `channel-members.json` for `members-darker-cozy`.
-    let state = variant.split('-').next().unwrap_or(variant);
-    let specific = maps.join(format!("{screen}-{state}.json"));
-    let map = if specific.exists() {
-        specific
-    } else {
-        maps.join(format!("{screen}.json"))
-    };
+    let map = map_for(&maps, screen, variant);
     let (checked, mismatches) = layout::compare(&dom, &map, &frame.with_extension("layout.json"))?;
     println!(
         "layout tree: {checked} elements, {} differ",
@@ -224,9 +217,40 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// The most specific layout map for a variant: `friends-tab-add.json` for `tab-add-friend-darker-cozy` when it
+/// exists, else `friends-tab.json`, else `friends.json`. Longer prefixes of the variant's segments win.
+fn map_for(maps: &Path, screen: &str, variant: &str) -> PathBuf {
+    let segments: Vec<&str> = variant.split('-').collect();
+    (1..=segments.len())
+        .rev()
+        .map(|count| maps.join(format!("{screen}-{}.json", segments[..count].join("-"))))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| maps.join(format!("{screen}.json")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn longest_variant_prefix_picks_the_map() {
+        let dir = std::env::temp_dir().join("gravecord-parity-maps");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("friends-tab.json"), "{}").unwrap();
+        fs::write(dir.join("friends-tab-add.json"), "{}").unwrap();
+        assert_eq!(
+            map_for(&dir, "friends", "tab-add-friend-darker-cozy"),
+            dir.join("friends-tab-add.json")
+        );
+        assert_eq!(
+            map_for(&dir, "friends", "tab-all-darker-cozy"),
+            dir.join("friends-tab.json")
+        );
+        assert_eq!(
+            map_for(&dir, "friends", "online-darker-cozy"),
+            dir.join("friends.json")
+        );
+    }
 
     #[test]
     fn identical_images_have_no_mismatch() {

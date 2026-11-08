@@ -216,6 +216,7 @@ fn wrapped_lines(window: &mut Window, label: &str, badge: bool) -> usize {
 }
 
 /// "Voice & Video" becomes "voice-video".
+#[cfg(any(test, feature = "capture"))]
 fn page_slug(label: &str) -> String {
     let mut slug = String::new();
     for word in label
@@ -611,6 +612,7 @@ impl Root {
     }
 
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
+    #[cfg(feature = "capture")]
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
         let page = SECTIONS

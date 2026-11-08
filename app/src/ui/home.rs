@@ -1,9 +1,9 @@
 //! Home: the DM sidebar, the friends panel and direct messages. Geometry is from `design/dom/home/friends-darker-cozy.json`.
 
 use super::tooltip::{Body, Tip};
-use super::{Root, avatar_source, color, icon, status_dot, status_label};
+use super::{Root, avatar_source, color, icon, status_dot};
 use crate::parity::Parity;
-use dc_state::{Id, PrivateChannel, User};
+use dc_state::{Id, PrivateChannel};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px, svg,
 };
@@ -327,170 +327,22 @@ impl Root {
                     .text_color(color("--channels-default"))
                     .child("Direct Messages")
                     .child(div().flex_1())
-                    .child(icon("dm_plus", 16., "--text-muted")),
+                    .child(
+                        // "Create DM": the same New Message picker as the Friends page's New Group DM.
+                        div()
+                            .id("dm-plus")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_group_dm_picker(window, cx)
+                            }))
+                            .child(icon("dm_plus", 16., "--text-muted")),
+                    ),
             )
             .children(rows)
     }
 
-    fn friend_row(&self, user: &User) -> impl IntoElement {
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
-        let status = self.stores.status(user.id).to_owned();
-        let action = |name: &str| {
-            div()
-                .size(px(36.))
-                .rounded_full()
-                .bg(color("--background-base-lower"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(name, 20., "--interactive-text-default"))
-        };
-        let group = SharedString::from(format!("friend-{}", user.id));
-        div()
-            .relative()
-            .pl(px(14.))
-            .pr(px(26.))
-            .child(
-                div()
-                    .absolute()
-                    .left(px(30.))
-                    .top(px(0.))
-                    .w(px(479.))
-                    .h(px(1.))
-                    .bg(color("--background-mod-subtle")),
-            )
-            .child(
-                div()
-                    .group(group.clone())
-                    .h(px(61.))
-                    .px(px(10.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                    .child(
-                        div()
-                            .relative()
-                            .size(px(32.))
-                            .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
-                            .child(status_dot(&status, "--background-base-lower")),
-                    )
-                    .child(
-                        div()
-                            .ml(px(12.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-strong"))
-                                            .child(user.display_name().to_owned()),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml(px(5.))
-                                            .opacity(0.)
-                                            .group_hover(group, |style| style.opacity(1.))
-                                            .text_size(px(14.))
-                                            .line_height(px(16.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-default"))
-                                            .child(user.username.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .line_height(px(17.5))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-muted"))
-                                    .child(status_label(&status)),
-                            ),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(10.))
-                            .child(action("chat_bubble"))
-                            .child(action("more_dots")),
-                    ),
-            )
-    }
-
-    fn friends_header(&self) -> impl IntoElement {
-        let tab = |label: &'static str, active: bool| {
-            div()
-                .h(px(32.))
-                .px(px(12.))
-                .rounded(px(8.))
-                .flex()
-                .items_center()
-                .line_height(px(20.))
-                .font_weight(FontWeight(500.))
-                .when(active, |this| {
-                    this.bg(color("--background-mod-strong"))
-                        .text_color(color("--text-strong"))
-                })
-                .when(!active, |this| {
-                    this.text_color(color("--interactive-text-default"))
-                })
-                .child(label)
-        };
-        div()
-            .parity_below("chat-header", 1.)
-            .flex_none()
-            .h(px(49.))
-            .border_b_1()
-            .border_color(color("--background-mod-subtle"))
-            .pl(px(22.))
-            .pr(px(14.))
-            .flex()
-            .items_center()
-            .bg(color("--background-base-lower"))
-            .child(icon("friends_header", 20., "--channels-default"))
-            .child(
-                div()
-                    .ml(px(6.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child("Friends"),
-            )
-            .child(
-                div()
-                    .ml(px(12.))
-                    .size(px(4.))
-                    .rounded_full()
-                    .bg(color("--background-mod-strong")),
-            )
-            .child(div().ml(px(12.)).child(tab("Online", true)))
-            .child(div().ml(px(16.)).child(tab("All", false)))
-            .child(
-                div()
-                    .ml(px(16.))
-                    .h(px(32.))
-                    .px(px(12.))
-                    .rounded(px(8.))
-                    .bg(color("--background-brand"))
-                    .flex()
-                    .items_center()
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--white"))
-                    .child("Add Friend"),
-            )
-            .child(div().flex_1())
-            .child(icon("new_group", 20., "--text-muted"))
-    }
-
-    pub(super) fn friends_panel(&self) -> impl IntoElement {
-        let online = self.stores.online_friends();
+    pub(super) fn friends_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let people = self.friends_people(cx);
         div()
             .flex()
             .flex_col()
@@ -498,7 +350,7 @@ impl Root {
             .min_w(px(0.))
             .h_full()
             .pt(px(1.))
-            .child(self.friends_header())
+            .child(self.friends_header(cx))
             .child(
                 div()
                     .flex()
@@ -511,40 +363,7 @@ impl Root {
                             .w(px(545.))
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .parity_with_border("people-search", 1.)
-                                    .mt(px(12.))
-                                    .ml(px(24.))
-                                    .w(px(505.))
-                                    .h(px(40.))
-                                    .rounded(px(8.))
-                                    .bg(color("--input-background-default"))
-                                    .border_1()
-                                    .border_color(color("--background-mod-subtle"))
-                                    .flex()
-                                    .items_center()
-                                    .pl(px(11.))
-                                    .child(icon("search_people", 16., "--interactive-text-default"))
-                                    .child(
-                                        div()
-                                            .ml(px(11.))
-                                            .text_color(color("--input-placeholder-text-default"))
-                                            .child("Search"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .mt(px(24.))
-                                    .ml(px(24.))
-                                    .h(px(34.))
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-default"))
-                                    .child(format!("Online — {}", online.len())),
-                            )
-                            .children(online.iter().map(|user| self.friend_row(user).into_any_element()).collect::<Vec<_>>()),
+                            .child(people),
                     )
                     .child(
                         div()

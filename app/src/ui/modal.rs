@@ -163,7 +163,7 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
                     div()
                         .text_size(px(16.))
                         .line_height(px(20.))
-                        .text_color(color("--text-muted"))
+                        .text_color(color("--text-subtle"))
                         .child(spec.subtitle),
                 ),
         )

@@ -8,9 +8,9 @@
 use crate::editor::Editor;
 use crate::ui::Root;
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Entity, EntityInputHandler, KeyDownEvent, Keystroke, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta,
-    ScrollEvent, ScrollSource, TouchPhase, point, px,
+    AnyWindowHandle, App, AsyncApp, Entity, EntityInputHandler, Focusable, KeyDownEvent, Keystroke,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point,
+    ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, point, px,
 };
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -85,8 +85,14 @@ fn with_composer(
     edit: impl FnOnce(&mut Editor, &mut gpui::Window, &mut gpui::Context<Editor>),
 ) {
     cx.update(|cx| {
-        let composer = root.read(cx).active_editor();
+        let editors = root.read(cx).open_editors();
         let _ = window.update(cx, |_, window, cx| {
+            // The field with focus takes the text; the composer (or the edit box) otherwise.
+            let composer = editors
+                .iter()
+                .find(|editor| editor.read(cx).focus_handle(cx).is_focused(window))
+                .unwrap_or_else(|| editors.last().expect("the composer is always open"))
+                .clone();
             composer.update(cx, |composer, cx| edit(composer, window, cx));
         });
     });

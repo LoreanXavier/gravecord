@@ -36,6 +36,8 @@ mod dm_profile;
 mod embed;
 mod files;
 mod forward;
+mod friends;
+mod group_dm;
 mod history;
 mod home;
 mod links;
@@ -150,6 +152,12 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    friends_tab: friends::FriendsTab,
+    group_dm: Option<group_dm::GroupDm>,
+    add_friend: Option<friends::AddFriend>,
+    people_search: Option<friends::PeopleSearch>,
+    friend_menu: Option<friends::FriendMenu>,
+    confirm_remove_friend: Option<Id>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
     notify_open: bool,
     /// The Mute Channel row while its durations show.
@@ -244,6 +252,12 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            friends_tab: friends::FriendsTab::default(),
+            group_dm: None,
+            add_friend: None,
+            people_search: None,
+            friend_menu: None,
+            confirm_remove_friend: None,
             quick_switcher: None,
             notify_open: false,
             notify_submenu: None,
@@ -343,6 +357,9 @@ impl Root {
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
+                if self.friends_fetched(&key, &body, cx) {
+                    return;
+                }
                 let profile = key
                     .strip_prefix("profile:")
                     .and_then(|user| user.parse::<Id>().ok());
@@ -755,8 +772,13 @@ impl Root {
     #[cfg(feature = "capture")]
     pub fn describe(&self, cx: &App) -> String {
         let composer = self.composer.read(cx).text();
+        let add_friend = self
+            .add_friend
+            .as_ref()
+            .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         format!(
-            "guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            self.friends_tab,
             self.current_guild()
                 .map(|guild| guild.name.as_str())
                 .unwrap_or("-"),
@@ -993,6 +1015,33 @@ impl Root {
             })
             .collect();
         inline(pieces, px(18.)).truncate()
+    }
+
+    /// Every text field that is open now, for the test harness to find the focused one.
+    #[cfg(feature = "capture")]
+    pub fn open_editors(&self) -> Vec<Entity<Editor>> {
+        let mut list: Vec<Entity<Editor>> = Vec::new();
+        list.extend(self.group_dm.as_ref().map(|picker| picker.search.clone()));
+        list.extend(
+            self.quick_switcher
+                .as_ref()
+                .map(|switcher| switcher.search.clone()),
+        );
+        if let Some(forward) = self.forward.as_ref() {
+            list.push(forward.search.clone());
+            list.push(forward.note.clone());
+        }
+        if let Some(form) = self.add_friend.as_ref() {
+            list.push(form.name.clone());
+            list.push(form.note.clone());
+        }
+        list.extend(
+            self.people_search
+                .as_ref()
+                .map(|search| search.field.clone()),
+        );
+        list.push(self.active_editor());
+        list
     }
 
     /// The field with focus: the inline editor while editing, else the composer.
@@ -3407,6 +3456,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if this.group_dm.is_some() && this.group_dm_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.quick_switcher.is_some() {
                     if keys.key == "escape" {
                         this.quick_switcher = None;
@@ -3430,6 +3483,15 @@ impl Render for Root {
                     } else {
                         this.go_forward(cx);
                     }
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape"
+                    && (this.friend_menu.is_some() || this.confirm_remove_friend.is_some())
+                {
+                    this.friend_menu = None;
+                    this.confirm_remove_friend = None;
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -3531,7 +3593,7 @@ impl Render for Root {
                         self.home_sidebar(cx).into_any_element()
                     })
                     .child(if self.guild.is_none() && self.channel.is_none() {
-                        self.friends_panel().into_any_element()
+                        self.friends_panel(cx).into_any_element()
                     } else {
                         div()
                             .parity("chat")
@@ -3589,6 +3651,9 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.friend_menu_layer(cx))
+            .children(self.remove_friend_modal(cx))
+            .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))

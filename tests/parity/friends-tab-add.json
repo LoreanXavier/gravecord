@@ -1,0 +1,12 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "rail": { "class": "wrapper_5dqHTG" },
+  "sidebar": { "class": "sidebarList_pog62O" },
+  "user-panel": { "class": "panels_pog62O" },
+  "chat-header": { "class": "theme-dark", "tag": "SECTION" },
+  "people-column": { "class": "peopleColumn_zrUwGA" },
+  "add-friend-wrapper": { "class": "addFriendInputWrapper_jF-DiS" },
+  "send-friend-request": { "class": "primary_F7qvhY", "tag": "BUTTON" },
+  "explore-servers": { "class": "container_OlkxSE", "tag": "BUTTON" },
+  "active-now": { "class": "nowPlayingColumn_zrUwGA" }
+}

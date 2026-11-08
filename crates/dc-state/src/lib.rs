@@ -599,10 +599,14 @@ impl PrivateChannel {
         Some(Self {
             id: id(&value["id"])?,
             kind: value["type"].as_u64()?,
-            recipients: value["recipient_ids"]
-                .as_array()
-                .map(|ids| ids.iter().filter_map(id).collect())
-                .unwrap_or_default(),
+            // READY lists `recipient_ids`; CHANNEL_CREATE and `POST /users/@me/channels` send `recipients` users.
+            recipients: match value["recipient_ids"].as_array() {
+                Some(ids) => ids.iter().filter_map(id).collect(),
+                None => value["recipients"]
+                    .as_array()
+                    .map(|users| users.iter().filter_map(|user| id(&user["id"])).collect())
+                    .unwrap_or_default(),
+            },
             last_message_id: id(&value["last_message_id"]).unwrap_or(0),
         })
     }
@@ -800,6 +804,25 @@ impl Stores {
                     self.insert_message(message);
                 }
             }
+            "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
+                if let Some(user) = User::from_value(&data["user"]) {
+                    self.users.insert(user.id, user);
+                }
+                if let (Some(user), Some(kind)) = (id(&data["id"]), data["type"].as_u64()) {
+                    self.relationships.insert(user, kind);
+                }
+            }
+            "RELATIONSHIP_REMOVE" => {
+                if let Some(user) = id(&data["id"]) {
+                    self.relationships.remove(&user);
+                }
+            }
+            "CHANNEL_CREATE" => self.add_private_channel(data),
+            "CHANNEL_DELETE" => {
+                if let Some(channel) = id(&data["id"]) {
+                    self.private_channels.retain(|known| known.id != channel);
+                }
+            }
             "MESSAGE_UPDATE" => self.update_message(data),
             "MESSAGE_REACTION_ADD" => self.react(data, 1),
             "MESSAGE_REACTION_REMOVE" => self.react(data, -1),
@@ -811,6 +834,26 @@ impl Stores {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A DM or group DM from CHANNEL_CREATE or the `POST /users/@me/channels` answer, put first in the list.
+    pub fn add_private_channel(&mut self, data: &Value) {
+        if !matches!(data["type"].as_u64(), Some(1 | 3)) {
+            return;
+        }
+        for user in data["recipients"].as_array().into_iter().flatten() {
+            if let Some(user) = User::from_value(user) {
+                self.users.entry(user.id).or_insert(user);
+            }
+        }
+        if let Some(channel) = PrivateChannel::from_value(data)
+            && !self
+                .private_channels
+                .iter()
+                .any(|known| known.id == channel.id)
+        {
+            self.private_channels.insert(0, channel);
         }
     }
 
@@ -1240,6 +1283,26 @@ mod tests {
                 {"id": "32", "type": 3, "recipient_ids": ["20", "21"], "last_message_id": null},
             ],
         })
+    }
+
+    #[test]
+    fn relationship_and_dm_events_update_the_lists() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id": "30", "type": 3, "user": {"id": "30", "username": "someone"}}),
+        );
+        assert_eq!(stores.relationships.get(&30), Some(&3));
+        assert!(stores.users.contains_key(&30));
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id": "30", "type": 3}));
+        assert!(!stores.relationships.contains_key(&30));
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "40", "type": 1, "recipients": [{"id": "30", "username": "someone"}]}),
+        );
+        assert_eq!(stores.private_channels[0].recipients, vec![30]);
+        stores.dispatch("CHANNEL_DELETE", &json!({"id": "40", "type": 1}));
+        assert!(stores.private_channels.is_empty());
     }
 
     #[test]

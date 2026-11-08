@@ -33,7 +33,7 @@ pub(crate) enum Destination {
 }
 
 pub(crate) struct QuickSwitcher {
-    search: Entity<Editor>,
+    pub(super) search: Entity<Editor>,
     _events: Subscription,
     query: String,
     selected: usize,

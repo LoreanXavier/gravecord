@@ -115,6 +115,14 @@ pub enum Request {
     GuildSettings {
         body: Value,
     },
+    /// Any other REST call. With a `key`, the outcome comes back as `Update::Fetched { key, body }` where `body`
+    /// is `{"ok": bool, "status": u16, "body": <response>}`.
+    Rest {
+        key: Option<String>,
+        method: reqwest::Method,
+        route: String,
+        body: Option<Value>,
+    },
     /// `POST /interactions`: an application command run by hand.
     Interaction {
         body: Value,
@@ -485,6 +493,31 @@ pub async fn run(
                         .await
                     {
                         warn!("guild settings failed: {error}");
+                    }
+                });
+            }
+            Request::Rest {
+                key,
+                method,
+                route,
+                body,
+            } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let outcome = client.request(method, &route, body.as_ref()).await;
+                    let report = match outcome {
+                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Err(dc_http::Error::Status { status, body, .. }) => {
+                            warn!("{route} failed: {status}");
+                            json!({"ok": false, "status": status.as_u16(), "body": body})
+                        }
+                        Err(error) => {
+                            warn!("{route} failed: {error}");
+                            json!({"ok": false, "status": 0, "body": null})
+                        }
+                    };
+                    if let Some(key) = key {
+                        let _ = updates.send(Update::Fetched { key, body: report });
                     }
                 });
             }
