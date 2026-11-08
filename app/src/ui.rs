@@ -229,6 +229,8 @@ pub struct Root {
     pending_join: Option<Id>,
     /// A message sent from a popout to someone without a DM yet: open the DM once it exists.
     open_dm_after_send: bool,
+    mention_filter: inbox::MentionFilter,
+    mentions_filter_open: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
     speech: crate::speech::Speech,
@@ -363,6 +365,8 @@ impl Root {
             generated_images: std::cell::RefCell::new(HashMap::new()),
             pending_join: None,
             open_dm_after_send: false,
+            mention_filter: inbox::MentionFilter::stored(),
+            mentions_filter_open: false,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
             speaking_message: None,
@@ -4172,6 +4176,7 @@ impl Render for Root {
             .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))
             .children(self.inbox_popout(window, cx))
+            .children(self.mentions_filter_layer(cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.group_dm_modal(window, cx))

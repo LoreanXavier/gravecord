@@ -20,6 +20,63 @@ const SCHEDULED_PICTURE: &str = "https://cdn.discordapp.com/assets/content/c5582
 const WUMPUS_AVATAR: &str = "https://cdn.discordapp.com/assets/content/2532e8cd0600ccfbc61ff81c21959bde90a6645d0e71644a92f6cde5bfc48439.png";
 const MAX_HEIGHT: f32 = 576.;
 pub(super) const MENTIONS_KEY: &str = "inbox-mentions";
+
+/// RecentMentionsStore's filter (`recentMentionFilterSettings` in local storage): @everyone and role mentions on by
+/// default, every server unless "This Server" was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MentionFilter {
+    pub everyone: bool,
+    pub roles: bool,
+    pub all_servers: bool,
+}
+
+impl Default for MentionFilter {
+    fn default() -> Self {
+        Self {
+            everyone: true,
+            roles: true,
+            all_servers: true,
+        }
+    }
+}
+
+const FILTER_STORAGE: &str = "recentMentionFilterSettings";
+
+impl MentionFilter {
+    pub(super) fn stored() -> Self {
+        let Some(value) = crate::storage::get(FILTER_STORAGE) else {
+            return Self::default();
+        };
+        Self {
+            everyone: value["everyoneFilter"].as_bool().unwrap_or(true),
+            roles: value["roleFilter"].as_bool().unwrap_or(true),
+            all_servers: value["guildFilter"].as_str() != Some("THIS_SERVER"),
+        }
+    }
+
+    fn store(self) {
+        crate::storage::set(
+            FILTER_STORAGE,
+            serde_json::json!({
+                "guildFilter": if self.all_servers { "ALL_SERVERS" } else { "THIS_SERVER" },
+                "everyoneFilter": self.everyone,
+                "roleFilter": self.roles,
+            }),
+        );
+    }
+
+    /// `fetchRecentMentions` query: `guild_id` only for "This Server" inside a server.
+    pub(super) fn route(self, guild: Option<Id>) -> String {
+        let mut route = format!(
+            "/users/@me/mentions?limit=25&roles={}&everyone={}",
+            self.roles, self.everyone
+        );
+        if let (false, Some(guild)) = (self.all_servers, guild) {
+            route.push_str(&format!("&guild_id={guild}"));
+        }
+        route
+    }
+}
 const UNREAD_PREFIX: &str = "inbox-unread:";
 /// The Unreads tutorial card stays dismissed once "Got it!" is pressed.
 const TUTORIAL_SEEN: &str = "inbox-unreads-tutorial-seen";
@@ -114,12 +171,152 @@ impl Root {
             self.request_unreads();
         }
         if tab == InboxTab::Mentions {
-            let _ = self.requests.send(crate::net::Request::Fetch {
-                key: MENTIONS_KEY.to_owned(),
-                route: "/users/@me/mentions?limit=25&roles=true&everyone=true".to_owned(),
-            });
+            self.fetch_mentions();
         }
         cx.notify();
+    }
+
+    fn fetch_mentions(&mut self) {
+        let _ = self.requests.send(crate::net::Request::Fetch {
+            key: MENTIONS_KEY.to_owned(),
+            route: self.mention_filter.route(self.guild),
+        });
+    }
+
+    /// `setGuildFilter`: the choice is kept and the list asked for again.
+    fn set_mention_filter(&mut self, filter: MentionFilter, cx: &mut Context<Self>) {
+        self.mention_filter = filter;
+        filter.store();
+        self.fetch_mentions();
+        cx.notify();
+    }
+
+    /// The Mentions filter (`mentions-filter`, module 713024): checkbox rows under the Filter button, right-aligned to
+    /// it 8px below. "Include all servers" only inside a server.
+    pub(super) fn mentions_filter_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.mentions_filter_open || self.inbox != Some(InboxTab::Mentions) {
+            return None;
+        }
+        let anchor = self.tip_anchors.borrow().get("inbox-filter").copied()?;
+        let filter = self.mention_filter;
+        let in_guild = self.guild.is_some() && self.current_dm().is_none();
+        let row = |id: &'static str, label: &'static str, checked: bool, next: MentionFilter| {
+            div()
+                .id(id)
+                .h(px(36.))
+                .px(px(8.))
+                .rounded(px(2.))
+                .cursor_pointer()
+                .hover(|style| {
+                    style
+                        .bg(color("--interactive-background-hover"))
+                        .rounded(px(4.))
+                })
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .size(px(20.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(if checked {
+                            color("--checkbox-border-selected-default")
+                        } else {
+                            color("--checkbox-border-default")
+                        })
+                        .bg(if checked {
+                            color("--checkbox-background-selected-default")
+                        } else {
+                            color("--checkbox-background-default")
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(checked, |this| {
+                            this.child(icon("checkbox_check", 18., "--white"))
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_mention_filter(next, cx)))
+        };
+        let menu = div()
+            .parity_with_border("mentions-filter", 1.)
+            .id("mentions-filter")
+            .occlude()
+            .p(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-higher"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.24),
+                offset: gpui::point(px(0.), px(12.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                let on_button = this
+                    .tip_anchors
+                    .borrow()
+                    .get("inbox-filter")
+                    .is_some_and(|bounds| bounds.contains(&event.position));
+                if !on_button {
+                    this.mentions_filter_open = false;
+                    cx.notify();
+                }
+            }))
+            .flex()
+            .flex_col()
+            .child(row(
+                "mentions-filter-everyone",
+                "Include @everyone mentions",
+                filter.everyone,
+                MentionFilter {
+                    everyone: !filter.everyone,
+                    ..filter
+                },
+            ))
+            .child(row(
+                "mentions-filter-roles",
+                "Include @role mentions",
+                filter.roles,
+                MentionFilter {
+                    roles: !filter.roles,
+                    ..filter
+                },
+            ))
+            .when(in_guild, |this| {
+                this.child(row(
+                    "mentions-filter-servers",
+                    "Include all servers",
+                    filter.all_servers,
+                    MentionFilter {
+                        all_servers: !filter.all_servers,
+                        ..filter
+                    },
+                ))
+            });
+        Some(
+            deferred(
+                gpui::anchored()
+                    .anchor(gpui::Anchor::TopRight)
+                    .position(gpui::point(anchor.right(), anchor.bottom() + px(8.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(menu),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
     }
 
     /// Saved messages still listed by the store (a removed one disappears at once), reminders or bookmarks.
@@ -1229,6 +1426,23 @@ impl Root {
                                     .text_color(color("--text-strong"))
                                     .child("Inbox"),
                             )
+                            .when(tab == InboxTab::Mentions, |this| {
+                                this.child(
+                                    div()
+                                        .mr(px(8.))
+                                        .relative()
+                                        .child(self.anchor_probe("inbox-filter"))
+                                        .child(self.inbox_button(
+                                            "inbox-filter".to_owned(),
+                                            "inbox_filter",
+                                            cx,
+                                            |this, _| {
+                                                this.mentions_filter_open =
+                                                    !this.mentions_filter_open
+                                            },
+                                        )),
+                                )
+                            })
                             .when(tab == InboxTab::Unreads, |this| {
                                 this.child(div().mr(px(8.)).child(self.inbox_button(
                                     "inbox-mark-all".to_owned(),
@@ -1298,6 +1512,28 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mentions_query_follows_the_filter() {
+        let all = MentionFilter::default();
+        assert_eq!(
+            all.route(Some(5)),
+            "/users/@me/mentions?limit=25&roles=true&everyone=true"
+        );
+        let narrow = MentionFilter {
+            everyone: false,
+            roles: true,
+            all_servers: false,
+        };
+        assert_eq!(
+            narrow.route(Some(5)),
+            "/users/@me/mentions?limit=25&roles=true&everyone=false&guild_id=5"
+        );
+        assert_eq!(
+            narrow.route(None),
+            "/users/@me/mentions?limit=25&roles=true&everyone=false"
+        );
+    }
     use serde_json::json;
 
     #[test]
