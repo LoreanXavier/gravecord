@@ -34,6 +34,8 @@ pub(crate) struct ThreadBrowser {
 /// The New Thread form: name, private, and the first message.
 pub(crate) struct NewThread {
     pub parent: Id,
+    /// Create Thread on a message: the message the thread grows from (`location: "Message"`).
+    pub starter: Option<dc_state::Message>,
     pub name: Entity<Editor>,
     pub message: Entity<Editor>,
     pub private: bool,
@@ -192,6 +194,23 @@ impl Root {
         cx.notify();
     }
 
+    /// The message menu's Create Thread: the panel with the message under the name, its text as the name.
+    pub(super) fn open_new_thread_from(
+        &mut self,
+        message: dc_state::Message,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_new_thread(window, cx);
+        let placeholder: String = message.content.chars().take(100).collect();
+        if let Some(form) = self.new_thread.as_mut() {
+            form.name
+                .update(cx, |editor, _| editor.set_placeholder(placeholder));
+            form.starter = Some(message);
+        }
+        cx.notify();
+    }
+
     pub(super) fn open_new_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(parent) = self.channel else {
             return;
@@ -232,6 +251,7 @@ impl Root {
         window.focus(&gpui::Focusable::focus_handle(message.read(cx), cx), cx);
         self.new_thread = Some(NewThread {
             parent,
+            starter: None,
             name,
             message,
             private: false,
@@ -258,23 +278,36 @@ impl Root {
             return;
         }
         let typed = form.name.read(cx).text().trim().to_owned();
-        // An empty name takes the message's start, as the official composer fills it.
-        let name = if typed.is_empty() {
-            message.chars().take(40).collect::<String>()
-        } else {
+        // An empty name takes the starter message's text, or the first message's start.
+        let name = if !typed.is_empty() {
             typed
+        } else if let Some(starter) = form.starter.as_ref() {
+            starter.content.chars().take(100).collect::<String>()
+        } else {
+            message.chars().take(40).collect::<String>()
+        };
+        let (route, location) = match form.starter.as_ref() {
+            // As TRAFFIC/thread-from-message.json records it.
+            Some(starter) => (
+                format!("/channels/{}/messages/{}/threads", form.parent, starter.id),
+                "Message",
+            ),
+            None => (
+                format!("/channels/{}/threads", form.parent),
+                "Thread Browser Toolbar",
+            ),
         };
         let body = json!({
             "name": name,
             "type": if form.private { PRIVATE_THREAD } else { PUBLIC_THREAD },
             "auto_archive_duration": AUTO_ARCHIVE,
-            "location": "Thread Browser Toolbar",
+            "location": location,
         });
         self.pending_thread_message = Some(message);
         let _ = self.requests.send(Request::Rest {
             key: Some(CREATE_KEY.to_owned()),
             method: reqwest::Method::POST,
-            route: format!("/channels/{}/threads", form.parent),
+            route,
             body: Some(body),
         });
         self.new_thread = None;
@@ -628,6 +661,47 @@ impl Root {
     pub(super) fn new_thread_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let form = self.new_thread.as_ref()?;
         let private = form.private;
+        let from_message = form.starter.is_some();
+        let starter = form.starter.as_ref().map(|message| {
+            let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
+            div()
+                .relative()
+                .mt(px(16.))
+                .pl(px(56.))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(2.))
+                        .size(px(40.))
+                        .children(avatar.map(|image| img(image).size(px(40.)).rounded_full())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(message.author.display_name().to_owned()),
+                        )
+                        .child(
+                            div()
+                                .ml(px(8.))
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(message.local_time().format("%-I:%M %p").to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .line_height(px(22.))
+                        .text_color(color("--text-default"))
+                        .child(message.content.clone()),
+                )
+        });
         Some(
             div()
                 .parity("new-thread")
@@ -694,7 +768,11 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-strong"))
-                                .child("Thread Name"),
+                                .child(if from_message {
+                                    "Thread Name (Optional)"
+                                } else {
+                                    "Thread Name"
+                                }),
                         )
                         .child(
                             div()
@@ -708,57 +786,62 @@ impl Root {
                                 .items_center()
                                 .child(div().w_full().child(form.name.clone())),
                         )
-                        .child(
-                            div()
-                                .mt(px(24.))
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--text-strong"))
-                                .child("Private Thread"),
-                        )
-                        .child(
-                            div()
-                                .id("new-thread-private")
-                                .mt(px(8.))
-                                .flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(form) = this.new_thread.as_mut() {
-                                        form.private = !form.private;
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .size(px(20.))
-                                        .rounded(px(4.))
-                                        .border_1()
-                                        .border_color(if private {
-                                            color("--checkbox-border-selected-default")
-                                        } else {
-                                            color("--checkbox-border-default")
-                                        })
-                                        .bg(if private {
-                                            color("--checkbox-background-selected-default")
-                                        } else {
-                                            color("--checkbox-background-default")
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .when(private, |this| {
-                                            this.child(icon("checkbox_check", 18., "--white"))
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .line_height(px(20.))
-                                        .text_color(color("--text-default"))
-                                        .child("Only people you invite and moderators can see"),
-                                ),
-                        ),
+                        .children(starter)
+                        .when(!from_message, |this| {
+                            this.child(
+                                div()
+                                    .mt(px(24.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child("Private Thread"),
+                            )
+                        })
+                        .when(!from_message, |this| {
+                            this.child(
+                                div()
+                                    .id("new-thread-private")
+                                    .mt(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(form) = this.new_thread.as_mut() {
+                                            form.private = !form.private;
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .size(px(20.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(if private {
+                                                color("--checkbox-border-selected-default")
+                                            } else {
+                                                color("--checkbox-border-default")
+                                            })
+                                            .bg(if private {
+                                                color("--checkbox-background-selected-default")
+                                            } else {
+                                                color("--checkbox-background-default")
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .when(private, |this| {
+                                                this.child(icon("checkbox_check", 18., "--white"))
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child("Only people you invite and moderators can see"),
+                                    ),
+                            )
+                        }),
                 )
                 .child(
                     div().px(px(8.)).pb(px(8.)).child(
