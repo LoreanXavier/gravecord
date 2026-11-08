@@ -267,6 +267,10 @@ pub(crate) struct ServerSettings {
     pub(super) webhooks: super::server_webhooks::WebhooksState,
     /// "Upload a Sound" while it is open.
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
+    pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
+    /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
+    pub(super) sticker_removing: Option<String>,
+    pub(super) sticker_error: Option<(String, String)>,
     /// The Engagement page's values.
     pub(super) engagement: super::server_engagement::EngagementState,
     /// The Members page's search and features.
@@ -399,6 +403,9 @@ impl Root {
             template: None,
             webhooks: Default::default(),
             sound_dialog: None,
+            sticker_dialog: None,
+            sticker_removing: None,
+            sticker_error: None,
             engagement: Default::default(),
             members: None,
             _events: events,
@@ -1093,7 +1100,7 @@ impl Root {
             Page::Engagement => self.server_engagement_page(open.guild, cx),
             Page::BoostPerks => Self::server_page_title("Boost Perks"),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
-            Page::Stickers => Self::server_page_title("Stickers"),
+            Page::Stickers => self.server_stickers_page(open.guild, cx),
             Page::Soundboard => self.server_sounds_page(open.guild, cx),
             Page::Members => self.server_members_page(open.guild, cx),
             Page::Roles => self.server_roles_page(open.guild, cx),

@@ -81,6 +81,7 @@ mod server_roles;
 mod server_settings;
 mod server_settings_pages;
 mod server_sounds;
+mod server_stickers;
 mod server_template;
 mod server_webhooks;
 mod settings;
@@ -510,6 +511,11 @@ impl Root {
                     self.webhooks_fetched(&key, cx);
                     return;
                 }
+                if key.starts_with(server_stickers::STICKERS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.stickers_fetched(&key, cx);
+                    return;
+                }
                 if key.starts_with(server_sounds::SOUNDS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.sounds_fetched(&key, cx);
@@ -684,6 +690,8 @@ impl Root {
                     ImageFormat::Png
                 } else if bytes.starts_with(b"RIFF") {
                     ImageFormat::Webp
+                } else if bytes.starts_with(b"GIF8") {
+                    ImageFormat::Gif
                 } else {
                     ImageFormat::Jpeg
                 };
@@ -1415,6 +1423,10 @@ impl Root {
                     .as_ref()
                     .map(|dialog| dialog.name.clone()),
             );
+            if let Some(dialog) = settings.sticker_dialog.as_ref() {
+                list.push(dialog.name.clone());
+                list.push(dialog.description.clone());
+            }
             list.extend(
                 settings
                     .webhooks
@@ -4104,6 +4116,10 @@ impl Render for Root {
                     {
                         open.sound_dialog = None;
                     } else if let Some(open) = this.server_settings.as_mut()
+                        && open.sticker_dialog.is_some()
+                    {
+                        open.sticker_dialog = None;
+                    } else if let Some(open) = this.server_settings.as_mut()
                         && open.games_open
                     {
                         open.games_open = false;
@@ -4276,6 +4292,7 @@ impl Render for Root {
             .children(self.members_prune_modal(cx))
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
+            .children(self.sticker_dialog_modal(cx))
             .children(self.webhook_channel_select(cx))
             .children(self.webhook_delete_modal(cx))
             .children(self.channel_settings_select(window, cx))

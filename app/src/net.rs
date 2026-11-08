@@ -49,6 +49,12 @@ pub enum Request {
         join: dc_voice::Join,
         controls: dc_voice::Controls,
     },
+    /// POST a form with a file and report like `Rest`.
+    RestForm {
+        key: String,
+        route: String,
+        form: dc_http::Form,
+    },
     /// GET a route and hand its JSON back under `key`.
     Fetch {
         key: String,
@@ -524,6 +530,23 @@ pub async fn run(
                     if let Some(key) = key {
                         let _ = updates.send(Update::Fetched { key, body: report });
                     }
+                });
+            }
+            Request::RestForm { key, route, form } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let report = match client.post_form(&route, &form).await {
+                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Err(dc_http::Error::Status { status, body, .. }) => {
+                            warn!("{route} failed: {status}");
+                            json!({"ok": false, "status": status.as_u16(), "body": body})
+                        }
+                        Err(error) => {
+                            warn!("{route} failed: {error}");
+                            json!({"ok": false, "status": 0, "body": null})
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body: report });
                 });
             }
             Request::Download { url, filename } => {

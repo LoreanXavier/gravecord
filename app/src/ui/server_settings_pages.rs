@@ -165,6 +165,7 @@ impl Root {
             Page::Members => self.request_members_page(guild, cx),
             Page::Engagement => self.request_engagement(guild),
             Page::Soundboard => self.request_sounds(guild),
+            Page::Stickers => self.request_stickers(guild),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
                 let _ = self.requests.send(Request::Fetch {

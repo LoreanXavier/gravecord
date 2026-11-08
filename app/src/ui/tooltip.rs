@@ -36,6 +36,8 @@ pub(super) enum Body {
     /// The rail's text, in the guild tooltip's `body-md/semibold`.
     Heading(SharedString),
     Guild(Id),
+    /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
+    Rich(SharedString, SharedString),
 }
 
 #[derive(Clone)]
@@ -49,6 +51,14 @@ impl Tip {
     pub fn text(text: &'static str, side: Side) -> Self {
         Self {
             body: Body::Text(text.into()),
+            side,
+            spacing: SPACING,
+        }
+    }
+
+    pub fn body(body: Body, side: Side) -> Self {
+        Self {
+            body,
             side,
             spacing: SPACING,
         }
@@ -418,6 +428,22 @@ impl Root {
                 .line_height(px(20.))
                 .font_weight(FontWeight(600.))
                 .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
+                .into_any_element(),
+            Body::Rich(title, body) => frame()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .child(
+                    div()
+                        .max_w(px(MAX_WIDTH - 24.))
+                        .font_weight(FontWeight(500.))
+                        .child(title.clone()),
+                )
+                .child(
+                    div()
+                        .max_w(px(MAX_WIDTH - 24.))
+                        .text_color(color("--text-subtle"))
+                        .child(body.clone()),
+                )
                 .into_any_element(),
             Body::Guild(id) => {
                 let guild = self.stores.guild(*id)?;

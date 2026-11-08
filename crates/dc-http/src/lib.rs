@@ -57,6 +57,17 @@ fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
     Ok(headers)
 }
 
+/// A `multipart/form-data` request (`Client::post_form`).
+#[derive(Clone, Debug)]
+pub struct Form {
+    pub fields: Vec<(String, String)>,
+    pub file_field: String,
+    pub file_name: String,
+    pub file_type: String,
+    pub file: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+}
+
 impl Client {
     pub fn new(token: Token, identity: Identity) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
@@ -101,6 +112,60 @@ impl Client {
             let response = self.send(&method, route, body).await?;
             let status = response.status();
             debug!("{method} {route}: {status}");
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let body: Value = response.json().await.unwrap_or(Value::Null);
+                let wait = retry_after(&body);
+                warn!("{route} rate limited for {wait:?}, attempt {attempt}");
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            let text = response.text().await?;
+            let value = if text.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&text).unwrap_or(Value::Null)
+            };
+            if status.is_success() {
+                return Ok(value);
+            }
+            return Err(Error::Status {
+                route: route.to_owned(),
+                status,
+                body: value,
+            });
+        }
+        Err(Error::RateLimited {
+            route: route.to_owned(),
+        })
+    }
+
+    /// `POST` with a form: its text fields, then one file. A rate limited attempt is sent again, so the form is rebuilt
+    /// each time.
+    pub async fn post_form(&self, route: &str, form: &Form) -> Result<Value, Error> {
+        let url = format!("{}{route}", pin::API_BASE);
+        for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+            let file = reqwest::multipart::Part::bytes(form.file.clone())
+                .file_name(form.file_name.clone())
+                .mime_str(&form.file_type)?;
+            let mut body = reqwest::multipart::Form::new();
+            for (name, value) in &form.fields {
+                body = body.text(name.clone(), value.clone());
+            }
+            let mut request = self
+                .http
+                .post(&url)
+                .header("authorization", self.token.expose())
+                .header(
+                    "x-super-properties",
+                    self.identity.super_properties_header(true),
+                )
+                .multipart(body.part(form.file_field.clone(), file));
+            for (name, value) in &form.headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
+            let response = request.send().await?;
+            let status = response.status();
+            debug!("POST {route}: {status}");
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
                 let wait = retry_after(&body);

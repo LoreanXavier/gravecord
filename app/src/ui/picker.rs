@@ -56,6 +56,8 @@ pub(crate) enum Target {
     Trait(u8),
     /// "Upload a Sound"'s Related Emoji.
     SoundEmoji,
+    /// "Upload a file"'s Related Emoji (stickers).
+    StickerEmoji,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -416,7 +418,8 @@ impl Root {
                     Target::Composer
                     | Target::ForwardNote
                     | Target::Trait(_)
-                    | Target::SoundEmoji => "Find the perfect emoji",
+                    | Target::SoundEmoji
+                    | Target::StickerEmoji => "Find the perfect emoji",
                     Target::Reaction { .. } => "Find the perfect reaction",
                 }
                 .to_owned(),
@@ -646,6 +649,16 @@ impl Root {
                     Item::Unicode(_) => self.set_sound_emoji(None, reaction.clone(), cx),
                     Item::Custom { id, name, .. } => {
                         self.set_sound_emoji(Some(id.to_string()), name.clone(), cx)
+                    }
+                }
+            }
+            Target::StickerEmoji => {
+                self.emoji_used.push((usage_key, now_ms()));
+                match &item {
+                    // Module 759886 keeps a unicode emoji by its characters, a custom one by id and name.
+                    Item::Unicode(_) => self.set_sticker_emoji(None, Some(reaction.clone()), cx),
+                    Item::Custom { id, name, .. } => {
+                        self.set_sticker_emoji(Some(id.to_string()), Some(name.clone()), cx)
                     }
                 }
             }
@@ -951,7 +964,10 @@ impl Root {
         // Composer: the right edge 32px in from the window's, the bottom 8px above the composer.
         // Reactions: beside the hover bar, kept inside the window.
         let reaction = matches!(picker.target, Target::Reaction { .. });
-        let trait_target = matches!(picker.target, Target::Trait(_) | Target::SoundEmoji);
+        let trait_target = matches!(
+            picker.target,
+            Target::Trait(_) | Target::SoundEmoji | Target::StickerEmoji
+        );
         // Neither the reaction picker nor a trait's has the tab bar (`design/dom/popouts/trait-emoji-darker-cozy.json`).
         let tabless = reaction || trait_target;
         let height = if tabless {
