@@ -137,7 +137,7 @@ impl Editor {
     }
 
     /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.buffer.text().trim().to_owned();
         self.buffer.clear();
         cx.emit(EditorEvent::Submit(text));

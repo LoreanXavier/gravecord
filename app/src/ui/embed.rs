@@ -5,7 +5,7 @@ use super::{Root, color, hsla, rgba};
 use crate::parity::Parity;
 use dc_markdown::{Block, Kind, Span, parse};
 use dc_state::{Embed, EmbedMedia, Id, Message};
-use gpui::{AnyElement, FontWeight, IntoElement, div, img, prelude::*, px};
+use gpui::{AnyElement, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
 /// `gridContainer_XyW1ZT` max-width.
 const GRID_MAX: f32 = 516.;
@@ -149,8 +149,12 @@ impl Root {
             );
         }
         if let Some(title) = &embed.title {
+            // The title links to the embed's address, as the message's own link does.
+            let link = embed.url.clone();
+            let root = self.weak.clone();
             column = column.child(
                 div()
+                    .id(SharedString::from(format!("embed-title-{message}-{index}")))
                     .mt(px(8.))
                     .text_size(px(16.))
                     .line_height(px(22.))
@@ -159,6 +163,12 @@ impl Root {
                         color("--text-link")
                     } else {
                         color("--text-strong")
+                    })
+                    .when(link.is_some(), |this| this.cursor_pointer())
+                    .on_click(move |_, _, cx| {
+                        if let Some(url) = &link {
+                            let _ = root.update(cx, |this, cx| this.follow_link(url, url, cx));
+                        }
                     })
                     .child(title.clone()),
             );

@@ -2928,7 +2928,7 @@ impl Root {
                     .border_color(color("--background-mod-subtle"))
                     .px(px(15.))
                     .py(px(17.))
-                    .child(editor),
+                    .child(editor.clone()),
             )
             .child(
                 div()
@@ -2939,9 +2939,34 @@ impl Root {
                     .text_color(color("--text-default"))
                     .flex()
                     .child("escape to ")
-                    .child(div().text_color(color("--text-link")).child("cancel"))
+                    .child(
+                        div()
+                            .id("edit-cancel")
+                            .cursor_pointer()
+                            .text_color(color("--text-link"))
+                            .on_click({
+                                let root = self.weak.clone();
+                                move |_, _, cx| {
+                                    let _ = root.update(cx, |this, cx| {
+                                        this.editing = None;
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .child("cancel"),
+                    )
                     .child(" \u{2022} enter to ")
-                    .child(div().text_color(color("--text-link")).child("save")),
+                    .child(
+                        div()
+                            .id("edit-save")
+                            .cursor_pointer()
+                            .text_color(color("--text-link"))
+                            .on_click({
+                                let editor = editor.clone();
+                                move |_, _, cx| editor.update(cx, |editor, cx| editor.submit(cx))
+                            })
+                            .child("save"),
+                    ),
             )
     }
 
