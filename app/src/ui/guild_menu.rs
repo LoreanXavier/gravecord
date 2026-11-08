@@ -133,8 +133,9 @@ impl Root {
             Entry::CreateChannel => self.open_create_channel(false, window, cx),
             Entry::CreateCategory => self.open_create_channel(true, window, cx),
             Entry::Notifications => self.open_guild_notifications(cx),
-            // Their dialogs and pages are being built: Invite, Server Settings, Create Event and App Directory.
-            Entry::Invite | Entry::Settings | Entry::CreateEvent | Entry::AppDirectory => {}
+            Entry::Invite => self.open_invite(cx),
+            // Their pages are being built: Server Settings, Create Event and App Directory.
+            Entry::Settings | Entry::CreateEvent | Entry::AppDirectory => {}
         }
         cx.notify();
     }

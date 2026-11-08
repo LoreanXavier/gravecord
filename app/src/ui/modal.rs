@@ -183,16 +183,19 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
             spec.body
                 .map(|body| div().pt(px(16.)).pl(px(24.)).pr(px(24.)).child(body)),
         )
-        .child(
-            div()
-                .mt(px(8.))
-                .pt(px(16.))
-                .px(px(24.))
-                .pb(px(8.))
-                .flex()
-                .gap(px(8.))
-                .children(buttons),
-        );
+        // A dialog without buttons (Invite) ends with its body.
+        .when(!buttons.is_empty(), |this| {
+            this.child(
+                div()
+                    .mt(px(8.))
+                    .pt(px(16.))
+                    .px(px(24.))
+                    .pb(px(8.))
+                    .flex()
+                    .gap(px(8.))
+                    .children(buttons),
+            )
+        });
     deferred(
         div()
             .id(SharedString::from(format!("{}-layer", spec.id)))

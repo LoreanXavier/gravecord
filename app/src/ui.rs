@@ -46,6 +46,7 @@ mod guild_notifications;
 mod history;
 mod home;
 mod inbox;
+mod invite;
 mod links;
 mod menu;
 mod modal;
@@ -165,6 +166,9 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    invite: Option<invite::Invite>,
+    invite_codes: HashMap<Id, String>,
+    pending_invite_link: Option<String>,
     guild_notifications: Option<Id>,
     raid_alerts_off: HashSet<(Id, u8)>,
     create_channel: Option<create_channel::CreateChannel>,
@@ -279,6 +283,9 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            invite: None,
+            invite_codes: HashMap::new(),
+            pending_invite_link: None,
             guild_notifications: None,
             raid_alerts_off: HashSet::new(),
             create_channel: None,
@@ -401,6 +408,14 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
                 if self.friends_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key == invite::CREATE_KEY {
+                    self.invite_created(&body, cx);
+                    return;
+                }
+                if key.starts_with(invite::DM_KEY) {
+                    self.invite_dm_opened(&body);
                     return;
                 }
                 if key == threads::CREATE_KEY {
@@ -1613,11 +1628,28 @@ impl Root {
                                 this.opacity(0.)
                                     .group_hover(action_group, |style| style.opacity(1.))
                             })
-                            .children(
-                                actions
-                                    .iter()
-                                    .map(|name| icon(name, 16., action_tint).into_any_element()),
-                            ),
+                            .children(actions.iter().map(|name| {
+                                // "Create Invite" opens the invite dialog for this channel; the gear waits for
+                                // channel settings.
+                                let invite = *name == "invite_small";
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "channel-action-{target}-{name}"
+                                    )))
+                                    .when(invite, |this| {
+                                        this.cursor_pointer().on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(guild) = this.guild {
+                                                    this.select(guild, Some(target));
+                                                }
+                                                this.open_invite(cx);
+                                            },
+                                        ))
+                                    })
+                                    .child(icon(name, 16., action_tint))
+                                    .into_any_element()
+                            })),
                     ),
             )
             .into_any_element()
@@ -1770,10 +1802,13 @@ impl Root {
                             .child(div().flex_1())
                             .child(
                                 div()
+                                    .id("guild-header-invite")
                                     .size(px(32.))
+                                    .cursor_pointer()
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx)))
                                     .child(icon("invite", 20., "--text-strong")),
                             ),
                     ),
@@ -3931,6 +3966,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
             .children(self.guild_menu_layer(cx))
