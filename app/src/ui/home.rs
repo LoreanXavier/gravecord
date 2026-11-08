@@ -10,6 +10,14 @@ use gpui::{
 
 impl Root {
     pub(super) fn select_home(&mut self, channel: Option<Id>) {
+        let from = self.route();
+        self.history.visit(
+            from,
+            super::history::Route {
+                guild: None,
+                channel,
+            },
+        );
         self.guild = None;
         self.channel = channel;
         if let Some(channel) = channel {

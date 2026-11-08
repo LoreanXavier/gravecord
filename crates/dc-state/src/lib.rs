@@ -1,6 +1,7 @@
 //! Flux stores. M0 slice: the parts of UserStore, GuildStore, ChannelStore and MessageStore the first screen reads.
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
+pub mod frecency;
 pub mod grouping;
 pub mod member_list;
 
@@ -105,6 +106,35 @@ pub struct Guild {
     pub features: Vec<String>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
+    pub emojis: Vec<GuildEmoji>,
+}
+
+/// A guild's custom emoji (`emojis` in GUILD_CREATE and `GUILD_EMOJIS_UPDATE`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuildEmoji {
+    pub id: Id,
+    pub name: String,
+    pub animated: bool,
+    /// False when the guild lost the boost level that allowed it.
+    pub available: bool,
+}
+
+impl GuildEmoji {
+    fn list(value: &Value) -> Vec<Self> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|emoji| {
+                Some(Self {
+                    id: id(&emoji["id"])?,
+                    name: text(&emoji["name"])?,
+                    animated: emoji["animated"].as_bool().unwrap_or(false),
+                    available: emoji["available"].as_bool().unwrap_or(true),
+                })
+            })
+            .collect()
+    }
 }
 
 /// `_` in module 426983.
@@ -152,7 +182,12 @@ impl Guild {
                 .as_u64()
                 .or(properties["premium_subscription_count"].as_u64())
                 .unwrap_or(0),
+            emojis: GuildEmoji::list(&value["emojis"]),
         })
+    }
+
+    pub fn has_emoji(&self, emoji: Id) -> bool {
+        self.emojis.iter().any(|known| known.id == emoji)
     }
 
     fn has_feature(&self, feature: &str) -> bool {
@@ -629,6 +664,13 @@ impl Stores {
                     self.sort_guilds();
                 }
             }
+            "GUILD_EMOJIS_UPDATE" => {
+                if let Some(guild) = id(&data["guild_id"])
+                    .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild))
+                {
+                    guild.emojis = GuildEmoji::list(&data["emojis"]);
+                }
+            }
             "TYPING_START" => {
                 if let (Some(channel), Some(user)) = (id(&data["channel_id"]), id(&data["user_id"]))
                 {
@@ -964,6 +1006,7 @@ mod tests {
                 .collect(),
             premium_tier: 0,
             premium_subscription_count: 0,
+            emojis: Vec::new(),
         };
         assert_eq!(guild(&[]).badge(), Badge::None);
         assert_eq!(guild(&["COMMUNITY"]).badge(), Badge::Community);

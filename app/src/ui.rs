@@ -28,14 +28,17 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+mod actions;
 mod badge_paths;
 mod dm;
 mod dm_profile;
 mod embed;
 mod files;
+mod history;
 mod home;
 mod links;
 mod menu;
+mod modal;
 mod plaintext_extensions;
 mod profile;
 mod settings;
@@ -134,6 +137,11 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    /// The message waiting in the "Pin It. Pin It Good." modal.
+    confirm_pin: Option<Message>,
+    /// Reactions given this session, for the frecency list until the stored settings catch up.
+    reactions_used: Vec<(String, u64)>,
+    history: history::History,
     /// The Leaving Discord modal, open while a link waits for confirmation.
     leaving: Option<links::Leaving>,
     last_typing_sent: Option<Instant>,
@@ -198,6 +206,9 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            confirm_pin: None,
+            reactions_used: Vec::new(),
+            history: history::History::default(),
             leaving: None,
             last_typing_sent: None,
             tip: None,
@@ -313,8 +324,11 @@ impl Root {
             .find(|channel| channel.kind == ChannelKind::Text)
             .map(|channel| channel.id);
         self.select(guild_id, channel);
+        // Opening on the last channel is not a step back can return from.
+        self.history = history::History::default();
         self.request_images();
         self.request_emoji_button();
+        self.request_frecency();
     }
 
     /// The composer's emoji button is a sprite cell tinted with the theme's icon color, so it follows the theme.
@@ -327,6 +341,14 @@ impl Root {
     }
 
     fn select(&mut self, guild: Id, channel: Option<Id>) {
+        let from = self.route();
+        self.history.visit(
+            from,
+            history::Route {
+                guild: Some(guild),
+                channel,
+            },
+        );
         self.guild = Some(guild);
         self.channel = channel;
         if let Some(channel) = channel {
@@ -885,7 +907,7 @@ impl Root {
         }
     }
 
-    fn titlebar(&self) -> impl IntoElement {
+    fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
             (Some(guild), _) => guild.name.clone(),
             (None, None) => "Friends".to_owned(),
@@ -901,16 +923,8 @@ impl Root {
             .h(px(32.))
             .w_full()
             .window_control_area(WindowControlArea::Drag)
-            .child(div().absolute().left(px(15.)).top(px(7.)).child(icon(
-                "title_back",
-                18.,
-                "--interactive-text-default",
-            )))
-            .child(div().absolute().left(px(39.)).top(px(7.)).child(icon(
-                "title_forward",
-                18.,
-                "--interactive-text-default",
-            )))
+            .child(self.history_button(true, cx))
+            .child(self.history_button(false, cx))
             .child(
                 div()
                     .absolute()
@@ -962,13 +976,10 @@ impl Root {
                             .child(icon("inbox", 18., "--text-muted")),
                     )
                     .child(
-                        div()
-                            .size(px(24.))
+                        // `ar` in module 596339: an anchor to the Help Center (`tP.C`, https:// + support host).
+                        bar_button("help", "help")
                             .mr(px(16.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("help", 18., "--text-muted")),
+                            .on_click(|_, _, cx| cx.open_url("https://support.discord.com")),
                     )
                     .child(
                         div()
@@ -1973,11 +1984,15 @@ impl Root {
                             })
                     })
                     .on_click(cx.listener(move |this, _, _, _| {
+                        if add {
+                            this.track_reaction(&emoji);
+                        }
                         let _ = this.requests.send(Request::React {
                             channel,
                             message: id,
                             emoji: emoji.clone(),
                             add,
+                            location: "Message",
                         });
                     }))
                     .child(
@@ -2293,7 +2308,7 @@ impl Root {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.open_menu(event.position, id, own, cx);
+                            this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
                         }),
                     )
                     .when(hovered && editing.is_none(), |this| {
@@ -2448,12 +2463,27 @@ impl Root {
                 button("msg_forward"),
                 cx,
             ))
-            .child(self.with_tip(
-                "toolbar-more",
-                Tip::text("More", Side::Top),
-                button("msg_more"),
-                cx,
-            ))
+            .child(
+                self.with_tip(
+                    "toolbar-more",
+                    Tip::text("More", Side::Top),
+                    button("msg_more"),
+                    cx,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let anchor = this.tip_anchors.borrow().get("toolbar-more").copied();
+                    if let Some(bounds) = anchor {
+                        this.tip = None;
+                        this.open_menu(
+                            menu::Anchor::MoreButton(gpui::point(bounds.left(), bounds.top())),
+                            id,
+                            own,
+                            cx,
+                        );
+                    }
+                })),
+            )
     }
 
     fn edit_box(&self, editor: Entity<Editor>) -> impl IntoElement {
@@ -2881,7 +2911,40 @@ impl Render for Root {
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && this.profile.is_some() {
+                let keys = &event.keystroke;
+                // `NAVIGATE_BACK`/`NAVIGATE_FORWARD`: global combos, so they work from the composer too.
+                let alt_only = keys.modifiers.alt
+                    && !keys.modifiers.control
+                    && !keys.modifiers.shift
+                    && !keys.modifiers.platform;
+                if alt_only && (keys.key == "left" || keys.key == "right") {
+                    if keys.key == "left" {
+                        this.go_back(cx);
+                    } else {
+                        this.go_forward(cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape"
+                    && (this.confirm_pin.is_some()
+                        || this.leaving.is_some()
+                        || this.confirm_delete.is_some()
+                        || this.menu.is_some())
+                {
+                    // The top layer closes first: a modal, then the menu under it.
+                    if this.confirm_pin.is_some() {
+                        this.confirm_pin = None;
+                    } else if this.leaving.is_some() {
+                        this.leaving = None;
+                    } else if this.confirm_delete.is_some() {
+                        this.confirm_delete = None;
+                    } else {
+                        this.menu = None;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.profile.is_some() {
                     this.profile = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -2890,6 +2953,14 @@ impl Render for Root {
                     cx.stop_propagation();
                 }
             }))
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Back),
+                cx.listener(|this, _, _, cx| this.go_back(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Forward),
+                cx.listener(|this, _, _, cx| this.go_forward(cx)),
+            )
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.on_drop_files(paths, cx);
             }))
@@ -2911,7 +2982,7 @@ impl Render for Root {
             .children(self.settings_layer(window, cx))
             .children(self.profile_layer(cx))
             .children(self.tip_layer())
-            .child(self.titlebar())
+            .child(self.titlebar(cx))
             .child(
                 div()
                     .flex()
@@ -2975,9 +3046,10 @@ impl Render for Root {
                     }),
             )
             .child(self.user_panel(cx))
-            .children(self.context_menu(cx))
+            .children(self.context_menu(window, cx))
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
+            .children(self.pin_modal(cx))
     }
 }
 
@@ -3006,6 +3078,32 @@ fn status_label(status: &str) -> &'static str {
 }
 
 /// The presence dot in its cut-out ring. Do Not Disturb adds the bar across the dot.
+/// `clickable_fErCLM`: a 24px top bar button, `--icon-muted`, on hover `--background-mod-normal` behind
+/// `--interactive-icon-hover`.
+fn bar_button(id: &'static str, name: &'static str) -> gpui::Stateful<gpui::Div> {
+    let group = SharedString::from(format!("bar-{id}"));
+    div()
+        .id(id)
+        .group(group.clone())
+        .size(px(24.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(|style| style.bg(color("--background-mod-normal")))
+        .child(
+            svg()
+                .path(format!("icons/{name}.svg"))
+                .size(px(18.))
+                .flex_none()
+                .text_color(color("--icon-muted"))
+                .group_hover(group, |style| {
+                    style.text_color(color("--interactive-icon-hover"))
+                }),
+        )
+}
+
 /// The status of a 20px avatar (`svg-mask-avatar-status-round-20`): a 6px dot at (14, 14) in a 10px hole.
 fn status_dot_small(status: &str, ring: &str) -> impl IntoElement {
     let tint = match status {

@@ -32,6 +32,16 @@ impl Theme {
     }
 }
 
+pub mod emoji_data;
+
+/// A unicode emoji by any of its names (`nameToEmoji`).
+pub fn emoji_by_name(name: &str) -> Option<&'static emoji_data::Emoji> {
+    let index = emoji_data::NAMES
+        .binary_search_by(|(known, _)| (*known).cmp(name))
+        .ok()?;
+    emoji_data::EMOJIS.get(usize::from(emoji_data::NAMES[index].1))
+}
+
 /// The asset file of a unicode emoji. Variation selectors are not part of the file names.
 pub fn emoji_file(text: &str) -> Option<&'static str> {
     let codepoints: Vec<String> = text
@@ -65,6 +75,24 @@ pub fn emoji_prefix(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{Theme, emoji_file, emoji_prefix};
+
+    #[test]
+    fn emoji_names_resolve() {
+        assert!(
+            super::emoji_data::NAMES
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0)
+        );
+        assert_eq!(
+            super::emoji_by_name("joy").map(|emoji| emoji.surrogates),
+            Some("\u{1f602}")
+        );
+        assert_eq!(
+            super::emoji_by_name("+1").map(|emoji| emoji.names[0]),
+            Some("thumbsup")
+        );
+        assert!(super::emoji_by_name("not_an_emoji").is_none());
+    }
 
     #[test]
     fn emoji_prefix_takes_the_longest_sequence() {

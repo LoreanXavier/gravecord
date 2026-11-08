@@ -60,6 +60,8 @@ pub enum Request {
         message: u64,
         emoji: String,
         add: bool,
+        /// The `location` query: where the reaction was given (`qN` in the bundle), e.g. `Message`.
+        location: &'static str,
     },
     LoadMessages {
         channel: u64,
@@ -80,6 +82,12 @@ pub enum Request {
     Delete {
         channel: u64,
         message: u64,
+    },
+    /// `PIN`/unpin: `PUT` or `DELETE /channels/{channel}/messages/pins/{message}`.
+    Pin {
+        channel: u64,
+        message: u64,
+        pin: bool,
     },
     Subscribe {
         guild: u64,
@@ -297,16 +305,35 @@ pub async fn run(
                     }
                 });
             }
+            Request::Pin {
+                channel,
+                message,
+                pin,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{channel}/messages/pins/{message}");
+                    let method = if pin {
+                        reqwest::Method::PUT
+                    } else {
+                        reqwest::Method::DELETE
+                    };
+                    if let Err(error) = client.request(method, &route, None).await {
+                        warn!("pinning failed: {error}");
+                    }
+                });
+            }
             Request::React {
                 channel,
                 message,
                 emoji,
                 add,
+                location,
             } => {
                 tokio::spawn(async move {
                     let route = format!(
-                        "/channels/{channel}/messages/{message}/reactions/{}/@me?location=Message&type=0",
+                        "/channels/{channel}/messages/{message}/reactions/{}/@me?location={}&type=0",
                         percent_encode(&emoji),
+                        percent_encode(location),
                     );
                     let method = if add {
                         reqwest::Method::PUT
