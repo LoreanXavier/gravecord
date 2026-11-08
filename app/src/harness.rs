@@ -143,6 +143,24 @@ pub async fn run(
                     });
                 }
             }
+            ["hscroll", x, y, dx] => {
+                if let (Some(position), Ok(dx)) = (at(x, y), dx.parse::<f32>()) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::Scroll(ScrollEvent {
+                                position,
+                                delta: ScrollDelta::Pixels(point(px(-dx), px(0.))),
+                                modifiers: Modifiers::default(),
+                                touch_phase: TouchPhase::Moved,
+                                source: ScrollSource::Pointer,
+                            }),
+                        );
+                    });
+                }
+            }
             ["rightclick", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| {

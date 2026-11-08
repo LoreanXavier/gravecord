@@ -269,6 +269,8 @@ pub(crate) struct ServerSettings {
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     /// The Engagement page's values.
     pub(super) engagement: super::server_engagement::EngagementState,
+    /// The Members page's search and features.
+    pub(super) members: Option<super::server_members::MembersState>,
     _events: Vec<Subscription>,
 }
 
@@ -398,6 +400,7 @@ impl Root {
             webhooks: Default::default(),
             sound_dialog: None,
             engagement: Default::default(),
+            members: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -1092,7 +1095,7 @@ impl Root {
             Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => Self::server_page_title("Stickers"),
             Page::Soundboard => self.server_sounds_page(open.guild, cx),
-            Page::Members => Self::server_page_title("Server Members"),
+            Page::Members => self.server_members_page(open.guild, cx),
             Page::Roles => self.server_roles_page(open.guild, cx),
             Page::Invites => self.server_invites_page(open.guild, cx),
             Page::Access => Self::server_page_title("Access"),
@@ -1109,9 +1112,17 @@ impl Root {
             Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
-        let close_left = if page == Page::Profile { 835. } else { 740. };
+        let close_left = match page {
+            Page::Profile => 835.,
+            Page::Members => 837.,
+            _ => 740.,
+        };
         // Custom pages (Invites) put ESC 32px higher: their scroller starts at the window's top.
-        let close_top = if page == Page::Invites { 0. } else { 32. };
+        let close_top = if matches!(page, Page::Invites | Page::Members) {
+            0.
+        } else {
+            32.
+        };
         let preview = (page == Page::Profile).then(|| {
             let name = open.name.read(cx).text().to_owned();
             let body = self.server_preview_body(cx);
@@ -1253,7 +1264,19 @@ impl Root {
         });
         // The role editor fills the panel itself (`page_cKeB2a`): its role column and its own scroller.
         let raw = page == Page::Roles && open.role.is_some();
-        let body: AnyElement = if raw {
+        let body: AnyElement = if page == Page::Members {
+            // `settingsHorizontalScroll`: the table is wider than its 844px window.
+            div()
+                .id("server-members-scroller")
+                .mt(px(32.))
+                .h(px(688.))
+                .w(px(844.))
+                .overflow_scroll()
+                .flex()
+                .items_start()
+                .child(content)
+                .into_any_element()
+        } else if raw {
             div()
                 .mt(px(32.))
                 .h(px(688.))

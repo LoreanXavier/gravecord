@@ -36,7 +36,7 @@ pub(crate) struct BansState {
 }
 
 /// Module 859126 `H`: the query's words, with anything that looks like a user id taken out as an id.
-fn split_query(query: &str) -> (Vec<String>, Vec<String>) {
+pub(super) fn split_query(query: &str) -> (Vec<String>, Vec<String>) {
     let mut words = Vec::new();
     let mut ids = Vec::new();
     for part in query.split_whitespace() {
@@ -162,6 +162,7 @@ impl Root {
                 }
             }
             Page::Emoji => self.request_emojis(guild),
+            Page::Members => self.request_members_page(guild, cx),
             Page::Engagement => self.request_engagement(guild),
             Page::Soundboard => self.request_sounds(guild),
             Page::Integrations => {

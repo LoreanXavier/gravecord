@@ -75,6 +75,7 @@ mod search;
 mod server_emoji;
 mod server_engagement;
 mod server_games;
+mod server_members;
 mod server_role_editor;
 mod server_roles;
 mod server_settings;
@@ -517,6 +518,11 @@ impl Root {
                 if key.starts_with(server_engagement::ENGAGEMENT_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.engagement_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_members::MEMBERS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.members_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_template::TEMPLATES_PREFIX) {
@@ -1397,6 +1403,12 @@ impl Root {
             list.push(settings.description.clone());
             list.extend(settings.traits.iter().cloned());
             list.push(settings.games_query.clone());
+            list.extend(
+                settings
+                    .members
+                    .as_ref()
+                    .map(|members| members.search.clone()),
+            );
             list.extend(
                 settings
                     .sound_dialog
@@ -4260,6 +4272,8 @@ impl Render for Root {
             .children(self.role_delete_modal(cx))
             .children(self.role_add_members_modal(cx))
             .children(self.template_delete_modal(cx))
+            .children(self.members_sort_layer(cx))
+            .children(self.members_prune_modal(cx))
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
             .children(self.webhook_channel_select(cx))
