@@ -547,7 +547,7 @@ impl Root {
 
     /// `submenu_M3qk4j`: 188 wide, its first row level with the row it hangs off (8px padding and the border
     /// above it), to the right when it fits, else to the left, 4px off the row; nudged 8px inside the window.
-    fn submenu_frame(
+    pub(super) fn submenu_frame(
         &self,
         rows: Vec<(AnyElement, f32)>,
         row: gpui::Bounds<Pixels>,

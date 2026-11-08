@@ -195,7 +195,7 @@ fn switch(
 }
 
 /// `radioIndicator_oJuRbG`: a 20px ring, 2px stroke, filled with an 8px dot when chosen.
-fn radio_dot(selected: bool) -> impl IntoElement {
+pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
     div()
         .flex_none()
         .size(px(20.))

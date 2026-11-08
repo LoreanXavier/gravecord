@@ -6,6 +6,7 @@ mod appearance;
 mod model;
 mod pages;
 mod render;
+pub(crate) use render::radio_dot;
 mod swatches;
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};

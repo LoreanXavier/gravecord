@@ -111,6 +111,10 @@ pub enum Request {
         message: u64,
         note: Option<String>,
     },
+    /// `PATCH /users/@me/guilds/settings`: notification levels and mutes.
+    GuildSettings {
+        body: Value,
+    },
     /// `POST /interactions`: an application command run by hand.
     Interaction {
         body: Value,
@@ -467,6 +471,20 @@ pub async fn run(
                         {
                             warn!("forward note failed: {error}");
                         }
+                    }
+                });
+            }
+            Request::GuildSettings { body } => {
+                tokio::spawn(async move {
+                    if let Err(error) = client
+                        .request(
+                            reqwest::Method::PATCH,
+                            "/users/@me/guilds/settings",
+                            Some(&body),
+                        )
+                        .await
+                    {
+                        warn!("guild settings failed: {error}");
                     }
                 });
             }

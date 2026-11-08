@@ -41,6 +41,7 @@ mod home;
 mod links;
 mod menu;
 mod modal;
+mod notify;
 mod picker;
 mod pins;
 mod plaintext_extensions;
@@ -148,6 +149,9 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    notify_open: bool,
+    /// The Mute Channel row while its durations show.
+    notify_submenu: Option<Bounds<Pixels>>,
     /// The open Pinned Messages popout, by the anchor key of the button that opened it.
     pins_open: Option<&'static str>,
     confirm_unpin: Option<Message>,
@@ -238,6 +242,8 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            notify_open: false,
+            notify_submenu: None,
             pins_open: None,
             confirm_unpin: None,
             forward: None,
@@ -1654,6 +1660,7 @@ impl Root {
             .current_dm()
             .and_then(|channel| self.stores.dm_recipient(channel))
             .cloned();
+        let muted = self.channel_muted_now();
         let search = format!(
             "Search {}",
             match &dm_user {
@@ -1665,8 +1672,15 @@ impl Root {
             }
         );
         // Header icons brighten to `--interactive-text-default` under the pointer.
+        // A button whose popout is open shows in `--interactive-text-active`.
+        let open_popout = |name: &str| match name {
+            "bell" | "bell_muted" => self.notify_open,
+            "pin" => self.pins_open.is_some(),
+            _ => false,
+        };
         let tool = |name: &str| {
             let group = SharedString::from(format!("header-{name}"));
+            let active = open_popout(name);
             div()
                 .group(group.clone())
                 .size(px(32.))
@@ -1678,7 +1692,11 @@ impl Root {
                         .path(format!("icons/{name}.svg"))
                         .size(px(20.))
                         .flex_none()
-                        .text_color(color("--text-muted"))
+                        .text_color(if active {
+                            color("--interactive-text-active")
+                        } else {
+                            color("--text-muted")
+                        })
                         .group_hover(group, |style| {
                             style.text_color(color("--interactive-text-default"))
                         }),
@@ -1810,12 +1828,21 @@ impl Root {
                             tool("threads"),
                             cx,
                         ))
-                        .child(self.with_tip(
-                            "notifications",
-                            Tip::text("Notification Settings", Side::Bottom),
-                            tool("bell"),
-                            cx,
-                        ))
+                        .child(
+                            self.with_tip(
+                                "notifications",
+                                Tip::text("Notification Settings", Side::Bottom),
+                                tool(if muted { "bell_muted" } else { "bell" }),
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tip = None;
+                                this.notify_open = !this.notify_open;
+                                this.notify_submenu = None;
+                                cx.notify();
+                            })),
+                        )
                         .child(
                             self.with_tip(
                                 "pins",
@@ -3297,7 +3324,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "escape" && this.confirm_unpin.is_some() {
+                if event.keystroke.key == "escape" && this.notify_open {
+                    this.notify_open = false;
+                    this.notify_submenu = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.confirm_unpin.is_some() {
                     this.confirm_unpin = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -3448,6 +3480,8 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.notify_menu(window, cx))
+            .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))
             .children(self.pins_popout(window, cx))
             .children(self.forward_modal(window, cx))

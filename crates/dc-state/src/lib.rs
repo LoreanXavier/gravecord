@@ -3,6 +3,7 @@
 
 pub mod frecency;
 pub mod grouping;
+pub mod guild_settings;
 pub mod member_list;
 pub mod read_state;
 
@@ -694,6 +695,7 @@ pub struct Stores {
     /// Bookmarks and reminders (`SavedMessagesStore`): (channel, message) to the reminder's `due_at`, `None` for a
     /// plain bookmark.
     pub saved: HashMap<(Id, Id), Option<String>>,
+    pub guild_settings: guild_settings::GuildSettingsStore,
 }
 
 impl Stores {
@@ -762,6 +764,7 @@ impl Stores {
                 }
             }
             "MESSAGE_ACK" => self.read_states.ack(data),
+            "USER_GUILD_SETTINGS_UPDATE" => self.guild_settings.update(data),
             "SAVED_MESSAGE_CREATE" => self.save(&data["save_data"]),
             "SAVED_MESSAGE_DELETE" => {
                 let data = if data["save_data"].is_object() {
@@ -865,6 +868,7 @@ impl Stores {
             })
             .collect();
         self.read_states.load(&data["read_state"]);
+        self.guild_settings.load(&data["user_guild_settings"]);
         let latest: Vec<(Id, Id)> = self
             .guilds
             .iter()
