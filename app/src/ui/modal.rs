@@ -19,6 +19,8 @@ pub(super) enum Tone {
     /// Primary while its form is incomplete: half opacity, and the click does nothing.
     PrimaryDisabled,
     Critical,
+    /// `critical-secondary` (Revoke Ban).
+    CriticalSecondary,
 }
 
 pub(super) type Handler = Box<dyn Fn(&mut Root, &mut Window, &mut Context<Root>)>;
@@ -72,6 +74,11 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
             color("--control-critical-primary-background-default"),
             color("--control-critical-primary-border-default"),
             color("--white"),
+        ),
+        Tone::CriticalSecondary => (
+            color("--control-critical-secondary-background-default"),
+            color("--control-critical-secondary-border-default"),
+            color("--control-critical-secondary-text-default"),
         ),
     };
     let run = spec.run;

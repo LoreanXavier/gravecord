@@ -74,6 +74,7 @@ mod saved;
 mod search;
 mod server_games;
 mod server_settings;
+mod server_settings_pages;
 mod settings;
 mod threads;
 mod tooltip;
@@ -495,6 +496,13 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_settings_pages::INVITES_PREFIX)
+                    || key.starts_with(server_settings_pages::BANS_PREFIX)
+                {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.server_page_fetched(&key, cx);
+                    return;
                 }
                 if key.starts_with(server_games::GAMES_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
@@ -1347,6 +1355,7 @@ impl Root {
             list.push(settings.description.clone());
             list.extend(settings.traits.iter().cloned());
             list.push(settings.games_query.clone());
+            list.extend(settings.bans.as_ref().map(|bans| bans.search.clone()));
             list.extend(
                 settings
                     .delete_name
@@ -4009,6 +4018,13 @@ impl Render for Root {
                         && open.games_open
                     {
                         open.games_open = false;
+                    } else if let Some(bans) = this
+                        .server_settings
+                        .as_mut()
+                        .and_then(|open| open.bans.as_mut())
+                        && bans.open.is_some()
+                    {
+                        bans.open = None;
                     } else {
                         this.server_settings = None;
                     }
@@ -4162,6 +4178,7 @@ impl Render for Root {
             .children(self.server_settings_layer(cx))
             .children(self.delete_server_modal(cx))
             .children(self.server_games_dropdown(window, cx))
+            .children(self.ban_dialog(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))

@@ -253,6 +253,8 @@ pub(crate) struct ServerSettings {
     /// Delete Server's name field while it is open, and whether the typed name was wrong.
     pub(super) delete_name: Option<(Entity<Editor>, Subscription)>,
     delete_wrong: bool,
+    /// The Bans page's search and open ban, made when the page first opens.
+    pub(super) bans: Option<super::server_settings_pages::BansState>,
     _events: Vec<Subscription>,
 }
 
@@ -374,6 +376,7 @@ impl Root {
             loaded: false,
             delete_name: None,
             delete_wrong: false,
+            bans: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -1016,9 +1019,12 @@ impl Root {
                                         ));
                                         return;
                                     }
-                                    if let Some(open) = this.server_settings.as_mut() {
-                                        open.page = target;
-                                    }
+                                    let Some(open) = this.server_settings.as_mut() else {
+                                        return;
+                                    };
+                                    open.page = target;
+                                    let guild = open.guild;
+                                    this.request_server_page(guild, target, cx);
                                     cx.notify();
                                 })),
                         );
@@ -1059,19 +1065,21 @@ impl Root {
             Page::Soundboard => Self::server_page_title("Soundboard"),
             Page::Members => Self::server_page_title("Server Members"),
             Page::Roles => Self::server_page_title("Roles"),
-            Page::Invites => Self::server_page_title("Invites"),
+            Page::Invites => self.server_invites_page(open.guild, cx),
             Page::Access => Self::server_page_title("Access"),
             Page::Integrations => Self::server_page_title("Integrations"),
             Page::AppDirectory => Self::server_page_title("App Directory"),
             Page::SafetySetup => Self::server_page_title("Safety Setup"),
             Page::AuditLog => Self::server_page_title("Audit Log"),
-            Page::Bans => Self::server_page_title("Server Ban List"),
+            Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
             Page::Community => Self::server_page_title("Enable Community"),
             Page::Template => Self::server_page_title("Server Template"),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
         let close_left = if page == Page::Profile { 835. } else { 740. };
+        // Custom pages (Invites) put ESC 32px higher: their scroller starts at the window's top.
+        let close_top = if page == Page::Invites { 0. } else { 32. };
         let preview = (page == Page::Profile).then(|| {
             let name = open.name.read(cx).text().to_owned();
             let body = self.server_preview_body(cx);
@@ -1203,6 +1211,8 @@ impl Root {
                             .overflow_y_scroll()
                             .flex()
                             .justify_end()
+                            // Not stretched, or the list could never be taller than the window and scroll.
+                            .items_start()
                             .child(nav),
                     )
                     .child(
@@ -1227,7 +1237,16 @@ impl Root {
                                             .pb(px(100.))
                                             .flex()
                                             .gap(px(40.))
-                                            .child(content)
+                                            // `contentColumn_jnk11m`: 660 inside its padding, except beside the card.
+                                            .child(if page == Page::Profile {
+                                                content
+                                            } else {
+                                                div()
+                                                    .w(px(660.))
+                                                    .flex_none()
+                                                    .child(content)
+                                                    .into_any_element()
+                                            })
                                             // The preview's column; the card itself stays put (below).
                                             .when(preview.is_some(), |this| {
                                                 this.child(div().w(px(300.)).flex_none())
@@ -1242,7 +1261,7 @@ impl Root {
                                 div()
                                     .absolute()
                                     .left(px(close_left))
-                                    .top(px(32.))
+                                    .top(px(close_top))
                                     .child(close),
                             )
                             .children(notice),
