@@ -30,6 +30,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 mod actions;
 mod apps;
+mod audio_menu;
 mod badge_paths;
 mod blocked;
 mod create_channel;
@@ -166,6 +167,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    audio_menu: Option<audio_menu::AudioMenu>,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
     pending_invite_link: Option<String>,
@@ -252,6 +254,7 @@ pub struct Root {
 
 impl Root {
     pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
+        audio_menu::restore_audio_prefs();
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, _, event, _| match event {
             EditorEvent::Submit(content) => {
@@ -283,6 +286,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            audio_menu: None,
             invite: None,
             invite_codes: HashMap::new(),
             pending_invite_link: None,
@@ -1858,8 +1862,17 @@ impl Root {
                 .justify_center()
                 .child(icon(name, 20., tint(muted)))
         };
-        let chevron = |muted: bool| {
+        let chevron = |muted: bool, side: audio_menu::Side| {
+            let probe = match side {
+                audio_menu::Side::Input => "mic-chevron",
+                audio_menu::Side::Output => "headphones-chevron",
+            };
             div()
+                .id(probe)
+                .relative()
+                .cursor_pointer()
+                .child(self.anchor_probe(probe))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_audio_menu(side, cx)))
                 .w(px(16.))
                 .h(px(32.))
                 .ml(px(1.))
@@ -1872,6 +1885,8 @@ impl Root {
                 .child(icon("audio_chevron", 16., tint(muted)))
         };
         let mic_muted = self.self_mute || self.self_deaf;
+        let mic_chevron = chevron(mic_muted, audio_menu::Side::Input);
+        let headphones_chevron = chevron(self.self_deaf, audio_menu::Side::Output);
         let row = div()
             .h(px(56.))
             .flex()
@@ -1925,7 +1940,7 @@ impl Root {
                                 cx,
                             )),
                     )
-                    .child(chevron(mic_muted)),
+                    .child(mic_chevron),
             )
             .child(
                 div()
@@ -1954,7 +1969,7 @@ impl Root {
                                 cx,
                             )),
                     )
-                    .child(chevron(self.self_deaf)),
+                    .child(headphones_chevron),
             )
             .child(
                 div()
@@ -3975,6 +3990,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.audio_menu_layer(cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))

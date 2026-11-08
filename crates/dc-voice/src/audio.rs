@@ -1,21 +1,112 @@
-//! Default microphone and speaker through cpal. Device callbacks only touch preallocated
+//! The chosen (or default) microphone and speaker through cpal, at the user panel's volumes. Device callbacks only touch preallocated
 //! lock-free rings; a worker thread moves 20 ms mono 48 kHz frames between those rings and
 //! the voice loop's bounded channels, and reopens devices that fail.
 //!
 //! Adapted from Serein `crates/discord-voice/src/audio.rs` (`Gate`, `Streams::open`,
 //! `input_config`, `input_stream`, `output_stream`, `Capture`, `Playback`) and
 //! `crates/platform/src/audio.rs` (`output_config`), MIT OR Apache-2.0. Dropped: echo
-//! cancellation, noise suppression, input gate, gain, device selection and listing, the
+//! cancellation, noise suppression, input gate, the
 //! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
 use crate::Frame;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
+
+/// The user panel's device and volume choices (`MediaEngineStore`'s input/output device and volumes). Devices are
+/// named as cpal names them; `None` follows the system default. Volumes are linear gains: input 0..1 (100 % at
+/// the slider's end), output 0..2 (the slider's middle is 100 %).
+pub struct Prefs {
+    input: Mutex<Option<String>>,
+    output: Mutex<Option<String>>,
+    input_gain: AtomicU32,
+    output_gain: AtomicU32,
+    /// Bumped when a device changes, so the worker reopens its streams.
+    pub(crate) generation: AtomicU64,
+}
+
+pub fn prefs() -> &'static Prefs {
+    static PREFS: OnceLock<Prefs> = OnceLock::new();
+    PREFS.get_or_init(|| Prefs {
+        input: Mutex::new(None),
+        output: Mutex::new(None),
+        input_gain: AtomicU32::new(1.0f32.to_bits()),
+        output_gain: AtomicU32::new(1.0f32.to_bits()),
+        generation: AtomicU64::new(0),
+    })
+}
+
+impl Prefs {
+    pub fn input_device(&self) -> Option<String> {
+        self.input.lock().ok().and_then(|device| device.clone())
+    }
+    pub fn output_device(&self) -> Option<String> {
+        self.output.lock().ok().and_then(|device| device.clone())
+    }
+    pub fn set_input_device(&self, device: Option<String>) {
+        if let Ok(mut slot) = self.input.lock() {
+            *slot = device;
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+    pub fn set_output_device(&self, device: Option<String>) {
+        if let Ok(mut slot) = self.output.lock() {
+            *slot = device;
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+    pub fn input_gain(&self) -> f32 {
+        f32::from_bits(self.input_gain.load(Ordering::Relaxed))
+    }
+    pub fn output_gain(&self) -> f32 {
+        f32::from_bits(self.output_gain.load(Ordering::Relaxed))
+    }
+    pub fn set_input_gain(&self, gain: f32) {
+        self.input_gain
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+    pub fn set_output_gain(&self, gain: f32) {
+        self.output_gain
+            .store(gain.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// The system's microphones and speakers by name, and the default ones.
+pub fn input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .map(|devices| devices.map(|device| device.to_string()).collect())
+        .unwrap_or_default()
+}
+pub fn output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .map(|devices| devices.map(|device| device.to_string()).collect())
+        .unwrap_or_default()
+}
+pub fn default_input_device() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .map(|device| device.to_string())
+}
+pub fn default_output_device() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .map(|device| device.to_string())
+}
+
+/// The chosen device, or the default when none is chosen or it is gone.
+fn pick(
+    devices: Option<impl Iterator<Item = cpal::Device>>,
+    wanted: Option<String>,
+) -> Option<cpal::Device> {
+    let wanted = wanted?;
+    devices?.find(|device| device.to_string() == wanted)
+}
 
 /// Frames buffered in each device ring: 160 ms.
 const RING: usize = 8;
@@ -102,9 +193,17 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
     let mut streams: Option<Streams> = None;
     let mut open_at = Instant::now();
     let mut input_retry_at = Instant::now();
+    let mut devices = prefs().generation.load(Ordering::Acquire);
     // A live call keeps its place while a device is away: failures reopen, never end the call.
     while !gate.stopped.load(Ordering::Acquire) {
         let now = Instant::now();
+        // A device picked in the user panel reopens both streams on it.
+        let chosen = prefs().generation.load(Ordering::Acquire);
+        if chosen != devices {
+            devices = chosen;
+            streams = None;
+            open_at = now;
+        }
         if gate.output_failed.swap(false, Ordering::AcqRel) && streams.is_some() {
             debug!("voice speaker stream failed; reopening devices");
             streams = None;
@@ -170,8 +269,8 @@ struct Streams {
 impl Streams {
     fn open(gate: &Arc<Gate>) -> Result<Self, &'static str> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
+        let device = pick(host.output_devices().ok(), prefs().output_device())
+            .or_else(|| host.default_output_device())
             .ok_or("No default speaker is available")?;
         let config = output_config(&device)?;
         let (output, output_read) = rtrb::RingBuffer::new(RING);
@@ -209,8 +308,8 @@ fn open_input(
     host: &cpal::Host,
     gate: &Arc<Gate>,
 ) -> Result<(cpal::Stream, rtrb::Consumer<Frame>), &'static str> {
-    let device = host
-        .default_input_device()
+    let device = pick(host.input_devices().ok(), prefs().input_device())
+        .or_else(|| host.default_input_device())
         .ok_or("No default microphone is available")?;
     let config = input_config(&device)?;
     let (ring, read) = rtrb::RingBuffer::new(RING);
@@ -392,7 +491,7 @@ impl Capture {
         }
         for frame in data.chunks_exact(channels) {
             let sample = frame.iter().map(|v| v.to_sample::<f32>()).sum::<f32>() / channels as f32;
-            self.sample(sanitize(sample));
+            self.sample(sanitize(sample) * prefs().input_gain());
         }
     }
     fn reset(&mut self) {
@@ -459,8 +558,9 @@ impl Playback {
             data.fill(T::from_sample(0.0));
             return;
         }
+        let gain = prefs().output_gain();
         for frame in data.chunks_mut(channels) {
-            frame.fill(T::from_sample(self.sample()));
+            frame.fill(T::from_sample((self.sample() * gain).clamp(-1.0, 1.0)));
         }
     }
     fn reset(&mut self) {

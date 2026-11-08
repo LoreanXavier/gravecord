@@ -38,6 +38,9 @@ mod rtp;
 mod session;
 mod signal;
 
+pub use audio::{
+    Prefs, default_input_device, default_output_device, input_devices, output_devices, prefs,
+};
 pub use rtp::Mode;
 
 use session::{ControlState, Credentials};
