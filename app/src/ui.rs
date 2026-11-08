@@ -74,6 +74,8 @@ mod saved;
 mod search;
 mod server_emoji;
 mod server_games;
+mod server_role_editor;
+mod server_roles;
 mod server_settings;
 mod server_settings_pages;
 mod settings;
@@ -497,6 +499,16 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_role_editor::ROLES_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.roles_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_roles::ROLE_CREATED_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.role_created(&key, cx);
+                    return;
                 }
                 if key.starts_with(server_emoji::EMOJIS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
@@ -1367,6 +1379,13 @@ impl Root {
                     .emoji
                     .as_ref()
                     .map(|emoji| emoji.fields())
+                    .unwrap_or_default(),
+            );
+            list.extend(
+                settings
+                    .roles
+                    .as_ref()
+                    .map(|roles| roles.fields())
                     .unwrap_or_default(),
             );
             list.extend(
@@ -4192,6 +4211,9 @@ impl Render for Root {
             .children(self.delete_server_modal(cx))
             .children(self.server_games_dropdown(window, cx))
             .children(self.ban_dialog(cx))
+            .children(self.role_menu_layer(cx))
+            .children(self.role_delete_modal(cx))
+            .children(self.role_add_members_modal(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))

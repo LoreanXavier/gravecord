@@ -257,6 +257,10 @@ pub(crate) struct ServerSettings {
     pub(super) bans: Option<super::server_settings_pages::BansState>,
     /// The Emoji page's name fields.
     pub(super) emoji: Option<super::server_emoji::EmojiState>,
+    /// The role open in the Roles editor (@everyone's id is the server's).
+    pub(super) role: Option<Id>,
+    /// The Roles pages' fields and unsaved edits.
+    pub(super) roles: Option<super::server_role_editor::RolesState>,
     _events: Vec<Subscription>,
 }
 
@@ -380,6 +384,8 @@ impl Root {
             delete_wrong: false,
             bans: None,
             emoji: None,
+            role: None,
+            roles: None,
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -936,7 +942,12 @@ impl Root {
             .iter()
             .find(|known| known.id == open.guild)?;
         let page = open.page;
-        let dirty = open.values(cx) != open.saved;
+        // The notice belongs to the page: Server Profile's values, or the Roles drafts.
+        let dirty = match page {
+            Page::Profile => open.values(cx) != open.saved,
+            Page::Roles => self.roles_dirty(),
+            _ => false,
+        };
         let mut nav = div()
             .w(px(264.))
             .pt(px(60.))
@@ -1067,7 +1078,7 @@ impl Root {
             Page::Stickers => Self::server_page_title("Stickers"),
             Page::Soundboard => Self::server_page_title("Soundboard"),
             Page::Members => Self::server_page_title("Server Members"),
-            Page::Roles => Self::server_page_title("Roles"),
+            Page::Roles => self.server_roles_page(open.guild, cx),
             Page::Invites => self.server_invites_page(open.guild, cx),
             Page::Access => Self::server_page_title("Access"),
             Page::Integrations => Self::server_page_title("Integrations"),
@@ -1167,9 +1178,17 @@ impl Root {
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-brand"))
                                 .child("Reset")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.reset_server_settings(cx)),
-                                ),
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this
+                                        .server_settings
+                                        .as_ref()
+                                        .is_some_and(|open| open.page == Page::Roles)
+                                    {
+                                        this.reset_roles(cx);
+                                    } else {
+                                        this.reset_server_settings(cx);
+                                    }
+                                })),
                         )
                         .child(
                             div()
@@ -1186,12 +1205,62 @@ impl Root {
                                 .font_weight(FontWeight(500.))
                                 .text_color(gpui::white())
                                 .child("Save Changes")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.save_server_settings(cx)),
-                                ),
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this
+                                        .server_settings
+                                        .as_ref()
+                                        .is_some_and(|open| open.page == Page::Roles)
+                                    {
+                                        this.save_roles(cx);
+                                    } else {
+                                        this.save_server_settings(cx);
+                                    }
+                                })),
                         ),
                 )
         });
+        // The role editor fills the panel itself (`page_cKeB2a`): its role column and its own scroller.
+        let raw = page == Page::Roles && open.role.is_some();
+        let body: AnyElement = if raw {
+            div()
+                .mt(px(32.))
+                .h(px(688.))
+                .w(px(700.))
+                .child(content)
+                .into_any_element()
+        } else {
+            div()
+                .id("server-settings-scroller")
+                .mt(px(32.))
+                .h_full()
+                .overflow_y_scroll()
+                .flex()
+                // Stretched, the page would be exactly as tall as the scroller and never scroll.
+                .items_start()
+                .child(
+                    div()
+                        .pt(px(60.))
+                        .px(px(40.))
+                        .pb(px(100.))
+                        .flex()
+                        .gap(px(40.))
+                        // `contentColumn_jnk11m`: 660 inside its padding, except beside the card.
+                        .child(if page == Page::Profile {
+                            content
+                        } else {
+                            div()
+                                .w(px(660.))
+                                .flex_none()
+                                .child(content)
+                                .into_any_element()
+                        })
+                        // The preview's column; the card itself stays put (below).
+                        .when(preview.is_some(), |this| {
+                            this.child(div().w(px(300.)).flex_none())
+                        }),
+                )
+                .into_any_element()
+        };
         Some(
             deferred(
                 div()
@@ -1224,38 +1293,7 @@ impl Root {
                             .flex_1()
                             .h_full()
                             .bg(color("--background-base-low"))
-                            .child(
-                                div()
-                                    .id("server-settings-scroller")
-                                    .mt(px(32.))
-                                    .h_full()
-                                    .overflow_y_scroll()
-                                    .flex()
-                                    // Stretched, the page would be exactly as tall as the scroller and never scroll.
-                                    .items_start()
-                                    .child(
-                                        div()
-                                            .pt(px(60.))
-                                            .px(px(40.))
-                                            .pb(px(100.))
-                                            .flex()
-                                            .gap(px(40.))
-                                            // `contentColumn_jnk11m`: 660 inside its padding, except beside the card.
-                                            .child(if page == Page::Profile {
-                                                content
-                                            } else {
-                                                div()
-                                                    .w(px(660.))
-                                                    .flex_none()
-                                                    .child(content)
-                                                    .into_any_element()
-                                            })
-                                            // The preview's column; the card itself stays put (below).
-                                            .when(preview.is_some(), |this| {
-                                                this.child(div().w(px(300.)).flex_none())
-                                            }),
-                                    ),
-                            )
+                            .child(body)
                             // The preview card and ESC hold their place while the page scrolls, as in the capture.
                             .children(preview.map(|preview| {
                                 div().absolute().left(px(495.)).top(px(92.)).child(preview)

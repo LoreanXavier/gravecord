@@ -57,7 +57,7 @@ const ADVANCED_KEY: &str = "channelPermissionSettingsAdvancedModeOn";
 /// The "+" over Roles/Members (`/assets/ef103ccb22234d89.svg`).
 pub(super) const ADD_TARGET_ART: &str = "https://discordapp.com/assets/ef103ccb22234d89.svg";
 /// "Need help with permissions?"
-const PERMISSIONS_HELP: &str = "https://support.discord.com/hc/en-us/articles/206029707";
+pub(super) const PERMISSIONS_HELP: &str = "https://support.discord.com/hc/en-us/articles/206029707";
 
 /// Module 824953: a new webhook is one of these, at random.
 const WEBHOOK_NAMES: [&str; 2] = ["Spidey Bot", "Captain Hook"];

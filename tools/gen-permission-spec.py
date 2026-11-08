@@ -64,6 +64,25 @@ def main():
             lines.append('    },')
         lines.append('];')
         lines.append('')
+    # The role editor's list (module 558393 `generateGuildPermissionSpec`), dumped to permission-spec-guild.json.
+    guild = json.loads(open(ROOT / 'design' / 'snapshot' / 'TRAFFIC' / 'permission-spec-guild.json', encoding='utf8').read())
+    lines.append('pub(super) static GUILD: &[Section] = &[')
+    for section in guild:
+        lines.append('    Section {')
+        lines.append(f'        title: {plain(section["title"])},')
+        lines.append(f'        description: {literal(section["description"])},')
+        lines.append('        permissions: &[')
+        for permission in section['permissions']:
+            lines.append('            Permission {')
+            lines.append(f'                title: {plain(permission["title"])},')
+            lines.append(f'                description: {plain(permission["description"])},')
+            lines.append(f'                everyone_description: {plain(permission["description"])},')
+            lines.append(f'                flag: {int(permission["flag"])},')
+            lines.append('            },')
+        lines.append('        ],')
+        lines.append('    },')
+    lines.append('];')
+    lines.append('')
     OUT.write_text('\n'.join(lines), encoding='utf8')
     print(OUT)
 
