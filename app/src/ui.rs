@@ -57,9 +57,12 @@ mod picker;
 mod pins;
 mod plaintext_extensions;
 mod profile;
+mod profile_menu;
 mod quickswitcher;
 mod reactions_modal;
+mod remediation;
 mod reminder_modal;
+mod report;
 mod saved;
 mod search;
 mod settings;
@@ -138,10 +141,11 @@ enum Row {
         index: usize,
         head: bool,
     },
-    /// A run of messages from blocked people, folded; `first` is the first one's id.
+    /// A run of messages from blocked (or ignored) people, folded; `first` is the first one's id.
     Blocked {
         first: Id,
         count: usize,
+        ignored: bool,
     },
 }
 
@@ -209,6 +213,10 @@ pub struct Root {
     pins_open: Option<&'static str>,
     confirm_unpin: Option<Message>,
     forward: Option<forward::Forward>,
+    profile_menu: Option<profile_menu::ProfileMenu>,
+    profile_menu_which: profile_menu::Which,
+    remediation: Option<(Id, remediation::Remedy)>,
+    report: Option<report::Report>,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
     speech: crate::speech::Speech,
@@ -334,6 +342,10 @@ impl Root {
             pins_open: None,
             confirm_unpin: None,
             forward: None,
+            profile_menu: None,
+            profile_menu_which: profile_menu::Which::Overflow,
+            remediation: None,
+            report: None,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
             speaking_message: None,
@@ -431,6 +443,13 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Fetched { key, body } => {
                 if self.friends_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.report_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key.starts_with(profile_menu::INVITE_KEY) {
+                    self.profile_invite_created(&key, &body);
                     return;
                 }
                 if key == invite::CREATE_KEY {
@@ -837,8 +856,16 @@ impl Root {
             .filter(|(_, kind)| **kind == blocked::RELATIONSHIP_BLOCKED)
             .map(|(user, _)| *user)
             .collect();
-        // The run of blocked messages being folded: its first id, and whether it is open.
-        let mut run: Option<(Id, bool)> = None;
+        // `isIgnoredForMessage`: an ignored author folds the same way, under its own line.
+        let ignored: HashSet<Id> = self
+            .stores
+            .ignored
+            .iter()
+            .filter(|user| !blocked.contains(user))
+            .copied()
+            .collect();
+        // The run being folded: its first id, whether it is open, and whether it is the ignored kind.
+        let mut run: Option<(Id, bool, bool)> = None;
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -848,9 +875,10 @@ impl Root {
                     .push(Row::Divider(local.format("%B %-d, %Y").to_string()));
                 last_day = Some(day);
             }
-            if blocked.contains(&message.author.id) {
+            if blocked.contains(&message.author.id) || ignored.contains(&message.author.id) {
+                let kind = ignored.contains(&message.author.id);
                 let open = match run {
-                    Some((first, open)) if !new_day => {
+                    Some((first, open, run_kind)) if !new_day && run_kind == kind => {
                         if let Some(Row::Blocked { count, .. }) = self
                             .rows
                             .iter_mut()
@@ -866,8 +894,9 @@ impl Root {
                         self.rows.push(Row::Blocked {
                             first: message.id,
                             count: 1,
+                            ignored: kind,
                         });
-                        run = Some((message.id, open));
+                        run = Some((message.id, open, kind));
                         open
                     }
                 };
@@ -983,7 +1012,10 @@ impl Root {
             .as_ref()
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         format!(
-            "add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            self.profile_menu
+                .as_ref()
+                .map(|menu| (menu.user, menu.invite, menu.sent.len())),
             self.friends_tab,
             self.current_guild()
                 .map(|guild| guild.name.as_str())
@@ -2974,7 +3006,11 @@ impl Root {
         match row {
             Row::Spacer => div().h(px(40.)).into_any_element(),
             Row::NewDivider => self.new_divider(),
-            Row::Blocked { first, count } => self.blocked_row(*first, *count, cx),
+            Row::Blocked {
+                first,
+                count,
+                ignored,
+            } => self.blocked_row(*first, *count, *ignored, cx),
             Row::Welcome => self
                 .dm_welcome(cx)
                 .unwrap_or_else(|| div().into_any_element()),
@@ -4100,6 +4136,10 @@ impl Render for Root {
             .children(self.unpin_modal(cx))
             .children(self.pins_popout(window, cx))
             .children(self.forward_modal(window, cx))
+            .children(self.profile_menu_layer(cx))
+            .children(self.profile_submenu_layer(window, cx))
+            .children(self.remediation_modal(cx))
+            .children(self.report_modal(cx))
             .children(self.custom_reminder_modal(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
@@ -4194,17 +4234,29 @@ fn status_dot_small(status: &str, ring: &str) -> impl IntoElement {
 }
 
 fn status_dot(status: &str, ring: &str) -> impl IntoElement {
+    status_dot_sized(status, ring, 10., 3.)
+}
+
+/// The status dot of a 40px avatar (`svg-mask-avatar-status-round-40`): 12px at (28, 28) in a 16px hole.
+fn status_dot_40(status: &str, ring: &str) -> impl IntoElement {
+    status_dot_sized(status, ring, 12., 2.)
+}
+
+/// A status dot of `dot` px in a ring-colored hole reaching `out` px past the avatar corner; the dnd bar,
+/// offline hole and idle bite scale with the dot (masks `svg-mask-status-*`).
+fn status_dot_sized(status: &str, ring: &str, dot: f32, out: f32) -> impl IntoElement {
     let tint = match status {
         "dnd" => "--icon-status-dnd",
         "idle" => "--icon-status-idle",
         "invisible" | "offline" => "--icon-status-offline",
         _ => "--icon-status-online",
     };
+    let hole = dot + if dot >= 12. { 4. } else { 6. };
     div()
         .absolute()
-        .right(px(-3.))
-        .bottom(px(-3.))
-        .size(px(16.))
+        .right(px(-out))
+        .bottom(px(-out))
+        .size(px(hole))
         .rounded_full()
         .bg(color(ring))
         .flex()
@@ -4212,7 +4264,7 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
         .justify_center()
         .child(
             div()
-                .size(px(10.))
+                .size(px(dot))
                 .rounded_full()
                 .bg(color(tint))
                 .flex()
@@ -4220,20 +4272,26 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
                 .justify_center()
                 .relative()
                 .when(status == "dnd", |this| {
-                    this.child(div().w(px(6.)).h(px(2.)).rounded(px(1.)).bg(color(ring)))
+                    this.child(
+                        div()
+                            .w(px(dot * 0.6))
+                            .h(px(dot * 0.2))
+                            .rounded(px(dot * 0.1))
+                            .bg(color(ring)),
+                    )
                 })
                 // `svg-mask-status-offline`: a hole of half the dot's size.
                 .when(matches!(status, "offline" | "invisible"), |this| {
-                    this.child(div().size(px(5.)).rounded_full().bg(color(ring)))
+                    this.child(div().size(px(dot * 0.5)).rounded_full().bg(color(ring)))
                 })
                 // `svg-mask-status-idle`: the dot less a circle of radius 0.375 centred at a quarter.
                 .when(status == "idle", |this| {
                     this.child(
                         div()
                             .absolute()
-                            .left(px(-1.25))
-                            .top(px(-1.25))
-                            .size(px(7.5))
+                            .left(px(-dot * 0.125))
+                            .top(px(-dot * 0.125))
+                            .size(px(dot * 0.75))
                             .rounded_full()
                             .bg(color(ring)),
                     )

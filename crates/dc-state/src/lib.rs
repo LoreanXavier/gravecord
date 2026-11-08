@@ -5,12 +5,13 @@ pub mod frecency;
 pub mod grouping;
 pub mod guild_settings;
 pub mod member_list;
+pub mod permissions;
 pub mod read_state;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub type Id = u64;
@@ -32,6 +33,7 @@ pub struct User {
     pub discriminator: String,
     /// `primary_guild`: the server tag shown after the name, when the user turned it on.
     pub tag: Option<ServerTag>,
+    pub bot: bool,
 }
 
 /// A user's server tag (`primary_guild` with `identity_enabled`): the guild, its badge hash and the tag text.
@@ -73,6 +75,7 @@ impl User {
             avatar: text(&value["avatar"]),
             discriminator: text(&value["discriminator"]).unwrap_or_else(|| "0".to_owned()),
             tag: ServerTag::from_value(&value["primary_guild"]),
+            bot: value["bot"].as_bool().unwrap_or(false),
         })
     }
 
@@ -117,6 +120,8 @@ pub struct Channel {
     pub parent_id: Option<Id>,
     /// The newest message when the channel arrived; `read_states.latest` follows it after that.
     pub last_message_id: Option<Id>,
+    /// `permission_overwrites`.
+    pub overwrites: Vec<permissions::Overwrite>,
 }
 
 impl Channel {
@@ -128,6 +133,7 @@ impl Channel {
             position: value["position"].as_i64().unwrap_or(0),
             parent_id: id(&value["parent_id"]),
             last_message_id: id(&value["last_message_id"]),
+            overwrites: permissions::Overwrite::list(&value["permission_overwrites"]),
         })
     }
 }
@@ -141,6 +147,17 @@ pub struct Guild {
     pub joined_at: String,
     pub channels: Vec<Channel>,
     pub roles: HashMap<Id, String>,
+    /// Role id to its permission bits (the @everyone role has the guild's id).
+    pub role_permissions: HashMap<Id, u64>,
+    /// The current user's roles here (READY `merged_members`, then GUILD_MEMBER_UPDATE).
+    pub my_roles: Vec<Id>,
+    /// The current user has not passed the rules screening yet (`pending` on their member).
+    pub my_pending: bool,
+    /// Their timeout's end in epoch milliseconds (`communication_disabled_until`).
+    pub my_timeout_until: Option<i64>,
+    /// 1 when moderation needs 2FA (`mfa_level` ELEVATED).
+    pub mfa_level: u64,
+    pub vanity_url_code: Option<String>,
     pub features: Vec<String>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
@@ -249,6 +266,19 @@ impl Guild {
                 .flatten()
                 .filter_map(|role| Some((id(&role["id"])?, text(&role["name"])?)))
                 .collect(),
+            role_permissions: value["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|role| {
+                    Some((id(&role["id"])?, permissions::bits(&role["permissions"])))
+                })
+                .collect(),
+            my_roles: Vec::new(),
+            my_pending: false,
+            my_timeout_until: None,
+            mfa_level: properties["mfa_level"].as_u64().unwrap_or(0),
+            vanity_url_code: text(&properties["vanity_url_code"]),
             features: properties["features"]
                 .as_array()
                 .into_iter()
@@ -268,6 +298,21 @@ impl Guild {
                 .unwrap_or(0),
             emojis: GuildEmoji::list(&value["emojis"]),
         })
+    }
+
+    /// The current user's member object: roles, screening and timeout.
+    pub fn set_my_member(&mut self, member: &Value) {
+        self.my_roles = member["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(id)
+            .collect();
+        self.my_pending = member["pending"].as_bool().unwrap_or(false);
+        self.my_timeout_until = member["communication_disabled_until"]
+            .as_str()
+            .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+            .map(|until| until.timestamp_millis());
     }
 
     /// The join date as a snowflake, so it compares with message ids.
@@ -782,6 +827,12 @@ pub struct Stores {
     pub typing: HashMap<Id, Vec<(Id, Instant)>>,
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
+    /// Users this account ignores (`user_ignored` on a relationship; RelationshipStore `isIgnored`).
+    pub ignored: HashSet<Id>,
+    /// The account has 2FA (`mfa_enabled` on READY's user).
+    pub mfa_enabled: bool,
+    /// `safety_settings.ignore_profile_speedbump_disabled`.
+    pub ignore_speedbump_disabled: bool,
     pub private_channels: Vec<PrivateChannel>,
     pub member_lists: HashMap<Id, member_list::MemberList>,
     /// User id to status, for people this session has presence for.
@@ -840,7 +891,16 @@ impl Stores {
                 }
             }
             "GUILD_CREATE" => {
-                if let Some(guild) = Guild::from_value(data) {
+                if let Some(mut guild) = Guild::from_value(data) {
+                    let me = self.current_user.as_ref().map(|user| user.id);
+                    if let Some(member) = data["members"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|member| me.is_some() && id(&member["user"]["id"]) == me)
+                    {
+                        guild.set_my_member(member);
+                    }
                     for channel in &guild.channels {
                         if let Some(latest) = channel.last_message_id {
                             self.read_states.latest.insert(channel.id, latest);
@@ -849,6 +909,41 @@ impl Stores {
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
                     self.sort_guilds();
+                }
+            }
+            "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
+                if let (Some(guild), Some(role)) = (
+                    id(&data["guild_id"])
+                        .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild)),
+                    id(&data["role"]["id"]),
+                ) {
+                    if let Some(name) = text(&data["role"]["name"]) {
+                        guild.roles.insert(role, name);
+                    }
+                    guild
+                        .role_permissions
+                        .insert(role, permissions::bits(&data["role"]["permissions"]));
+                }
+            }
+            "GUILD_ROLE_DELETE" => {
+                if let (Some(guild), Some(role)) = (
+                    id(&data["guild_id"])
+                        .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild)),
+                    id(&data["role_id"]),
+                ) {
+                    guild.roles.remove(&role);
+                    guild.role_permissions.remove(&role);
+                    guild.my_roles.retain(|known| *known != role);
+                }
+            }
+            "GUILD_MEMBER_UPDATE" => {
+                let me = self.current_user.as_ref().map(|user| user.id);
+                if me.is_some()
+                    && id(&data["user"]["id"]) == me
+                    && let Some(guild) = id(&data["guild_id"])
+                        .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild))
+                {
+                    guild.set_my_member(data);
                 }
             }
             "GUILD_EMOJIS_UPDATE" => {
@@ -954,6 +1049,26 @@ impl Stores {
                 if let (Some(user), Some(kind)) = (id(&data["id"]), data["type"].as_u64()) {
                     self.relationships.insert(user, kind);
                 }
+                if let (Some(user), Some(ignored)) =
+                    (id(&data["id"]), data["user_ignored"].as_bool())
+                {
+                    self.set_ignored(user, ignored);
+                }
+            }
+            // A settings write from any session: type 1 is PreloadedUserSettings, sent whole.
+            "USER_SETTINGS_PROTO_UPDATE" => {
+                if data["settings"]["type"].as_u64() == Some(1)
+                    && let Some(proto) = data["settings"]["proto"].as_str()
+                {
+                    // A partial update carries only what changed: absent there means unchanged.
+                    let disabled = settings::ignore_speedbump_disabled(proto);
+                    if data["partial"] != true || disabled {
+                        self.ignore_speedbump_disabled = disabled;
+                    }
+                    if let Some(theme) = settings::theme(proto) {
+                        self.theme = theme;
+                    }
+                }
             }
             "RELATIONSHIP_REMOVE" => {
                 if let Some(user) = id(&data["id"]) {
@@ -995,6 +1110,28 @@ impl Stores {
     }
 
     /// A DM or group DM from CHANNEL_CREATE or the `POST /users/@me/channels` answer, put first in the list.
+    /// `RELATIONSHIP_IGNORE_USER_SUCCESS` / `RELATIONSHIP_UNIGNORE_USER_SUCCESS`.
+    pub fn set_ignored(&mut self, user: Id, ignored: bool) {
+        if ignored {
+            self.ignored.insert(user);
+        } else {
+            self.ignored.remove(&user);
+        }
+    }
+
+    /// Who permissions are computed for.
+    pub fn me(&self) -> Option<permissions::Me> {
+        Some(permissions::Me {
+            id: self.current_user.as_ref()?.id,
+            mfa_enabled: self.mfa_enabled,
+        })
+    }
+
+    /// RelationshipStore `isIgnored`: ignored and not blocked.
+    pub fn is_ignored(&self, user: Id) -> bool {
+        self.ignored.contains(&user) && self.relationships.get(&user) != Some(&2)
+    }
+
     pub fn add_private_channel(&mut self, data: &Value) {
         if !matches!(data["type"].as_u64(), Some(1 | 3)) {
             return;
@@ -1016,11 +1153,15 @@ impl Stores {
 
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
+        self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.theme = data["user_settings_proto"]
             .as_str()
             .and_then(settings::theme)
             .unwrap_or(0);
+        self.ignore_speedbump_disabled = data["user_settings_proto"]
+            .as_str()
+            .is_some_and(settings::ignore_speedbump_disabled);
         self.guild_order = data["user_settings_proto"]
             .as_str()
             .and_then(settings::guild_order)
@@ -1038,6 +1179,13 @@ impl Stores {
             .flatten()
             .filter_map(|entry| Some((id(&entry["id"])?, entry["type"].as_u64()?)))
             .collect();
+        self.ignored = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["user_ignored"].as_bool() == Some(true))
+            .filter_map(|entry| id(&entry["id"]))
+            .collect();
         self.private_channels = data["private_channels"]
             .as_array()
             .map(|channels| {
@@ -1054,6 +1202,38 @@ impl Stores {
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
             .unwrap_or_default();
+        // `merged_members` lines up with `guilds`: the current user's member object in each.
+        let me = self.current_user.as_ref().map(|user| user.id);
+        let merged: Vec<Option<Value>> = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, _)| {
+                data["merged_members"][index]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|member| me.is_none() || id(&member["user_id"]) == me)
+                    .cloned()
+            })
+            .collect();
+        let guild_ids: Vec<Option<Id>> = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|guild| id(&guild["id"]))
+            .collect();
+        for (guild_id, member) in guild_ids.into_iter().zip(merged) {
+            if let (Some(guild), Some(member)) = (
+                self.guilds
+                    .iter_mut()
+                    .find(|guild| Some(guild.id) == guild_id),
+                member,
+            ) {
+                guild.set_my_member(&member);
+            }
+        }
         self.voice_states = data["guilds"]
             .as_array()
             .into_iter()
@@ -1369,6 +1549,12 @@ mod tests {
             joined_at: String::new(),
             channels: Vec::new(),
             roles: HashMap::new(),
+            role_permissions: HashMap::new(),
+            my_roles: Vec::new(),
+            my_pending: false,
+            my_timeout_until: None,
+            mfa_level: 0,
+            vanity_url_code: None,
             features: features
                 .iter()
                 .map(|feature| (*feature).to_owned())
@@ -1744,5 +1930,54 @@ mod tests {
             ..User::default()
         };
         assert_eq!(legacy.default_avatar_index(), 2);
+    }
+
+    #[test]
+    fn ignored_users_follow_ready_and_relationship_events() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "relationships": [
+                    {"id": "20", "type": 0, "user_ignored": true},
+                    {"id": "21", "type": 1},
+                    {"id": "22", "type": 2, "user_ignored": true}
+                ]
+            }),
+        );
+        assert!(stores.is_ignored(20));
+        assert!(!stores.is_ignored(21));
+        // Blocked wins over ignored, as `isIgnored` checks.
+        assert!(!stores.is_ignored(22));
+        stores.dispatch(
+            "RELATIONSHIP_UPDATE",
+            &json!({"id": "21", "type": 1, "user_ignored": true}),
+        );
+        assert!(stores.is_ignored(21));
+        stores.set_ignored(21, false);
+        assert!(!stores.is_ignored(21));
+    }
+
+    #[test]
+    fn settings_proto_updates_read_the_speedbump() {
+        let mut stores = Stores::default();
+        let patch = settings::ignore_speedbump_disabled_patch();
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": patch}, "partial": true}),
+        );
+        assert!(stores.ignore_speedbump_disabled);
+        // A partial update without the field leaves it alone; a full one without it clears it.
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": ""}, "partial": true}),
+        );
+        assert!(stores.ignore_speedbump_disabled);
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": ""}, "partial": false}),
+        );
+        assert!(!stores.ignore_speedbump_disabled);
     }
 }

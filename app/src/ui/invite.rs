@@ -105,7 +105,12 @@ impl Root {
             return;
         };
         invite.sent.insert(user);
-        let link = format!("https://discord.gg/{code}");
+        self.send_link_to_dm(user, format!("https://discord.gg/{code}"));
+        cx.notify();
+    }
+
+    /// A link to someone: in their DM, opened first when there is none.
+    pub(super) fn send_link_to_dm(&mut self, user: Id, link: String) {
         match self
             .stores
             .private_channels
@@ -131,7 +136,6 @@ impl Root {
                 });
             }
         }
-        cx.notify();
     }
 
     pub(super) fn invite_dm_opened(&mut self, report: &Value) {

@@ -1,6 +1,8 @@
 """Write the first svg under a capture node as an icon file.
 
-python tools/svg-of.py design/dom/<screen>/<variant>.json <aria-label or class substring> app/assets/icons/<name>.svg [keep]
+python tools/svg-of.py design/dom/<screen>/<variant>.json <aria-label or class substring>[#n] app/assets/icons/<name>.svg [keep]
+
+`#n` takes the n-th matching node (from 0) instead of the first.
 
 Paths keep their geometry and fill rules; fills become #000 so the icon can be tinted, unless `keep` is given, which
 keeps literal colours (for illustrations).
@@ -12,6 +14,10 @@ import sys
 def main():
     path, needle, out = sys.argv[1], sys.argv[2], sys.argv[3]
     keep = len(sys.argv) > 4 and sys.argv[4] == 'keep'
+    skip = 0
+    if '#' in needle:
+        needle, skip = needle.rsplit('#', 1)
+        skip = int(skip)
     capture = json.load(open(path, encoding='utf8'))
     strings = capture['snapshot']['strings']
     nodes = capture['snapshot']['documents'][0]['nodes']
@@ -40,6 +46,9 @@ def main():
         if needle in found.get('aria-label', '') or needle in found.get('class', '') or needle == found.get('id'):
             svg = first_svg(node)
             if svg is None:
+                continue
+            if skip > 0:
+                skip -= 1
                 continue
             view_box = attrs(svg).get('viewBox', '0 0 24 24')
             parts = []

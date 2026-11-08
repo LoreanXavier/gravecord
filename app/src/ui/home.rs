@@ -159,6 +159,8 @@ impl Root {
 
     fn dm_row(&self, channel: &PrivateChannel, cx: &mut Context<Self>) -> Option<AnyElement> {
         let recipient = self.stores.dm_recipient(channel)?.clone();
+        // Blocked or ignored people carry their mark where the close button would be.
+        let marked = self.is_blocked(recipient.id) || self.stores.is_ignored(recipient.id);
         let id = channel.id;
         let selected = self.channel == Some(id);
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
@@ -231,15 +233,19 @@ impl Root {
                                     recipient.tag.as_ref().map(|tag| self.server_tag_chip(tag)),
                                 ),
                         )
-                        .when(self.is_blocked(recipient.id), |this| {
-                            // `favoriteIcon_zln_tS`: the blocked mark, 16px with 8px after it.
+                        .when(marked, |this| {
+                            // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.
                             this.child(div().mr(px(8.)).child(icon(
-                                "blocked",
+                                if self.is_blocked(recipient.id) {
+                                    "blocked"
+                                } else {
+                                    "eye_slash"
+                                },
                                 16.,
                                 "--text-default",
                             )))
                         })
-                        .when(!self.is_blocked(recipient.id), |this| {
+                        .when(!marked, |this| {
                             this.child(
                                 // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
                                 // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it

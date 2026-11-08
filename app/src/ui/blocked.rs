@@ -19,6 +19,15 @@ pub(super) fn blocked_count(count: usize) -> String {
     }
 }
 
+/// `VFWjc+`: "1 ignored message", "N ignored messages".
+pub(super) fn ignored_count(count: usize) -> String {
+    match count {
+        0 => "No ignored messages".to_owned(),
+        1 => "1 ignored message".to_owned(),
+        _ => format!("{count} ignored messages"),
+    }
+}
+
 impl Root {
     pub(super) fn is_blocked(&self, user: Id) -> bool {
         self.stores.relationships.get(&user) == Some(&RELATIONSHIP_BLOCKED)
@@ -30,6 +39,7 @@ impl Root {
         &self,
         first: Id,
         count: usize,
+        ignored: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let shown = self.shown_blocked.contains(&first);
@@ -46,10 +56,11 @@ impl Root {
                     .items_center()
                     .child(
                         // `blockedIcon_cKojhe`: 28px in, the text at the 72px gutter.
-                        div()
-                            .w(px(72.))
-                            .pl(px(28.))
-                            .child(icon("blocked", 16., "--text-muted")),
+                        div().w(px(72.)).pl(px(28.)).child(icon(
+                            if ignored { "eye_slash" } else { "blocked" },
+                            16.,
+                            "--text-muted",
+                        )),
                     )
                     .child(
                         div()
@@ -57,7 +68,14 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(22.))
                             .text_color(color("--text-default"))
-                            .child(format!("{} \u{2014} ", blocked_count(count))),
+                            .child(format!(
+                                "{} \u{2014} ",
+                                if ignored {
+                                    ignored_count(count)
+                                } else {
+                                    blocked_count(count)
+                                }
+                            )),
                     )
                     .child(
                         div()
@@ -129,9 +147,12 @@ impl Root {
 
     /// `container_7ne32W`: the blocked person's profile waits behind "Show Profile?". gpui has no backdrop blur, so
     /// the panel's own surface stands in for the blurred card.
+    /// The ignored person's profile asks the same (`/cZp5s`), with "Don't show this again" (`QbcRCJ`, module 254828)
+    /// turning the question off for good (`safetySettings.ignoreProfileSpeedbumpDisabled`).
     pub(super) fn blocked_profile_gate(
         &self,
         user: &dc_state::User,
+        ignored: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let avatar = self.images.get(&avatar_source(user).0).cloned();
@@ -171,7 +192,11 @@ impl Root {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(icon("blocked", 24., "--text-default")),
+                                            .child(icon(
+                                                if ignored { "eye_slash" } else { "blocked" },
+                                                24.,
+                                                "--text-default",
+                                            )),
                                     ),
                             )
                             .child(
@@ -189,10 +214,17 @@ impl Root {
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child(format!(
-                                        "You blocked {}, so just making sure. They won't be notified, and will still be blocked",
-                                        user.display_name()
-                                    )),
+                                    .child(if ignored {
+                                        format!(
+                                            "You ignored {}, so just making sure. They won't be notified, and will still be ignored",
+                                            user.display_name()
+                                        )
+                                    } else {
+                                        format!(
+                                            "You blocked {}, so just making sure. They won't be notified, and will still be blocked",
+                                            user.display_name()
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -217,9 +249,41 @@ impl Root {
                                 cx.notify();
                             }))
                             .child("Yes, show profile"),
-                    ),
+                    )
+                    .when(ignored, |this| {
+                        this.child(
+                            div()
+                                .id("ignored-dont-show")
+                                .mt(px(-8.))
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-brand"))
+                                .hover(|style| style.underline())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.disable_ignore_speedbump(id);
+                                    cx.notify();
+                                }))
+                                .child("Don't show this again"),
+                        )
+                    }),
             )
             .into_any_element()
+    }
+}
+
+impl Root {
+    /// `j0.updateSetting(true)`: the settings-proto PATCH, kept locally at once, and this profile shown.
+    fn disable_ignore_speedbump(&mut self, user: Id) {
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: "/users/@me/settings-proto/1".to_owned(),
+            body: Some(serde_json::json!({"settings": dc_proto::settings::ignore_speedbump_disabled_patch()})),
+        });
+        self.stores.ignore_speedbump_disabled = true;
+        self.shown_blocked_profiles.insert(user);
     }
 }
 

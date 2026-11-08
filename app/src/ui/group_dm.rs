@@ -621,6 +621,7 @@ mod tests {
             avatar: None,
             discriminator: "0".to_owned(),
             tag: None,
+            bot: false,
         }
     }
 

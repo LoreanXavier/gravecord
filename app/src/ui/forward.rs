@@ -36,7 +36,10 @@ impl Destination {
 }
 
 pub(crate) struct Forward {
-    pub message: Message,
+    /// The forwarded message; none when a profile is shared.
+    pub message: Option<Message>,
+    /// Share Profile (module 627664): the same modal, sending the profile link instead.
+    pub(super) profile: Option<dc_state::User>,
     pub(super) search: Entity<Editor>,
     pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
@@ -61,6 +64,26 @@ impl Root {
     pub(super) fn open_forward(
         &mut self,
         message: Message,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forward_with(Some(message), None, window, cx);
+    }
+
+    /// Share Profile: the forward modal titled "Share Profile" with the user as preview.
+    pub(super) fn open_share_profile(
+        &mut self,
+        user: dc_state::User,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forward_with(None, Some(user), window, cx);
+    }
+
+    fn open_forward_with(
+        &mut self,
+        message: Option<Message>,
+        profile: Option<dc_state::User>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -98,6 +121,7 @@ impl Root {
         window.focus(&search.read(cx).focus_handle(cx), cx);
         self.forward = Some(Forward {
             message,
+            profile,
             search,
             note,
             _events: [search_events, note_events],
@@ -134,7 +158,10 @@ impl Root {
 
     /// The rows: selected first while not searching, then history and frecency; or the search matches.
     fn forward_results(&self, forward: &Forward) -> Vec<Destination> {
-        let origin = forward.message.channel_id;
+        let origin = forward
+            .message
+            .as_ref()
+            .map_or(0, |message| message.channel_id);
         let query = forward.query.trim().to_lowercase();
         let mut out: Vec<Destination> = Vec::new();
         let push = |destination: Destination, out: &mut Vec<Destination>| {
@@ -236,7 +263,28 @@ impl Root {
             return;
         }
         let note = note.unwrap_or_else(|| forward.note.read(cx).text().trim().to_owned());
-        let source = &forward.message;
+        if let Some(user) = forward.profile.as_ref() {
+            // The link, then the note after a blank line, as one message per destination.
+            let link = profile_link(user.id);
+            let content = if note.is_empty() {
+                link
+            } else {
+                format!("{link}\n\n{note}")
+            };
+            for destination in &forward.selected {
+                let _ = self.requests.send(Request::Send {
+                    channel: destination.channel(),
+                    content: content.clone(),
+                    files: Vec::new(),
+                    reply: None,
+                });
+            }
+        }
+        let Some(source) = forward.message.as_ref() else {
+            self.go_to_destination(&forward.selected);
+            self.show_success_toast("Message forwarded!".to_owned(), cx);
+            return;
+        };
         let guild = self
             .stores
             .guilds
@@ -257,8 +305,13 @@ impl Root {
                 note: (!note.is_empty()).then(|| note.clone()),
             });
         }
-        // `transitionToDestination` with a single destination.
-        if let [only] = forward.selected.as_slice() {
+        self.go_to_destination(&forward.selected);
+        self.show_app_toast("Message forwarded!", cx);
+    }
+
+    /// `transitionToDestination` with a single destination.
+    fn go_to_destination(&mut self, selected: &[Destination]) {
+        if let [only] = selected {
             match only {
                 Destination::Dm(channel) => self.select_home(Some(*channel)),
                 Destination::Channel(channel) => {
@@ -274,7 +327,6 @@ impl Root {
                 }
             }
         }
-        self.show_app_toast("Message forwarded!", cx);
     }
 
     fn destination_row(
@@ -481,7 +533,14 @@ impl Root {
                 .map(|(index, destination)| self.destination_row(*destination, index, cx))
                 .collect()
         };
-        let preview = self.preview_text(&super::first_spans(&forward.message.content));
+        let preview = match (&forward.message, &forward.profile) {
+            (Some(message), _) => self
+                .preview_text(&super::first_spans(&message.content))
+                .into_any_element(),
+            (None, Some(user)) => self.profile_preview(user),
+            (None, None) => div().into_any_element(),
+        };
+        let sharing = forward.profile.as_ref().map(|user| user.id);
         let send_label = if count <= 1 {
             "Send".to_owned()
         } else {
@@ -527,7 +586,11 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Forward To"),
+                                    .child(if sharing.is_some() {
+                                        "Share Profile"
+                                    } else {
+                                        "Forward To"
+                                    }),
                             )
                             .child(
                                 div()
@@ -626,7 +689,7 @@ impl Root {
                     div()
                         .relative()
                         .pl(px(16.))
-                        .py(px(4.))
+                        .when(sharing.is_none(), |this| this.py(px(4.)))
                         .child(
                             div()
                                 .absolute()
@@ -637,7 +700,11 @@ impl Root {
                                 .rounded(px(2.))
                                 .bg(color("--border-subtle")),
                         )
-                        .child(div().h(px(22.)).pt(px(2.)).child(preview)),
+                        .child(if sharing.is_some() {
+                            div().child(preview)
+                        } else {
+                            div().h(px(22.)).pt(px(2.)).child(preview)
+                        }),
                 ),
             )
             .child(
@@ -687,6 +754,35 @@ impl Root {
                                     )),
                             ),
                     )
+                    .when_some(sharing, |this, user| {
+                        // `additionalActions`: Copy Link, a secondary icon button.
+                        this.child(
+                            div()
+                                .id("share-copy-link")
+                                .size(px(40.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|style| {
+                                    style.bg(color("--control-secondary-background-hover"))
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    svg()
+                                        .path("icons/share_link.svg")
+                                        .size(px(20.))
+                                        .text_color(color("--control-secondary-text-default")),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        profile_link(user),
+                                    ));
+                                    this.show_success_toast("Link Copied!".to_owned(), cx);
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .id("forward-send")
@@ -740,4 +836,55 @@ impl Root {
             .into_any_element(),
         )
     }
+
+    /// `preview_0XXhWj`: the shared user, avatar 40 with status, display name and tag.
+    fn profile_preview(&self, user: &dc_state::User) -> AnyElement {
+        let picture = self.images.get(&avatar_source(user).0).cloned();
+        let presence = self
+            .stores
+            .presences
+            .get(&user.id)
+            .cloned()
+            .unwrap_or_else(|| "offline".to_owned());
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .relative()
+                    .size(px(40.))
+                    .rounded_full()
+                    .children(picture.map(|picture| img(picture).size(px(40.)).rounded_full()))
+                    .child(super::status_dot_40(&presence, "--background-surface-high")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(user.display_name().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(user.username.clone()),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// Module 640794: `${location.protocol}//${location.host}/users/{id}` on the desktop client's host.
+pub(super) fn profile_link(user: Id) -> String {
+    format!("https://discord.com/users/{user}")
 }

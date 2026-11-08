@@ -45,6 +45,7 @@ impl Row {
                 avatar: user["avatar"].as_str().map(str::to_owned),
                 discriminator: user["discriminator"].as_str().unwrap_or("0").to_owned(),
                 tag: None,
+                bot: false,
             },
             nick: member["nick"].as_str().map(str::to_owned),
             status: member["presence"]["status"]

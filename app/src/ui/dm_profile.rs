@@ -209,8 +209,8 @@ impl Root {
                         .right(px(8.))
                         .flex()
                         .gap(px(8.))
-                        .child(round_button("profile_friend"))
-                        .child(round_button("more_horizontal")),
+                        .child(self.profile_friend_button(user.id, cx))
+                        .child(self.profile_more_button(user.id, cx)),
                 );
         let names = div()
             .flex()
@@ -334,8 +334,14 @@ impl Root {
             .min_h(px(0.))
             .p(px(2.))
             .rounded(px(8.))
-            .border_1()
-            .border_color(hsla(0., 0., 1., 0.08))
+            // `box-shadow: rgba(255, 255, 255, 0.08) 0 0 0 1px`: a ring outside the card, not a border.
+            .shadow(vec![gpui::BoxShadow {
+                color: hsla(0., 0., 1., 0.08),
+                offset: gpui::point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(1.),
+                inset: false,
+            }])
             .bg(linear_gradient(
                 180.,
                 linear_color_stop(palette.top, 0.),
@@ -351,7 +357,11 @@ impl Root {
                     .child(div().flex_1().child(header).child(sections))
                     .child(footer),
             );
-        let gated = self.is_blocked(user.id) && !self.shown_blocked_profiles.contains(&user.id);
+        // Blocked, or ignored while the speedbump is on: "Show Profile?" first.
+        let ignored = !self.is_blocked(user.id) && self.stores.is_ignored(user.id);
+        let gated = (self.is_blocked(user.id)
+            || (ignored && !self.stores.ignore_speedbump_disabled))
+            && !self.shown_blocked_profiles.contains(&user.id);
         Some(
             div()
                 .parity("dm-profile")
@@ -369,7 +379,7 @@ impl Root {
                             .size_full()
                             .rounded(px(8.))
                             .bg(color("--background-base-lowest"))
-                            .child(self.blocked_profile_gate(&user, cx)),
+                            .child(self.blocked_profile_gate(&user, ignored, cx)),
                     )
                 })
                 .into_any_element(),
@@ -377,7 +387,8 @@ impl Root {
     }
 }
 
-fn round_button(name: &'static str) -> impl IntoElement {
+/// `bannerButton_C4gRrZ`: 32px round on the banner, a 16px white icon.
+pub(super) fn round_button(name: &'static str) -> gpui::Div {
     div()
         .size(px(32.))
         .rounded_full()

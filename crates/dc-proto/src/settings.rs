@@ -10,6 +10,8 @@ const FIELD_GUILD_FOLDERS: u64 = 14;
 const FOLDERS_FOLDER: u64 = 1;
 const FOLDERS_POSITIONS: u64 = 2;
 const FOLDER_GUILD_IDS: u64 = 1;
+const FIELD_SAFETY: u64 = 21;
+const SAFETY_IGNORE_SPEEDBUMP_DISABLED: u64 = 2;
 
 const WIRE_VARINT: u64 = 0;
 const WIRE_FIXED64: u64 = 1;
@@ -127,6 +129,50 @@ pub fn theme(settings_base64: &str) -> Option<u64> {
     varint_of(appearance, APPEARANCE_THEME)
 }
 
+/// `safety_settings.ignore_profile_speedbump_disabled`: an ignored user's profile shows without asking first.
+pub fn ignore_speedbump_disabled(settings_base64: &str) -> bool {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return false;
+    };
+    fields(&settings)
+        .find(|(number, _)| *number == FIELD_SAFETY)
+        .and_then(|(_, safety)| varint_of(safety, SAFETY_IGNORE_SPEEDBUMP_DISABLED))
+        .is_some_and(|value| value != 0)
+}
+
+fn push_varint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// A partial `PreloadedUserSettings` holding one varint field inside nested messages, as `ob(ProtoClass, changes)`
+/// writes only what changed. The PATCH body of `/users/@me/settings-proto/1` carries it base64-encoded.
+pub fn encode_varint_at(path: &[u64], field: u64, value: u64) -> String {
+    let mut message = Vec::new();
+    push_varint(&mut message, field << 3 | WIRE_VARINT);
+    push_varint(&mut message, value);
+    for number in path.iter().rev() {
+        let mut outer = Vec::new();
+        push_varint(&mut outer, number << 3 | WIRE_BYTES);
+        push_varint(&mut outer, message.len() as u64);
+        outer.extend_from_slice(&message);
+        message = outer;
+    }
+    STANDARD.encode(message)
+}
+
+/// "Don't show this again" on an ignored profile (`ignoreProfileSpeedbumpDisabled` set to true).
+pub fn ignore_speedbump_disabled_patch() -> String {
+    encode_varint_at(&[FIELD_SAFETY], SAFETY_IGNORE_SPEEDBUMP_DISABLED, 1)
+}
+
 /// Guild ids in sidebar order, from `guild_folders`. Folders win over the legacy flat list.
 pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
     let settings = STANDARD.decode(settings_base64).ok()?;
@@ -213,6 +259,17 @@ mod tests {
         assert_eq!(guild_order(&encoded(&[])), None);
         assert_eq!(guild_order("not base64!"), None);
         assert_eq!(guild_order(&encoded(&[0x72, 200])), None);
+    }
+
+    #[test]
+    fn the_speedbump_patch_round_trips() {
+        let patch = ignore_speedbump_disabled_patch();
+        assert_eq!(
+            STANDARD.decode(&patch).unwrap(),
+            vec![0xaa, 0x01, 0x02, 0x10, 0x01]
+        );
+        assert!(ignore_speedbump_disabled(&patch));
+        assert!(!ignore_speedbump_disabled(&encoded(&[])));
     }
 
     #[test]

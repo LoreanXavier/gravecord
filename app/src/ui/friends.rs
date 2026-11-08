@@ -15,9 +15,9 @@ use gpui::{
 };
 use serde_json::json;
 
-const RELATIONSHIP_FRIEND: u64 = 1;
-const RELATIONSHIP_INCOMING: u64 = 3;
-const RELATIONSHIP_OUTGOING: u64 = 4;
+pub(super) const RELATIONSHIP_FRIEND: u64 = 1;
+pub(super) const RELATIONSHIP_INCOMING: u64 = 3;
+pub(super) const RELATIONSHIP_OUTGOING: u64 = 4;
 const NOTE_LIMIT: usize = 120;
 pub(super) const FRIEND_REQUEST_KEY: &str = "friend-request:";
 pub(super) const OPEN_DM_KEY: &str = "open-dm";
