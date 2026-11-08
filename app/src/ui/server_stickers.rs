@@ -3,7 +3,8 @@
 //!
 //! `GET /guilds/{id}/stickers` lists them. The page is a timeline of the four levels with their slots; Upload Sticker
 //! opens "Upload a file", which posts a form with the file (`POST /guilds/{id}/stickers`). A tile's pencil is the same
-//! dialog without a file (`PATCH`), its X `DELETE`s. Lottie stickers (partners only) are uploaded but not previewed.
+//! dialog without a file (`PATCH`), its X `DELETE`s. Lottie stickers (partners only) are uploaded but not previewed. The
+//! buttons that ask for Boosts open Boost Perks' dialog; buying Boosts itself is not drawn.
 //! Measured in `design/dom/settings/guild-stickers-darker-cozy.json` and `modals/sticker-upload-darker-cozy.json`.
 
 use super::tooltip::{Body, Side, Tip};
@@ -1346,15 +1347,11 @@ impl Root {
                     .child(text)
             };
         let to_perks = cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-            if let Some(open) = this.server_settings.as_mut() {
-                open.page = super::server_settings::Page::BoostPerks;
-            }
+            this.open_perks(super::server_boost::Perks::Banner, cx);
             cx.notify();
         });
         let to_perks_unlock = cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
-            if let Some(open) = this.server_settings.as_mut() {
-                open.page = super::server_settings::Page::BoostPerks;
-            }
+            this.open_perks(super::server_boost::Perks::Banner, cx);
             cx.notify();
         });
         let status: Option<AnyElement> = if card.unlock_button {
@@ -1697,9 +1694,7 @@ impl Root {
                 .text_color(gpui::rgba(0x000000ff))
                 .child(text)
                 .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(open) = this.server_settings.as_mut() {
-                        open.page = super::server_settings::Page::BoostPerks;
-                    }
+                    this.open_perks(super::server_boost::Perks::Banner, cx);
                     cx.notify();
                 }))
         };

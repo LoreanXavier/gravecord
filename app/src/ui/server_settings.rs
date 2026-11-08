@@ -282,6 +282,7 @@ pub(crate) struct ServerSettings {
     pub(super) safety: super::server_safety::SafetyState,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
+    pub(super) boost: super::server_boost::BoostState,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -436,6 +437,7 @@ impl Root {
             safety: Default::default(),
             community: None,
             overview: None,
+            boost: Default::default(),
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -1005,6 +1007,7 @@ impl Root {
             Page::Integrations => self.webhook_dirty(open.guild, cx),
             Page::Access => self.access_dirty(open.guild, cx),
             Page::Community => self.overview_dirty(),
+            Page::BoostPerks => self.boost_dirty(),
             _ => false,
         };
         let mut nav = div()
@@ -1146,7 +1149,7 @@ impl Root {
             Page::Profile => self.server_profile_page(open, cx),
             Page::Tag => Self::server_page_title("Server Tag"),
             Page::Engagement => self.server_engagement_page(open.guild, cx),
-            Page::BoostPerks => Self::server_page_title("Boost Perks"),
+            Page::BoostPerks => self.server_boost_page(open.guild, cx),
             Page::Emoji => self.server_emoji_page(open.guild, cx),
             Page::Stickers => self.server_stickers_page(open.guild, cx),
             Page::Access => self.server_access_page(open.guild, cx),
@@ -1291,6 +1294,7 @@ impl Root {
                                         Some((Page::Engagement, _)) => this.reset_engagement(cx),
                                         Some((Page::Access, guild)) => this.reset_access(guild, cx),
                                         Some((Page::Community, _)) => this.reset_overview(cx),
+                                        Some((Page::BoostPerks, _)) => this.reset_boost(cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1327,6 +1331,9 @@ impl Root {
                                             this.save_engagement(guild, cx)
                                         }
                                         Some((Page::Access, guild)) => this.save_access(guild, cx),
+                                        Some((Page::BoostPerks, guild)) => {
+                                            this.save_boost(guild, cx)
+                                        }
                                         Some((Page::Community, guild)) => {
                                             this.save_overview(guild, cx)
                                         }

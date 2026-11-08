@@ -75,6 +75,7 @@ mod saved;
 mod search;
 mod server_access;
 mod server_audit;
+mod server_boost;
 mod server_community;
 mod server_emoji;
 mod server_engagement;
@@ -521,6 +522,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.audit_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_boost::BOOST_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.boost_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_community::OVERVIEW_PREFIX) {
@@ -4156,7 +4162,10 @@ impl Render for Root {
                         && open.sticker_dialog.is_some()
                     {
                         open.sticker_dialog = None;
-                    } else if this.close_access_overlay() || this.close_community_wizard() {
+                    } else if this.close_access_overlay()
+                        || this.close_community_wizard()
+                        || this.close_perks()
+                    {
                         cx.notify();
                     } else if let Some(open) = this.server_settings.as_mut()
                         && open.games_open
@@ -4338,6 +4347,7 @@ impl Render for Root {
             .children(self.community_wizard_modal(cx))
             .children(self.community_select_layer(cx))
             .children(self.overview_select_layer(cx))
+            .children(self.boost_perks_modal(cx))
             .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
             .children(

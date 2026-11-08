@@ -184,6 +184,7 @@ impl Root {
             Page::Access => self.request_access(guild, cx),
             Page::AuditLog => self.request_audit(guild),
             Page::SafetySetup => self.request_safety(guild),
+            Page::BoostPerks => self.request_boost(guild),
             Page::Community => self.request_community(guild),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
