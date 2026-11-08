@@ -151,7 +151,7 @@ impl Root {
         self.put_app_toast(message, true, cx);
     }
 
-    fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
+    pub(super) fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
         let duration = std::time::Duration::from_millis(3000);
         self.app_toast = Some(AppToast {
             message,

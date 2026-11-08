@@ -182,6 +182,7 @@ impl Root {
             Page::Soundboard => self.request_sounds(guild),
             Page::Stickers => self.request_stickers(guild),
             Page::Access => self.request_access(guild, cx),
+            Page::AutoMod => self.request_automod(guild, cx),
             Page::AuditLog => self.request_audit(guild),
             Page::SafetySetup => self.request_safety(guild),
             Page::BoostPerks => self.request_boost(guild),

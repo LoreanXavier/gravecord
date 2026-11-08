@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 pub(super) const SAFETY_PREFIX: &str = "guild-safety:";
 const SAVED_PREFIX: &str = "guild-safety:saved:";
 /// Module 652215's `SAFE_DIRECT_MESSAGING` article.
-const CONTENT_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/115000068672";
+pub(super) const CONTENT_ARTICLE: &str =
+    "https://support.discord.com/hc/en-us/articles/115000068672";
 const MEMBERS_FEATURE: &str = "ENABLED_MODERATION_EXPERIENCE_FOR_NON_COMMUNITY";
 const PRUNE_FEATURE: &str = "PRUNE_REQUIRES_ADMIN";
 const RAID_FEATURE: &str = "NON_COMMUNITY_RAID_ALERTS";
@@ -30,7 +31,7 @@ fn recommendation_range() -> std::ops::Range<usize> {
 }
 
 /// One option of a picker (`w3`): its value, words and the mark at its left.
-struct Option3 {
+pub(super) struct Option3 {
     value: u64,
     title: &'static str,
     description: String,
@@ -85,7 +86,7 @@ fn verification_options(community: bool) -> Vec<Option3> {
 }
 
 /// `QL`.
-fn content_options(community: bool) -> Vec<Option3> {
+pub(super) fn content_options(community: bool) -> Vec<Option3> {
     vec![
         Option3 {
             value: 2,
@@ -160,6 +161,13 @@ pub(crate) struct SafetyState {
 impl Root {
     fn safety_mut(&mut self) -> Option<&mut SafetyState> {
         self.server_settings.as_mut().map(|open| &mut open.safety)
+    }
+
+    /// The filter level the guild has, for the AutoMod page's `th`.
+    pub(super) fn safety_content(&self) -> u64 {
+        self.server_settings
+            .as_ref()
+            .map_or(0, |open| open.safety.content)
     }
 
     pub(super) fn request_safety(&mut self, guild: Id) {
@@ -353,7 +361,7 @@ impl Root {
     }
 
     /// `eJ`: the choice in a row with Change; open, every option under it.
-    fn safety_picker(
+    pub(super) fn safety_picker(
         &self,
         guild: Id,
         which: u8,

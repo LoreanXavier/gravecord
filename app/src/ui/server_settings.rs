@@ -278,6 +278,7 @@ pub(crate) struct ServerSettings {
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
+    pub(super) automod: Option<super::server_automod::AutoModState>,
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
     pub(super) community: Option<super::server_community::Wizard>,
@@ -434,6 +435,7 @@ impl Root {
             sound_dialog: None,
             sticker_dialog: None,
             access: None,
+            automod: None,
             audit: Default::default(),
             safety: Default::default(),
             community: None,
@@ -1168,7 +1170,7 @@ impl Root {
             Page::SafetySetup => self.server_safety_page(open.guild, cx),
             Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
-            Page::AutoMod => Self::server_page_title("AutoMod"),
+            Page::AutoMod => self.server_automod_page(open.guild, cx),
             Page::Community => {
                 let community = self.stores.guild(open.guild).is_some_and(|known| {
                     known.features.iter().any(|feature| feature == "COMMUNITY")

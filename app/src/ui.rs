@@ -75,6 +75,7 @@ mod saved;
 mod search;
 mod server_access;
 mod server_audit;
+mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_emoji;
@@ -549,6 +550,11 @@ impl Root {
                 if key.starts_with(server_safety::SAFETY_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.safety_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_automod::AUTOMOD_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.automod_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_access::ACCESS_PREFIX) {
@@ -1476,6 +1482,9 @@ impl Root {
             }
             if let Some(access) = settings.access.as_ref() {
                 list.extend(access.editors());
+            }
+            if let Some(automod) = settings.automod.as_ref() {
+                list.extend(automod.editors());
             }
             list.extend(
                 settings
@@ -4170,6 +4179,7 @@ impl Render for Root {
                     {
                         open.sticker_dialog = None;
                     } else if this.close_access_overlay()
+                        || this.close_automod_overlay()
                         || this.close_community_wizard()
                         || this.close_perks()
                     {
@@ -4349,6 +4359,12 @@ impl Render for Root {
             .children(self.sound_dialog_modal(cx))
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
+            .children(self.automod_picker_layer(cx))
+            .children(self.automod_bar_layer(cx))
+            .children(self.automod_dialog_modal(cx))
+            .children(self.automod_confirm_modal(cx))
+            .children(self.automod_menu_layer(cx))
+            .children(self.automod_select_layer(cx))
             .children(self.audit_select_layer(cx))
             .children(self.safety_select_layer(cx))
             .children(self.community_wizard_modal(cx))

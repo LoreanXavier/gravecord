@@ -96,6 +96,10 @@ pub struct Editor {
     style: Rc<EditorStyle>,
     laid: Rc<RefCell<Laid>>,
     dragging: bool,
+    /// A text area: Enter starts a new line instead of submitting.
+    enter_inserts_newline: bool,
+    /// `Edited` also follows deleting, pasting, cutting and undoing, not only typing.
+    reports_all_edits: bool,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -115,7 +119,17 @@ impl Editor {
             style: Rc::new(style),
             laid: Rc::default(),
             dragging: false,
+            enter_inserts_newline: false,
+            reports_all_edits: false,
         }
+    }
+
+    pub fn set_enter_inserts_newline(&mut self, on: bool) {
+        self.enter_inserts_newline = on;
+    }
+
+    pub fn set_reports_all_edits(&mut self, on: bool) {
+        self.reports_all_edits = on;
     }
 
     pub fn set_text(&mut self, text: &str) {
@@ -152,6 +166,10 @@ impl Editor {
         if self.buffer.marked().is_some() {
             return;
         }
+        let before = self
+            .reports_all_edits
+            .then(|| self.buffer.text().to_owned());
+        let enter_inserts_newline = self.enter_inserts_newline;
         let buffer = &mut self.buffer;
         let move_to = |buffer: &mut TextBuffer, at: usize| {
             if shift {
@@ -161,7 +179,7 @@ impl Editor {
             }
         };
         match stroke.key.as_str() {
-            "enter" if shift => buffer.insert("\n"),
+            "enter" if shift || enter_inserts_newline => buffer.insert("\n"),
             "enter" => self.submit(cx),
             "escape" => cx.emit(EditorEvent::Cancel),
             "backspace" => buffer.backspace(),
@@ -210,6 +228,9 @@ impl Editor {
                 cx.propagate();
                 return;
             }
+        }
+        if before.is_some_and(|before| before != self.buffer.text()) {
+            cx.emit(EditorEvent::Edited);
         }
         cx.stop_propagation();
         cx.notify();
