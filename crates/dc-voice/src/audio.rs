@@ -200,6 +200,9 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
     // Echo cancellation and noise suppression run here, between the device rings and the voice loop.
     let mut processor = crate::process::Processor::new();
     let mut capturing = false;
+    // Every five seconds the debug log gets how many microphone frames came and how loud, and how many were played.
+    let mut tally_at = Instant::now() + Duration::from_secs(5);
+    let (mut captured, mut played, mut loudest) = (0u32, 0u32, 0f32);
     // A live call keeps its place while a device is away: failures reopen, never end the call.
     while !gate.stopped.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -256,6 +259,12 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
             let Ok(mut frame) = active.input.pop() else {
                 break;
             };
+            captured += 1;
+            loudest = loudest.max(
+                frame
+                    .iter()
+                    .fold(0f32, |peak, sample| peak.max(sample.abs())),
+            );
             if gate.capture() {
                 processor.capture(&mut frame, &prefs().processing);
                 // A full channel means the voice loop is behind; drop rather than block.
@@ -269,8 +278,21 @@ fn run(gate: &Arc<Gate>, capture: &mpsc::SyncSender<Frame>, playback: &mpsc::Rec
             if gate.playback() {
                 // What the speakers play is the echo canceller's reference.
                 processor.render(&frame, &prefs().processing);
+                played += 1;
                 let _ = active.output.push(frame);
             }
+        }
+        if now >= tally_at {
+            debug!(
+                captured,
+                played,
+                peak = loudest,
+                capturing = gate.capture(),
+                playing = gate.playback(),
+                "voice audio tally"
+            );
+            (captured, played, loudest) = (0, 0, 0.0);
+            tally_at = now + Duration::from_secs(5);
         }
         std::thread::park_timeout(Duration::from_millis(5));
     }
@@ -290,6 +312,11 @@ impl Streams {
             .or_else(|| host.default_output_device())
             .ok_or("No default speaker is available")?;
         let config = output_config(&device)?;
+        debug!(
+            rate = config.sample_rate(),
+            channels = config.channels(),
+            "voice speaker opened"
+        );
         let (output, output_read) = rtrb::RingBuffer::new(RING);
         let render = Playback::new(config.sample_rate(), output_read);
         let stream_config = config.config();
@@ -329,6 +356,11 @@ fn open_input(
         .or_else(|| host.default_input_device())
         .ok_or("No default microphone is available")?;
     let config = input_config(&device)?;
+    debug!(
+        rate = config.sample_rate(),
+        channels = config.channels(),
+        "voice microphone opened"
+    );
     let (ring, read) = rtrb::RingBuffer::new(RING);
     let capture = Capture::new(config.sample_rate(), ring);
     let stream_config = config.config();

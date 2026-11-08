@@ -47,6 +47,8 @@ const SMOOTH: f32 = 0.5;
 const RELATIVE_FLOOR: f32 = 0.01;
 /// How slowly the bin's long-run power follows: about ten seconds.
 const LONG_RUN: f32 = 0.999;
+/// The most a bin is turned down: 20 dB, so a wrong prediction cannot carve holes into the voice.
+const MIN_GAIN: f32 = 0.1;
 /// An absolute floor for `λ`, for digital silence.
 const POWER_FLOOR: f32 = 1e-10;
 /// The inverse correlation matrix starts as this times the identity.
@@ -140,6 +142,17 @@ impl Bin {
     }
 }
 
+/// The filter only ever turns a bin down: the output keeps the observed bin's phase at a gain of `|d| / |x|`, at most
+/// one and at least `MIN_GAIN`. Subtracting the prediction outright let a tail the filter expected but the room did
+/// not make come out as new sound after each sentence, which in a live call sounded like added reverb.
+fn clamp_to(observed: Complex32, desired: Complex32) -> Complex32 {
+    let level = observed.norm();
+    if level <= f32::EPSILON {
+        return observed;
+    }
+    observed * (desired.norm() / level).clamp(MIN_GAIN, 1.0)
+}
+
 pub(crate) struct Dereverb {
     forward: Arc<dyn RealToComplex<f32>>,
     inverse: Arc<dyn ComplexToReal<f32>>,
@@ -201,7 +214,7 @@ impl Dereverb {
         {
             let observed = *value;
             let past: [Complex32; TAPS] = std::array::from_fn(|index| history[DELAY - 1 + index]);
-            *value = bin.step(observed, &past);
+            *value = clamp_to(observed, bin.step(observed, &past));
             history.copy_within(..DELAY + TAPS - 1, 1);
             history[0] = observed;
         }
@@ -281,6 +294,19 @@ mod tests {
         }
         // Dry speech-like input keeps at least 90 % of itself.
         assert!(error < energy * 0.1, "changed {error} of {energy}");
+        // Nothing comes out of the silences after each burst: a tail the filter expects is never added as sound.
+        let mut gaps = 0.0f32;
+        for index in 48_000..signal.len() - LATENCY {
+            // The silence that starts a window after a burst ends, for the rest of the gap.
+            let phase = index % 14_400;
+            if (4_800 + 1_920..12_000).contains(&phase) {
+                gaps += out[index + LATENCY].powi(2);
+            }
+        }
+        assert!(
+            gaps < energy * 1e-6,
+            "{gaps} came out of silence, of {energy}"
+        );
     }
 
     #[test]
@@ -336,6 +362,30 @@ mod tests {
             }
         }
         assert!(after < before * 0.5, "reverb tail kept {after} of {before}");
+        // And no 10 ms of a tail comes out louder than it went in: a prediction the room did not bear out must not be
+        // added as new sound (in a live call that was a reverb-like smear after each sentence).
+        let mut louder = 0;
+        for start in (dry.len() / 2..dry.len() - LATENCY - HOP).step_by(HOP) {
+            let phase = start % 33_600;
+            // Up to a window before the next burst, whose onset the bins' gains spread back within their window
+            // (about 60 dB under the burst).
+            if !(4_800..33_600 - 1_920).contains(&phase) {
+                continue;
+            }
+            let into: f32 = wet[start..start + HOP].iter().map(|v| v * v).sum();
+            let came: f32 = out[start + LATENCY..start + LATENCY + HOP]
+                .iter()
+                .map(|v| v * v)
+                .sum();
+            // 1 dB of room for the windows' overlap.
+            if came > into * 1.26 && came > 1e-9 {
+                louder += 1;
+            }
+        }
+        assert_eq!(
+            louder, 0,
+            "{louder} blocks of the tails came out louder than they went in"
+        );
     }
 }
 

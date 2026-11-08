@@ -280,8 +280,16 @@ fn select_field_open(value: &'static str, width: Option<f32>, open: bool) -> gpu
 const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[(
     "voice_noise_suppression_setting",
     "voice_noise_suppression_setting/open",
-    &["Krisp", "Standard", "None"],
+    &["DeepFilterNet", "Standard", "None"],
 )];
+
+/// Noise Suppression's description names what runs. The official one says "Powered by Krisp", which cannot run here
+/// (BLOCKED.md); the owner asked for DeepFilterNet to be shown as itself in the same design (11-08).
+const NOISE_DESCRIPTION: Runs = &[
+    ("Reduces background noise from your mic. Powered by ", false),
+    ("DeepFilterNet", true),
+    (".", false),
+];
 
 /// Where the three microphone choices are kept in storage.json, beside the user panel's devices and volumes.
 const NOISE_STORED: &str = "audio.noise_suppression";
@@ -291,7 +299,7 @@ const ROOM_ECHO_STORED: &str = "audio.room_echo";
 /// The select's option index as the processors take it: Krisp, Standard, None.
 fn suppression(index: usize) -> dc_voice::Suppression {
     match index {
-        0 => dc_voice::Suppression::Krisp,
+        0 => dc_voice::Suppression::DeepFilterNet,
         1 => dc_voice::Suppression::Standard,
         _ => dc_voice::Suppression::None,
     }
@@ -743,6 +751,11 @@ impl Root {
                     Some(*field)
                 };
                 let select = self.settings_select(key, value, field, cx);
+                let description = if *key == "voice_noise_suppression_setting" {
+                    NOISE_DESCRIPTION
+                } else {
+                    description
+                };
                 if *vertical {
                     div()
                         .min_h(px(48.))
@@ -962,8 +975,8 @@ mod voice_tests {
             .iter()
             .find(|(key, ..)| *key == "voice_noise_suppression_setting")
             .expect("the select opens");
-        assert_eq!(*options, ["Krisp", "Standard", "None"]);
-        assert_eq!(suppression(0), dc_voice::Suppression::Krisp);
+        assert_eq!(*options, ["DeepFilterNet", "Standard", "None"]);
+        assert_eq!(suppression(0), dc_voice::Suppression::DeepFilterNet);
         assert_eq!(suppression(1), dc_voice::Suppression::Standard);
         assert_eq!(suppression(2), dc_voice::Suppression::None);
     }

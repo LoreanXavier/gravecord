@@ -68,6 +68,10 @@ struct Capture {
     /// Scripted input, see `harness.rs`.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     script: Option<String>,
+    /// `--follow <file>`: stay open and run each line added to the file as a script, for live tests driven from
+    /// outside (a voice call, say). `shot <png>` saves a frame, `quit` ends the run.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    follow: Option<PathBuf>,
 }
 
 fn capture_args() -> Option<Capture> {
@@ -88,6 +92,11 @@ fn capture_args() -> Option<Capture> {
             .position(|arg| arg == "--script")
             .and_then(|at| args.get(at + 1))
             .cloned(),
+        follow: args
+            .iter()
+            .position(|arg| arg == "--follow")
+            .and_then(|at| args.get(at + 1))
+            .map(PathBuf::from),
     })
 }
 
@@ -98,6 +107,27 @@ fn save_frame(image: &image::RgbaImage, path: &Path) -> Result<()> {
 
 /// Calibrated against the official client with `tools/calibrate-text.py`. 2.2 is the top of gpui's table.
 const TEXT_GAMMA: &str = "2.2";
+
+/// `--log <file>`: debug events go to that file, for live tests (a voice call) driven from outside. Off otherwise:
+/// nothing is logged. Debug events may name user ids, so the file belongs in a scratch folder, never in the repo.
+fn record_log() {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(path) = args
+        .iter()
+        .position(|arg| arg == "--log")
+        .and_then(|at| args.get(at + 1))
+    else {
+        return;
+    };
+    let Ok(file) = std::fs::File::create(path) else {
+        return;
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(file))
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+}
 
 /// A panic on the UI thread aborts the process with nothing on screen, so it is written down first:
 /// `%LOCALAPPDATA%\gravecord\panic.log`, newest last. The message never holds tokens or message content.
@@ -133,6 +163,7 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
     }
     record_panics();
+    record_log();
     let secrets_path = find_upwards("secrets.toml").context("secrets.toml not found")?;
     let token = secrets::load(&secrets_path).context("loading secrets.toml")?;
     let assets_root = find_upwards("app/assets").context("app/assets not found")?;
@@ -209,6 +240,32 @@ fn main() -> Result<()> {
                     if let Some(script) = &capture.script {
                         let log = capture.path.with_extension("log");
                         harness::run(script, window.into(), root.clone(), log, cx).await;
+                    }
+                    #[cfg(feature = "capture")]
+                    if let Some(follow) = &capture.follow {
+                        let log = capture.path.with_extension("log");
+                        let mut done = 0;
+                        'follow: loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(300))
+                                .await;
+                            let text = std::fs::read_to_string(follow).unwrap_or_default();
+                            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+                            for line in lines.iter().skip(done) {
+                                done += 1;
+                                let line = line.trim();
+                                if line == "quit" {
+                                    break 'follow;
+                                }
+                                if let Some(shot) = line.strip_prefix("shot ") {
+                                    let shot = PathBuf::from(shot.trim());
+                                    cx.update(|cx| write_capture(cx, window.into(), &shot));
+                                    continue;
+                                }
+                                harness::run(line, window.into(), root.clone(), log.clone(), cx)
+                                    .await;
+                            }
+                        }
                     }
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(capture.settle_ms))

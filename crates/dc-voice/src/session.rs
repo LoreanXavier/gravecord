@@ -176,25 +176,18 @@ fn negotiation_timeout(
     }
 }
 
-/// Serein's encoder profile: mono capture sent as dual-mono stereo Opus at 510 kb/s CBR,
-/// Music signal, full band, no FEC or DTX.
+/// The official client's default: a voice channel's 64 kb/s, variable, speech-tuned, with in-band FEC. Serein's profile
+/// (dual-mono stereo at 510 kb/s CBR) sent packets the other members never played: the voice server forwards a
+/// channel's bitrate, not five times it. Mono capture is still sent as dual-mono stereo, as the SDP asks.
 fn encoder() -> Result<Encoder, &'static str> {
     let fail = |_| "Opus encoder configuration failed";
-    let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Audio).map_err(fail)?;
-    encoder.set_bitrate(Bitrate::Bits(510_000)).map_err(fail)?;
-    encoder.set_vbr(false).map_err(fail)?;
-    encoder.set_vbr_constraint(false).map_err(fail)?;
-    encoder.set_lsb_depth(24).map_err(fail)?;
+    let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Voip).map_err(fail)?;
+    encoder.set_bitrate(Bitrate::Bits(64_000)).map_err(fail)?;
+    encoder.set_vbr(true).map_err(fail)?;
     encoder.set_complexity(10).map_err(fail)?;
-    encoder.set_signal(opus2::Signal::Music).map_err(fail)?;
-    encoder
-        .set_force_channels(Some(Channels::Stereo))
-        .map_err(fail)?;
-    encoder
-        .set_max_bandwidth(opus2::Bandwidth::Fullband)
-        .map_err(fail)?;
-    encoder.set_inband_fec(false).map_err(fail)?;
-    encoder.set_packet_loss_perc(0).map_err(fail)?;
+    encoder.set_signal(opus2::Signal::Voice).map_err(fail)?;
+    encoder.set_inband_fec(true).map_err(fail)?;
+    encoder.set_packet_loss_perc(10).map_err(fail)?;
     encoder.set_dtx(false).map_err(fail)?;
     Ok(encoder)
 }
@@ -222,6 +215,10 @@ pub(crate) async fn run(
     let mut mode: Option<Mode> = None;
     let mut transport: Option<Transport> = None;
     let mut secured_at: Option<Instant> = None;
+    // Where packets go, for the debug log every five seconds: received, opened by the transport, from a known user,
+    // decrypted by DAVE; and sent.
+    let mut tally = [0u32; 5];
+    let mut tally_at = Instant::now() + Duration::from_secs(5);
     let mut udp: Option<UdpSocket> = None;
     let mut next_udp_ping = Instant::now();
     let mut udp_ping_sequence = 0u32;
@@ -417,6 +414,7 @@ pub(crate) async fn run(
                     let wire = transport.as_mut().ok_or("Missing voice transport key")?.seal(&header, &data)?;
                     if let Some(socket) = &udp {
                         udp_failures.send(socket, &wire, "Voice UDP send failed")?;
+                        tally[4] += 1;
                     }
                     sequence = sequence.wrapping_add(1);
                     if !active && silence == 0 {
@@ -438,6 +436,19 @@ pub(crate) async fn run(
                     }
                 } else {
                     mixer.clear();
+                }
+                if now >= tally_at {
+                    debug!(
+                        received = tally[0],
+                        opened = tally[1],
+                        known = tally[2],
+                        decrypted = tally[3],
+                        sent = tally[4],
+                        ready = dave.ready,
+                        "voice packet tally"
+                    );
+                    tally = [0; 5];
+                    tally_at = now + Duration::from_secs(5);
                 }
                 if now >= speakers_at {
                     let mut current: BTreeSet<u64> = mixer.speaking().collect();
@@ -470,13 +481,20 @@ pub(crate) async fn run(
                     discovering = false;
                     continue;
                 }
+                tally[0] += 1;
+                if tally[0] <= 2 {
+                    debug!(length, first = packet[0], second = packet[1], "voice packet received");
+                }
                 let Some(crypto) = &transport else { continue };
                 let Some(rtp) = crypto.open(&packet[..length]) else { continue };
+                tally[1] += 1;
                 let Some(user) = mixer.user(rtp.ssrc) else { continue };
+                tally[2] += 1;
                 if !dave.ready || !dave.contains(user) || controls.borrow().self_deaf {
                     continue;
                 }
                 let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else { continue };
+                tally[3] += 1;
                 mixer.push(rtp.ssrc, rtp.sequence, opus);
             },
             event = ws.next() => {
@@ -503,6 +521,7 @@ pub(crate) async fn run(
                             seq_ack = seq;
                         }
                         let data = &mut message.d;
+                        debug!(op = message.raw_op, "voice signaling op received");
                         match message.op {
                             Some(VoiceOp::Hello) => {
                                 if heartbeat_ms.is_some() {
@@ -564,6 +583,7 @@ pub(crate) async fn run(
                                 send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
                             }
                             Some(VoiceOp::Speaking) => {
+                                debug!(ssrc = data["ssrc"].as_u64(), "voice speaking op");
                                 let user = signal::id(data, "user_id")?;
                                 if user != own && dave.contains(user) {
                                     let value = u32::try_from(signal::number(data, "ssrc")?).map_err(|_| "Invalid voice SSRC")?;
@@ -675,6 +695,7 @@ pub(crate) async fn run(
                     }
                     Message::Binary(bytes) => {
                         let frame = signal::parse_binary(&bytes)?;
+                        debug!(op = frame.op, "voice binary op received");
                         seq_ack = i64::from(frame.seq);
                         match frame.op {
                             op if op == VoiceOp::MlsExternalSender as u8 => dave
@@ -747,14 +768,20 @@ mod tests {
         )));
     }
 
+    /// The other members only hear packets near the channel's bitrate: 20 ms at 64 kb/s VBR stays far under the
+    /// 1275 bytes Serein's 510 kb/s CBR sent, which the voice server forwarded to no one.
     #[test]
-    fn opus_profile_produces_full_size_cbr_packets() {
+    fn opus_profile_stays_near_the_channels_bitrate() {
         let mut encoder = encoder().unwrap();
-        let stereo: Vec<f32> = (0..1920)
-            .map(|i| ((i / 2) as f32 * 0.05).sin() * 0.3)
-            .collect();
         let mut out = [0u8; 1275];
-        let length = encoder.encode_float(&stereo, &mut out).unwrap();
-        assert_eq!(length, 1275, "510 kb/s CBR is 1275 bytes per 20 ms");
+        let mut total = 0;
+        for frame in 0..50 {
+            let stereo: Vec<f32> = (0..1920)
+                .map(|i| (((frame * 960 + i / 2) as f32) * 0.05).sin() * 0.3)
+                .collect();
+            total += encoder.encode_float(&stereo, &mut out).unwrap();
+        }
+        // One second of audio: 64 kb/s is 8000 bytes; VBR may run somewhat over on a pure tone.
+        assert!(total < 12_000, "{total} bytes in a second");
     }
 }

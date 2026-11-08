@@ -32,8 +32,8 @@ const BLOCK: usize = 480;
 /// The Noise Suppression choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Suppression {
-    /// `KRISP`: DeepFilterNet 3 here.
-    Krisp,
+    /// `KRISP` in the official client; DeepFilterNet 3 here, and named so.
+    DeepFilterNet,
     /// `STANDARD`: WebRTC's noise suppressor.
     Standard,
     /// `NONE`.
@@ -43,14 +43,14 @@ pub enum Suppression {
 impl Suppression {
     fn to_u8(self) -> u8 {
         match self {
-            Suppression::Krisp => 0,
+            Suppression::DeepFilterNet => 0,
             Suppression::Standard => 1,
             Suppression::None => 2,
         }
     }
     fn from_u8(value: u8) -> Self {
         match value {
-            0 => Suppression::Krisp,
+            0 => Suppression::DeepFilterNet,
             1 => Suppression::Standard,
             _ => Suppression::None,
         }
@@ -302,7 +302,7 @@ impl Processor {
         } else if self.room.is_none() {
             self.room = Some(crate::dereverb::Dereverb::new());
         }
-        if settings.suppression == Suppression::Krisp {
+        if settings.suppression == Suppression::DeepFilterNet {
             if self.deep.is_none() {
                 self.deep = Deep::start();
             }
@@ -443,7 +443,7 @@ mod tests {
     fn deepfilternet_loads_and_turns_noise_down() {
         let prefs = ProcessingPrefs::new();
         prefs.set_echo_cancellation(false);
-        prefs.set_suppression(Suppression::Krisp);
+        prefs.set_suppression(Suppression::DeepFilterNet);
         let mut processor = Processor::new();
         let mut seed = 7u32;
         let mut noise = move || {

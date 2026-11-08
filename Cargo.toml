@@ -24,6 +24,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync",
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 toml = "0.9"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
 # Voice, at Serein's pins (vendor/serein/crates/discord-voice/Cargo.toml); aes-gcm at the version Serein's lockfile resolves.
