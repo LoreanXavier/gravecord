@@ -185,7 +185,7 @@ impl Root {
                 title: "Set Custom Reminder".into(),
                 subtitle: Some(div().into_any_element()),
                 body: Some(body),
-                buttons: [
+                buttons: vec![
                     super::modal::button(
                         "custom-reminder-cancel",
                         "Cancel",

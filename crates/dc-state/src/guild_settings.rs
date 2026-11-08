@@ -29,6 +29,12 @@ pub struct GuildSettings {
     pub channels: HashMap<Id, Override>,
     /// The server menu's Hide Muted Channels.
     pub hide_muted_channels: bool,
+    pub suppress_everyone: bool,
+    pub suppress_roles: bool,
+    /// `NotifyHighlights`: 0 unset, 1 disabled, 2 enabled.
+    pub notify_highlights: u64,
+    pub mute_scheduled_events: bool,
+    pub mobile_push: bool,
 }
 
 fn snowflake(value: &Value) -> Option<Id> {
@@ -74,6 +80,29 @@ impl GuildSettings {
             mute_end: end_time(&entry["mute_config"]),
             channels,
             hide_muted_channels: entry["hide_muted_channels"].as_bool().unwrap_or(false),
+            suppress_everyone: entry["suppress_everyone"].as_bool().unwrap_or(false),
+            suppress_roles: entry["suppress_roles"].as_bool().unwrap_or(false),
+            notify_highlights: entry["notify_highlights"].as_u64().unwrap_or(0),
+            mute_scheduled_events: entry["mute_scheduled_events"].as_bool().unwrap_or(false),
+            mobile_push: entry["mobile_push"].as_bool().unwrap_or(true),
+        }
+    }
+
+    /// One field as `PATCH /users/@me/guilds/settings` sends it, applied here.
+    pub fn apply(&mut self, field: &str, value: &Value) {
+        let flag = value.as_bool().unwrap_or(false);
+        match field {
+            "muted" => self.muted = flag,
+            "message_notifications" => {
+                self.message_notifications = value.as_u64().unwrap_or(self.message_notifications)
+            }
+            "suppress_everyone" => self.suppress_everyone = flag,
+            "suppress_roles" => self.suppress_roles = flag,
+            "notify_highlights" => self.notify_highlights = value.as_u64().unwrap_or(0),
+            "mute_scheduled_events" => self.mute_scheduled_events = flag,
+            "mobile_push" => self.mobile_push = flag,
+            "hide_muted_channels" => self.hide_muted_channels = flag,
+            _ => {}
         }
     }
 }

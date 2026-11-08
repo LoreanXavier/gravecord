@@ -50,7 +50,8 @@ pub(super) struct Spec {
     /// Some dialogs (Create Channel) have none, and no gap for one.
     pub subtitle: Option<AnyElement>,
     pub body: Option<AnyElement>,
-    pub buttons: [Button; 2],
+    /// The footer: two equal buttons, or one across it (Done).
+    pub buttons: Vec<Button>,
     /// Close button, scrim click and Escape.
     pub close: Handler,
 }
@@ -106,7 +107,11 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
     let close_scrim = close.clone();
-    let [secondary, primary] = spec.buttons;
+    let buttons: Vec<AnyElement> = spec
+        .buttons
+        .into_iter()
+        .map(|button| footer_button(button, cx))
+        .collect();
     let modal = div()
         .parity_with_border(spec.id, 1.)
         .id(spec.id)
@@ -186,8 +191,7 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
                 .pb(px(8.))
                 .flex()
                 .gap(px(8.))
-                .child(footer_button(secondary, cx))
-                .child(footer_button(primary, cx)),
+                .children(buttons),
         );
     deferred(
         div()
@@ -296,7 +300,7 @@ impl Root {
                 title: "Pin It. Pin It Good.".into(),
                 subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(self.message_preview(&message)),
-                buttons: [
+                buttons: vec![
                     button("pin-cancel", "Cancel", Tone::Secondary, |this, _, _| {
                         this.confirm_pin = None;
                     }),

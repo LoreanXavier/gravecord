@@ -42,6 +42,7 @@ mod friends;
 mod gifs;
 mod group_dm;
 mod guild_menu;
+mod guild_notifications;
 mod history;
 mod home;
 mod inbox;
@@ -164,6 +165,8 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    guild_notifications: Option<Id>,
+    raid_alerts_off: HashSet<(Id, u8)>,
     create_channel: Option<create_channel::CreateChannel>,
     guild_menu: bool,
     thread_browser: Option<threads::ThreadBrowser>,
@@ -276,6 +279,8 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            guild_notifications: None,
+            raid_alerts_off: HashSet::new(),
             create_channel: None,
             guild_menu: false,
             thread_browser: None,
@@ -3926,6 +3931,7 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
             .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))

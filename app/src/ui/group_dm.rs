@@ -473,7 +473,7 @@ impl Root {
                         .into_any_element(),
                 ),
                 body: Some(body),
-                buttons: [
+                buttons: vec![
                     modal::button(
                         "group-dm-cancel",
                         "Cancel",

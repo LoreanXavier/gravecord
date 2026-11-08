@@ -1043,7 +1043,7 @@ impl Root {
                         .into_any_element(),
                 ),
                 body: None,
-                buttons: [
+                buttons: vec![
                     super::modal::button(
                         "remove-friend-cancel",
                         "Cancel",

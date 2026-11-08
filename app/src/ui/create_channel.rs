@@ -54,12 +54,13 @@ pub(super) fn switch(on: bool) -> gpui::Div {
         } else {
             gpui::rgba(0x0000001f)
         })
+        // `thumb_9AraPt`: a 24px box whose knob is an 18px circle 3px in.
         .child(
             div()
                 .absolute()
-                .top(px(-1.))
-                .left(px(if on { 23. } else { -1. }))
-                .size(px(24.))
+                .top(px(2.))
+                .left(px(if on { 26. } else { 2. }))
+                .size(px(18.))
                 .rounded_full()
                 .bg(gpui::rgb(0xffffff)),
         )
@@ -350,7 +351,7 @@ impl Root {
                 title: create_label.into(),
                 subtitle: None,
                 body: Some(body),
-                buttons: [
+                buttons: vec![
                     modal::button(
                         "create-channel-cancel",
                         "Cancel",

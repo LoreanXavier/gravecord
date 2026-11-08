@@ -401,7 +401,7 @@ impl Root {
                         .into_any_element(),
                 ),
                 body: Some(body),
-                buttons: [
+                buttons: vec![
                     super::modal::button(
                         "unpin-cancel",
                         "Cancel",
