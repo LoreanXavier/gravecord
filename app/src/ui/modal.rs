@@ -58,7 +58,7 @@ pub(super) struct Spec {
     pub close: Handler,
 }
 
-fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
+pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
     let (background, border, text) = match spec.tone {
         Tone::Secondary => (
             color("--control-secondary-background-default"),

@@ -184,7 +184,16 @@ impl Root {
             Page::Access => self.request_access(guild, cx),
             Page::AutoMod => self.request_automod(guild, cx),
             Page::AuditLog => self.request_audit(guild),
-            Page::SafetySetup => self.request_safety(guild),
+            Page::SafetySetup => {
+                self.request_safety(guild);
+                let community = self.stores.guild(guild).is_some_and(|known| {
+                    known.features.iter().any(|feature| feature == "COMMUNITY")
+                });
+                if community {
+                    self.request_community_safety(guild, cx);
+                }
+            }
+            Page::Insights => self.request_insights(guild),
             Page::BoostPerks => self.request_boost(guild),
             Page::Tag => self.request_tag(guild),
             Page::Community => self.request_community(guild),

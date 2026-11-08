@@ -281,6 +281,7 @@ pub(crate) struct ServerSettings {
     pub(super) automod: Option<super::server_automod::AutoModState>,
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
+    pub(super) insights: super::server_insights::InsightsState,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -438,6 +439,7 @@ impl Root {
             automod: None,
             audit: Default::default(),
             safety: Default::default(),
+            insights: Default::default(),
             community: None,
             overview: None,
             boost: Default::default(),
@@ -1073,7 +1075,9 @@ impl Root {
                         if community && target == Page::AutoMod {
                             continue;
                         }
+                        // `po`: Members leaves settings on a Community server, for a page not built yet.
                         let external = target == Page::AppDirectory;
+                        let launch = external || (community && target == Page::Members);
                         nav = nav.child(
                             div()
                                 .id(SharedString::from(format!("server-settings-{label}")))
@@ -1100,7 +1104,7 @@ impl Root {
                                     this.hover(|style| style.bg(color("--background-mod-subtle")))
                                 })
                                 .child(div().flex_1().child(*label))
-                                .when(external, |this| {
+                                .when(launch, |this| {
                                     this.child(icon("open_external", 16., "--icon-subtle"))
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1167,7 +1171,16 @@ impl Root {
             }
             Page::Integrations => self.server_integrations_page(open.guild, cx),
             Page::AppDirectory => Self::server_page_title("App Directory"),
-            Page::SafetySetup => self.server_safety_page(open.guild, cx),
+            Page::SafetySetup => {
+                let community = self.stores.guild(open.guild).is_some_and(|known| {
+                    known.features.iter().any(|feature| feature == "COMMUNITY")
+                });
+                if community {
+                    self.community_safety_page(open.guild, cx)
+                } else {
+                    self.server_safety_page(open.guild, cx)
+                }
+            }
             Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => self.server_automod_page(open.guild, cx),
@@ -1182,7 +1195,7 @@ impl Root {
                 }
             }
             Page::Onboarding => Self::server_page_title("Onboarding"),
-            Page::Insights => Self::server_page_title("Server Insights"),
+            Page::Insights => self.server_insights_page(open.guild, cx),
             Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.

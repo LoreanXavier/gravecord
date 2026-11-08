@@ -181,6 +181,24 @@ fn sections(community: bool) -> Vec<(&'static str, Vec<u64>)> {
     list
 }
 
+/// `u9`'s count over the sections' triggers.
+fn rule_counts(rules: &[AutoRule], community: bool) -> (usize, usize) {
+    let (mut enabled, mut total) = (0, 0);
+    for trigger in sections(community)
+        .into_iter()
+        .flat_map(|(_, triggers)| triggers)
+    {
+        let mut any = false;
+        for rule in rules.iter().filter(|rule| rule.trigger_type == trigger) {
+            any = true;
+            total += 1;
+            enabled += usize::from(rule.enabled);
+        }
+        total += usize::from(!any);
+    }
+    (enabled, total)
+}
+
 /// `XO`: an action's starting value. The metadata's `undefined`s are left out, as `JSON.stringify` leaves them.
 fn default_action(kind: u64) -> Value {
     match kind {
@@ -2113,6 +2131,26 @@ impl Root {
     }
 
     /// Escape: the open dialog, list or menu first.
+    /// The page itself, or the Community Safety step that shows it (`uW.C.AUTOMOD`).
+    fn automod_on_screen(open: &super::server_settings::ServerSettings) -> bool {
+        open.page == super::server_settings::Page::AutoMod
+            || (open.page == super::server_settings::Page::SafetySetup
+                && open.safety.step == super::server_safety_community::SafetyStep::AutoMod)
+    }
+
+    /// `u9`: enabled rules and all rules, a trigger with none counting as one that is off.
+    pub(super) fn automod_counts(&self) -> (usize, usize) {
+        let Some(open) = self.server_settings.as_ref() else {
+            return (0, 0);
+        };
+        let community = self
+            .stores
+            .guild(open.guild)
+            .is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"));
+        let rules = open.automod.as_ref().map_or(&[][..], |state| &state.rules);
+        rule_counts(rules, community)
+    }
+
     pub(super) fn close_automod_overlay(&mut self) -> bool {
         let Some(state) = self.automod_mut() else {
             return false;
@@ -4015,7 +4053,7 @@ impl Root {
     /// `f.Ei`: what can still be picked, under the field.
     pub(super) fn automod_picker_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;
-        if open.page != super::server_settings::Page::AutoMod {
+        if !Self::automod_on_screen(open) {
             return None;
         }
         let state = open.automod.as_ref()?;
@@ -4227,7 +4265,7 @@ impl Root {
     /// `tR`: the bar under the open rule. It is `position: fixed`, 20 above the window's edge.
     pub(super) fn automod_bar_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;
-        if open.page != super::server_settings::Page::AutoMod {
+        if !Self::automod_on_screen(open) {
             return None;
         }
         let state = open.automod.as_ref()?;
@@ -4337,7 +4375,7 @@ impl Root {
     /// The menu (`345585`) at the click.
     pub(super) fn automod_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;
-        if open.page != super::server_settings::Page::AutoMod {
+        if !Self::automod_on_screen(open) {
             return None;
         }
         let state = open.automod.as_ref()?;

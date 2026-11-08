@@ -12,6 +12,7 @@ capture = ["gpui/test-support", "gpui_platform/test-support"]
 anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 dc-gateway.workspace = true
 dc-http.workspace = true
 dc-markdown.workspace = true

@@ -81,10 +81,12 @@ mod server_community;
 mod server_emoji;
 mod server_engagement;
 mod server_games;
+mod server_insights;
 mod server_members;
 mod server_role_editor;
 mod server_roles;
 mod server_safety;
+mod server_safety_community;
 mod server_settings;
 mod server_settings_pages;
 mod server_sounds;
@@ -550,6 +552,11 @@ impl Root {
                 if key.starts_with(server_safety::SAFETY_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.safety_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_insights::INSIGHTS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.insights_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_automod::AUTOMOD_PREFIX) {
@@ -4180,6 +4187,7 @@ impl Render for Root {
                         open.sticker_dialog = None;
                     } else if this.close_access_overlay()
                         || this.close_automod_overlay()
+                        || this.close_safety_overlay()
                         || this.close_community_wizard()
                         || this.close_perks()
                     {
@@ -4365,6 +4373,8 @@ impl Render for Root {
             .children(self.automod_confirm_modal(cx))
             .children(self.automod_menu_layer(cx))
             .children(self.automod_select_layer(cx))
+            .children(self.safety_verify_modal(cx))
+            .children(self.safety_risky_modal(cx))
             .children(self.audit_select_layer(cx))
             .children(self.safety_select_layer(cx))
             .children(self.community_wizard_modal(cx))

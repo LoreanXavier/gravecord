@@ -71,6 +71,46 @@ pub(super) fn switch(on: bool) -> gpui::Div {
         )
 }
 
+/// A disabled switch. `switchIndicator_9AraPt` at half opacity holds a 16px knob and dims it as one group; `gpui`'s opacity
+/// dims each paint apart, so the knob is drawn solid in the colour that group gives over `behind`.
+pub(super) fn switch_dimmed(on: bool, behind: &str) -> gpui::Div {
+    let under = color(behind);
+    let knob = gpui::Rgba {
+        r: (1. + under.r) / 2.,
+        g: (1. + under.g) / 2.,
+        b: (1. + under.b) / 2.,
+        a: 1.,
+    };
+    div()
+        .relative()
+        .flex_none()
+        .w(px(48.))
+        .h(px(24.))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .opacity(0.5)
+                .bg(if on {
+                    color("--background-brand")
+                } else {
+                    gpui::rgba(0x0000001f)
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(4.))
+                .left(px(if on { 28. } else { 5. }))
+                .size(px(16.))
+                .rounded_full()
+                .bg(knob),
+        )
+}
+
 /// `radioIndicator_oJuRbG`: brand with a white 8px dot when picked, a faint ring otherwise.
 pub(super) fn radio(picked: bool) -> gpui::Div {
     div()

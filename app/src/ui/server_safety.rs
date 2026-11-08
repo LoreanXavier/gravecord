@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 pub(super) const SAFETY_PREFIX: &str = "guild-safety:";
 const SAVED_PREFIX: &str = "guild-safety:saved:";
+pub(super) const RISKY_PREFIX: &str = "guild-safety:risky:";
 /// Module 652215's `SAFE_DIRECT_MESSAGING` article.
 pub(super) const CONTENT_ARTICLE: &str =
     "https://support.discord.com/hc/en-us/articles/115000068672";
@@ -37,6 +38,15 @@ pub(super) struct Option3 {
     description: String,
     mark: Option<&'static str>,
     disabled: bool,
+}
+
+/// `vd` with its disabled options left out, as module 313003 asks for them.
+pub(super) fn verification_choices() -> Vec<(u64, &'static str, String)> {
+    verification_options(true)
+        .into_iter()
+        .filter(|option| !option.disabled)
+        .map(|option| (option.value, option.title, option.description))
+        .collect()
 }
 
 /// `vd`.
@@ -148,18 +158,23 @@ fn alerts_on(features: &[String]) -> bool {
 /// What the page reads from the guild, which the state store does not keep.
 #[derive(Default)]
 pub(crate) struct SafetyState {
-    verification: u64,
+    pub(super) verification: u64,
     content: u64,
-    alerts_channel: Option<String>,
-    updates_channel: Option<String>,
+    pub(super) alerts_channel: Option<String>,
+    pub(super) updates_channel: Option<String>,
     /// Which picker is open: 0 verification, 1 content.
     open_picker: Option<u8>,
-    select_open: bool,
+    pub(super) select_open: bool,
     error: Option<String>,
+    /// The Community page: which step, Activity Alerts opened, the two dialogs.
+    pub(super) step: super::server_safety_community::SafetyStep,
+    pub(super) raid_open: bool,
+    pub(super) verify_dialog: Option<super::server_safety_community::VerifyDialog>,
+    pub(super) risky_open: bool,
 }
 
 impl Root {
-    fn safety_mut(&mut self) -> Option<&mut SafetyState> {
+    pub(super) fn safety_mut(&mut self) -> Option<&mut SafetyState> {
         self.server_settings.as_mut().map(|open| &mut open.safety)
     }
 
@@ -179,9 +194,64 @@ impl Root {
         });
     }
 
+    /// `updateMFALevel`.
+    pub(super) fn send_guild_mfa(&mut self, guild: Id, level: u64) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{SAVED_PREFIX}{guild}")),
+            method: reqwest::Method::POST,
+            route: format!("/guilds/{guild}/mfa"),
+            body: Some(json!({ "level": level })),
+        });
+    }
+
     pub(super) fn safety_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
         let report = self.fetched.get(key).cloned().unwrap_or_default();
+        if key.starts_with(RISKY_PREFIX) {
+            // Module 868952 closes once the role is saved; the gateway updates the count.
+            if report["ok"] == true {
+                if let Some(state) = self.safety_mut() {
+                    state.risky_open = false;
+                }
+            } else {
+                self.put_app_toast(
+                    "Something went wrong when enabling alerts. Please try again later.".to_owned(),
+                    false,
+                    cx,
+                );
+            }
+            cx.notify();
+            return;
+        }
         let saved = key.starts_with(SAVED_PREFIX);
+        // Module 313003: a saved level closes the dialog, a refused one says why in it.
+        if saved {
+            let ok = report["ok"] == true;
+            let dialog = self.safety_mut().and_then(|state| {
+                if ok {
+                    state.verify_dialog = None;
+                    return None;
+                }
+                state.verify_dialog.as_mut()
+            });
+            if let Some(dialog) = dialog {
+                dialog.error = report["body"]["message"].as_str().map(str::to_owned);
+                cx.notify();
+                return;
+            }
+            // `tc`, `td`, `uq` on a Community server: a toast, as that page has no place for the words.
+            let community = self.server_settings.as_ref().is_some_and(|open| {
+                self.stores.guild(open.guild).is_some_and(|known| {
+                    known.features.iter().any(|feature| feature == "COMMUNITY")
+                })
+            });
+            if !ok && community {
+                self.put_app_toast(
+                    "Something went wrong when enabling alerts. Please try again later.".to_owned(),
+                    false,
+                    cx,
+                );
+            }
+        }
         if let Some(state) = self.safety_mut() {
             if report["ok"] == true {
                 let body = &report["body"];
@@ -210,7 +280,7 @@ impl Root {
     }
 
     /// `saveGuild`.
-    fn save_safety(&mut self, guild: Id, body: Value) {
+    pub(super) fn save_safety(&mut self, guild: Id, body: Value) {
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{SAVED_PREFIX}{guild}")),
             method: reqwest::Method::PATCH,
@@ -226,13 +296,13 @@ impl Root {
             .unwrap_or_default()
     }
 
-    fn toggle_safety_feature(&mut self, guild: Id, feature: &str, on: bool) {
+    pub(super) fn toggle_safety_feature(&mut self, guild: Id, feature: &str, on: bool) {
         let features = with_feature(&self.safety_features(guild), feature, on);
         self.save_safety(guild, json!({ "features": features }));
     }
 
     /// A blue `inline-notice`.
-    fn safety_notice(body: AnyElement) -> AnyElement {
+    pub(super) fn safety_notice(body: AnyElement) -> AnyElement {
         div()
             .p(px(12.))
             .rounded(px(8.))
@@ -282,9 +352,12 @@ impl Root {
         );
         let switch = div()
             .id(id)
-            .when(disabled, |this| this.opacity(0.5))
             .when(!disabled, |this| this.cursor_pointer())
-            .child(super::create_channel::switch(on));
+            .child(if disabled {
+                super::create_channel::switch_dimmed(on, "--background-base-lower")
+            } else {
+                super::create_channel::switch(on)
+            });
         (row, switch)
     }
 
