@@ -30,6 +30,38 @@ pub struct User {
     pub global_name: Option<String>,
     pub avatar: Option<String>,
     pub discriminator: String,
+    /// `primary_guild`: the server tag shown after the name, when the user turned it on.
+    pub tag: Option<ServerTag>,
+}
+
+/// A user's server tag (`primary_guild` with `identity_enabled`): the guild, its badge hash and the tag text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServerTag {
+    pub guild_id: Id,
+    pub badge: Option<String>,
+    pub tag: String,
+}
+
+impl ServerTag {
+    fn from_value(value: &Value) -> Option<Self> {
+        if !value["identity_enabled"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        Some(Self {
+            guild_id: id(&value["identity_guild_id"])?,
+            badge: text(&value["badge"]),
+            tag: text(&value["tag"])?,
+        })
+    }
+
+    /// `clan-badges/{guild}/{badge}.png?size=16`, as the chip's 14px image loads it.
+    pub fn badge_url(&self) -> Option<String> {
+        let badge = self.badge.as_ref()?;
+        Some(format!(
+            "https://cdn.discordapp.com/clan-badges/{}/{badge}.png?size=16",
+            self.guild_id
+        ))
+    }
 }
 
 impl User {
@@ -40,6 +72,7 @@ impl User {
             global_name: text(&value["global_name"]),
             avatar: text(&value["avatar"]),
             discriminator: text(&value["discriminator"]).unwrap_or_else(|| "0".to_owned()),
+            tag: ServerTag::from_value(&value["primary_guild"]),
         })
     }
 

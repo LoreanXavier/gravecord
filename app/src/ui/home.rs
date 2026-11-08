@@ -163,14 +163,25 @@ impl Root {
         let selected = self.channel == Some(id);
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
         let status = self.stores.status(recipient.id).to_owned();
-        let tint = if selected {
+        // Text takes its hover colour at layout time, which gpui's `hover` cannot reach, so the row tracks it.
+        let tint = if selected || self.hovered_dm == Some(id) {
             "--text-strong"
         } else {
             "--text-muted"
         };
+        let group = SharedString::from(format!("dm-row-{id}"));
         Some(
             div()
                 .id(SharedString::from(format!("dm-{id}")))
+                .group(group.clone())
+                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                    if *inside {
+                        this.hovered_dm = Some(id);
+                    } else if this.hovered_dm == Some(id) {
+                        this.hovered_dm = None;
+                    }
+                    cx.notify();
+                }))
                 .flex_none()
                 .h(px(44.))
                 .pt(px(1.))
@@ -189,6 +200,7 @@ impl Root {
                         .flex()
                         .items_center()
                         .gap(px(12.))
+                        .text_color(color(tint))
                         .when(selected, |this| this.bg(color("--background-mod-strong")))
                         .when(!selected, |this| {
                             this.hover(|style| style.bg(color("--background-mod-subtle")))
@@ -204,15 +216,87 @@ impl Root {
                         )
                         .child(
                             div()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color(tint))
-                                .child(recipient.display_name().to_owned()),
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
+                                        .child(recipient.display_name().to_owned()),
+                                )
+                                .children(
+                                    recipient.tag.as_ref().map(|tag| self.server_tag_chip(tag)),
+                                ),
+                        )
+                        .child(
+                            // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
+                            // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it
+                            // was open.
+                            div()
+                                .id(SharedString::from(format!("dm-close-{id}")))
+                                .mr(px(8.))
+                                .size(px(18.))
+                                .flex_none()
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .opacity(0.)
+                                .group_hover(group, |style| style.opacity(0.7))
+                                .hover(|style| style.opacity(1.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_dm(id, cx);
+                                }))
+                                .child(icon("friend_ignore", 16., "--text-strong")),
                         ),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// `chipletContainerInner_k8jyN7`: the server tag after a name, 4px on, a 14px badge and 12/16 semibold text.
+    pub(super) fn server_tag_chip(&self, tag: &dc_state::ServerTag) -> AnyElement {
+        let badge = tag
+            .badge_url()
+            .and_then(|url| self.images.get(&url).cloned());
+        div()
+            .ml(px(7.5))
+            .h(px(16.))
+            .px(px(4.))
+            .rounded(px(4.))
+            .bg(color("--background-mod-strong"))
+            .flex()
+            .items_center()
+            .children(badge.map(|image| img(image).size(px(14.)).mr(px(2.))))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-default"))
+                    .child(tag.tag.clone()),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn close_dm(&mut self, channel: Id, cx: &mut Context<Self>) {
+        self.stores
+            .private_channels
+            .retain(|known| known.id != channel);
+        if self.channel == Some(channel) && self.guild.is_none() {
+            self.select_home(None);
+        }
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: None,
+            method: reqwest::Method::DELETE,
+            route: format!("/channels/{channel}?silent=false"),
+            body: None,
+        });
+        cx.notify();
     }
 
     pub(super) fn home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {

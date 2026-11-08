@@ -508,6 +508,7 @@ mod tests {
             global_name: None,
             avatar: None,
             discriminator: "0".to_owned(),
+            tag: None,
         }
     }
 

@@ -153,6 +153,7 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    hovered_dm: Option<Id>,
     group_dm: Option<group_dm::GroupDm>,
     add_friend: Option<friends::AddFriend>,
     people_search: Option<friends::PeopleSearch>,
@@ -253,6 +254,7 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            hovered_dm: None,
             group_dm: None,
             add_friend: None,
             people_search: None,
@@ -550,6 +552,9 @@ impl Root {
         for user in users {
             let (key, url) = avatar_source(&user);
             self.request_image(key, url);
+            if let Some(url) = user.tag.as_ref().and_then(dc_state::ServerTag::badge_url) {
+                self.request_image(url.clone(), url);
+            }
         }
     }
 
@@ -3778,8 +3783,25 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
+                .relative()
                 .when(status == "dnd", |this| {
                     this.child(div().w(px(6.)).h(px(2.)).rounded(px(1.)).bg(color(ring)))
+                })
+                // `svg-mask-status-offline`: a hole of half the dot's size.
+                .when(matches!(status, "offline" | "invisible"), |this| {
+                    this.child(div().size(px(5.)).rounded_full().bg(color(ring)))
+                })
+                // `svg-mask-status-idle`: the dot less a circle of radius 0.375 centred at a quarter.
+                .when(status == "idle", |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(-1.25))
+                            .top(px(-1.25))
+                            .size(px(7.5))
+                            .rounded_full()
+                            .bg(color(ring)),
+                    )
                 }),
         )
 }
