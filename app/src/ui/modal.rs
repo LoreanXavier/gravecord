@@ -104,6 +104,15 @@ fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
 }
 
 pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized(spec, 480., cx)
+}
+
+/// `size-sm_dvN-MP`: the same dialog 400 wide (Delete Channel).
+pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized(spec, 400., cx)
+}
+
+fn render_sized(spec: Spec, width: f32, cx: &mut Context<Root>) -> AnyElement {
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
     let close_scrim = close.clone();
@@ -116,7 +125,7 @@ pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
         .parity_with_border(spec.id, 1.)
         .id(spec.id)
         .occlude()
-        .w(px(480.))
+        .w(px(width))
         .pt(px(8.))
         .pb(px(16.))
         .rounded(px(12.))

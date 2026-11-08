@@ -45,6 +45,18 @@ pub(super) enum Which {
 }
 
 impl Root {
+    /// `can(permission, channel)` for the current user.
+    pub(super) fn can_in_channel(&self, channel: &dc_state::Channel, permission: u64) -> bool {
+        let Some(me) = self.stores.me() else {
+            return false;
+        };
+        self.stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel.id))
+            .is_some_and(|guild| permissions::can_in_channel(guild, channel, me, permission))
+    }
+
     /// Servers to invite this person to, in rail order: inviting allowed (or a vanity code), not the one in view.
     fn invite_guilds(&self) -> Vec<(Id, String)> {
         let Some(me) = self.stores.me() else {

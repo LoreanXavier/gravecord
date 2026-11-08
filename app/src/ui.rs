@@ -33,6 +33,8 @@ mod apps;
 mod audio_menu;
 mod badge_paths;
 mod blocked;
+mod channel_settings;
+mod channel_settings_pages;
 mod create_channel;
 mod dm;
 mod dm_profile;
@@ -230,6 +232,7 @@ pub struct Root {
     /// A message sent from a popout to someone without a DM yet: open the DM once it exists.
     open_dm_after_send: bool,
     mention_filter: inbox::MentionFilter,
+    channel_settings: Option<channel_settings::ChannelSettings>,
     mentions_filter_open: bool,
     /// Channels this session opened, newest first: the forward dialog's first suggestions.
     channel_history: Vec<Id>,
@@ -366,6 +369,7 @@ impl Root {
             pending_join: None,
             open_dm_after_send: false,
             mention_filter: inbox::MentionFilter::stored(),
+            channel_settings: None,
             mentions_filter_open: false,
             channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
@@ -480,6 +484,17 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key == channel_settings::SAVE_KEY {
+                    self.channel_settings_saved(&body, cx);
+                    return;
+                }
+                if let Some(channel) = key
+                    .strip_prefix("channel-webhook-created:")
+                    .and_then(|channel| channel.parse::<Id>().ok())
+                {
+                    self.request_channel_settings_page(channel, false);
+                    return;
                 }
                 if self.report_fetched(&key, &body, cx) {
                     return;
@@ -1306,6 +1321,10 @@ impl Root {
                 .map(|switcher| switcher.search.clone()),
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
+        if let Some(settings) = self.channel_settings.as_ref() {
+            list.push(settings.name.clone());
+            list.push(settings.topic.clone());
+        }
         list.extend(
             self.profile
                 .as_ref()
@@ -1758,28 +1777,56 @@ impl Root {
                                 this.opacity(0.)
                                     .group_hover(action_group, |style| style.opacity(1.))
                             })
-                            .children(actions.iter().map(|name| {
-                                // "Create Invite" opens the invite dialog for this channel; the gear waits for
-                                // channel settings.
-                                let invite = *name == "invite_small";
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "channel-action-{target}-{name}"
-                                    )))
-                                    .when(invite, |this| {
-                                        this.cursor_pointer().on_click(cx.listener(
-                                            move |this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                if let Some(guild) = this.guild {
-                                                    this.select(guild, Some(target));
-                                                }
-                                                this.open_invite(cx);
-                                            },
-                                        ))
+                            .children(
+                                actions
+                                    .iter()
+                                    .filter(|name| {
+                                        // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
+                                        let needed = match **name {
+                                            "settings_small" => {
+                                                dc_state::permissions::MANAGE_CHANNELS
+                                            }
+                                            "invite_small" => {
+                                                dc_state::permissions::CREATE_INSTANT_INVITE
+                                            }
+                                            _ => 0,
+                                        };
+                                        needed == 0 || self.can_in_channel(channel, needed)
                                     })
-                                    .child(icon(name, 16., action_tint))
-                                    .into_any_element()
-                            })),
+                                    .map(|name| {
+                                        // "Create Invite" opens the invite dialog for this channel; the gear opens its
+                                        // settings.
+                                        let invite = *name == "invite_small";
+                                        let gear = *name == "settings_small";
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "channel-action-{target}-{name}"
+                                            )))
+                                            .when(gear, |this| {
+                                                this.cursor_pointer().on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.open_channel_settings(
+                                                            target, window, cx,
+                                                        );
+                                                    },
+                                                ))
+                                            })
+                                            .when(invite, |this| {
+                                                this.cursor_pointer().on_click(cx.listener(
+                                                    move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        if let Some(guild) = this.guild {
+                                                            this.select(guild, Some(target));
+                                                        }
+                                                        this.open_invite(cx);
+                                                    },
+                                                ))
+                                            })
+                                            .child(icon(name, 16., action_tint))
+                                            .into_any_element()
+                                    }),
+                            ),
                     ),
             )
             .into_any_element()
@@ -3919,6 +3966,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if this.channel_settings.is_some() && keys.key == "escape" {
+                    if let Some(settings) = this.channel_settings.as_mut()
+                        && settings.confirm_delete_open()
+                    {
+                        settings.close_delete();
+                    } else {
+                        this.channel_settings = None;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.quick_switcher.is_some() {
                     if keys.key == "escape" {
                         this.quick_switcher = None;
@@ -4049,6 +4108,9 @@ impl Render for Root {
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
             .children(self.settings_layer(window, cx))
+            .children(self.channel_settings_layer(cx))
+            .children(self.channel_settings_select(window, cx))
+            .children(self.delete_channel_modal(cx))
             .children(self.profile_layer(cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))

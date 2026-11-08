@@ -122,6 +122,13 @@ pub struct Channel {
     pub last_message_id: Option<Id>,
     /// `permission_overwrites`.
     pub overwrites: Vec<permissions::Overwrite>,
+    pub topic: Option<String>,
+    /// Slowmode in seconds (`rate_limit_per_user`).
+    pub rate_limit_per_user: u64,
+    /// Channel flags (`IS_SPOILER_CHANNEL` 1 << 21 among them).
+    pub flags: u64,
+    /// Minutes a new thread stays listed without activity (`default_auto_archive_duration`).
+    pub default_auto_archive_duration: Option<u64>,
 }
 
 impl Channel {
@@ -134,6 +141,10 @@ impl Channel {
             parent_id: id(&value["parent_id"]),
             last_message_id: id(&value["last_message_id"]),
             overwrites: permissions::Overwrite::list(&value["permission_overwrites"]),
+            topic: text(&value["topic"]),
+            rate_limit_per_user: value["rate_limit_per_user"].as_u64().unwrap_or(0),
+            flags: value["flags"].as_u64().unwrap_or(0),
+            default_auto_archive_duration: value["default_auto_archive_duration"].as_u64(),
         })
     }
 }

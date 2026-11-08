@@ -39,6 +39,11 @@ pub(crate) fn channel_slug(name: &str) -> String {
         .join("-")
 }
 
+/// The slug while it is typed: lower case, each space a dash at once (the trim waits for the save).
+pub(crate) fn channel_slug_live(name: &str) -> String {
+    name.to_lowercase().replace(' ', "-")
+}
+
 /// `container_9AraPt`: a 48x24 switch, the white 24px thumb at the side it is set to.
 pub(super) fn switch(on: bool) -> gpui::Div {
     div()
