@@ -127,7 +127,7 @@ impl Root {
                         this.child(self.content(message))
                     })
                     .children(self.forwarded_block(message, cx))
-                    .children(self.accessories(message)),
+                    .children(self.accessories(message, cx)),
             )
             // `actionButtons_6bgemo`: Jump and Unpin, top right, while hovered.
             .child(

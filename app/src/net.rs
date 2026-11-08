@@ -123,6 +123,11 @@ pub enum Request {
         route: String,
         body: Option<Value>,
     },
+    /// Saves a file (a CDN URL, no authorization) into the user's Downloads folder under a free name.
+    Download {
+        url: String,
+        filename: String,
+    },
     /// `POST /interactions`: an application command run by hand.
     Interaction {
         body: Value,
@@ -518,6 +523,35 @@ pub async fn run(
                     };
                     if let Some(key) = key {
                         let _ = updates.send(Update::Fetched { key, body: report });
+                    }
+                });
+            }
+            Request::Download { url, filename } => {
+                tokio::spawn(async move {
+                    let Some(folder) = std::env::var_os("USERPROFILE")
+                        .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+                    else {
+                        return;
+                    };
+                    let bytes = match reqwest::get(&url).await {
+                        Ok(response) => match response.bytes().await {
+                            Ok(bytes) => bytes,
+                            Err(error) => return warn!("download failed: {error}"),
+                        },
+                        Err(error) => return warn!("download failed: {error}"),
+                    };
+                    let (stem, extension) = match filename.rsplit_once('.') {
+                        Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
+                        None => (filename.clone(), String::new()),
+                    };
+                    let mut target = folder.join(&filename);
+                    let mut copy = 1;
+                    while target.exists() {
+                        target = folder.join(format!("{stem} ({copy}){extension}"));
+                        copy += 1;
+                    }
+                    if let Err(error) = std::fs::write(&target, &bytes) {
+                        warn!("download not saved: {error}");
                     }
                 });
             }

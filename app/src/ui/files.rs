@@ -72,13 +72,18 @@ pub(super) fn wanted(message: &Message) -> Vec<(String, String)> {
 const COLLAPSED_LINES: usize = 6;
 
 impl Root {
-    fn plaintext_card(&self, attachment: &Attachment) -> AnyElement {
+    fn plaintext_card(&self, attachment: &Attachment, cx: &mut Context<Self>) -> AnyElement {
         let text = self
             .texts
             .get(&text_key(attachment))
             .cloned()
             .unwrap_or_default();
         let shown: Vec<&str> = text.lines().take(COLLAPSED_LINES).collect();
+        let language = self.file_language.get(&attachment.id).cloned();
+        let wrap = self.file_wrap.contains(&attachment.id);
+        let shown_text = shown.join("\n");
+        let (for_language, for_expand, for_more) =
+            (attachment.clone(), attachment.clone(), attachment.clone());
         // `max(lines * 16px, 100px) + 26px`.
         let height = (shown.len() as f32 * 16.).max(100.) + 26.;
         div()
@@ -102,7 +107,16 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(16.))
                             .text_color(color("--text-code"))
-                            .children(shown.iter().map(|line| div().child((*line).to_owned()))),
+                            .when(!wrap, |this| this.whitespace_nowrap())
+                            // A chosen language highlights the preview; plain text otherwise.
+                            .when_some(language.clone(), |this, language| {
+                                this.children(super::code_lines(Some(&language), &shown_text))
+                            })
+                            .when(language.is_none(), |this| {
+                                this.children(
+                                    shown.iter().map(|line| div().child((*line).to_owned())),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -139,17 +153,62 @@ impl Root {
                             ),
                     )
                     .child(div().flex_1().min_w(px(16.)))
-                    .child(icon("file_language", 18., "--text-default"))
                     .child(
                         div()
+                            .id(gpui::SharedString::from(format!(
+                                "file-language-{}",
+                                attachment.id
+                            )))
+                            .cursor_pointer()
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.open_file_menu(
+                                        for_language.clone(),
+                                        super::file_actions::FileMenuKind::Language,
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ))
+                            .child(icon("file_language", 18., "--text-default")),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "file-expand-{}",
+                                attachment.id
+                            )))
                             .ml(px(16.))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.file_expanded = Some(for_expand.clone());
+                                cx.notify();
+                            }))
                             .child(icon("file_expand", 18., "--text-default")),
                     )
-                    .child(div().ml(px(16.)).mr(px(4.)).child(icon(
-                        "file_more",
-                        18.,
-                        "--text-default",
-                    ))),
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "file-more-{}",
+                                attachment.id
+                            )))
+                            .ml(px(16.))
+                            .mr(px(4.))
+                            .cursor_pointer()
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.open_file_menu(
+                                        for_more.clone(),
+                                        super::file_actions::FileMenuKind::More,
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ))
+                            .child(icon("file_more", 18., "--text-default")),
+                    ),
             )
             .into_any_element()
     }
@@ -184,13 +243,13 @@ impl Root {
     }
 
     /// `nonVisualMediaItemContainer_idVBIj`: 8px under the pictures, each item as wide as it needs.
-    pub(super) fn files(&self, message: &Message) -> Option<AnyElement> {
+    pub(super) fn files(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         let cards: Vec<AnyElement> = message
             .attachments
             .iter()
             .filter_map(|attachment| match kind(attachment) {
                 Kind::Image => None,
-                Kind::Plaintext => Some(self.plaintext_card(attachment)),
+                Kind::Plaintext => Some(self.plaintext_card(attachment, cx)),
                 Kind::Audio | Kind::Other => Some(self.file_card(attachment)),
             })
             .map(|card| div().flex().child(card).into_any_element())

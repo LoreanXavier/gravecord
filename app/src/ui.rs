@@ -37,6 +37,7 @@ mod create_channel;
 mod dm;
 mod dm_profile;
 mod embed;
+mod file_actions;
 mod files;
 mod forward;
 mod friends;
@@ -168,6 +169,10 @@ pub struct Root {
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
+    file_menu: Option<file_actions::FileMenu>,
+    file_wrap: HashSet<Id>,
+    file_language: HashMap<Id, String>,
+    file_expanded: Option<dc_state::Attachment>,
     view_reactions: Option<reactions_modal::ViewReactions>,
     audio_menu: Option<audio_menu::AudioMenu>,
     invite: Option<invite::Invite>,
@@ -288,6 +293,10 @@ impl Root {
             show_members: false,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
+            file_menu: None,
+            file_wrap: HashSet::new(),
+            file_language: HashMap::new(),
+            file_expanded: None,
             view_reactions: None,
             audio_menu: None,
             invite: None,
@@ -2741,7 +2750,7 @@ impl Root {
                         .when(!copy.content.is_empty(), |this| {
                             this.child(self.content(&copy))
                         })
-                        .children(self.accessories(&copy))
+                        .children(self.accessories(&copy, cx))
                         .children(footer.map(|footer| {
                             div()
                                 .id(SharedString::from(format!(
@@ -2777,10 +2786,10 @@ impl Root {
         )
     }
 
-    fn accessories(&self, message: &Message) -> Option<AnyElement> {
+    fn accessories(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         let parts: Vec<AnyElement> = [
             self.attachments(message),
-            self.files(message),
+            self.files(message, cx),
             self.embeds(message),
         ]
         .into_iter()
@@ -3002,7 +3011,7 @@ impl Root {
                             this.child(self.content(message))
                         })
                         .children(self.forwarded_block(message, cx))
-                        .children(self.accessories(message))
+                        .children(self.accessories(message, cx))
                         .children(self.reactions(message, cx))
                         .into_any_element(),
                 };
@@ -4006,6 +4015,8 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.file_menu_layer(cx))
+            .children(self.file_expanded_layer(cx))
             .children(self.view_reactions_modal(cx))
             .children(self.audio_menu_layer(cx))
             .children(self.invite_modal(cx))
