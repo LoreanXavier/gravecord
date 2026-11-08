@@ -6,17 +6,20 @@
 //! Measured in `design/dom/settings/guild-community-darker-cozy.json`, `modals/community-1..5-darker-cozy.json`.
 
 use super::{Root, color, icon};
+use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, SharedString, deferred, div, img,
-    linear_color_stop, linear_gradient, prelude::*, px,
+    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, deferred,
+    div, img, linear_color_stop, linear_gradient, prelude::*, px,
 };
 use serde_json::{Value, json};
 
 pub(super) const COMMUNITY_PREFIX: &str = "guild-community:";
 const SAVED_PREFIX: &str = "guild-community:saved:";
 const ROLE_PREFIX: &str = "guild-community:role:";
+pub(super) const OVERVIEW_PREFIX: &str = "guild-overview:";
+const OVERVIEW_SAVED_PREFIX: &str = "guild-overview:saved:";
 const HOUSE_ART: &str = "https://discord.com/assets/fc0ec9c0404d2552.svg";
 const SPARKLES_ART: &str = "https://discord.com/assets/2990c2614b7e7388.svg";
 /// `graphic.src` of the intro step.
@@ -160,7 +163,14 @@ impl Root {
         self.server_settings.as_mut()?.community.as_mut()
     }
 
-    pub(super) fn request_community(&mut self) {
+    pub(super) fn request_community(&mut self, guild: Id) {
+        let community = self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"));
+        if community {
+            self.request_overview(guild);
+        }
         for url in [HOUSE_ART, SPARKLES_ART, CAMPFIRE_ART] {
             self.request_image(url.to_owned(), url.to_owned());
         }
@@ -1400,6 +1410,832 @@ impl Root {
     }
 }
 
+/// `c8`'s values, as read and as edited.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct OverviewValues {
+    rules: Option<String>,
+    updates: Option<String>,
+    alerts: Option<String>,
+    locale: String,
+    description: String,
+    /// Disable Community was pressed: it waits for Save Changes like the rest.
+    disabling: bool,
+}
+
+/// `c8` while it is open.
+pub(crate) struct Overview {
+    saved: OverviewValues,
+    now: OverviewValues,
+    description: Entity<Editor>,
+    open_select: Option<OverviewSelect>,
+    /// `dismissedCommunityFeaturesUpsell`.
+    dismissed: bool,
+    confirm_disable: bool,
+    error: Option<String>,
+    _events: Subscription,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverviewSelect {
+    Rules,
+    Updates,
+    Alerts,
+    Locale,
+}
+
+impl OverviewSelect {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Rules => "overview-rules",
+            Self::Updates => "overview-updates",
+            Self::Alerts => "overview-alerts",
+            Self::Locale => "overview-locale",
+        }
+    }
+}
+
+/// What Save Changes sends: only what changed, and the features together with the channels they free.
+fn overview_body(saved: &OverviewValues, now: &OverviewValues, features: &[String]) -> Value {
+    let mut body = json!({});
+    if saved.rules != now.rules || now.disabling {
+        body["rules_channel_id"] = json!(now.rules);
+    }
+    if saved.updates != now.updates || now.disabling {
+        body["public_updates_channel_id"] = json!(now.updates);
+    }
+    if saved.alerts != now.alerts {
+        body["safety_alerts_channel_id"] = json!(now.alerts);
+    }
+    if saved.locale != now.locale {
+        body["preferred_locale"] = json!(now.locale);
+    }
+    if saved.description != now.description {
+        body["description"] = if now.description.is_empty() {
+            Value::Null
+        } else {
+            json!(now.description)
+        };
+    }
+    if now.disabling {
+        let kept: Vec<&String> = features
+            .iter()
+            .filter(|feature| {
+                !matches!(
+                    feature.as_str(),
+                    "COMMUNITY" | "DISCOVERABLE" | "PREVIEW_ENABLED"
+                )
+            })
+            .collect();
+        body["features"] = json!(kept);
+    }
+    body
+}
+
+/// `c5`: the language's own name, and plain English for `en-US`.
+fn locale_name(value: &str) -> String {
+    if value == "en-US" {
+        return "English".to_owned();
+    }
+    super::audit_spec::LOCALES
+        .iter()
+        .find(|(known, _)| *known == value)
+        .map_or_else(|| value.to_owned(), |(_, name)| (*name).to_owned())
+}
+
+impl Root {
+    fn overview_mut(&mut self) -> Option<&mut Overview> {
+        self.server_settings.as_mut()?.overview.as_mut()
+    }
+
+    fn request_overview(&mut self, guild: Id) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{OVERVIEW_PREFIX}{guild}")),
+            method: reqwest::Method::GET,
+            route: format!("/guilds/{guild}"),
+            body: None,
+        });
+    }
+
+    pub(super) fn overview_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
+        let report = self.fetched.get(key).cloned().unwrap_or_default();
+        if key.starts_with(OVERVIEW_SAVED_PREFIX) {
+            if report["ok"] == true {
+                if let Some(guild) = key
+                    .strip_prefix(OVERVIEW_SAVED_PREFIX)
+                    .and_then(|guild| guild.parse::<Id>().ok())
+                {
+                    self.request_overview(guild);
+                }
+            } else if let Some(overview) = self.overview_mut() {
+                overview.error = report["body"]["message"].as_str().map(str::to_owned);
+            }
+            cx.notify();
+            return;
+        }
+        if report["ok"] != true {
+            return;
+        }
+        let body = &report["body"];
+        let text = |name: &str| body[name].as_str().map(str::to_owned);
+        let values = OverviewValues {
+            rules: text("rules_channel_id"),
+            updates: text("public_updates_channel_id"),
+            alerts: text("safety_alerts_channel_id"),
+            locale: text("preferred_locale").unwrap_or_default(),
+            description: text("description").unwrap_or_default(),
+            disabling: false,
+        };
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(super::editor_style(), cx);
+            editor.set_placeholder("Tell the world a bit about this server.".to_owned());
+            editor.set_text(&values.description);
+            editor
+        });
+        let events = cx.subscribe(&editor, |this, editor, event: &EditorEvent, cx| {
+            let text = editor.read(cx).text().to_owned();
+            match event {
+                EditorEvent::Submit(submitted) => {
+                    let submitted = submitted.clone();
+                    editor.update(cx, |editor, _| editor.set_text(&submitted));
+                }
+                EditorEvent::Edited => {
+                    let cut: String = text.chars().take(300).collect();
+                    if cut != text {
+                        editor.update(cx, |editor, _| editor.set_text(&cut));
+                    }
+                    if let Some(overview) = this.overview_mut() {
+                        overview.now.description = cut;
+                    }
+                }
+                EditorEvent::Cancel => {}
+            }
+            cx.notify();
+        });
+        let dismissed = self
+            .overview_mut()
+            .is_some_and(|overview| overview.dismissed);
+        if let Some(open) = self.server_settings.as_mut() {
+            open.overview = Some(Overview {
+                saved: values.clone(),
+                now: values,
+                description: editor,
+                open_select: None,
+                dismissed,
+                confirm_disable: false,
+                error: None,
+                _events: events,
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn overview_dirty(&self) -> bool {
+        self.server_settings
+            .as_ref()
+            .and_then(|open| open.overview.as_ref())
+            .is_some_and(|overview| overview.saved != overview.now)
+    }
+
+    pub(super) fn reset_overview(&mut self, cx: &mut Context<Self>) {
+        let mut text = None;
+        if let Some(overview) = self.overview_mut() {
+            overview.now = overview.saved.clone();
+            overview.error = None;
+            text = Some((
+                overview.description.clone(),
+                overview.saved.description.clone(),
+            ));
+        }
+        if let Some((editor, value)) = text {
+            editor.update(cx, |editor, _| editor.set_text(&value));
+        }
+        cx.notify();
+    }
+
+    pub(super) fn save_overview(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let features = self
+            .stores
+            .guild(guild)
+            .map(|known| known.features.clone())
+            .unwrap_or_default();
+        let Some(overview) = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.overview.as_ref())
+        else {
+            return;
+        };
+        let body = overview_body(&overview.saved, &overview.now, &features);
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{OVERVIEW_SAVED_PREFIX}{guild}")),
+            method: reqwest::Method::PATCH,
+            route: format!("/guilds/{guild}"),
+            body: Some(body),
+        });
+        cx.notify();
+    }
+
+    /// One `e2.Z` in its horizontal layout.
+    fn overview_row(
+        &self,
+        which: OverviewSelect,
+        (label, description, helper): (&'static str, &'static str, Option<String>),
+        shown: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let opened = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.overview.as_ref())
+            .is_some_and(|overview| overview.open_select == Some(which));
+        let key = which.key();
+        div()
+            .flex()
+            .gap(px(24.))
+            .child(
+                div()
+                    .w(px(388.))
+                    .flex_none()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-subtle"))
+                            .child(description),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(248.))
+                    .flex_none()
+                    .child(
+                        div()
+                            .id(key)
+                            .relative()
+                            .child(self.anchor_probe(key))
+                            .h(px(40.))
+                            .pl(px(12.))
+                            .pr(px(8.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(if opened {
+                                color("--text-brand")
+                            } else {
+                                color("--input-border-default")
+                            })
+                            .bg(color("--input-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(if shown.is_some() {
+                                        color("--text-default")
+                                    } else {
+                                        color("--input-placeholder-text-default")
+                                    })
+                                    .child(shown.unwrap_or_else(|| "Select...".to_owned())),
+                            )
+                            .child(
+                                gpui::svg()
+                                    .path("icons/select_chevron.svg")
+                                    .size(px(20.))
+                                    .text_color(color("--interactive-text-default"))
+                                    .with_transformation(gpui::Transformation::rotate(
+                                        gpui::percentage(if opened { 0.5 } else { 0. }),
+                                    )),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(overview) = this.overview_mut() {
+                                    overview.open_select = if overview.open_select == Some(which) {
+                                        None
+                                    } else {
+                                        Some(which)
+                                    };
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .children(helper.map(|helper| {
+                        div()
+                            .mt(px(8.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-subtle"))
+                            .child(helper)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn overview_channel_name(&self, guild: Id, id: Option<&str>) -> Option<String> {
+        let id = id?.parse::<Id>().ok()?;
+        self.stores
+            .guild(guild)?
+            .channels
+            .iter()
+            .find(|channel| channel.id == id)
+            .map(|channel| format!("#{}", channel.name))
+    }
+
+    /// `c7`: the notice with where to go next, until it is dismissed.
+    fn overview_upsell(&self, guild: Id, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let overview = self.server_settings.as_ref()?.overview.as_ref()?;
+        if overview.dismissed {
+            return None;
+        }
+        let has = |name: &str| {
+            self.stores
+                .guild(guild)
+                .is_some_and(|known| known.features.iter().any(|feature| feature == name))
+        };
+        let small = |id: &'static str, text: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(11.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(if primary {
+                    color("--control-primary-border-default")
+                } else {
+                    color("--control-secondary-border-default")
+                })
+                .bg(if primary {
+                    color("--control-primary-background-default")
+                } else {
+                    color("--control-secondary-background-default")
+                })
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(if primary {
+                    color("--white")
+                } else {
+                    color("--control-secondary-text-default")
+                })
+                .child(text)
+        };
+        let go = |page: super::server_settings::Page| {
+            cx.listener(move |this: &mut Root, _: &gpui::ClickEvent, _, cx| {
+                if let Some(open) = this.server_settings.as_mut() {
+                    open.page = page;
+                }
+                if let Some(guild) = this.server_settings.as_ref().map(|open| open.guild) {
+                    this.request_server_page(guild, page, cx);
+                }
+                cx.notify();
+            })
+        };
+        use super::server_settings::Page;
+        Some(
+            div()
+                .relative()
+                .p(px(16.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .child(
+                    div()
+                        .pr(px(8.))
+                        .child(
+                            div()
+                                .mb(px(8.))
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child("Your server is now a Community Server!"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-default"))
+                                .child("You now have access to additional tools that can help you moderate, run, and grow your server. Check out some of them to get started!"),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("overview-upsell-close")
+                        .absolute()
+                        .top(px(22.))
+                        .right(px(22.))
+                        .cursor_pointer()
+                        .child(icon("modal_close", 20., "--interactive-text-default"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(overview) = this.overview_mut() {
+                                overview.dismissed = true;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .mt(px(28.))
+                        .flex()
+                        .gap(px(8.))
+                        .when(!has("GUILD_ONBOARDING"), |this| {
+                            this.child(
+                                small("overview-onboarding", "Set up Onboarding", true)
+                                    .on_click(go(Page::Onboarding)),
+                            )
+                        })
+                        .when(!has("DISCOVERABLE"), |this| {
+                            this.child(
+                                small("overview-discovery", "Apply for Discovery", false)
+                                    .on_click(go(Page::Access)),
+                            )
+                        })
+                        .child(
+                            small("overview-insights", "Check Server Insights", false)
+                                .on_click(go(Page::Insights)),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The page once Community is on (`c8`).
+    pub(super) fn server_overview_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        let Some(overview) = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.overview.as_ref())
+        else {
+            return div().into_any_element();
+        };
+        let now = overview.now.clone();
+        let description = overview.description.clone();
+        let error = overview.error.clone();
+        let divider = || div().h(px(1.)).bg(color("--border-subtle"));
+        let known = self.stores.guild(guild);
+        let me = self.stores.me();
+        let admin = known.zip(me).is_some_and(|(known, me)| {
+            dc_state::permissions::can_in_guild(known, me, dc_state::permissions::ADMINISTRATOR)
+        });
+        let updates_helper = if now.updates.is_none() && now.alerts.is_none() {
+            "Optional Without a moderator channel, raid alerts and lockdown notices won't be delivered."
+        } else {
+            "Optional"
+        };
+        let focus = description.clone();
+        let upsell = self.overview_upsell(guild, cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Community Settings"),
+            )
+            .children(upsell)
+            .child(self.overview_row(
+                OverviewSelect::Rules,
+                (
+                    "Rules or guidelines channel",
+                    "Please select the channel that hosts your rules. This channel will by default start from the top and will feature a special header.",
+                    None,
+                ),
+                Some(
+                    self.overview_channel_name(guild, now.rules.as_deref())
+                        .unwrap_or_else(|| "None".to_owned()),
+                ),
+                cx,
+            ))
+            .child(divider())
+            .child(self.overview_row(
+                OverviewSelect::Updates,
+                (
+                    "Community Updates Channel",
+                    "This is the channel where Discord will send relevant updates for Community admins and moderators. As some info might be sensitive, we recommend selecting a role-restricted channel.",
+                    Some(updates_helper.to_owned()),
+                ),
+                Some(
+                    self.overview_channel_name(guild, now.updates.as_deref())
+                        .unwrap_or_else(|| "None".to_owned()),
+                ),
+                cx,
+            ))
+            .child(divider())
+            .child(self.overview_row(
+                OverviewSelect::Alerts,
+                (
+                    "Safety Notifications Channel",
+                    "This is the channel where Discord will send you important safety updates about your server. As some info might be sensitive, we recommend selecting a role-restricted channel.",
+                    None,
+                ),
+                self.overview_channel_name(guild, now.alerts.as_deref()),
+                cx,
+            ))
+            .child(divider())
+            .child(self.overview_row(
+                OverviewSelect::Locale,
+                (
+                    "Server Primary Language",
+                    "This helps Discord customize features for you and your members.",
+                    None,
+                ),
+                Some(locale_name(&now.locale)),
+                cx,
+            ))
+            .child(divider())
+            .child(
+                div()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child("Server Description"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .mb(px(8.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-subtle"))
+                            .child("Describe your community. This description will be displayed in external embeds of this server\u{2019}s invite link."),
+                    )
+                    .child(
+                        div()
+                            .id("overview-description")
+                            .h(px(89.))
+                            .pt(px(12.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .cursor_text()
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                let handle = gpui::Focusable::focus_handle(focus.read(cx), cx);
+                                window.focus(&handle, cx);
+                            }))
+                            .child(div().w_full().child(description)),
+                    ),
+            )
+            .child(divider())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .w(px(516.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child("Disable Community"),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-subtle"))
+                                    .child("This will remove specific features for Community Servers, like Server Discovery and Server Insights."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("overview-disable")
+                            .h(px(32.))
+                            .px(px(11.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-critical-primary-border-default"))
+                            .bg(color("--control-critical-primary-background-default"))
+                            .when(!admin, |this| this.opacity(0.5))
+                            .when(admin, |this| {
+                                this.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                    let discoverable = this.stores.guild(guild).is_some_and(|known| {
+                                        known.features.iter().any(|feature| feature == "DISCOVERABLE")
+                                    });
+                                    if let Some(overview) = this.overview_mut() {
+                                        if discoverable {
+                                            overview.confirm_disable = true;
+                                        } else {
+                                            overview.now.disabling = true;
+                                            overview.now.rules = None;
+                                            overview.now.updates = None;
+                                        }
+                                    }
+                                    cx.notify();
+                                }))
+                            })
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--white"))
+                            .child("Disable Community"),
+                    ),
+            )
+            .children(error.map(|error| {
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-feedback-critical"))
+                    .child(error)
+            }))
+            .into_any_element()
+    }
+
+    /// The open list of `c8`.
+    pub(super) fn overview_select_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.server_settings.as_ref()?;
+        if open.page != super::server_settings::Page::Community {
+            return None;
+        }
+        let overview = open.overview.as_ref()?;
+        let which = overview.open_select?;
+        let field = self
+            .tip_anchors
+            .borrow()
+            .get(which.key())
+            .copied()?
+            .dilate(px(1.));
+        let known = self.stores.guild(open.guild)?;
+        let channels = known
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == dc_state::ChannelKind::Text)
+            .map(|channel| (channel.id.to_string(), format!("#{}", channel.name)));
+        let (options, current): (Vec<(Option<String>, String)>, Option<String>) = match which {
+            OverviewSelect::Rules | OverviewSelect::Updates => (
+                std::iter::once((None, "None".to_owned()))
+                    .chain(channels.map(|(id, name)| (Some(id), name)))
+                    .collect(),
+                if which == OverviewSelect::Rules {
+                    overview.now.rules.clone()
+                } else {
+                    overview.now.updates.clone()
+                },
+            ),
+            OverviewSelect::Alerts => (
+                channels.map(|(id, name)| (Some(id), name)).collect(),
+                overview.now.alerts.clone(),
+            ),
+            OverviewSelect::Locale => (
+                super::audit_spec::LOCALES
+                    .iter()
+                    .map(|(value, _)| (Some((*value).to_owned()), locale_name(value)))
+                    .collect(),
+                Some(overview.now.locale.clone()),
+            ),
+        };
+        let rows: Vec<AnyElement> = options
+            .into_iter()
+            .enumerate()
+            .map(|(index, (value, label))| {
+                let selected = value == current;
+                let chosen = value.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "overview-option-{}-{index}",
+                        which.key()
+                    )))
+                    .flex_none()
+                    .h(px(40.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--background-mod-normal")))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .when(selected, |this| {
+                        this.child(icon("select_check", 20., "--text-brand"))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(overview) = this.overview_mut() {
+                            match which {
+                                OverviewSelect::Rules => overview.now.rules = chosen.clone(),
+                                OverviewSelect::Updates => overview.now.updates = chosen.clone(),
+                                OverviewSelect::Alerts => overview.now.alerts = chosen.clone(),
+                                OverviewSelect::Locale => {
+                                    overview.now.locale = chosen.clone().unwrap_or_default();
+                                }
+                            }
+                            overview.open_select = None;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            deferred(
+                div()
+                    .id("overview-select-layer")
+                    .occlude()
+                    .absolute()
+                    .left(field.left())
+                    .top(field.bottom() + px(4.))
+                    .w(field.size.width)
+                    .max_h(px(210.))
+                    .p(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .overflow_y_scroll()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(overview) = this.overview_mut() {
+                            overview.open_select = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(div().flex().flex_col().children(rows)),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
+    /// The question before a discoverable server stops being a community.
+    pub(super) fn overview_confirm_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let overview = self.server_settings.as_ref()?.overview.as_ref()?;
+        if !overview.confirm_disable {
+            return None;
+        }
+        let close = |this: &mut Root| {
+            if let Some(overview) = this.overview_mut() {
+                overview.confirm_disable = false;
+            }
+        };
+        Some(super::modal::render(
+            super::modal::Spec {
+                id: "overview-disable-modal",
+                title: "Are you sure?".into(),
+                subtitle: Some(
+                    "Disabling Community will also remove your server from Server Discovery."
+                        .into_any_element(),
+                ),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "overview-disable-cancel",
+                        "Never Mind",
+                        super::modal::Tone::Secondary,
+                        move |this, _, _| close(this),
+                    ),
+                    super::modal::button(
+                        "overview-disable-confirm",
+                        "Confirm",
+                        super::modal::Tone::Critical,
+                        |this, _, _| {
+                            if let Some(overview) = this.overview_mut() {
+                                overview.confirm_disable = false;
+                                overview.now.disabling = true;
+                                overview.now.rules = None;
+                                overview.now.updates = None;
+                            }
+                        },
+                    ),
+                ],
+                close: Box::new(move |this, _, _| close(this)),
+            },
+            cx,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1445,6 +2281,40 @@ mod tests {
         assert!(body.get("verification_level").is_none());
         assert!(body.get("explicit_content_filter").is_none());
         assert!(body.get("default_message_notifications").is_none());
+    }
+
+    #[test]
+    fn saving_the_overview_sends_only_what_changed() {
+        let saved = OverviewValues {
+            rules: Some("1".to_owned()),
+            locale: "en-US".to_owned(),
+            ..Default::default()
+        };
+        let mut now = saved.clone();
+        assert_eq!(overview_body(&saved, &now, &[]), json!({}));
+        now.locale = "tr".to_owned();
+        assert_eq!(
+            overview_body(&saved, &now, &[]),
+            json!({"preferred_locale": "tr"})
+        );
+        now = saved.clone();
+        now.disabling = true;
+        now.rules = None;
+        let features = [
+            "COMMUNITY".to_owned(),
+            "NEWS".to_owned(),
+            "DISCOVERABLE".to_owned(),
+        ];
+        let body = overview_body(&saved, &now, &features);
+        assert_eq!(body["features"], json!(["NEWS"]));
+        assert!(body["rules_channel_id"].is_null());
+        assert!(body.get("public_updates_channel_id").is_some());
+    }
+
+    #[test]
+    fn english_goes_by_its_plain_name() {
+        assert_eq!(locale_name("en-US"), "English");
+        assert_eq!(locale_name("en-GB"), "English, UK");
     }
 
     #[test]

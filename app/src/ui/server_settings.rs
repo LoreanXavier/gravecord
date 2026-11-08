@@ -69,6 +69,8 @@ pub(super) enum Page {
     Bans,
     AutoMod,
     Community,
+    Onboarding,
+    Insights,
     Template,
 }
 
@@ -126,6 +128,13 @@ const SIDEBAR: &[Option<Group>] = &[
     Some((None, &[(Page::Community, "Enable Community")])),
     None,
     Some((None, &[(Page::Template, "Server Template")])),
+];
+
+/// The group that replaces Enable Community once Community is on.
+const COMMUNITY_ITEMS: &[(Page, &str)] = &[
+    (Page::Community, "Community Overview"),
+    (Page::Onboarding, "Onboarding"),
+    (Page::Insights, "Server Insights"),
 ];
 
 /// A trait's emoji as the API stores it (`emoji_id`, `emoji_name`, `emoji_animated`); a unicode emoji goes by its
@@ -272,6 +281,7 @@ pub(crate) struct ServerSettings {
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
     pub(super) community: Option<super::server_community::Wizard>,
+    pub(super) overview: Option<super::server_community::Overview>,
     /// The sticker being removed, dimmed until the list comes back, and why a removal failed.
     pub(super) sticker_removing: Option<String>,
     pub(super) sticker_error: Option<(String, String)>,
@@ -425,6 +435,7 @@ impl Root {
             audit: Default::default(),
             safety: Default::default(),
             community: None,
+            overview: None,
             sticker_removing: None,
             sticker_error: None,
             engagement: Default::default(),
@@ -993,6 +1004,7 @@ impl Root {
             Page::Engagement => self.engagement_dirty(),
             Page::Integrations => self.webhook_dirty(open.guild, cx),
             Page::Access => self.access_dirty(open.guild, cx),
+            Page::Community => self.overview_dirty(),
             _ => false,
         };
         let mut nav = div()
@@ -1003,6 +1015,11 @@ impl Root {
             .pb(px(60.))
             .flex()
             .flex_col();
+        // With Community on, its entry becomes three and AutoMod moves away (`predicate`s in module 989433).
+        let community = self
+            .stores
+            .guild(open.guild)
+            .is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"));
         for (index, group) in SIDEBAR.iter().enumerate() {
             match group {
                 None => {
@@ -1037,8 +1054,17 @@ impl Root {
                                 .child(header),
                         );
                     }
+                    let items: &[(Page, &str)] =
+                        if community && matches!(items.first(), Some((Page::Community, _))) {
+                            COMMUNITY_ITEMS
+                        } else {
+                            items
+                        };
                     for (target, label) in items.iter() {
                         let target = *target;
+                        if community && target == Page::AutoMod {
+                            continue;
+                        }
                         let external = target == Page::AppDirectory;
                         nav = nav.child(
                             div()
@@ -1137,7 +1163,18 @@ impl Root {
             Page::AuditLog => self.server_audit_page(open.guild, cx),
             Page::Bans => self.server_bans_page(open.guild, cx),
             Page::AutoMod => Self::server_page_title("AutoMod"),
-            Page::Community => self.server_community_page(open.guild, cx),
+            Page::Community => {
+                let community = self.stores.guild(open.guild).is_some_and(|known| {
+                    known.features.iter().any(|feature| feature == "COMMUNITY")
+                });
+                if community {
+                    self.server_overview_page(open.guild, cx)
+                } else {
+                    self.server_community_page(open.guild, cx)
+                }
+            }
+            Page::Onboarding => Self::server_page_title("Onboarding"),
+            Page::Insights => Self::server_page_title("Server Insights"),
             Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
@@ -1253,6 +1290,7 @@ impl Root {
                                         }
                                         Some((Page::Engagement, _)) => this.reset_engagement(cx),
                                         Some((Page::Access, guild)) => this.reset_access(guild, cx),
+                                        Some((Page::Community, _)) => this.reset_overview(cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1289,6 +1327,9 @@ impl Root {
                                             this.save_engagement(guild, cx)
                                         }
                                         Some((Page::Access, guild)) => this.save_access(guild, cx),
+                                        Some((Page::Community, guild)) => {
+                                            this.save_overview(guild, cx)
+                                        }
                                         _ => this.save_server_settings(cx),
                                     }
                                 })),

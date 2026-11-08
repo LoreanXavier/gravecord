@@ -523,6 +523,11 @@ impl Root {
                     self.audit_fetched(&key, cx);
                     return;
                 }
+                if key.starts_with(server_community::OVERVIEW_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.overview_fetched(&key, cx);
+                    return;
+                }
                 if key.starts_with(server_community::COMMUNITY_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.community_fetched(&key, cx);
@@ -4332,6 +4337,8 @@ impl Render for Root {
             .children(self.safety_select_layer(cx))
             .children(self.community_wizard_modal(cx))
             .children(self.community_select_layer(cx))
+            .children(self.overview_select_layer(cx))
+            .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
             .children(
                 self.server_settings
