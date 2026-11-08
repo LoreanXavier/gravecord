@@ -4,6 +4,7 @@
 
 use super::{Root, avatar_source, color, icon};
 use crate::net::Request;
+use crate::parity::Parity;
 use dc_state::permissions::{Overwrite, VIEW_CHANNEL};
 use dc_state::{Channel, Id, User};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
@@ -54,7 +55,7 @@ pub(super) fn incident_body(
 /// `channelPermissionSettingsAdvancedModeOn` in local storage.
 const ADVANCED_KEY: &str = "channelPermissionSettingsAdvancedModeOn";
 /// The "+" over Roles/Members (`/assets/ef103ccb22234d89.svg`).
-const ADD_TARGET_ART: &str = "https://discordapp.com/assets/ef103ccb22234d89.svg";
+pub(super) const ADD_TARGET_ART: &str = "https://discordapp.com/assets/ef103ccb22234d89.svg";
 /// "Need help with permissions?"
 const PERMISSIONS_HELP: &str = "https://support.discord.com/hc/en-us/articles/206029707";
 
@@ -885,12 +886,12 @@ impl Root {
                     .path("icons/chevron_right_20.svg")
                     .size(px(20.))
                     .text_color(color("--text-strong"))
-                    // The icon points left: turned half round when closed, three quarters when open.
-                    .with_transformation(gpui::Transformation::rotate(gpui::radians(if open {
-                        3. * std::f32::consts::FRAC_PI_2
-                    } else {
-                        std::f32::consts::PI
-                    }))),
+                    // The icon points down (open); closed, it is turned to point right.
+                    .when(!open, |this| {
+                        this.with_transformation(gpui::Transformation::rotate(gpui::radians(
+                            3. * std::f32::consts::FRAC_PI_2,
+                        )))
+                    }),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 crate::storage::set(ADVANCED_KEY, serde_json::json!(!open));
@@ -931,6 +932,20 @@ impl Root {
             };
             targets.push((entry.id, entry.kind, name));
         }
+        for (id, (_, _, kind)) in &edits {
+            if !targets.iter().any(|(known, _, _)| known == id) {
+                let name = if *kind == 0 {
+                    guild.roles.get(id).cloned().unwrap_or_default()
+                } else {
+                    self.stores
+                        .users
+                        .get(id)
+                        .map(|user| user.display_name().to_owned())
+                        .unwrap_or_default()
+                };
+                targets.push((*id, *kind, name));
+            }
+        }
         let selected = settings
             .and_then(|settings| settings.perm_target)
             .unwrap_or(guild.id);
@@ -948,11 +963,12 @@ impl Root {
             },
             |(allow, deny, _)| (*allow, *deny),
         );
+        // `sidebarScrollable_EDKX0U`: 15px of padding and the 8px scrollbar gutter on the right.
         let list = div()
             .w(px(232.))
             .flex_none()
             .pt(px(24.))
-            .pr(px(15.))
+            .pr(px(23.))
             .flex()
             .flex_col()
             .child(
@@ -967,11 +983,21 @@ impl Root {
                     .font_weight(FontWeight(500.))
                     .text_color(color("--channels-default"))
                     .child(div().flex_1().child("Roles/Members"))
-                    .children(
-                        self.images
-                            .get(ADD_TARGET_ART)
-                            .cloned()
-                            .map(|art| img(art).size(px(16.))),
+                    .child(
+                        div()
+                            .id("permissions-add-target")
+                            .relative()
+                            .child(self.anchor_probe("permissions-add-target"))
+                            .cursor_pointer()
+                            .children(
+                                self.images
+                                    .get(ADD_TARGET_ART)
+                                    .cloned()
+                                    .map(|art| img(art).size(px(16.))),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_add_target(window, cx)
+                            })),
                     ),
             )
             .children(targets.iter().map(|(id, _, name)| {
@@ -1308,6 +1334,209 @@ impl Root {
             },
             cx,
         ))
+    }
+}
+
+impl Root {
+    fn toggle_add_target(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(settings) = self.channel_settings.as_mut() else {
+            return;
+        };
+        if settings.add_target.take().is_some() {
+            cx.notify();
+            return;
+        }
+        let field = cx.new(|cx| {
+            let mut editor = crate::editor::Editor::new(super::editor_style(), cx);
+            editor.set_placeholder("Role/Member".to_owned());
+            editor
+        });
+        let events = cx.subscribe(&field, |this, _, event: &crate::editor::EditorEvent, cx| {
+            if matches!(event, crate::editor::EditorEvent::Cancel)
+                && let Some(settings) = this.channel_settings.as_mut()
+            {
+                settings.add_target = None;
+            }
+            cx.notify();
+        });
+        let handle = gpui::Focusable::focus_handle(field.read(cx), cx);
+        window.focus(&handle, cx);
+        if let Some(settings) = self.channel_settings.as_mut() {
+            settings.add_target = Some((field, events));
+        }
+        cx.notify();
+    }
+
+    /// Roles without an overwrite here, then members this client knows in the server, matching the search.
+    fn add_target_candidates(&self, query: &str) -> Vec<(Id, u64, String, Option<User>)> {
+        let Some(settings) = self.channel_settings.as_ref() else {
+            return Vec::new();
+        };
+        let Some(guild) = self.stores.guilds.iter().find(|guild| {
+            guild
+                .channels
+                .iter()
+                .any(|known| known.id == settings.channel)
+        }) else {
+            return Vec::new();
+        };
+        let Some(channel) = guild
+            .channels
+            .iter()
+            .find(|known| known.id == settings.channel)
+        else {
+            return Vec::new();
+        };
+        let taken = |id: Id| {
+            channel.overwrites.iter().any(|entry| entry.id == id)
+                || settings.perm_edits.contains_key(&id)
+        };
+        let query = query.trim().to_lowercase();
+        let mut out: Vec<(Id, u64, String, Option<User>)> = guild
+            .roles
+            .iter()
+            .filter(|(id, _)| **id != guild.id && !taken(**id))
+            .filter(|(_, name)| name.to_lowercase().contains(&query))
+            .map(|(id, name)| (*id, 0, name.clone(), None))
+            .collect();
+        out.sort_by(|a, b| a.2.cmp(&b.2));
+        let mut members: Vec<User> = self.stores.current_user.iter().cloned().collect();
+        if let Some(list) = self.stores.member_lists.get(&guild.id) {
+            for row in &list.rows {
+                if let dc_state::member_list::Row::Member { user, .. } = row {
+                    if !members.iter().any(|known| known.id == user.id) {
+                        members.push(user.clone());
+                    }
+                }
+            }
+        }
+        for user in members {
+            if taken(user.id) {
+                continue;
+            }
+            if user.display_name().to_lowercase().contains(&query)
+                || user.username.to_lowercase().contains(&query)
+            {
+                out.push((user.id, 1, user.display_name().to_owned(), Some(user)));
+            }
+        }
+        out
+    }
+
+    pub(super) fn add_target_popout(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let settings = self.channel_settings.as_ref()?;
+        let (field, _) = settings.add_target.as_ref()?;
+        let anchor = self
+            .tip_anchors
+            .borrow()
+            .get("permissions-add-target")
+            .copied()?;
+        let query = field.read(cx).text().to_owned();
+        let rows = self
+            .add_target_candidates(&query)
+            .into_iter()
+            .map(|(id, kind, name, user)| {
+                let picture = user
+                    .as_ref()
+                    .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+                div()
+                    .id(SharedString::from(format!("permissions-add-{id}")))
+                    .flex_none()
+                    .h(px(40.))
+                    .rounded(px(4.))
+                    .pl(px(8.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(user.is_some(), |this| {
+                        this.child(div().size(px(32.)).rounded_full().children(
+                            picture.map(|picture| img(picture).size(px(32.)).rounded_full()),
+                        ))
+                        .child(div().w(px(16.)))
+                    })
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(name),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(settings) = this.channel_settings.as_mut() {
+                            settings.perm_edits.insert(id, (0, 0, kind));
+                            settings.perm_target = Some(id);
+                            settings.add_target = None;
+                        }
+                        cx.notify();
+                    }))
+            });
+        // The popout's left is the list's, 8px under the header row.
+        let left = anchor.left() - px(183.);
+        Some(
+            gpui::deferred(
+                div()
+                    .parity("permissions-add")
+                    .id("permissions-add-popout")
+                    .occlude()
+                    .absolute()
+                    .left(left)
+                    .top(anchor.bottom() + px(14.))
+                    .w(px(250.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        let on_plus = this
+                            .tip_anchors
+                            .borrow()
+                            .get("permissions-add-target")
+                            .is_some_and(|bounds| bounds.contains(&event.position));
+                        if !on_plus && let Some(settings) = this.channel_settings.as_mut() {
+                            settings.add_target = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .pt(px(12.))
+                            .px(px(12.))
+                            .pb(px(8.))
+                            .child(
+                                div()
+                                    .mb(px(8.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child("Add:"),
+                            )
+                            .child(
+                                div()
+                                    .h(px(40.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--input-border-active"))
+                                    .bg(color("--input-background-default"))
+                                    .pl(px(12.))
+                                    .pr(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .child(div().flex_1().min_w(px(0.)).child(field.clone())),
+                            ),
+                    )
+                    .child(div().p(px(4.)).flex().flex_col().children(rows)),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
     }
 }
 

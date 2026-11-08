@@ -70,6 +70,8 @@ pub(crate) struct ChannelSettings {
     pub(super) perm_edits: std::collections::HashMap<Id, (u64, u64, u64)>,
     /// "Sync permissions?" is open.
     pub(super) confirm_sync: bool,
+    /// The "+" popout's search field while it is open (`createOverwritePopout_4T6RB7`).
+    pub(super) add_target: Option<(Entity<Editor>, Subscription)>,
     _events: [Subscription; 2],
 }
 
@@ -195,9 +197,12 @@ impl Root {
             perm_target: None,
             perm_edits: std::collections::HashMap::new(),
             confirm_sync: false,
+            add_target: None,
             _events: [name_events, topic_events],
         });
         self.request_image(OVERVIEW_ART.to_owned(), OVERVIEW_ART.to_owned());
+        let plus = super::channel_settings_pages::ADD_TARGET_ART;
+        self.request_image(plus.to_owned(), plus.to_owned());
         let _ = window;
         cx.notify();
     }

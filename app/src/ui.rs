@@ -1327,6 +1327,7 @@ impl Root {
         if let Some(settings) = self.channel_settings.as_ref() {
             list.push(settings.name.clone());
             list.push(settings.topic.clone());
+            list.extend(settings.add_target.as_ref().map(|(field, _)| field.clone()));
         }
         list.extend(
             self.profile
@@ -4115,6 +4116,7 @@ impl Render for Root {
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))
+            .children(self.add_target_popout(cx))
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
             .children(self.profile_layer(cx))
