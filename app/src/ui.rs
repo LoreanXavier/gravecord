@@ -102,6 +102,7 @@ mod tooltip;
 mod unread;
 mod uploads;
 mod voice;
+mod voice_sounds;
 
 use tooltip::{Body, Side, Tip};
 
@@ -299,6 +300,12 @@ pub struct Root {
     call: Option<voice::Call>,
     self_mute: bool,
     self_deaf: bool,
+    /// Lets the system-wide push to talk hook (another thread) reach the window.
+    updates: UnboundedSender<Update>,
+    /// The system-wide push to talk hook, while connected to voice in push to talk mode.
+    ptt_hook: Option<dc_hotkey::Hook>,
+    /// Push to talk is down, as far as the sounds know.
+    ptt_down: bool,
     /// Users the voice connection reports as speaking.
     speaking: HashSet<Id>,
     /// Text of attachments shown as plaintext previews, by `text:` key.
@@ -321,7 +328,11 @@ pub struct Root {
 }
 
 impl Root {
-    pub fn new(requests: UnboundedSender<Request>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        requests: UnboundedSender<Request>,
+        updates: UnboundedSender<Update>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         audio_menu::restore_audio_prefs();
         let voice = settings::VoiceState::restore();
         let setting_choices = voice.choices();
@@ -428,6 +439,9 @@ impl Root {
             content_width: 793.,
             profile: None,
             call: None,
+            updates,
+            ptt_hook: None,
+            ptt_down: false,
             self_mute: false,
             self_deaf: false,
             speaking: HashSet::new(),
@@ -447,7 +461,11 @@ impl Root {
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::Dispatch { name, data } => {
+                let voice_before = (name == "VOICE_STATE_UPDATE").then(|| self.others_in_call());
                 self.stores.dispatch(&name, &data);
+                if name == "VOICE_STATE_UPDATE" {
+                    self.after_voice_state(voice_before.flatten(), &data);
+                }
                 if name.starts_with("RELATIONSHIP_") {
                     self.rebuild_rows();
                 }
@@ -460,6 +478,10 @@ impl Root {
                         4 => set_theme(Theme::Midnight),
                         _ => {}
                     }
+                    crate::sounds::refresh_soundpack(
+                        crate::sounds::now_ms(),
+                        &self.stores.experiments,
+                    );
                     self.after_ready();
                 }
                 if name == "MESSAGE_CREATE"
@@ -511,6 +533,7 @@ impl Root {
                 self.ready = true;
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
+            Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::Fetched { key, body } => {
                 if self.friends_fetched(&key, &body, cx) {
                     return;
@@ -1251,6 +1274,11 @@ impl Root {
                 None => "none",
             },
         ) + &format!(" voice_settings=[{}]", self.voice.describe())
+            + &format!(
+                " sounds={:?} ptt_hook={}",
+                crate::sounds::played(),
+                self.ptt_hook.is_some()
+            )
     }
 
     fn begin_edit(&mut self, message: Id, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4173,6 +4201,14 @@ impl Render for Root {
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
             // Push to talk and the keybind recorder see every key in the window first.
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if this.voice_mouse(event.button, true, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_any_mouse_up(cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                this.voice_mouse(event.button, false, cx);
+            }))
             .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
                 this.voice_key_up(&event.keystroke, cx);
             }))
@@ -4580,6 +4616,15 @@ impl Render for Root {
 pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) {
     let handle = root.read(cx).composer.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
+    // Without the system-wide hook, push to talk is only seen while the window is active.
+    root.update(cx, |_, cx| {
+        cx.observe_window_activation(window, |this, window, _| {
+            if !window.is_window_active() {
+                this.release_push_to_talk_on_blur();
+            }
+        })
+        .detach();
+    });
 }
 
 /// Built-in sections; anything else is a hoisted role, named once roles are stored.

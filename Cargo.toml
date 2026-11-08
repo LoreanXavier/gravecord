@@ -35,6 +35,8 @@ davey = { version = "=0.1.4", default-features = false }
 openmls = { version = "=0.8.1", default-features = false }
 opus2 = { version = "=0.4.0", default-features = false, features = ["backend-libopus", "static", "bundled"] }
 rtrb = "=0.4.0"
+# The official UI sounds are mp3 (module 696354): crates/dc-voice/src/sound.rs decodes them with Symphonia (MPL-2.0).
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
 # Microphone processing (crates/dc-voice/src/process.rs): Sonora, a pure Rust port of WebRTC audio processing
 # (BSD-3-Clause); DeepFilterNet 3 through libDF on tract (MIT OR Apache-2.0), with its bundled model; the FFT and
 # arrays libDF uses.
@@ -53,6 +55,7 @@ realfft = "3"
 url = "2"
 zeroize = "1.8"
 dc-gateway = { path = "crates/dc-gateway" }
+dc-hotkey = { path = "crates/dc-hotkey" }
 dc-markdown = { path = "crates/dc-markdown" }
 dc-state = { path = "crates/dc-state" }
 dc-tokens = { path = "crates/dc-tokens" }

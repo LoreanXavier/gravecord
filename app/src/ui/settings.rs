@@ -627,6 +627,32 @@ impl Root {
         cx.notify();
     }
 
+    /// `openUserSettings(category)`: the page that holds the category, scrolled to it.
+    pub(super) fn open_settings_category(
+        &mut self,
+        page_label: &str,
+        category: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(cx);
+        let entry = SECTIONS
+            .iter()
+            .flat_map(|(_, entries)| entries.iter())
+            .find(|entry| entry.label == page_label);
+        if let (Some(open), Some(entry)) = (self.settings.as_mut(), entry) {
+            *open = Open::new(entry.page);
+            if let Some((index, anchor)) = anchors_of(entry)
+                .iter()
+                .enumerate()
+                .find(|(_, anchor)| anchor.label == category)
+            {
+                open.anchor = index;
+                open.content.scroll_to_top_of_item(anchor.target);
+            }
+        }
+        cx.notify();
+    }
+
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
     #[cfg(feature = "capture")]
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
@@ -644,6 +670,7 @@ impl Root {
 
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = None;
+        crate::sounds::stop_preview();
         cx.notify();
     }
 

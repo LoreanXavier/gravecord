@@ -6,13 +6,13 @@
 use super::model::{Choice, Node, Runs};
 use super::{Page, Root, color, mask_icon};
 use crate::storage;
-use crate::ui::audio_menu::{self, Side};
+use crate::ui::audio_menu::{self, Side, slider_to_volume, volume_to_slider};
 use crate::ui::tooltip;
 use gpui::{
     AnyElement, Bounds, Context, FontWeight, Image, ImageFormat, IntoElement, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, SharedString,
-    StyledText, Task, Window, canvas, deferred, div, img, linear_color_stop, linear_gradient,
-    point, prelude::*, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, SharedString, Task,
+    Window, canvas, deferred, div, img, linear_color_stop, linear_gradient, point, prelude::*, px,
+    size,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -22,6 +22,11 @@ pub(super) const PROFILE: &str = "voice_input_profile_setting";
 pub(super) const SENSITIVITY: &str = "voice_input_sensitivity_field_set";
 pub(super) const NOISE: &str = "voice_noise_suppression_setting";
 pub(super) const ECHO: &str = "voice_echo_cancellation_setting";
+/// `getArticleURL(VOICE_VIDEO_TROUBLESHOOTING)` with the page's own query (`oo` in module 158935).
+const TROUBLESHOOTING_GUIDE: &str = "https://support.discord.com/hc/en-us/articles/360045138471?utm_source=discord&utm_medium=blog&utm_campaign=2020-06_help-voice-video&utm_content=--t%3Apm";
+/// `getArticleURL(NO_INPUT_DETECTED)`.
+const NO_INPUT_HELP: &str = "https://support.discord.com/hc/en-us/articles/214925018";
+
 pub(super) const PUSH_TO_TALK: &str = "voice_push_to_talk_setting";
 pub(super) const KEYBIND: &str = "voice_push_to_talk_keybind_setting";
 pub(super) const RELEASE_DELAY: &str = "voice_push_to_talk_release_delay_setting";
@@ -284,34 +289,6 @@ fn push(effective: &Effective) {
     processing.set_auto_threshold(effective.auto_threshold);
     processing.set_advanced_voice_activity(effective.advanced_voice_activity);
     processing.set_push_to_talk_held(false);
-}
-
-/// 792251 `M`: a stored volume (100 = unity) to its slider position.
-pub(super) fn volume_to_slider(volume: f32) -> f32 {
-    if volume == 0. {
-        return 0.;
-    }
-    let ratio = volume / 100.;
-    let position = if ratio < 1. {
-        ratio.powf(1. / 2.8)
-    } else {
-        20. * ratio.log10() / 6. + 1.
-    };
-    position * 100.
-}
-
-/// 792251 `w`: a slider position to the stored volume.
-pub(super) fn slider_to_volume(position: f32) -> f32 {
-    if position == 0. {
-        return 0.;
-    }
-    let ratio = position / 100.;
-    let volume = if ratio < 1. {
-        ratio.powf(2.8)
-    } else {
-        10f32.powf((ratio - 1.) * 6. / 20.)
-    };
-    volume * 100.
 }
 
 /// `Number.prototype.toFixed`: the sign kept apart and halves rounded away from zero.
@@ -656,11 +633,14 @@ pub(in crate::ui) struct VoiceState {
     mic_test: Option<MicTest>,
     /// The keybind recorder is listening (`RECORDING`), and the keys held since it started.
     recording: bool,
-    recording_held: Vec<u32>,
+    /// `[deviceType, code]` of what is down while recording.
+    recording_held: Vec<[u32; 2]>,
     /// Keys held now, for push to talk.
     held: Vec<u32>,
     modifiers: Modifiers,
     drag: Option<Drag>,
+    /// A focus handle per slider, so the arrow keys reach the one that was clicked.
+    slider_focus: std::cell::RefCell<std::collections::HashMap<&'static str, gpui::FocusHandle>>,
     hovered_slider: Option<&'static str>,
     device_open: Option<Side>,
     devices: Devices,
@@ -683,6 +663,7 @@ impl VoiceState {
             held: Vec::new(),
             modifiers: Modifiers::default(),
             drag: None,
+            slider_focus: Default::default(),
             hovered_slider: None,
             device_open: None,
             devices: Devices::default(),
@@ -850,6 +831,10 @@ impl Root {
             Some(Choice::Index(index)) => *index,
             _ => 0,
         };
+        // The Sounds lists (Voice & Video, Notifications) are the notification store's switches.
+        if crate::sounds::set_switch(key, on) {
+            return;
+        }
         let effective_mode = self.voice.stored.effective().push_to_talk;
         let stored = &mut self.voice.stored;
         match key {
@@ -879,6 +864,7 @@ impl Root {
         self.voice.stored.save();
         push(&self.voice.stored.effective());
         self.voice.held.clear();
+        self.sync_ptt_hook();
         let choices = self.voice.choices();
         self.setting_choices.extend(choices);
     }
@@ -1028,7 +1014,7 @@ impl Root {
                 self.voice.recording = false;
                 self.voice.recording_held.clear();
             } else if let Some(code) = code {
-                self.record_key(code);
+                self.record_part(KEYBOARD_KEY, code);
             }
             cx.notify();
             return true;
@@ -1048,7 +1034,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         if let Some(code) = windows_code(&keystroke.key) {
-            self.release_recorded(code);
+            self.release_recorded(KEYBOARD_KEY, code);
             self.voice.held.retain(|held| *held != code);
         }
         // Modifiers let go with the key (their own change may never come).
@@ -1061,9 +1047,11 @@ impl Root {
 
     /// The desktop recorder takes one combo (`handleNativeChange` then `recordEnd`): it ends when the last of its
     /// keys is let go.
-    fn release_recorded(&mut self, code: u32) {
+    fn release_recorded(&mut self, kind: u32, code: u32) {
         let before = self.voice.recording_held.len();
-        self.voice.recording_held.retain(|held| *held != code);
+        self.voice
+            .recording_held
+            .retain(|held| *held != [kind, code]);
         if self.voice.recording && before > 0 && self.voice.recording_held.is_empty() {
             self.voice.recording = false;
         }
@@ -1076,14 +1064,14 @@ impl Root {
         self.voice.modifiers = modifiers;
         for code in &before {
             if !after.contains(code) {
-                self.release_recorded(*code);
+                self.release_recorded(KEYBOARD_KEY, *code);
                 self.voice.held.retain(|held| held != code);
             }
         }
         for code in after {
             if !before.contains(&code) {
                 if self.voice.recording {
-                    self.record_key(code);
+                    self.record_part(KEYBOARD_KEY, code);
                     cx.notify();
                 } else if !self.voice.held.contains(&code) {
                     self.voice.held.push(code);
@@ -1095,16 +1083,16 @@ impl Root {
 
     /// A key went down while recording: the combo grows and is saved at once, as each `onChange` calls
     /// `setMode(PUSH_TO_TALK, {shortcut})`.
-    fn record_key(&mut self, code: u32) {
-        if self.voice.recording_held.contains(&code) {
+    fn record_part(&mut self, kind: u32, code: u32) {
+        if self.voice.recording_held.contains(&[kind, code]) {
             return;
         }
-        self.voice.recording_held.push(code);
+        self.voice.recording_held.push([kind, code]);
         let combo: Vec<[u32; 3]> = self
             .voice
             .recording_held
             .iter()
-            .map(|code| [KEYBOARD_KEY, *code, WINDOWS])
+            .map(|[kind, code]| [*kind, *code, WINDOWS])
             .collect();
         self.voice
             .stored
@@ -1115,10 +1103,114 @@ impl Root {
     /// Push to talk is held while every key of the keybind is down (in this window; the system-wide hook is
     /// another task).
     fn update_push_to_talk(&mut self) {
+        // While the system-wide hook runs it reports the keybind itself, with the window's keys included.
+        if self.ptt_hook.is_some() {
+            self.sync_ptt_hook();
+            return;
+        }
         let stored = &self.voice.stored;
         let held =
             stored.effective().push_to_talk && shortcut_down(&stored.shortcut, &self.voice.held);
         set_push_to_talk_held(held);
+        self.ptt_held_changed(held);
+        self.sync_ptt_hook();
+    }
+
+    /// The official native input numbers mouse buttons from 1 (the primary button is never a keybind part): right 1,
+    /// middle 2, back 3, forward 4. The numbers beyond the primary one are not in the dumps; they follow the order the
+    /// recorder shows (`mouse4` is the fourth).
+    pub(in crate::ui) fn mouse_code(button: MouseButton) -> Option<u32> {
+        use gpui::NavigationDirection::{Back, Forward};
+        match button {
+            MouseButton::Left => None,
+            MouseButton::Right => Some(1),
+            MouseButton::Middle => Some(2),
+            MouseButton::Navigate(Back) => Some(3),
+            MouseButton::Navigate(Forward) => Some(4),
+        }
+    }
+
+    /// A mouse button pressed or released anywhere in the window. While recording it becomes part of the keybind (true:
+    /// nobody else takes it).
+    pub(in crate::ui) fn voice_mouse(
+        &mut self,
+        button: MouseButton,
+        down: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(code) = Self::mouse_code(button) else {
+            return false;
+        };
+        if down && self.voice.recording {
+            self.record_part(MOUSE_BUTTON, code);
+            cx.notify();
+            return true;
+        }
+        if !down {
+            self.release_recorded(MOUSE_BUTTON, code);
+            self.sync_ptt_hook();
+            cx.notify();
+        }
+        false
+    }
+
+    /// The push to talk state changed (from the window's keys or the hook): its sound, inside a call.
+    pub(in crate::ui) fn ptt_held_changed(&mut self, held: bool) {
+        if std::mem::replace(&mut self.ptt_down, held) == held || self.call.is_none() {
+            return;
+        }
+        let push_to_talk = self.voice.stored.effective().push_to_talk;
+        if let Some(sound) =
+            crate::ui::voice_sounds::ptt_sound(held, push_to_talk, self.self_mute || self.self_deaf)
+        {
+            crate::sounds::play_event(sound);
+        }
+    }
+
+    /// The system-wide hook runs only while connected to voice in push to talk mode with a keybind, and not while the
+    /// keybind is being recorded. It never runs in harness runs (nothing there may read the real keyboard).
+    pub(in crate::ui) fn sync_ptt_hook(&mut self) {
+        let stored = &self.voice.stored;
+        let wanted = !storage::is_capture_run()
+            && !self.voice.recording
+            && self.call.as_ref().is_some_and(|call| call.connected)
+            && stored.effective().push_to_talk
+            && !stored.shortcut.is_empty();
+        if !wanted {
+            // Stopping lets go of push to talk (`on_change(false)`).
+            if let Some(hook) = self.ptt_hook.take() {
+                hook.stop();
+                self.ptt_held_changed(false);
+            }
+            return;
+        }
+        let shortcut = stored.shortcut.clone();
+        #[cfg(windows)]
+        match &self.ptt_hook {
+            Some(hook) => hook.set_shortcut(shortcut),
+            None => {
+                let updates = self.updates.clone();
+                match dc_hotkey::start(shortcut, move |held| {
+                    set_push_to_talk_held(held);
+                    let _ = updates.send(crate::net::Update::PushToTalk(held));
+                }) {
+                    Ok(hook) => self.ptt_hook = Some(hook),
+                    Err(error) => tracing::warn!("push to talk hook not started: {error}"),
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = shortcut;
+    }
+
+    /// The window lost the focus with no hook to see the keys: nothing may stay held.
+    pub(in crate::ui) fn release_push_to_talk_on_blur(&mut self) {
+        if self.ptt_hook.is_some() {
+            return;
+        }
+        self.voice.held.clear();
+        set_push_to_talk_held(false);
+        self.ptt_held_changed(false);
     }
 
     // ----- rows -----
@@ -1228,11 +1320,31 @@ impl Root {
                 .rounded(px(4.))
                 .overflow_hidden()
         };
+        let focus = self
+            .voice
+            .slider_focus
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
         div()
             .id(SharedString::from(format!("voice-slider-{key}")))
             .relative()
             .h(px(24.))
             .w_full()
+            .track_focus(&focus)
+            .when(!disabled, |this| {
+                this.on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                    // One step per press: left/down toward the start, right/up toward the end.
+                    let direction = match event.keystroke.key.as_str() {
+                        "left" | "down" => -1,
+                        "right" | "up" => 1,
+                        _ => return,
+                    };
+                    this.nudge_slider(key, direction, cx);
+                    cx.stop_propagation();
+                }))
+            })
             .when(disabled, |this| this.opacity(0.6))
             .child(self.anchor_probe(format!("voice-slider-{key}")))
             .child(
@@ -1287,7 +1399,10 @@ impl Root {
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if let Some(handle) = this.voice.slider_focus.borrow().get(key) {
+                                window.focus(handle, cx);
+                            }
                             this.start_slider_drag(key, event.position.x, cx);
                         }),
                     )
@@ -1387,46 +1502,45 @@ impl Root {
         let track = f32::from(drag.bounds.size.width) - 10.;
         let mut fraction = ((f32::from(x - drag.bounds.left()) - 5.) / track).clamp(0., 1.);
         // The new slider moves in steps of 1 (310592 `step`); the sensitivity slider drags smoothly.
-        let steps = match drag.key {
-            INPUT_VOLUME => Some(100.),
-            OUTPUT_VOLUME => Some(200.),
-            RELEASE_DELAY => Some(2000.),
-            _ => None,
-        };
-        if let Some(steps) = steps {
+        if drag.key != SENSITIVITY {
+            let steps = slider_steps(drag.key);
             fraction = (fraction * steps).round() / steps;
         }
         drag.fraction = fraction;
         let key = drag.key;
         // `asValueChanges`: the volumes follow the drag.
-        match key {
-            INPUT_VOLUME => {
-                audio_menu::store_gain(Side::Input, slider_to_volume(fraction * 100.) / 100.)
-            }
-            OUTPUT_VOLUME => {
-                audio_menu::store_gain(Side::Output, slider_to_volume(fraction * 200.) / 100.)
-            }
-            _ => {}
-        }
+        store_slider_volume(key, fraction);
         self.show_slider_bubble(key);
         cx.notify();
     }
 
-    /// `onChangeEnd` / `onValueChange`: the delay and the sensitivity are written once, on release.
-    fn end_slider_drag(&mut self, cx: &mut Context<Self>) {
-        let Some(drag) = self.voice.drag.take() else {
-            return;
-        };
-        match drag.key {
+    /// An arrow key on a focused slider: one step (the slider's `step`, 310592) toward the end the arrow points to.
+    pub(in crate::ui) fn nudge_slider(
+        &mut self,
+        key: &'static str,
+        direction: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let steps = slider_steps(key);
+        let current = (self.slider_fraction(key) * steps).round();
+        let fraction = ((current + direction as f32).clamp(0., steps)) / steps;
+        store_slider_volume(key, fraction);
+        self.commit_slider(key, fraction);
+        cx.notify();
+    }
+
+    /// The value a slider writes when it is let go (or moved by a key): the delay and the sensitivity.
+    fn commit_slider(&mut self, key: &'static str, fraction: f32) {
+        match key {
             RELEASE_DELAY => {
-                let delay = (drag.fraction * 2000.).round();
+                let delay = (fraction * 2000.).round();
                 self.voice
                     .stored
                     .set_mode(true, |stored| stored.delay = delay);
                 self.voice_commit();
             }
             SENSITIVITY => {
-                let threshold = drag.fraction * 100. - 100.;
+                let threshold = fraction * 100. - 100.;
                 let mode = self.voice.stored.effective().push_to_talk;
                 self.voice
                     .stored
@@ -1435,6 +1549,14 @@ impl Root {
             }
             _ => {}
         }
+    }
+
+    /// `onChangeEnd` / `onValueChange`: the delay and the sensitivity are written once, on release.
+    fn end_slider_drag(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.voice.drag.take() else {
+            return;
+        };
+        self.commit_slider(drag.key, drag.fraction);
         self.hide_tip(&format!("voice-bubble-{}", drag.key));
         cx.notify();
     }
@@ -1814,13 +1936,15 @@ impl Root {
                 )
                 .child(
                     // `micTestHelpLink`: the link 4px after the sentence, about a space at this size.
-                    div().child(StyledText::new(format!("{text} Help!")).with_highlights([(
-                        text.len() + 1..text.len() + " Help!".len(),
-                        gpui::HighlightStyle {
-                            color: Some(color("--text-link").into()),
-                            ..Default::default()
-                        },
-                    )])),
+                    // The sentence ends in the link, `Anchor` to the article `NO_INPUT_DETECTED`.
+                    self.text_with_link(
+                        "mic-test-help",
+                        &format!("{text} "),
+                        "Help!",
+                        "",
+                        cx,
+                        |_, cx| cx.open_url(NO_INPUT_HELP),
+                    ),
                 )
                 .into_any_element()
         } else {
@@ -1856,14 +1980,20 @@ impl Root {
             .child(
                 div()
                     .when(testing && !detecting, |this| this.invisible())
-                    .child(super::render::runs_text(
-                        &[
-                            ("Need help? Check out our ", false),
-                            ("troubleshooting guide", true),
-                            (".", false),
-                        ],
-                        "--text-subtle",
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-subtle"))
+                            .child(self.text_with_link(
+                                "mic-test-guide",
+                                "Need help? Check out our ",
+                                "troubleshooting guide",
+                                ".",
+                                cx,
+                                |_, cx| cx.open_url(TROUBLESHOOTING_GUIDE),
+                            )),
+                    ),
             )
             .into_any_element()
     }
@@ -1968,17 +2098,49 @@ impl Root {
                     .flex_col()
                     .gap(px(4.))
                     .child(label_text("Push to Talk Keybind"))
-                    .child(super::render::runs_text(
-                        &[
-                            ("You can add multiple Push to Talk binds under ", false),
-                            ("Keybind Settings", true),
-                            (".", false),
-                        ],
-                        "--text-subtle",
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-subtle"))
+                            .child(self.text_with_link(
+                                "ptt-keybind-settings",
+                                "You can add multiple Push to Talk binds under ",
+                                "Keybind Settings",
+                                ".",
+                                cx,
+                                // `openUserSettings(SYSTEM_CUSTOM_KEYBINDS_CATEGORY)`.
+                                |this, cx| {
+                                    this.open_settings_category("System", "Custom Keybinds", cx)
+                                },
+                            )),
+                    ),
             )
             .child(recorder)
             .into_any_element()
+    }
+}
+
+/// How many steps a slider has end to end: the volumes in whole percents, the delay in milliseconds, the sensitivity in
+/// decibels (a drag on it is smooth, a key moves one).
+fn slider_steps(key: &str) -> f32 {
+    match key {
+        OUTPUT_VOLUME => 200.,
+        RELEASE_DELAY => 2000.,
+        _ => 100.,
+    }
+}
+
+/// The volume sliders write as they move; the others on release.
+fn store_slider_volume(key: &str, fraction: f32) {
+    match key {
+        INPUT_VOLUME => {
+            audio_menu::store_gain(Side::Input, slider_to_volume(fraction * 100.) / 100.)
+        }
+        OUTPUT_VOLUME => {
+            audio_menu::store_gain(Side::Output, slider_to_volume(fraction * 200.) / 100.)
+        }
+        _ => {}
     }
 }
 

@@ -178,6 +178,20 @@ pub async fn run(
                     });
                 }
             }
+            // A click with a frame between press and release, for text links: they register the release listener
+            // only once the press has been painted.
+            ["press", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, down(position));
+                    });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(150))
+                        .await;
+                    cx.update(|cx| dispatch(cx, window, up(position)));
+                }
+            }
             ["drag", x1, y1, x2, y2] => {
                 if let (Some(from), Some(to)) = (at(x1, y1), at(x2, y2)) {
                     cx.update(|cx| {

@@ -8,6 +8,7 @@ mod inline;
 mod net;
 mod palette;
 mod parity;
+mod sounds;
 mod speech;
 mod storage;
 mod text_buffer;
@@ -178,6 +179,7 @@ fn main() -> Result<()> {
 
     let (update_tx, mut update_rx) = mpsc::unbounded_channel();
     let (request_tx, request_rx) = mpsc::unbounded_channel();
+    let hook_tx = update_tx.clone();
     runtime.spawn(net::run(token, update_tx, request_rx));
 
     application()
@@ -201,7 +203,7 @@ fn main() -> Result<()> {
                         ..Default::default()
                     },
                     |window, cx| {
-                        let root = cx.new(|cx| ui::Root::new(request_tx, cx));
+                        let root = cx.new(|cx| ui::Root::new(request_tx, hook_tx, cx));
                         ui::bind_focus(&root, window, cx);
                         root
                     },

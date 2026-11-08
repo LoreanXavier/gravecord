@@ -19,6 +19,7 @@ opus2.workspace = true
 rand.workspace = true
 realfft.workspace = true
 rtrb.workspace = true
+symphonia.workspace = true
 rustls.workspace = true
 sonora.workspace = true
 sonora-agc2.workspace = true

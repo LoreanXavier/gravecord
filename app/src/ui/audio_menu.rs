@@ -76,6 +76,39 @@ pub(super) fn restore_audio_prefs() {
     }
 }
 
+/// 792251 `M`: a stored volume (100 = unity) to its slider position.
+pub(super) fn volume_to_slider(volume: f32) -> f32 {
+    if volume == 0. {
+        return 0.;
+    }
+    let ratio = volume / 100.;
+    let position = if ratio < 1. {
+        ratio.powf(1. / 2.8)
+    } else {
+        20. * ratio.log10() / 6. + 1.
+    };
+    position * 100.
+}
+
+/// 792251 `w`: a slider position to the stored volume.
+pub(super) fn slider_to_volume(position: f32) -> f32 {
+    if position == 0. {
+        return 0.;
+    }
+    let ratio = position / 100.;
+    let volume = if ratio < 1. {
+        ratio.powf(2.8)
+    } else {
+        10f32.powf((ratio - 1.) * 6. / 20.)
+    };
+    volume * 100.
+}
+
+/// The linear gain of a slider position (0 to 100 for the input, 0 to 200 for the output).
+fn slider_gain(position: f32) -> f32 {
+    slider_to_volume(position) / 100.
+}
+
 /// A volume from Voice & Video's sliders, as a linear gain, to the engine and storage.json.
 pub(super) fn store_gain(side: Side, gain: f32) {
     let prefs = dc_voice::prefs();
@@ -139,23 +172,19 @@ impl Root {
             key,
             device.map_or(serde_json::Value::Null, |device| json!(device)),
         );
+        // `setInputDevice` / `setOutputDevice` end with `mention3` on the voice output (module 827343).
+        crate::sounds::play_device_changed();
         cx.notify();
     }
 
     /// The slider at `x` (window pixels) inside the 188px track that starts at `left`.
     fn set_volume_at(&mut self, side: Side, x: Pixels, left: f32, cx: &mut Context<Self>) {
         let fraction = ((f32::from(x) - left) / SLIDER_WIDTH).clamp(0., 1.);
-        let prefs = dc_voice::prefs();
+        // The same perceptual curve and 1-step slider as Voice & Video's (module 792251): both write the same keys.
         match side {
-            Side::Input => {
-                prefs.set_input_gain(fraction);
-                storage::set(INPUT_VOLUME, json!(fraction));
-            }
-            Side::Output => {
-                // The output slider runs to 200 %.
-                prefs.set_output_gain(fraction * 2.);
-                storage::set(OUTPUT_VOLUME, json!(fraction * 2.));
-            }
+            Side::Input => store_gain(side, slider_gain((fraction * 100.).round())),
+            // The output slider runs to 200 %.
+            Side::Output => store_gain(side, slider_gain((fraction * 200.).round())),
         }
         cx.notify();
     }
@@ -218,8 +247,8 @@ impl Root {
     fn audio_slider(&self, side: Side, cx: &mut Context<Self>) -> AnyElement {
         let prefs = dc_voice::prefs();
         let fraction = match side {
-            Side::Input => prefs.input_gain(),
-            Side::Output => prefs.output_gain() / 2.,
+            Side::Input => volume_to_slider(prefs.input_gain() * 100.) / 100.,
+            Side::Output => volume_to_slider(prefs.output_gain() * 100.) / 200.,
         }
         .clamp(0., 1.);
         let left = self
@@ -580,6 +609,21 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The user panel's sliders share storage with Voice & Video's, so they share its curve: halfway on the input
+    /// slider is a gain of 0.1436 (0.5^2.8), not 0.5, and the far end of the output slider is 2.
+    #[test]
+    fn the_panel_sliders_use_the_perceptual_curve() {
+        assert!((slider_gain(50.) - 0.143_58).abs() < 1e-4);
+        assert_eq!(slider_gain(100.), 1.);
+        assert!((slider_gain(200.) - 1.995_26).abs() < 1e-4);
+        assert_eq!(slider_gain(0.), 0.);
+        // Reading back gives the position that was set.
+        let position = volume_to_slider(slider_gain(73.) * 100.);
+        assert!((position - 73.).abs() < 1e-3);
+    }
+
     use super::split_device;
 
     #[test]

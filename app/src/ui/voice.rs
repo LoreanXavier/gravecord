@@ -18,6 +18,10 @@ pub(crate) struct Call {
     /// The connection was handed to `dc-voice`.
     started: bool,
     pub connected: bool,
+    /// Who the media connection says is in the call (`ClientConnected` / `ClientDisconnected`), for the
+    /// `rtcConnectionJoinSounds` experiment.
+    rtc_users: Vec<u64>,
+    tracker: super::voice_sounds::RtcTracker,
 }
 
 /// `linkBottom_TNyK-N`: under the channel this client is in, "Set a channel status" with a pencil, 12/16 medium.
@@ -80,35 +84,62 @@ impl Root {
             controls,
             started: false,
             connected: false,
+            rtc_users: Vec::new(),
+            tracker: Default::default(),
         });
         self.stores.voice_server = None;
+        if let Some(sound) = super::voice_sounds::connect_start_sound(
+            self.rtc_join_sounds(),
+            self.room(guild, channel),
+        ) {
+            crate::sounds::play_event(sound);
+        }
         self.send_voice_state(guild, Some(channel));
+        self.sync_ptt_hook();
         cx.notify();
     }
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
         if let Some(call) = self.call.take() {
+            if call.connected
+                && let Some(sound) =
+                    super::voice_sounds::disconnect_sound(self.room(call.guild, call.channel))
+            {
+                crate::sounds::play_event(sound);
+            }
             call.controls.disconnect();
             self.send_voice_state(call.guild, None);
         }
+        self.sync_ptt_hook();
         cx.notify();
     }
 
     pub(super) fn toggle_self_mute(&mut self, cx: &mut Context<Self>) {
+        let before = (self.self_mute || self.self_deaf, self.self_deaf);
         self.self_mute = !self.self_mute;
         // Unmuting while deafened undeafens too, as the official toggle does.
         if !self.self_mute {
             self.self_deaf = false;
         }
-        self.after_voice_toggle(cx);
+        self.after_voice_toggle(before, cx);
     }
 
     pub(super) fn toggle_self_deaf(&mut self, cx: &mut Context<Self>) {
+        let before = (self.self_mute || self.self_deaf, self.self_deaf);
         self.self_deaf = !self.self_deaf;
-        self.after_voice_toggle(cx);
+        self.after_voice_toggle(before, cx);
     }
 
-    fn after_voice_toggle(&mut self, cx: &mut Context<Self>) {
+    /// `before`/after: (effectively muted, deafened). Deafen and undeafen always sound; mute and unmute only inside a
+    /// call (`inVoiceChannel` in `Sa`).
+    fn after_voice_toggle(&mut self, before: (bool, bool), cx: &mut Context<Self>) {
+        if let Some(sound) = super::voice_sounds::toggle_sound(
+            before,
+            (self.self_mute || self.self_deaf, self.self_deaf),
+        ) && (self.call.is_some() || sound.ends_with("deafen"))
+        {
+            crate::sounds::play_event(sound);
+        }
         if let Some(call) = &self.call {
             call.controls
                 .set_self_mute(self.self_mute || self.self_deaf);
@@ -168,6 +199,16 @@ impl Root {
                 if let Some(call) = self.call.as_mut() {
                     call.connected = true;
                 }
+                if let Some(call) = &self.call
+                    && let Some(sound) = super::voice_sounds::connected_sound(
+                        self.rtc_join_sounds(),
+                        self.room(call.guild, call.channel),
+                    )
+                {
+                    crate::sounds::play_event(sound);
+                }
+                self.rtc_step();
+                self.sync_ptt_hook();
             }
             dc_voice::Event::SpeakingChanged { user_id, speaking } => {
                 if speaking {
@@ -176,16 +217,141 @@ impl Root {
                     self.speaking.remove(&user_id);
                 }
             }
+            dc_voice::Event::ClientConnected { user_id } => {
+                if let Some(call) = self.call.as_mut()
+                    && !call.rtc_users.contains(&user_id)
+                {
+                    call.rtc_users.push(user_id);
+                }
+                self.rtc_step();
+            }
+            dc_voice::Event::ClientDisconnected { user_id } => {
+                if let Some(call) = self.call.as_mut() {
+                    call.rtc_users.retain(|user| *user != user_id);
+                }
+                self.rtc_step();
+            }
             dc_voice::Event::Disconnected { reason } => {
                 info!("voice disconnected: {reason:?}");
                 self.speaking.clear();
+                let dropped = self
+                    .call
+                    .as_ref()
+                    .filter(|call| call.connected)
+                    .map(|call| (call.guild, call.channel));
                 if let Some(call) = self.call.as_mut() {
                     call.connected = false;
+                    call.rtc_users.clear();
                 }
+                if let Some((guild, channel)) = dropped
+                    && let Some(sound) =
+                        super::voice_sounds::disconnect_sound(self.room(guild, channel))
+                {
+                    crate::sounds::play_event(sound);
+                }
+                self.rtc_step();
+                self.sync_ptt_hook();
             }
             _ => {}
         }
         cx.notify();
+    }
+
+    /// `rtcConnectionJoinSounds` (experiment `2026-09-voice-connect-feedback`, variations 1 and 2).
+    fn rtc_join_sounds(&self) -> bool {
+        super::voice_sounds::rtc_join_sounds(&self.stores.experiments)
+    }
+
+    /// The channel as join and leave sounds see it: its kind, and whether it is the server's AFK channel.
+    fn room(&self, guild: Id, channel: Id) -> super::voice_sounds::Room {
+        let kind = self
+            .stores
+            .guilds
+            .iter()
+            .filter(|candidate| candidate.id == guild)
+            .flat_map(|guild| guild.channels.iter())
+            .find(|candidate| candidate.id == channel)
+            .map_or(2, |candidate| match candidate.kind {
+                dc_state::ChannelKind::Text => 0,
+                dc_state::ChannelKind::Voice => 2,
+                dc_state::ChannelKind::Category => 4,
+                dc_state::ChannelKind::Other(kind) => kind,
+            });
+        super::voice_sounds::Room {
+            kind,
+            is_afk: self.stores.afk_channels.get(&guild) == Some(&channel),
+        }
+    }
+
+    /// Who else the voice states place in the channel of the call; none outside a call.
+    pub(super) fn others_in_call(&self) -> Option<Vec<Id>> {
+        let call = self.call.as_ref()?;
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        Some(
+            self.stores
+                .voice_members(call.guild, call.channel)
+                .into_iter()
+                .map(|state| state.user_id)
+                .filter(|user| Some(*user) != me)
+                .collect(),
+        )
+    }
+
+    /// After a `VOICE_STATE_UPDATE` reached the stores: the server moved us (`Su`), or someone joined or left the
+    /// channel (`SE` without the rtc experiment). `before` is who was in the channel before the update.
+    pub(super) fn after_voice_state(&mut self, before: Option<Vec<Id>>, data: &serde_json::Value) {
+        let parse =
+            |value: &serde_json::Value| value.as_str().and_then(|text| text.parse::<Id>().ok());
+        let (Some(me), Some(call)) = (
+            self.stores.current_user.as_ref().map(|user| user.id),
+            self.call.as_ref(),
+        ) else {
+            return;
+        };
+        let (guild, channel) = (call.guild, call.channel);
+        let user = parse(&data["user_id"]);
+        if user == Some(me) {
+            let to = parse(&data["channel_id"]);
+            if parse(&data["guild_id"]) == Some(guild)
+                && let Some(to) = to.filter(|_| super::voice_sounds::was_moved(channel, to))
+            {
+                if let Some(call) = self.call.as_mut() {
+                    call.channel = to;
+                }
+                crate::sounds::play_event("user_moved");
+            }
+            return;
+        }
+        if self.rtc_join_sounds() {
+            return;
+        }
+        let (Some(before), Some(after)) = (before, self.others_in_call()) else {
+            return;
+        };
+        if let Some(sound) =
+            super::voice_sounds::count_sound(self.room(guild, channel), before.len(), after.len())
+        {
+            crate::sounds::play_event(sound);
+        }
+    }
+
+    /// `SE` with the experiment: the media connection's own list of who is in the call.
+    fn rtc_step(&mut self) {
+        if !self.rtc_join_sounds() {
+            return;
+        }
+        let Some((guild, channel)) = self.call.as_ref().map(|call| (call.guild, call.channel))
+        else {
+            return;
+        };
+        let room = self.room(guild, channel);
+        let in_channel = self.others_in_call().unwrap_or_default();
+        if let Some(call) = self.call.as_mut() {
+            let users = call.rtc_users.clone();
+            if let Some(sound) = call.tracker.step(room, call.connected, &users, &in_channel) {
+                crate::sounds::play_event(sound);
+            }
+        }
     }
 
     /// `wrapper_9U6LUN`: connection state, where, the call buttons, and the camera, screen, activity and soundboard

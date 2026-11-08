@@ -28,6 +28,8 @@ pub enum Update {
     Images(Vec<(String, Vec<u8>)>),
     /// An event of the voice connection.
     Voice(dc_voice::Event),
+    /// The system-wide push to talk keybind went down or up.
+    PushToTalk(bool),
     /// The body of a `Request::Fetch`.
     Fetched {
         key: String,

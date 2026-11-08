@@ -103,7 +103,7 @@ pub fn default_output_device() -> Option<String> {
 }
 
 /// The chosen device, or the default when none is chosen or it is gone.
-fn pick(
+pub(crate) fn pick(
     devices: Option<impl Iterator<Item = cpal::Device>>,
     wanted: Option<String>,
 ) -> Option<cpal::Device> {
@@ -431,7 +431,9 @@ fn input_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, &'
 
 /// Windows keeps the shared-mode default (Serein: some drivers advertise converted WASAPI
 /// formats they then reject). Elsewhere 48 kHz with the fewest channels, else the default.
-fn output_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, &'static str> {
+pub(crate) fn output_config(
+    device: &cpal::Device,
+) -> Result<cpal::SupportedStreamConfig, &'static str> {
     if !cfg!(target_os = "windows")
         && let Ok(supported) = device.supported_output_configs()
         && let Some(config) = supported

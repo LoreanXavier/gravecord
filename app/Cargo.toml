@@ -14,6 +14,7 @@ base64.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 dc-gateway.workspace = true
+dc-hotkey.workspace = true
 dc-http.workspace = true
 dc-markdown.workspace = true
 dc-proto.workspace = true

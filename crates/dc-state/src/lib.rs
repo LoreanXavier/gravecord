@@ -1,6 +1,7 @@
 //! Flux stores. M0 slice: the parts of UserStore, GuildStore, ChannelStore and MessageStore the first screen reads.
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
+pub mod experiments;
 pub mod frecency;
 pub mod grouping;
 pub mod guild_settings;
@@ -874,6 +875,10 @@ pub struct VoiceServer {
 
 #[derive(Default)]
 pub struct Stores {
+    /// This account's experiment assignments from READY (`ApexExperimentStore`).
+    pub experiments: experiments::Assignments,
+    /// Guild to its AFK voice channel (`afk_channel_id`), which voice join and leave sounds skip.
+    pub afk_channels: HashMap<Id, Id>,
     /// Guild to its members in voice. A state without a channel removes the member.
     pub voice_states: HashMap<Id, Vec<VoiceState>>,
     /// The last voice server handed to this session.
@@ -950,6 +955,7 @@ impl Stores {
                 }
             }
             "GUILD_CREATE" => {
+                self.note_afk_channel(data);
                 if let Some(mut guild) = Guild::from_value(data) {
                     let me = self.current_user.as_ref().map(|user| user.id);
                     if let Some(member) = data["members"]
@@ -971,6 +977,7 @@ impl Stores {
                 }
             }
             "GUILD_UPDATE" => {
+                self.note_afk_channel(data);
                 if let Some(guild) = id(&data["id"])
                     .and_then(|known| self.guilds.iter_mut().find(|guild| guild.id == known))
                 {
@@ -1217,8 +1224,27 @@ impl Stores {
         }
     }
 
+    /// READY and GUILD_CREATE nest the guild's settings under `properties`; GUILD_UPDATE does not.
+    fn note_afk_channel(&mut self, guild: &Value) {
+        let properties = if guild["properties"].is_object() {
+            &guild["properties"]
+        } else {
+            guild
+        };
+        if let Some(guild_id) = id(&guild["id"]) {
+            match id(&properties["afk_channel_id"]) {
+                Some(channel) => self.afk_channels.insert(guild_id, channel),
+                None => self.afk_channels.remove(&guild_id),
+            };
+        }
+    }
+
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
+        self.experiments = experiments::Assignments::from_ready(
+            &data["apex_experiments"],
+            data["user"]["id"].as_str().unwrap_or_default(),
+        );
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.theme = data["user_settings_proto"]
@@ -1290,6 +1316,10 @@ impl Stores {
             .flatten()
             .map(|guild| id(&guild["id"]))
             .collect();
+        self.afk_channels.clear();
+        for guild in data["guilds"].as_array().into_iter().flatten() {
+            self.note_afk_channel(guild);
+        }
         for (guild_id, member) in guild_ids.into_iter().zip(merged) {
             if let (Some(guild), Some(member)) = (
                 self.guilds

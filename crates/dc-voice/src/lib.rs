@@ -40,6 +40,7 @@ mod process;
 mod rtp;
 mod session;
 mod signal;
+pub mod sound;
 
 pub use audio::{
     Prefs, Preview, default_input_device, default_output_device, input_devices, output_devices,

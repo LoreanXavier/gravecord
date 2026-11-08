@@ -96,6 +96,10 @@ pub(super) fn label_track(available: f32, label: (Pixels, Pixels), control: f32)
     label_min + grow + free / 2.
 }
 
+/// The Voice & Video sounds list and how many of its nodes (four switches, three rules) show before its accordion.
+const VOICE_SOUNDS_LIST: &str = "voice_and_video_sounds_list";
+const SOUNDS_SHOWN_NODES: usize = 7;
+
 pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
     let mut text = String::new();
     let mut links = Vec::new();
@@ -631,8 +635,12 @@ impl Root {
                 description,
                 on,
             } => {
-                let on = self.choice_on(key, *on);
-                let disabled = self.voice_disabled(key);
+                // The sound rows show the notification store (`NotificationSettingsStore`), not a local copy.
+                let on =
+                    crate::sounds::switch_value(key).unwrap_or_else(|| self.choice_on(key, *on));
+                let disabled = self.voice_disabled(key)
+                    || (*key == crate::sounds::SELECTED_CHANNEL
+                        && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));
                 div()
                     .min_h(px(48.))
                     .py(px(8.))
@@ -822,6 +830,23 @@ impl Root {
                 children,
             } => {
                 let open = self.setting_choices.get(key) == Some(&Choice::On(true));
+                // The sounds list shows its first four sounds (Deafen to Unmute, with the rules between) before
+                // the "Show 18 more sounds" row; the rest sit behind it.
+                let (shown, children): (&'static [Node], &'static [Node]) =
+                    if *key == VOICE_SOUNDS_LIST && children.len() > SOUNDS_SHOWN_NODES + 1 {
+                        (
+                            &children[..SOUNDS_SHOWN_NODES],
+                            &children[SOUNDS_SHOWN_NODES + 1..],
+                        )
+                    } else {
+                        (&[], children)
+                    };
+                // `ji1uNt` / `0JYT98`: "Show 18 more sounds", then "Hide 18 sounds".
+                let label: &'static str = if open && *key == VOICE_SOUNDS_LIST {
+                    "Hide 18 sounds"
+                } else {
+                    label
+                };
                 let header = div()
                     .id(SharedString::from(format!("accordion-{key}")))
                     .flex()
@@ -878,9 +903,23 @@ impl Root {
                 } else {
                     Vec::new()
                 };
+                let shown_rows: Vec<AnyElement> = shown
+                    .iter()
+                    .map(|child| self.render_node(child, width, window, cx))
+                    .collect();
                 div()
                     .flex()
                     .flex_col()
+                    .when(!shown_rows.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(16.))
+                                .pb(px(16.))
+                                .children(shown_rows),
+                        )
+                    })
                     .child(header)
                     .child(
                         div()
@@ -918,20 +957,34 @@ impl Root {
     ) -> gpui::Div {
         let extent = label_extent(window, label, badge, description);
         let label_width = label_track(width - COLUMN_GAP, extent, SWITCH_WIDTH);
+        // "Preview Sound" plays the row's sound (`aZ`); the link is the whole description.
+        let preview = crate::sounds::row_sound(key)
+            .filter(|_| matches!(description, [("Preview Sound", true)]));
+        let cap = description_max_width(window);
+        let label_side = match preview {
+            Some(sound) => label_block_capped(label, badge, &[], Some(cap)).child(
+                div()
+                    .max_w(cap)
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-subtle"))
+                    .child(
+                        self.text_with_link(key, "", "Preview Sound", "", cx, move |_, _| {
+                            crate::sounds::preview(sound)
+                        }),
+                    ),
+            ),
+            None => label_block_capped(label, badge, description, Some(cap)),
+        };
         div()
             .flex()
             .when(description.is_empty(), |this| this.items_center())
             .justify_between()
             .gap(px(COLUMN_GAP))
             .child(
-                label_block_capped(
-                    label,
-                    badge,
-                    description,
-                    Some(description_max_width(window)),
-                )
-                .w(px(label_width))
-                .when(disabled, |this| this.opacity(0.5)),
+                label_side
+                    .w(px(label_width))
+                    .when(disabled, |this| this.opacity(0.5)),
             )
             .child(switch(
                 SharedString::from(format!("switch-{key}")),
