@@ -125,7 +125,9 @@ fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
     let mut args = vec![
         "--capture".to_owned(),
         out.display().to_string(),
-        "2000".to_owned(),
+        // `GRAVECORD_SETTLE_MS` shortens the wait after the script: the call view hides its controls two seconds after
+        // the pointer stops, so its frames with the controls showing are taken sooner.
+        std::env::var("GRAVECORD_SETTLE_MS").unwrap_or_else(|_| "2000".to_owned()),
     ];
     if let Some(script) = script {
         args.extend(["--script".to_owned(), script.to_owned()]);

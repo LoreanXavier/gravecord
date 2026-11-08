@@ -35,9 +35,22 @@ type SubRow = (String, Option<String>, Option<String>, bool);
 pub(crate) enum Sub {
     Devices,
     Profile,
+    /// The call bar's Output Device row.
+    OutputDevices,
+}
+
+/// The palette of the menu: the call container is `theme-midnight`, the user panel follows the app.
+fn tone(call: bool, name: &str) -> gpui::Rgba {
+    if call {
+        gpui::rgba(dc_tokens::Theme::Midnight.color(name))
+    } else {
+        color(name)
+    }
 }
 
 pub(crate) struct AudioMenu {
+    /// Opened from the call view's bar: the midnight palette and the longer list (Output Device, levels, Deafen).
+    pub call: bool,
     pub side: Side,
     pub at: Point<Pixels>,
     pub sub: Option<Sub>,
@@ -142,8 +155,26 @@ impl Root {
             self.audio_menu = None;
         } else if let Some(bounds) = anchor {
             self.audio_menu = Some(AudioMenu {
+                call: false,
                 side,
                 at: gpui::point(bounds.left() - px(33.), bounds.top()),
+                sub: None,
+                dragging: false,
+            });
+        }
+        cx.notify();
+    }
+
+    /// The call bar's microphone chevron: its menu sits 8px over the nub, 121.5px left of its edge.
+    pub(super) fn toggle_audio_menu_at(&mut self, key: &str, cx: &mut Context<Self>) {
+        let anchor = self.tip_anchors.borrow().get(key).copied();
+        if self.audio_menu.as_ref().is_some_and(|menu| menu.call) {
+            self.audio_menu = None;
+        } else if let Some(bounds) = anchor {
+            self.audio_menu = Some(AudioMenu {
+                call: true,
+                side: Side::Input,
+                at: gpui::point(bounds.left() - px(120.5), bounds.top()),
                 sub: None,
                 dragging: false,
             });
@@ -198,6 +229,7 @@ impl Root {
         sub: Sub,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let call = self.audio_menu.as_ref().is_some_and(|menu| menu.call);
         let open = self
             .audio_menu
             .as_ref()
@@ -210,7 +242,7 @@ impl Root {
             .flex()
             .items_center()
             .when(open, |this| {
-                this.bg(color("--interactive-background-hover"))
+                this.bg(tone(call, "--interactive-background-hover"))
                     .rounded(px(4.))
             })
             .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
@@ -229,7 +261,7 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
+                            .text_color(tone(call, "--text-strong"))
                             .child(title),
                     )
                     .child(
@@ -237,7 +269,7 @@ impl Root {
                             .mt(px(2.))
                             .text_size(px(12.))
                             .line_height(px(16.))
-                            .text_color(color("--text-muted"))
+                            .text_color(tone(call, "--text-muted"))
                             .child(detail),
                     ),
             )
@@ -247,6 +279,7 @@ impl Root {
 
     fn audio_slider(&self, side: Side, cx: &mut Context<Self>) -> AnyElement {
         let prefs = dc_voice::prefs();
+        let call = self.audio_menu.as_ref().is_some_and(|menu| menu.call);
         let fraction = match side {
             Side::Input => volume_to_slider(prefs.input_gain() * 100.) / 100.,
             Side::Output => volume_to_slider(prefs.output_gain() * 100.) / 200.,
@@ -296,13 +329,13 @@ impl Root {
                     .w(px(SLIDER_WIDTH))
                     .h(px(4.))
                     .rounded(px(4.))
-                    .bg(color("--background-mod-strong"))
+                    .bg(tone(call, "--background-mod-strong"))
                     .child(
                         div()
                             .h_full()
                             .w(px(SLIDER_WIDTH * fraction))
                             .rounded(px(4.))
-                            .bg(color("--background-brand")),
+                            .bg(tone(call, "--background-brand")),
                     ),
             )
             .child(
@@ -319,11 +352,16 @@ impl Root {
 
     fn audio_submenu(&self, menu: &AudioMenu, cx: &mut Context<Self>) -> Option<AnyElement> {
         let sub = menu.sub?;
-        let side = menu.side;
+        let call = menu.call;
+        let side = if sub == Sub::OutputDevices {
+            Side::Output
+        } else {
+            menu.side
+        };
         let radio = |picked: bool| super::create_channel::radio(picked);
         let mut rows: Vec<AnyElement> = Vec::new();
         let (top_offset, entries): (f32, Vec<SubRow>) = match sub {
-            Sub::Devices => {
+            Sub::Devices | Sub::OutputDevices => {
                 let (devices, default, chosen) = match side {
                     Side::Input => (
                         dc_voice::input_devices(),
@@ -347,7 +385,7 @@ impl Root {
                     let picked = chosen.as_deref() == Some(device.as_str());
                     list.push((name, kind, Some(device), picked));
                 }
-                (0., list)
+                (if sub == Sub::OutputDevices { 104. } else { 0. }, list)
             }
             Sub::Profile => {
                 let current = storage::get(INPUT_PROFILE)
@@ -370,7 +408,7 @@ impl Root {
             }
         };
         for (index, (title, detail, device, picked)) in entries.into_iter().enumerate() {
-            let device_row = sub == Sub::Devices;
+            let device_row = matches!(sub, Sub::Devices | Sub::OutputDevices);
             let profile = title.clone();
             rows.push(
                 div()
@@ -383,7 +421,7 @@ impl Root {
                     .items_center()
                     .hover(|style| {
                         style
-                            .bg(color("--interactive-background-hover"))
+                            .bg(tone(call, "--interactive-background-hover"))
                             .rounded(px(4.))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -417,7 +455,7 @@ impl Root {
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
+                                    .text_color(tone(call, "--text-strong"))
                                     .child(title),
                             )
                             .children(detail.map(|detail| {
@@ -425,7 +463,7 @@ impl Root {
                                     .mt(px(2.))
                                     .text_size(px(12.))
                                     .line_height(px(16.))
-                                    .text_color(color("--text-muted"))
+                                    .text_color(tone(call, "--text-muted"))
                                     .child(detail)
                             })),
                     )
@@ -448,8 +486,8 @@ impl Root {
                         .p(px(8.))
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
+                        .border_color(tone(call, "--border-subtle"))
+                        .bg(tone(call, "--background-surface-higher"))
                         .children(rows),
                 )
                 .into_any_element(),
@@ -458,6 +496,10 @@ impl Root {
 
     /// The menu's top: its bottom sits 4px over the chevron.
     fn audio_menu_top(&self, menu: &AudioMenu) -> f32 {
+        if menu.call {
+            // 470px tall, its bottom 8px over the chevron's nub.
+            return f32::from(menu.at.y) - 8. - 470.;
+        }
         let height = match menu.side {
             Side::Input => 250.,
             Side::Output => 198.,
@@ -467,6 +509,7 @@ impl Root {
 
     pub(super) fn audio_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.audio_menu.as_ref()?;
+        let call = menu.call;
         let side = menu.side;
         let prefs = dc_voice::prefs();
         let device_name = |chosen: Option<String>| {
@@ -494,6 +537,15 @@ impl Root {
                     Sub::Profile,
                     cx,
                 ));
+                if call {
+                    items.push(self.audio_row(
+                        "audio-output-device",
+                        "Output Device",
+                        device_name(prefs.output_device()),
+                        Sub::OutputDevices,
+                        cx,
+                    ));
+                }
             }
             Side::Output => {
                 items.push(self.audio_row(
@@ -505,7 +557,7 @@ impl Root {
                 ));
             }
         }
-        let separator = || div().my(px(8.)).h(px(1.)).bg(color("--border-subtle"));
+        let separator = || div().my(px(8.)).h(px(1.)).bg(tone(call, "--border-subtle"));
         let top = self.audio_menu_top(menu);
         let panel = div()
             .parity_with_border("audio-menu", 1.)
@@ -515,8 +567,8 @@ impl Root {
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-surface-higher"))
+            .border_color(tone(call, "--border-subtle"))
+            .bg(tone(call, "--background-surface-higher"))
             .shadow(vec![gpui::BoxShadow {
                 color: gpui::hsla(0., 0., 0., 0.24),
                 offset: gpui::point(px(0.), px(12.)),
@@ -525,10 +577,11 @@ impl Root {
                 inset: false,
             }])
             .children(items)
-            .child(separator())
-            .child(
+            .child(separator());
+        let volume_row =
+            |side: Side, id: &'static str, label: &'static str, cx: &mut Context<Self>| {
                 div()
-                    .id("audio-volume-row")
+                    .id(id)
                     .h(px(58.))
                     .on_hover(cx.listener(|this, inside: &bool, _, cx| {
                         if *inside && let Some(menu) = this.audio_menu.as_mut() {
@@ -542,48 +595,177 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(if side == Side::Input {
-                                "Input Volume"
-                            } else {
-                                "Output Volume"
-                            }),
+                            .text_color(tone(call, "--text-strong"))
+                            .child(label),
                     )
-                    .child(self.audio_slider(side, cx)),
-            )
-            .child(separator())
-            .child(
-                div()
-                    .id("audio-voice-settings")
-                    .h(px(36.))
-                    .p(px(8.))
-                    .rounded(px(2.))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .hover(|style| {
-                        style
-                            .bg(color("--interactive-background-hover"))
-                            .rounded(px(4.))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.audio_menu = None;
-                        this.open_settings_section("Voice & Video", cx);
-                    }))
-                    .child(div().mr(px(8.)).child(icon(
-                        "settings",
-                        20.,
-                        "--interactive-text-default",
-                    )))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child("Voice Settings"),
-                    ),
+                    .child(self.audio_slider(side, cx))
+            };
+        let panel = if call {
+            let (level, _) = prefs.processing.meter();
+            let live = !(self.self_mute || self.self_deaf);
+            let progress = if live {
+                (level + 100.).clamp(0., 100.)
+            } else {
+                0.
+            };
+            let notches = self.notches_on(
+                192,
+                20,
+                gpui::rgba(dc_tokens::Theme::Midnight.color("--background-surface-higher")),
             );
+            let meter = div()
+                .relative()
+                .ml(px(6.))
+                .w(px(192.))
+                .h(px(20.))
+                .overflow_hidden()
+                .bg(tone(call, "--background-mod-strong"))
+                .when(progress > 0., |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .h_full()
+                            .w(px(192. * progress / 100.))
+                            .bg(gpui::linear_gradient(
+                                90.,
+                                gpui::linear_color_stop(tone(call, "--yellow-260"), 0.),
+                                gpui::linear_color_stop(tone(call, "--green-360"), 1.),
+                            )),
+                    )
+                })
+                .child(
+                    gpui::img(notches)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(px(192.))
+                        .h(px(20.)),
+                );
+            let deafened = self.self_deaf;
+            panel
+                .child(volume_row(
+                    Side::Input,
+                    "audio-input-volume-row",
+                    "Input Volume",
+                    cx,
+                ))
+                .child(
+                    div()
+                        .id("audio-input-level-row")
+                        .h(px(74.))
+                        .child(
+                            div()
+                                .p(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(tone(call, "--text-strong"))
+                                .child("Input Level"),
+                        )
+                        .child(div().mt(px(-2.)).child(meter)),
+                )
+                .child(volume_row(
+                    Side::Output,
+                    "audio-output-volume-row",
+                    "Output Volume",
+                    cx,
+                ))
+                .child(separator())
+                .child(
+                    div()
+                        .id("audio-deafen")
+                        .h(px(36.))
+                        .p(px(8.))
+                        .rounded(px(2.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .hover(|style| {
+                            style
+                                .bg(tone(call, "--interactive-background-hover"))
+                                .rounded(px(4.))
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_self_deaf(cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(tone(call, "--text-strong"))
+                                .child("Deafen"),
+                        )
+                        .child(
+                            div()
+                                .size(px(20.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(if deafened {
+                                    color("--checkbox-border-selected-default")
+                                } else {
+                                    color("--checkbox-border-default")
+                                })
+                                .bg(if deafened {
+                                    color("--checkbox-background-selected-default")
+                                } else {
+                                    color("--checkbox-background-default")
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(deafened, |this| {
+                                    this.child(icon("checkbox_check", 18., "--white"))
+                                }),
+                        ),
+                )
+        } else {
+            panel
+                .child(volume_row(
+                    side,
+                    "audio-volume-row",
+                    if side == Side::Input {
+                        "Input Volume"
+                    } else {
+                        "Output Volume"
+                    },
+                    cx,
+                ))
+                .child(separator())
+        };
+        let panel = panel.child(
+            div()
+                .id("audio-voice-settings")
+                .h(px(36.))
+                .p(px(8.))
+                .rounded(px(2.))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .hover(|style| {
+                    style
+                        .bg(tone(call, "--interactive-background-hover"))
+                        .rounded(px(4.))
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.audio_menu = None;
+                    this.open_settings_section("Voice & Video", cx);
+                }))
+                .child(
+                    div()
+                        .mr(px(8.))
+                        .child(icon("settings", 20., "--interactive-text-default")),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(tone(call, "--text-strong"))
+                        .child("Voice Settings"),
+                ),
+        );
         Some(
             // A click anywhere else lands on this backdrop and closes the menu (and its submenu).
             deferred(

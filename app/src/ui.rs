@@ -105,6 +105,7 @@ mod uploads;
 mod voice;
 mod voice_panel;
 mod voice_sounds;
+mod voice_view;
 
 use tooltip::{Body, Side, Tip};
 
@@ -217,6 +218,8 @@ pub struct Root {
     file_expanded: Option<dc_state::Attachment>,
     view_reactions: Option<reactions_modal::ViewReactions>,
     audio_menu: Option<audio_menu::AudioMenu>,
+    /// The voice channel's call view: its idle timer, menus and docked chat.
+    vv: voice_view::State,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
     pending_invite_link: Option<String>,
@@ -380,6 +383,7 @@ impl Root {
             file_expanded: None,
             view_reactions: None,
             audio_menu: None,
+            vv: voice_view::State::default(),
             invite: None,
             invite_codes: HashMap::new(),
             pending_invite_link: None,
@@ -1093,7 +1097,7 @@ impl Root {
         let complete = self
             .channel
             .is_some_and(|channel| self.complete_history.contains(&channel));
-        if complete && self.current_dm().is_some() {
+        if complete && (self.current_dm().is_some() || self.voice_view_open()) {
             self.rows.push(Row::Welcome);
         }
         let divider = self.divider_after();
@@ -1802,6 +1806,32 @@ impl Root {
                 )
             })
             .child(self.with_tip(format!("guild-{id}"), Tip::rail(Body::Guild(id)), tile, cx))
+            // The server this client is in a call in carries a green speaker at the icon's top right.
+            .when(
+                self.call.as_ref().is_some_and(|call| call.guild == id),
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(41.))
+                            .top(px(1.))
+                            .size(px(14.))
+                            .rounded_full()
+                            .bg(color("--status-positive"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: color("--background-base-lowest").into(),
+                                offset: gpui::point(px(0.), px(0.)),
+                                blur_radius: px(0.),
+                                spread_radius: px(2.),
+                                inset: false,
+                            }])
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("voice_channel", 10., "--white")),
+                    )
+                },
+            )
     }
 
     fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1955,11 +1985,24 @@ impl Root {
         };
         let action_group = group.clone();
         let name_group = group.clone();
+        // `channelInfo_Wx6SnQ`: the call's timer takes the action icons' place until the row is hovered.
+        let timer = in_call.then(|| self.call_timer()).flatten().map(|text| {
+            div()
+                .absolute()
+                .right(px(8.))
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_family(MONO)
+                .text_color(color("--text-feedback-positive"))
+                .when(self.vv.row_focus, |this| this.opacity(0.))
+                .group_hover(group.clone(), |style| style.opacity(0.))
+                .child(text)
+        });
         let target = channel.id;
         div()
             .flex_none()
             .relative()
-            .h(px(34.))
+            .h(px(if in_call { 50. } else { 34. }))
             .pt(px(1.))
             .pl(px(8.))
             .when(unread, |this| {
@@ -1980,6 +2023,8 @@ impl Root {
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if voice {
+                            // The clicked row keeps its action icons until a press lands elsewhere (`:focus-within`).
+                            this.vv.row_focus = true;
                             if let Some(guild) = this.guild {
                                 this.request_join_voice(guild, target, cx);
                             }
@@ -1993,14 +2038,14 @@ impl Root {
                         }
                     }))
                     .group(group)
-                    .h(px(32.))
+                    .h(px(if in_call { 48. } else { 32. }))
                     .w(px(286.))
                     .pl(px(8.))
                     .pr(px(8.))
                     .rounded(px(8.))
+                    .when(in_call, |this| this.pt(px(4.)))
                     .flex()
-                    .items_center()
-                    .gap(px(8.))
+                    .flex_col()
                     .when(selected, |this| {
                         this.parity("channel-selected")
                             .bg(color("--background-mod-strong"))
@@ -2008,89 +2053,108 @@ impl Root {
                     .when(!selected, |this| {
                         this.hover(|style| style.bg(color("--background-mod-subtle")))
                     })
-                    .child(div().when(dim, |this| this.opacity(0.5)).child(icon(
-                        name,
-                        20.,
-                        if in_call {
-                            "--icon-voice-connected"
-                        } else if dim {
-                            "--icon-muted"
-                        } else {
-                            tint
-                        },
-                    )))
                     .child(
                         div()
-                            .flex_1()
-                            .when(dim, |this| this.opacity(0.5))
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color(tint))
-                            .group_hover(name_group, |style| {
-                                style.text_color(color("--text-strong"))
-                            })
-                            .child(channel.name.clone()),
-                    )
-                    .child(
-                        div()
+                            .w_full()
+                            .h(px(if in_call { 24. } else { 32. }))
+                            .flex_none()
                             .flex()
-                            .gap(px(4.))
-                            .when(!selected && !in_call, |this| {
-                                this.opacity(0.)
-                                    .group_hover(action_group, |style| style.opacity(1.))
-                            })
-                            .children(
-                                actions
-                                    .iter()
-                                    .filter(|name| {
-                                        // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
-                                        let needed = match **name {
-                                            "settings_small" => {
-                                                dc_state::permissions::MANAGE_CHANNELS
-                                            }
-                                            "invite_small" => {
-                                                dc_state::permissions::CREATE_INSTANT_INVITE
-                                            }
-                                            _ => 0,
-                                        };
-                                        needed == 0 || self.can_in_channel(channel, needed)
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().when(dim, |this| this.opacity(0.5)).child(icon(
+                                name,
+                                20.,
+                                if in_call {
+                                    "--icon-voice-connected"
+                                } else if dim {
+                                    "--icon-muted"
+                                } else {
+                                    tint
+                                },
+                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .when(dim, |this| this.opacity(0.5))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color(tint))
+                                    .group_hover(name_group, |style| {
+                                        style.text_color(color("--text-strong"))
                                     })
-                                    .map(|name| {
-                                        // "Create Invite" opens the invite dialog for this channel; the gear opens its
-                                        // settings.
-                                        let invite = *name == "invite_small";
-                                        let gear = *name == "settings_small";
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "channel-action-{target}-{name}"
-                                            )))
-                                            .when(gear, |this| {
-                                                this.cursor_pointer().on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        cx.stop_propagation();
-                                                        this.open_channel_settings(
-                                                            target, window, cx,
-                                                        );
-                                                    },
-                                                ))
+                                    .child(channel.name.clone()),
+                            )
+                            .children(timer)
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(4.))
+                                    .when(!selected || in_call || voice, |this| {
+                                        if in_call && self.vv.row_focus {
+                                            this
+                                        } else {
+                                            this.opacity(0.).group_hover(action_group, |style| {
+                                                style.opacity(1.)
                                             })
-                                            .when(invite, |this| {
-                                                this.cursor_pointer().on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                        if let Some(guild) = this.guild {
-                                                            this.select(guild, Some(target));
-                                                        }
-                                                        this.open_invite(cx);
-                                                    },
-                                                ))
+                                        }
+                                    })
+                                    .children(
+                                        actions
+                                            .iter()
+                                            .filter(|name| {
+                                                // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
+                                                let needed = match **name {
+                                                    "settings_small" => {
+                                                        dc_state::permissions::MANAGE_CHANNELS
+                                                    }
+                                                    "invite_small" => {
+                                                        dc_state::permissions::CREATE_INSTANT_INVITE
+                                                    }
+                                                    _ => 0,
+                                                };
+                                                needed == 0 || self.can_in_channel(channel, needed)
                                             })
-                                            .child(icon(name, 16., action_tint))
-                                            .into_any_element()
-                                    }),
+                                            .map(|name| {
+                                                // "Create Invite" opens the invite dialog for this channel; the gear opens its
+                                                // settings.
+                                                let invite = *name == "invite_small";
+                                                let gear = *name == "settings_small";
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "channel-action-{target}-{name}"
+                                                    )))
+                                                    .when(gear, |this| {
+                                                        this.cursor_pointer().on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                cx.stop_propagation();
+                                                                this.open_channel_settings(
+                                                                    target, window, cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                    })
+                                                    .when(invite, |this| {
+                                                        this.cursor_pointer().on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                cx.stop_propagation();
+                                                                if let Some(guild) = this.guild {
+                                                                    this.select(
+                                                                        guild,
+                                                                        Some(target),
+                                                                    );
+                                                                }
+                                                                this.open_invite(cx);
+                                                            },
+                                                        ))
+                                                    })
+                                                    .child(icon(name, 16., action_tint))
+                                                    .into_any_element()
+                                            }),
+                                    ),
                             ),
-                    ),
+                    )
+                    .when(in_call, |this| this.child(voice::status_line())),
             )
             .into_any_element()
     }
@@ -2158,14 +2222,8 @@ impl Root {
                             rows.extend(self.thread_rows(row.id, cx));
                         }
                         if row.kind == ChannelKind::Voice {
-                            if self
-                                .call
-                                .as_ref()
-                                .is_some_and(|call| call.channel == row.id)
-                            {
-                                rows.push(voice::status_line());
-                            }
                             rows.extend(self.voice_members(guild.id, row.id));
+                            rows.extend(self.voice_invite_row(guild.id, row.id, cx));
                         }
                         rows
                     })
@@ -3384,9 +3442,12 @@ impl Root {
                 count,
                 ignored,
             } => self.blocked_row(*first, *count, *ignored, cx),
-            Row::Welcome => self
-                .dm_welcome(cx)
-                .unwrap_or_else(|| div().into_any_element()),
+            Row::Welcome => if self.voice_view_open() {
+                self.voice_welcome()
+            } else {
+                self.dm_welcome(cx)
+            }
+            .unwrap_or_else(|| div().into_any_element()),
             Row::Divider(date) => div()
                 .pt(px(24.))
                 .pl(px(16.))
@@ -3770,7 +3831,14 @@ impl Root {
         let placeholder = if self.current_thread().is_some() {
             format!("Message \"{}\"", self.channel_title())
         } else {
-            let prefix = if self.guild.is_some() { "#" } else { "@" };
+            // A voice channel's chat names it without the hash.
+            let prefix = if self.voice_view_open() {
+                ""
+            } else if self.guild.is_some() {
+                "#"
+            } else {
+                "@"
+            };
             format!("Message {prefix}{}", self.channel_title())
         };
         self.composer
@@ -3853,6 +3921,7 @@ impl Root {
                 );
             }
         }));
+        let docked = self.voice_chat_docked();
         let gift_button = tool("gift");
         let sticker_button = tool("sticker");
         let apps_button = tool("apps");
@@ -3906,9 +3975,11 @@ impl Root {
                                     .pt(px(12.))
                                     .flex()
                                     .gap(px(8.))
-                                    .child(gift_button)
-                                    .child(gif_button)
-                                    .child(sticker_button)
+                                    .when(!docked, |this| {
+                                        this.child(gift_button)
+                                            .child(gif_button)
+                                            .child(sticker_button)
+                                    })
                                     .child(emoji_button)
                                     .child(apps_button),
                             ),
@@ -4220,6 +4291,10 @@ impl Render for Root {
             0.
         };
         self.content_width = f32::from(window.viewport_size().width) - 375. - members - 112.;
+        if self.voice_chat_docked() {
+            // The docked voice chat is 450 wide with its 1px border.
+            self.content_width = 450. - 2. - 112.;
+        }
         let rows = list(
             self.list.clone(),
             cx.processor(|this, index, _, cx| this.row(index, cx)),
@@ -4439,6 +4514,7 @@ impl Render for Root {
             // Capture runs before the text under the pointer starts its own selection.
             .capture_any_mouse_down(cx.listener(|this, _, window, _| {
                 this.selection.borrow_mut().clear();
+                this.vv.row_focus = false;
                 window.refresh();
             }))
             .relative()
@@ -4510,6 +4586,8 @@ impl Render for Root {
                 };
                 let content = if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(cx).into_any_element()
+                } else if self.voice_view_open() {
+                    self.voice_view(window, cx)
                 } else {
                     // The New Thread panel sits beside the whole chat column, header included.
                     div()

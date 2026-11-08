@@ -996,7 +996,12 @@ impl Root {
 
     /// The meter's notches on the voice panel popout's colour.
     pub(in crate::ui) fn small_notches(&self, width: u32, height: u32) -> Arc<Image> {
-        let fill = hex(color("--background-surface-higher"));
+        self.notches_on(width, height, color("--background-surface-higher"))
+    }
+
+    /// The same notches over any surface colour (the call view's menu is midnight whatever the theme).
+    pub(in crate::ui) fn notches_on(&self, width: u32, height: u32, surface: Rgba) -> Arc<Image> {
+        let fill = hex(surface);
         let key = format!("voice-notches:{width}:{height}:{fill}");
         if let Some(found) = self.generated_images.borrow().get(&key) {
             return found.clone();

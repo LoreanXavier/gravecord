@@ -20,6 +20,8 @@ pub(crate) struct Call {
     /// The connection was handed to `dc-voice`.
     started: bool,
     pub connected: bool,
+    /// When the media connection came up: the call timer in the sidebar counts from here.
+    pub connected_at: Option<std::time::Instant>,
     /// Who the media connection says is in the call (`ClientConnected` / `ClientDisconnected`), for the
     /// `rtcConnectionJoinSounds` experiment.
     rtc_users: Vec<u64>,
@@ -39,10 +41,8 @@ impl Call {
 pub(super) fn status_line() -> AnyElement {
     div()
         .flex_none()
-        .mt(px(-5.))
-        .mb(px(4.))
         .h(px(16.))
-        .pl(px(44.))
+        .pl(px(28.))
         .flex()
         .items_center()
         .gap(px(4.))
@@ -81,6 +81,8 @@ impl Root {
     pub(super) fn join_voice(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
         if let Some(call) = &self.call {
             if call.channel == channel {
+                // The row of the call this client is in opens its view.
+                self.open_voice_view(guild, channel, cx);
                 return;
             }
             call.controls.disconnect();
@@ -97,6 +99,7 @@ impl Root {
             controls,
             started: false,
             connected: false,
+            connected_at: None,
             rtc_users: Vec::new(),
             tracker: Default::default(),
         });
@@ -109,6 +112,8 @@ impl Root {
         }
         self.send_voice_state(guild, Some(channel));
         self.sync_ptt_hook();
+        self.vv.invite_dismissed = false;
+        self.open_voice_view(guild, channel, cx);
         cx.notify();
     }
 
@@ -217,6 +222,7 @@ impl Root {
                 info!("voice connected");
                 if let Some(call) = self.call.as_mut() {
                     call.connected = true;
+                    call.connected_at = Some(std::time::Instant::now());
                 }
                 if let Some(call) = &self.call
                     && let Some(sound) = super::voice_sounds::connected_sound(
@@ -492,19 +498,25 @@ impl Root {
         let camera = self.with_tip(
             "voice-camera-tip",
             Tip::text("Turn On Camera", Side::Top),
-            wide("voice-camera", "voice_camera"),
+            wide("voice-camera", "voice_camera")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
             cx,
         );
         let screen = self.with_tip(
             "voice-screen-tip",
             Tip::text("Share Your Screen", Side::Top),
-            wide("voice-screen", "voice_screen"),
+            wide("voice-screen", "voice_screen")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
             cx,
         );
         let activity = self.with_tip(
             "voice-activity-tip",
             Tip::text("Start An Activity", Side::Top),
-            wide("voice-activity", "voice_activity"),
+            wide("voice-activity", "voice_activity")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.voice_activity_clicked(cx))),
             cx,
         );
         // `greyButtonActive` while the picker is open, `disabled` (opacity .3) under a server mute, suppression or deafening.
@@ -648,13 +660,14 @@ impl Root {
                     })
                     .unwrap_or_default();
                 let avatar = self.images.get(&avatar_source(&user).0).cloned();
+                let (muted, deaf) = (state.self_mute || state.mute, state.self_deaf || state.deaf);
                 let speaking = self.speaking.contains(&state.user_id)
                     || self.soundboard.user_playing(state.user_id);
                 div()
                     .flex_none()
                     .h(px(32.))
                     .pl(px(44.))
-                    .pr(px(8.))
+                    .pr(px(17.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -675,9 +688,24 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
+                            .text_color(color(if speaking {
+                                "--interactive-text-active"
+                            } else {
+                                "--channels-default"
+                            }))
                             .child(user.display_name().to_owned()),
                     )
+                    // `icons_YUoOxm`: 16px, the muted microphone or the deafened headphones.
+                    .when(deaf, |this| {
+                        this.child(super::icon(
+                            "headphones_deafened",
+                            16.,
+                            "--channels-default",
+                        ))
+                    })
+                    .when(muted && !deaf, |this| {
+                        this.child(super::icon("voice_member_muted", 16., "--channels-default"))
+                    })
                     .into_any_element()
             })
             .collect()

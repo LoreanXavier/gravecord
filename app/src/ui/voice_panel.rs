@@ -755,9 +755,17 @@ impl Root {
         channel: Id,
         cx: &mut Context<Self>,
     ) {
-        self.select(guild, Some(channel));
-        cx.notify();
+        self.open_voice_view(guild, channel, cx);
     }
+
+    /// The camera button of the panel and the bar. Video is not built yet: this does nothing visible.
+    pub(super) fn voice_camera_clicked(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Share Your Screen, panel and bar. Screen sharing is not built yet: this does nothing visible.
+    pub(super) fn voice_screen_clicked(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Start An Activity, panel and bar. Activities are not built yet: this does nothing visible.
+    pub(super) fn voice_activity_clicked(&mut self, _cx: &mut Context<Self>) {}
 }
 
 #[cfg(test)]
