@@ -58,6 +58,8 @@ pub(crate) enum Target {
     SoundEmoji,
     /// "Upload a file"'s Related Emoji (stickers).
     StickerEmoji,
+    /// Onboarding's answer or task dialog.
+    OnboardingEmoji,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -419,7 +421,8 @@ impl Root {
                     | Target::ForwardNote
                     | Target::Trait(_)
                     | Target::SoundEmoji
-                    | Target::StickerEmoji => "Find the perfect emoji",
+                    | Target::StickerEmoji
+                    | Target::OnboardingEmoji => "Find the perfect emoji",
                     Target::Reaction { .. } => "Find the perfect reaction",
                 }
                 .to_owned(),
@@ -650,6 +653,20 @@ impl Root {
                     Item::Custom { id, name, .. } => {
                         self.set_sound_emoji(Some(id.to_string()), name.clone(), cx)
                     }
+                }
+            }
+            Target::OnboardingEmoji => {
+                self.emoji_used.push((usage_key, now_ms()));
+                match &item {
+                    Item::Unicode(_) => {
+                        self.set_onboarding_emoji(None, Some(reaction.clone()), false, cx)
+                    }
+                    Item::Custom { id, name, animated } => self.set_onboarding_emoji(
+                        Some(id.to_string()),
+                        Some(name.clone()),
+                        *animated,
+                        cx,
+                    ),
                 }
             }
             Target::StickerEmoji => {
@@ -966,7 +983,7 @@ impl Root {
         let reaction = matches!(picker.target, Target::Reaction { .. });
         let trait_target = matches!(
             picker.target,
-            Target::Trait(_) | Target::SoundEmoji | Target::StickerEmoji
+            Target::Trait(_) | Target::SoundEmoji | Target::StickerEmoji | Target::OnboardingEmoji
         );
         // Neither the reaction picker nor a trait's has the tab bar (`design/dom/popouts/trait-emoji-darker-cozy.json`).
         let tabless = reaction || trait_target;

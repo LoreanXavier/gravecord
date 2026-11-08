@@ -83,6 +83,7 @@ mod server_engagement;
 mod server_games;
 mod server_insights;
 mod server_members;
+mod server_onboarding;
 mod server_role_editor;
 mod server_roles;
 mod server_safety;
@@ -562,6 +563,11 @@ impl Root {
                 if key.starts_with(server_automod::AUTOMOD_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.automod_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_onboarding::ONBOARDING_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.onboarding_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_access::ACCESS_PREFIX) {
@@ -1492,6 +1498,9 @@ impl Root {
             }
             if let Some(automod) = settings.automod.as_ref() {
                 list.extend(automod.editors());
+            }
+            if let Some(onboarding) = settings.onboarding.as_ref() {
+                list.extend(onboarding.editors());
             }
             list.extend(
                 settings
@@ -4121,6 +4130,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.onboarding_note_focus(window, cx);
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
             .current_dm()
@@ -4186,6 +4196,7 @@ impl Render for Root {
                     {
                         open.sticker_dialog = None;
                     } else if this.close_access_overlay()
+                        || this.close_onboarding_overlay()
                         || this.close_automod_overlay()
                         || this.close_safety_overlay()
                         || this.close_community_wizard()
@@ -4367,6 +4378,7 @@ impl Render for Root {
             .children(self.sound_dialog_modal(cx))
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
+            .children(self.onboarding_layer(cx))
             .children(self.automod_picker_layer(cx))
             .children(self.automod_bar_layer(cx))
             .children(self.automod_dialog_modal(cx))

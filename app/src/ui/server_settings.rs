@@ -279,6 +279,7 @@ pub(crate) struct ServerSettings {
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
     pub(super) automod: Option<super::server_automod::AutoModState>,
+    pub(super) onboarding: Option<super::server_onboarding::OnboardingState>,
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
     pub(super) insights: super::server_insights::InsightsState,
@@ -437,6 +438,7 @@ impl Root {
             sticker_dialog: None,
             access: None,
             automod: None,
+            onboarding: None,
             audit: Default::default(),
             safety: Default::default(),
             insights: Default::default(),
@@ -1015,6 +1017,7 @@ impl Root {
             Page::Community => self.overview_dirty(),
             Page::BoostPerks => self.boost_dirty(),
             Page::Tag => self.tag_dirty(),
+            Page::Onboarding => self.onboarding_dirty(),
             _ => false,
         };
         let mut nav = div()
@@ -1075,6 +1078,15 @@ impl Root {
                         if community && target == Page::AutoMod {
                             continue;
                         }
+                        if target == Page::Onboarding && !self.onboarding_allowed(open.guild) {
+                            continue;
+                        }
+                        // `decoration`.
+                        let decoration = if target == Page::Onboarding {
+                            self.onboarding_decoration(open.guild)
+                        } else {
+                            None
+                        };
                         // `po`: Members leaves settings on a Community server, for a page not built yet.
                         let external = target == Page::AppDirectory;
                         let launch = external || (community && target == Page::Members);
@@ -1107,6 +1119,12 @@ impl Root {
                                 .when(launch, |this| {
                                     this.child(icon("open_external", 16., "--icon-subtle"))
                                 })
+                                .children(decoration.map(|decoration| {
+                                    div()
+                                        .font_weight(FontWeight(400.))
+                                        .text_color(color("--text-brand"))
+                                        .child(decoration)
+                                }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if external {
                                         // App Directory opens on the web, as the official entry's arrow says.
@@ -1117,6 +1135,14 @@ impl Root {
                                                 .map_or(0, |open| open.guild)
                                         ));
                                         return;
+                                    }
+                                    if this
+                                        .server_settings
+                                        .as_ref()
+                                        .is_some_and(|open| open.page == Page::Onboarding)
+                                        && target != Page::Onboarding
+                                    {
+                                        this.onboarding_leave(cx);
                                     }
                                     let Some(open) = this.server_settings.as_mut() else {
                                         return;
@@ -1194,7 +1220,7 @@ impl Root {
                     self.server_community_page(open.guild, cx)
                 }
             }
-            Page::Onboarding => Self::server_page_title("Onboarding"),
+            Page::Onboarding => self.server_onboarding_page(open.guild, cx),
             Page::Insights => self.server_insights_page(open.guild, cx),
             Page::Template => self.server_template_page(open.guild, cx),
         };
@@ -1240,6 +1266,13 @@ impl Root {
                     .justify_center()
                     .child(icon("settings_esc_close", 18., "--icon-subtle"))
                     .on_click(cx.listener(|this, _, _, cx| {
+                        if this
+                            .server_settings
+                            .as_ref()
+                            .is_some_and(|open| open.page == Page::Onboarding)
+                        {
+                            this.onboarding_leave(cx);
+                        }
                         this.server_settings = None;
                         cx.notify();
                     })),
@@ -1314,6 +1347,7 @@ impl Root {
                                         Some((Page::Community, _)) => this.reset_overview(cx),
                                         Some((Page::BoostPerks, _)) => this.reset_boost(cx),
                                         Some((Page::Tag, _)) => this.reset_tag(cx),
+                                        Some((Page::Onboarding, _)) => this.reset_onboarding(cx),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1323,6 +1357,8 @@ impl Root {
                                 .id("server-settings-save")
                                 .ml(px(10.))
                                 .h(px(32.))
+                                .min_w(px(60.))
+                                .justify_center()
                                 .px(px(11.))
                                 .rounded(px(8.))
                                 .bg(color("--control-connected-background-default"))
@@ -1332,7 +1368,11 @@ impl Root {
                                 .text_size(px(14.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(gpui::white())
-                                .child("Save Changes")
+                                .child(if page == Page::Onboarding {
+                                    "Save"
+                                } else {
+                                    "Save Changes"
+                                })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     match this
                                         .server_settings
@@ -1357,6 +1397,7 @@ impl Root {
                                             this.save_overview(guild, cx)
                                         }
                                         Some((Page::Tag, guild)) => this.save_tag(guild, cx),
+                                        Some((Page::Onboarding, _)) => this.save_onboarding(cx),
                                         _ => this.save_server_settings(cx),
                                     }
                                 })),
@@ -1461,7 +1502,8 @@ impl Root {
                                     .top(px(close_top))
                                     .child(close),
                             )
-                            .children(notice),
+                            .children(notice)
+                            .children(self.onboarding_notice(open.guild, cx)),
                     )
                     .child(div().absolute().top_0().right_0().child(window_controls())),
             )

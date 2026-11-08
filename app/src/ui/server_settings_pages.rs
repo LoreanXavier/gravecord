@@ -197,6 +197,7 @@ impl Root {
             Page::BoostPerks => self.request_boost(guild),
             Page::Tag => self.request_tag(guild),
             Page::Community => self.request_community(guild),
+            Page::Onboarding => self.request_onboarding_page(guild, cx),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
                 let _ = self.requests.send(Request::Fetch {
