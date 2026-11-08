@@ -165,6 +165,7 @@ impl Root {
             Action::MarkUnread => self.mark_unread(message.channel_id, message.id),
             Action::Bookmark => self.toggle_bookmark(message.channel_id, message.id, cx),
             Action::Speak => self.speak_message(message, cx),
+            Action::Forward => self.open_forward(message, window, cx),
             Action::AddReaction => {
                 if let Some(super::menu::OpenMenu { anchor, .. }) = self.last_menu {
                     let at = match anchor {

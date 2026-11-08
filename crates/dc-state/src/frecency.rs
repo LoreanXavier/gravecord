@@ -27,6 +27,19 @@ pub enum Kind {
     Emoji,
     /// `ef`: reactions; frecency `trunc(1000 * (total / max_total * 0.2 + score / 1000 * 0.8))`.
     Reaction,
+    /// Guilds and channels (module 205761): steeper day weights, frecency as for emoji, 100 kept.
+    Channel,
+}
+
+/// `computeWeight` of the channel frecency in module 205761.
+pub fn channel_weight(days: i64) -> f64 {
+    match days {
+        0 => 100.,
+        1 => 70.,
+        2 | 3 => 50.,
+        4..=6 => 30.,
+        _ => 10.,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,7 +61,7 @@ impl Frecency {
         Self {
             kind,
             max_samples: 10,
-            items: 42,
+            items: if kind == Kind::Channel { 100 } else { 42 },
             usage: Vec::new(),
         }
     }
@@ -104,7 +117,11 @@ impl Frecency {
                     .map(|time| {
                         // moment's `diff(..., "days")` truncates toward zero.
                         let days = (now_ms as i64 - *time as i64) / 86_400_000;
-                        weight(days)
+                        if self.kind == Kind::Channel {
+                            channel_weight(days)
+                        } else {
+                            weight(days)
+                        }
                     })
                     .sum();
                 if score <= 0. || usage.recent_uses.is_empty() {
@@ -112,7 +129,9 @@ impl Frecency {
                 }
                 let total = f64::from(usage.total_uses);
                 let frecency = match self.kind {
-                    Kind::Emoji => (total * (score / usage.recent_uses.len() as f64)).ceil(),
+                    Kind::Emoji | Kind::Channel => {
+                        (total * (score / usage.recent_uses.len() as f64)).ceil()
+                    }
                     Kind::Reaction if max_total == 0 => 0.,
                     Kind::Reaction => {
                         (1000. * (total / f64::from(max_total) * 0.2 + score / 1000. * 0.8)).trunc()

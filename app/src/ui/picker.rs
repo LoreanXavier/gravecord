@@ -46,7 +46,12 @@ const DEFAULT_EMOJI: [&str; 10] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Composer,
-    Reaction { channel: Id, message: Id },
+    /// The forward dialog's optional message.
+    ForwardNote,
+    Reaction {
+        channel: Id,
+        message: Id,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -371,7 +376,7 @@ impl Root {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_placeholder(
                 match target {
-                    Target::Composer => "Find the perfect emoji",
+                    Target::Composer | Target::ForwardNote => "Find the perfect emoji",
                     Target::Reaction { .. } => "Find the perfect reaction",
                 }
                 .to_owned(),
@@ -536,6 +541,12 @@ impl Root {
                 self.emoji_used.push((usage_key, now_ms()));
                 self.composer
                     .update(cx, |editor, cx| editor.insert(&text, cx));
+            }
+            Target::ForwardNote => {
+                self.emoji_used.push((usage_key, now_ms()));
+                if let Some(note) = self.forward.as_ref().map(super::forward::Forward::note) {
+                    note.update(cx, |editor, cx| editor.insert(&text, cx));
+                }
             }
             Target::Reaction { channel, message } => {
                 self.reactions_used.push((usage_key, now_ms()));

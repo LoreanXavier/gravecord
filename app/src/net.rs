@@ -103,6 +103,14 @@ pub enum Request {
         due_at: Option<String>,
         save: bool,
     },
+    /// Forward: an empty message whose `message_reference` is the source with `type: 1`, then the note on its own.
+    Forward {
+        destination: u64,
+        guild: Option<u64>,
+        channel: u64,
+        message: u64,
+        note: Option<String>,
+    },
     /// `POST /interactions`: an application command run by hand.
     Interaction {
         body: Value,
@@ -424,6 +432,41 @@ pub async fn run(
                     };
                     if let Err(error) = result {
                         warn!("saving failed: {error}");
+                    }
+                });
+            }
+            Request::Forward {
+                destination,
+                guild,
+                channel,
+                message,
+                note,
+            } => {
+                tokio::spawn(async move {
+                    let route = format!("/channels/{destination}/messages");
+                    let mut body = send_body(destination, "", None);
+                    body["message_reference"] = json!({
+                        "guild_id": guild.map(|guild| guild.to_string()),
+                        "channel_id": channel.to_string(),
+                        "message_id": message.to_string(),
+                        "type": 1,
+                    });
+                    body["flags"] = json!(0);
+                    if let Err(error) = client
+                        .request(reqwest::Method::POST, &route, Some(&body))
+                        .await
+                    {
+                        warn!("forwarding failed: {error}");
+                        return;
+                    }
+                    if let Some(note) = note {
+                        let body = send_body(destination, &note, None);
+                        if let Err(error) = client
+                            .request(reqwest::Method::POST, &route, Some(&body))
+                            .await
+                        {
+                            warn!("forward note failed: {error}");
+                        }
                     }
                 });
             }

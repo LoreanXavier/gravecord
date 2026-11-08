@@ -22,6 +22,9 @@ impl Root {
         self.channel = channel;
         self.unread_from = None;
         if let Some(channel) = channel {
+            self.remember_channel(channel);
+        }
+        if let Some(channel) = channel {
             let _ = self
                 .requests
                 .send(crate::net::Request::LoadMessages { channel });

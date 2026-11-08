@@ -26,6 +26,12 @@ pub(crate) struct Toast {
     pub until: Instant,
 }
 
+/// The app-wide toast (`toast_W6gbBa`): top centre, three seconds.
+pub(crate) struct AppToast {
+    pub message: &'static str,
+    pub until: Instant,
+}
+
 /// moment's `humanize()` with its default thresholds, as the reminder labels use it.
 pub(crate) fn humanize(milliseconds: i64) -> String {
     let seconds = (milliseconds.abs() as f64 / 1000.).round();
@@ -132,6 +138,79 @@ impl Root {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(super) fn show_app_toast(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        let duration = std::time::Duration::from_millis(3000);
+        self.app_toast = Some(AppToast {
+            message,
+            until: Instant::now() + duration,
+        });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .app_toast
+                    .as_ref()
+                    .is_some_and(|toast| toast.until <= Instant::now())
+                {
+                    this.app_toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// `wrapper_O41c2-`: 12px padding and radius on `--background-surface-highest` with a `--border-normal` edge,
+    /// an 18px icon in `--icon-feedback-positive`, 16/20 text; 40px from the top, centred.
+    pub(super) fn app_toast_layer(&self) -> Option<AnyElement> {
+        let toast = self.app_toast.as_ref()?;
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .top(px(40.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .p(px(12.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-normal"))
+                            .bg(color("--background-surface-highest"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.24),
+                                offset: gpui::point(px(0.), px(12.)),
+                                blur_radius: px(24.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                svg()
+                                    .path("icons/toast_forwarded.svg")
+                                    .size(px(18.))
+                                    .text_color(color("--icon-feedback-positive")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-strong"))
+                                    .child(toast.message),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
     }
 
     /// Bookmark Message / Remove Bookmark.

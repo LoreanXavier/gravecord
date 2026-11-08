@@ -35,6 +35,7 @@ mod dm;
 mod dm_profile;
 mod embed;
 mod files;
+mod forward;
 mod history;
 mod home;
 mod links;
@@ -146,10 +147,14 @@ pub struct Root {
     show_members: bool,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    forward: Option<forward::Forward>,
+    /// Channels this session opened, newest first: the forward dialog's first suggestions.
+    channel_history: Vec<Id>,
     speech: crate::speech::Speech,
     /// The message Speak Message is reading.
     speaking_message: Option<Id>,
     toast: Option<saved::Toast>,
+    app_toast: Option<saved::AppToast>,
     /// The open submenu of the message menu: the row it hangs off.
     submenu: Option<menu::Submenu>,
     custom_reminder: Option<reminder_modal::CustomReminder>,
@@ -229,9 +234,12 @@ impl Root {
             confirm_delete: None,
             show_members: false,
             show_dm_profile: true,
+            forward: None,
+            channel_history: Vec::new(),
             speech: crate::speech::Speech::new(),
             speaking_message: None,
             toast: None,
+            app_toast: None,
             submenu: None,
             custom_reminder: None,
             unread_from: None,
@@ -414,6 +422,9 @@ impl Root {
         self.guild = Some(guild);
         self.channel = channel;
         self.unread_from = None;
+        if let Some(channel) = channel {
+            self.remember_channel(channel);
+        }
         if let Some(channel) = channel {
             let _ = self.requests.send(Request::Subscribe { guild, channel });
             let _ = self.requests.send(Request::LoadMessages { channel });
@@ -872,17 +883,7 @@ impl Root {
             .images
             .get(&avatar_source(&referenced.author).0)
             .cloned();
-        let text = parse(&referenced.content)
-            .into_iter()
-            .find_map(|block| match block {
-                Block::Paragraph(spans)
-                | Block::Quote(spans)
-                | Block::Subtext(spans)
-                | Block::Heading { spans, .. }
-                | Block::ListItem { spans, .. } => Some(spans),
-                Block::Code { .. } => None,
-            })
-            .unwrap_or_default();
+        let text = first_spans(&referenced.content);
         div()
             .relative()
             .h(px(18.))
@@ -2643,12 +2644,22 @@ impl Root {
                         )),
                 )
             })
-            .child(self.with_tip(
-                "toolbar-forward",
-                Tip::text("Forward", Side::Top),
-                button("msg_forward"),
-                cx,
-            ))
+            .child(
+                self.with_tip(
+                    "toolbar-forward",
+                    Tip::text("Forward", Side::Top),
+                    button("msg_forward"),
+                    cx,
+                )
+                .cursor_pointer()
+                .on_click({
+                    let found = message.clone();
+                    cx.listener(move |this, _, window, cx| {
+                        this.tip = None;
+                        this.open_forward(found.clone(), window, cx);
+                    })
+                }),
+            )
             .child(
                 self.with_tip(
                     "toolbar-more",
@@ -2847,6 +2858,21 @@ fn editor_style() -> EditorStyle {
 }
 
 /// A message's text as copied: its blocks, one per line.
+/// The spans of the first text block, for one-line previews of a message.
+fn first_spans(content: &str) -> Vec<Span> {
+    parse(content)
+        .into_iter()
+        .find_map(|block| match block {
+            Block::Paragraph(spans)
+            | Block::Quote(spans)
+            | Block::Subtext(spans)
+            | Block::Heading { spans, .. }
+            | Block::ListItem { spans, .. } => Some(spans),
+            Block::Code { .. } => None,
+        })
+        .unwrap_or_default()
+}
+
 /// For each span, the link it belongs to: its address and the whole run's visible text (a masked link's label can span
 /// several styled spans).
 fn link_runs(spans: &[Span]) -> Vec<Option<(String, String)>> {
@@ -3128,7 +3154,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
+                if event.keystroke.key == "escape" && this.forward.is_some() {
+                    this.forward = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
                     this.custom_reminder = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -3267,8 +3297,10 @@ impl Render for Root {
             .children(self.delete_modal(cx))
             .children(self.leaving_modal(cx))
             .children(self.pin_modal(cx))
+            .children(self.forward_modal(window, cx))
             .children(self.custom_reminder_modal(cx))
             .children(self.toast_layer())
+            .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
     }
 }

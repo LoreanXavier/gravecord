@@ -136,6 +136,74 @@ pub fn emoji_map(settings_base64: &str, field: u64) -> Vec<(String, Item)> {
     out
 }
 
+pub const GUILD_AND_CHANNEL_FRECENCY: u64 = 12;
+
+/// The `guild_and_channels` map of `GuildAndChannelFrecency` (field 12): guild or channel id to its uses. The key
+/// arrives as a fixed64 or a varint depending on the writer, so both are read.
+pub fn id_map(settings_base64: &str, field: u64) -> Vec<(u64, Item)> {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (number, value) in fields(&settings) {
+        let (true, Value::Bytes(frecency)) = (number == field, value) else {
+            continue;
+        };
+        for (entry_number, entry) in fields(frecency) {
+            let (1, Value::Bytes(entry)) = (entry_number, entry) else {
+                continue;
+            };
+            let mut key = None;
+            let mut value = Item::default();
+            let mut reader = Reader { bytes: entry };
+            while !reader.bytes.is_empty() {
+                let Some(tag) = reader.varint() else { break };
+                match (tag >> 3, tag & 7) {
+                    (1, 0) => key = reader.varint(),
+                    (1, 1) => {
+                        key = reader
+                            .take(8)
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .map(u64::from_le_bytes)
+                    }
+                    (2, 2) => {
+                        let Some(length) = reader
+                            .varint()
+                            .and_then(|length| usize::try_from(length).ok())
+                        else {
+                            break;
+                        };
+                        if let Some(message) = reader.take(length) {
+                            value = item(message);
+                        }
+                    }
+                    (_, 0) => {
+                        reader.varint();
+                    }
+                    (_, 1) => {
+                        reader.take(8);
+                    }
+                    (_, 2) => {
+                        let length = reader
+                            .varint()
+                            .and_then(|length| usize::try_from(length).ok())
+                            .unwrap_or(0);
+                        reader.take(length);
+                    }
+                    (_, 5) => {
+                        reader.take(4);
+                    }
+                    _ => break,
+                }
+            }
+            if let Some(key) = key {
+                out.push((key, value));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +226,27 @@ mod tests {
         out.extend(varint(payload.len() as u64));
         out.extend_from_slice(payload);
         out
+    }
+
+    #[test]
+    fn reads_channel_frecency_with_fixed64_keys() {
+        let mut item = varint(1 << 3);
+        item.extend(varint(3));
+        let mut entry = vec![(1 << 3) | 1];
+        entry.extend(1_568_692_565_136_375_900u64.to_le_bytes());
+        entry.extend(bytes(2, &item));
+        let settings = bytes(GUILD_AND_CHANNEL_FRECENCY, &bytes(1, &entry));
+        let read = id_map(&STANDARD.encode(&settings), GUILD_AND_CHANNEL_FRECENCY);
+        assert_eq!(
+            read,
+            [(
+                1_568_692_565_136_375_900,
+                Item {
+                    total_uses: 3,
+                    ..Item::default()
+                }
+            )]
+        );
     }
 
     #[test]
