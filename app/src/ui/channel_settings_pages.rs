@@ -60,7 +60,7 @@ pub(super) const ADD_TARGET_ART: &str = "https://discordapp.com/assets/ef103ccb2
 pub(super) const PERMISSIONS_HELP: &str = "https://support.discord.com/hc/en-us/articles/206029707";
 
 /// Module 824953: a new webhook is one of these, at random.
-const WEBHOOK_NAMES: [&str; 2] = ["Spidey Bot", "Captain Hook"];
+pub(super) const WEBHOOK_NAMES: [&str; 2] = ["Spidey Bot", "Captain Hook"];
 
 /// `dd:hh:mm:ss` until an invite runs out (days only when there are any); "∞" for one that never does.
 pub(super) fn expires_in(created_ms: i64, max_age_s: i64, now_ms: i64) -> String {

@@ -263,6 +263,8 @@ pub(crate) struct ServerSettings {
     pub(super) roles: Option<super::server_role_editor::RolesState>,
     /// The Server Template page's fields.
     pub(super) template: Option<super::server_template::TemplateState>,
+    /// Integrations' webhook sub-page.
+    pub(super) webhooks: super::server_webhooks::WebhooksState,
     _events: Vec<Subscription>,
 }
 
@@ -389,6 +391,7 @@ impl Root {
             role: None,
             roles: None,
             template: None,
+            webhooks: Default::default(),
             _events: events,
         });
         let _ = self.requests.send(Request::Fetch {
@@ -950,6 +953,7 @@ impl Root {
             Page::Profile => open.values(cx) != open.saved,
             Page::Roles => self.roles_dirty(),
             Page::Template => self.template_dirty(open.guild, cx),
+            Page::Integrations => self.webhook_dirty(open.guild, cx),
             _ => false,
         };
         let mut nav = div()
@@ -1085,7 +1089,10 @@ impl Root {
             Page::Roles => self.server_roles_page(open.guild, cx),
             Page::Invites => self.server_invites_page(open.guild, cx),
             Page::Access => Self::server_page_title("Access"),
-            Page::Integrations => Self::server_page_title("Integrations"),
+            Page::Integrations if open.webhooks.showing => {
+                self.server_webhooks_page(open.guild, cx)
+            }
+            Page::Integrations => self.server_integrations_page(open.guild, cx),
             Page::AppDirectory => Self::server_page_title("App Directory"),
             Page::SafetySetup => Self::server_page_title("Safety Setup"),
             Page::AuditLog => Self::server_page_title("Audit Log"),
@@ -1192,6 +1199,9 @@ impl Root {
                                         Some((Page::Template, guild)) => {
                                             this.reset_template(guild, cx)
                                         }
+                                        Some((Page::Integrations, guild)) => {
+                                            this.reset_webhook(guild, cx)
+                                        }
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1220,6 +1230,9 @@ impl Root {
                                         Some((Page::Roles, _)) => this.save_roles(cx),
                                         Some((Page::Template, guild)) => {
                                             this.save_template(guild, cx)
+                                        }
+                                        Some((Page::Integrations, guild)) => {
+                                            this.save_webhook(guild, cx)
                                         }
                                         _ => this.save_server_settings(cx),
                                     }

@@ -79,6 +79,7 @@ mod server_roles;
 mod server_settings;
 mod server_settings_pages;
 mod server_template;
+mod server_webhooks;
 mod settings;
 mod threads;
 mod tooltip;
@@ -500,6 +501,11 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
+                }
+                if key.starts_with(server_settings_pages::WEBHOOKS_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.webhooks_fetched(&key, cx);
+                    return;
                 }
                 if key.starts_with(server_template::TEMPLATES_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
@@ -1379,6 +1385,13 @@ impl Root {
             list.push(settings.description.clone());
             list.extend(settings.traits.iter().cloned());
             list.push(settings.games_query.clone());
+            list.extend(
+                settings
+                    .webhooks
+                    .open
+                    .as_ref()
+                    .map(|open| open.name.clone()),
+            );
             if let Some(template) = settings.template.as_ref() {
                 list.push(template.title.clone());
                 list.push(template.description.clone());
@@ -4225,6 +4238,8 @@ impl Render for Root {
             .children(self.role_delete_modal(cx))
             .children(self.role_add_members_modal(cx))
             .children(self.template_delete_modal(cx))
+            .children(self.webhook_channel_select(cx))
+            .children(self.webhook_delete_modal(cx))
             .children(self.channel_settings_select(window, cx))
             .children(self.delete_channel_modal(cx))
             .children(self.sync_permissions_modal(cx))

@@ -20,6 +20,10 @@ use serde_json::Value;
 
 pub(super) const INVITES_PREFIX: &str = "guild-invites:";
 pub(super) const BANS_PREFIX: &str = "guild-bans:";
+pub(super) const WEBHOOKS_PREFIX: &str = "guild-webhooks:";
+const WEBHOOK_MADE_PREFIX: &str = "guild-webhooks:made:";
+/// `emptyStateImage_2S81sZ`: the Bots and Apps picture.
+const NO_APPS_ART: &str = "https://cdn.discordapp.com/assets/content/21f7110f79ffef19fffd9358370afbf23891b43abf872f3c8e77ccc59807b058.svg";
 /// Module 29093: the dark No Bans picture.
 const NO_BANS_ART: &str = "https://discordapp.com/assets/626d8d0fc1024e29.svg";
 
@@ -158,6 +162,13 @@ impl Root {
                 }
             }
             Page::Emoji => self.request_emojis(guild),
+            Page::Integrations => {
+                self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
+                let _ = self.requests.send(Request::Fetch {
+                    key: format!("{WEBHOOKS_PREFIX}{guild}"),
+                    route: format!("/guilds/{guild}/webhooks"),
+                });
+            }
             Page::Template => self.request_template_page(guild, cx),
             Page::Roles => {
                 self.request_roles_page();
@@ -238,6 +249,241 @@ impl Root {
             self.request_image(key, url);
         }
         cx.notify();
+    }
+
+    /// A webhook was created: list them again.
+    pub(super) fn webhooks_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(guild) = key.strip_prefix(WEBHOOK_MADE_PREFIX)
+            && let Ok(guild) = guild.parse::<Id>()
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: format!("{WEBHOOKS_PREFIX}{guild}"),
+                route: format!("/guilds/{guild}/webhooks"),
+            });
+        } else if let Some(guild) = key.strip_prefix(super::server_webhooks::WEBHOOK_SAVED_PREFIX)
+            && let Ok(guild) = guild.parse::<Id>()
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: format!("{WEBHOOKS_PREFIX}{guild}"),
+                route: format!("/guilds/{guild}/webhooks"),
+            });
+        } else if let Some(guild) = key
+            .strip_prefix(WEBHOOKS_PREFIX)
+            .and_then(|guild| guild.parse::<Id>().ok())
+        {
+            self.request_webhook_images(guild);
+        }
+        cx.notify();
+    }
+
+    /// Create Webhook on the server's first text channel, named as the channel page names them (module 824953).
+    pub(super) fn create_server_webhook(&mut self, guild: Id) {
+        let channel = self
+            .stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .and_then(|known| {
+                known
+                    .channels
+                    .iter()
+                    .find(|channel| matches!(channel.kind, dc_state::ChannelKind::Text))
+                    .map(|channel| channel.id)
+            });
+        let Some(channel) = channel else {
+            return;
+        };
+        let name = super::channel_settings_pages::WEBHOOK_NAMES
+            [(chrono::Utc::now().timestamp_subsec_nanos() % 2) as usize];
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{WEBHOOK_MADE_PREFIX}{guild}")),
+            method: reqwest::Method::POST,
+            route: format!("/channels/{channel}/webhooks"),
+            body: Some(serde_json::json!({"name": name})),
+        });
+    }
+
+    /// Integrations (module 989433 `uM`, measured in `guild-integrations-darker-cozy.json`): the intro, the Webhooks
+    /// and Channels Followed cards, then Bots and Apps. The webhook editor behind View Webhooks is not drawn yet.
+    pub(super) fn server_integrations_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        let webhooks: Vec<Value> = self
+            .fetched
+            .get(&format!("{WEBHOOKS_PREFIX}{guild}"))
+            .and_then(|body| body.as_array().cloned())
+            .unwrap_or_default();
+        // A followed channel's webhook has type 2, an incoming one type 1.
+        let incoming = webhooks
+            .iter()
+            .filter(|hook| hook["type"].as_u64() == Some(1))
+            .count();
+        let followed = webhooks
+            .iter()
+            .filter(|hook| hook["type"].as_u64() == Some(2))
+            .count();
+        let plural = |count: usize, one: &str| {
+            if count == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{count} {one}s")
+            }
+        };
+        let small_button = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(11.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--control-primary-border-default"))
+                .bg(color("--control-primary-background-default"))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--white"))
+                .child(label)
+        };
+        let card =
+            |glyph: &'static str, title: &'static str, detail: String, button: AnyElement| {
+                div()
+                    .h(px(88.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .bg(color("--card-background-default"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(48.))
+                            .flex_none()
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(glyph, 24., "--interactive-text-default")),
+                    )
+                    .child(
+                        div()
+                            .ml(px(8.))
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-default"))
+                                    .child(detail),
+                            ),
+                    )
+                    .child(button)
+            };
+        let divider = || div().my(px(32.)).h(px(1.)).bg(color("--border-subtle"));
+        let art = self.images.get(NO_APPS_ART).cloned();
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mb(px(20.))
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Integrations"),
+            )
+            .child(
+                div().text_size(px(14.)).line_height(px(18.)).text_color(color("--text-default")).child(self.text_with_link(
+                    "server-integrations-help",
+                    "Customize your server with integrations. Manage webhooks, followed channels, and apps, as well as Twitch and YouTube settings for creators. ",
+                    "Learn more about managing integrations.",
+                    "",
+                    cx,
+                    |_, cx| cx.open_url("https://support.discord.com/hc/en-us/articles/360045093012"),
+                )),
+            )
+            .child(divider())
+            .child(card(
+                "integrations_webhook",
+                "Webhooks",
+                plural(incoming, "webhook"),
+                if incoming == 0 {
+                    small_button("server-integrations-webhook", "Create Webhook")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.create_server_webhook(guild);
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                } else {
+                    div()
+                        .id("server-integrations-webhooks")
+                        .cursor_pointer()
+                        .child(icon("roles_arrow", 24., "--interactive-text-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| this.show_webhooks(guild, cx)))
+                        .into_any_element()
+                },
+            ))
+            .child(div().h(px(16.)))
+            .child(card(
+                "integrations_followed",
+                "Channels Followed",
+                plural(followed, "channel"),
+                small_button("server-integrations-followed", "Learn More")
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")))
+                    .into_any_element(),
+            ))
+            .child(divider())
+            .child(
+                div()
+                    .mb(px(16.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Bots and Apps"),
+            )
+            .child(
+                div()
+                    .pt(px(32.))
+                    .pb(px(32.))
+                    .rounded(px(8.))
+                    .bg(color("--card-background-default"))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .children(art.map(|art| img(art).w(px(249.)).h(px(140.)).mb(px(24.))))
+                    .child(
+                        div()
+                            .text_size(px(24.))
+                            .line_height(px(32.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
+                            .child("You don't have any apps yet!"),
+                    )
+                    .child(
+                        div().mt(px(8.)).text_size(px(14.)).line_height(px(18.)).text_color(color("--text-default")).child(self.text_with_link(
+                            "server-integrations-directory",
+                            "Visit the ",
+                            "App Directory",
+                            " to add apps to your server",
+                            cx,
+                            move |_, cx| cx.open_url(&format!("https://discord.com/application-directory?guild_id={guild}")),
+                        )),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn primary_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
