@@ -1262,9 +1262,19 @@ impl Root {
                 .as_ref()
                 .is_some_and(|call| call.channel == channel.id);
         // `modeUnreadImportant`: an unread channel reads in `--text-strong`, with a pill at the sidebar's edge.
-        let unread = channel.kind == ChannelKind::Text && self.stores.is_unread(channel.id);
+        // `modeMuted`: a muted channel never reads unread, and dims to half in `--text-muted`.
+        let muted = self.guild.is_some_and(|guild| {
+            self.stores
+                .guild_settings
+                .channel_muted(guild, channel.id, chrono::Utc::now())
+        });
+        let unread =
+            !muted && channel.kind == ChannelKind::Text && self.stores.is_unread(channel.id);
+        let dim = muted && !selected && !in_call;
         let tint = if selected || in_call || unread {
             "--text-strong"
+        } else if dim {
+            "--text-muted"
         } else {
             "--channels-default"
         };
@@ -1340,18 +1350,21 @@ impl Root {
                     .when(!selected, |this| {
                         this.hover(|style| style.bg(color("--background-mod-subtle")))
                     })
-                    .child(icon(
+                    .child(div().when(dim, |this| this.opacity(0.5)).child(icon(
                         name,
                         20.,
                         if in_call {
                             "--icon-voice-connected"
+                        } else if dim {
+                            "--icon-muted"
                         } else {
                             tint
                         },
-                    ))
+                    )))
                     .child(
                         div()
                             .flex_1()
+                            .when(dim, |this| this.opacity(0.5))
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))

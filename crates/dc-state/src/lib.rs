@@ -914,10 +914,12 @@ impl Stores {
     /// A guild is unread when one of its text channels is.
     pub fn guild_unread(&self, guild: &Guild) -> bool {
         let joined = guild.joined_snowflake();
+        let now = chrono::Utc::now();
         guild
             .channels
             .iter()
             .filter(|channel| channel.kind == ChannelKind::Text)
+            .filter(|channel| !self.guild_settings.channel_muted(guild.id, channel.id, now))
             .any(|channel| self.read_states.is_unread(channel.id, joined))
     }
 
