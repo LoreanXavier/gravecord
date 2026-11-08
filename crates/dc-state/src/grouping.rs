@@ -95,6 +95,7 @@ mod tests {
             forwarded: None,
             pinned: false,
             reference_id: None,
+            reference_channel_id: None,
         }
     }
 
