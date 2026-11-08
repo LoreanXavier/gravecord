@@ -105,6 +105,7 @@ mod uploads;
 mod voice;
 mod voice_panel;
 mod voice_sounds;
+mod voice_video;
 mod voice_view;
 
 use tooltip::{Body, Side, Tip};
@@ -303,6 +304,7 @@ pub struct Root {
     profile: Option<profile::Popout>,
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
+    video: voice_video::Video,
     panel: voice_panel::PanelState,
     soundboard: soundboard::Board,
     self_mute: bool,
@@ -447,6 +449,7 @@ impl Root {
             content_width: 793.,
             profile: None,
             call: None,
+            video: Default::default(),
             panel: voice_panel::PanelState::default(),
             soundboard: soundboard::Board::new(),
             updates,
@@ -474,6 +477,7 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE").then(|| self.others_in_call());
                 self.stores.dispatch(&name, &data);
                 self.soundboard_dispatch(&name, &data, cx);
+                self.stream_dispatch(&name, &data, cx);
                 if name == "VOICE_STATE_UPDATE" {
                     self.after_voice_state(voice_before.flatten(), &data);
                 }
@@ -544,6 +548,7 @@ impl Root {
                 self.ready = true;
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
+            Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::Fetched { key, body } => {
                 if key.starts_with("soundboard:") {
@@ -1293,6 +1298,7 @@ impl Root {
                 None => "none",
             },
         ) + &format!(" voice_settings=[{}]", self.voice.describe())
+            + &format!(" video=[{}]", self.video.describe())
             + &format!(
                 " sounds={:?} ptt_hook={}",
                 crate::sounds::played(),

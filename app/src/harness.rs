@@ -2,6 +2,7 @@
 //! keys and drags are exercised without a visible window.
 //!
 //! `--script "click 36 157; wait 800; type hello; key enter; drag 450 330 600 330; note label"`.
+//! `stream start` / `stream stop` run a Go Live stream from the synthetic source (only when alone in the channel).
 //! `note` appends the app's state to `<capture>.log`. The clipboard is shared with the owner's desktop, so scripts never
 //! press ctrl-c; `note` reports the selection directly.
 
@@ -277,6 +278,15 @@ pub async fn run(
             ["settings", page] => {
                 let page = (*page).to_owned();
                 root.update(cx, |root, cx| root.open_settings_page(&page, cx));
+            }
+            // Go Live from the synthetic pattern, only when nobody else is in the channel; ends by itself after ten
+            // seconds. The outcome goes to the log.
+            ["stream", "start"] => {
+                let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(cx));
+                let _ = writeln!(output, "stream start: {outcome}");
+            }
+            ["stream", "stop"] => {
+                root.update(cx, |root, cx| root.stream_stop(cx));
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

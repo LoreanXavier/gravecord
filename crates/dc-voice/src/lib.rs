@@ -1,10 +1,10 @@
-//! Audio-only Discord voice connection: the voice control socket, UDP media with `rtpsize`
-//! AEAD transport encryption, DAVE end-to-end encryption, Opus, and the default microphone
-//! and speaker.
+//! Discord voice: the voice control socket, UDP media with `rtpsize` AEAD transport encryption, DAVE end-to-end
+//! encryption, Opus, the default microphone and speaker, and video: cameras in a call and Go Live streams.
 //!
-//! Adapted from Serein's `discord-voice` crate (`vendor/serein/crates/discord-voice`,
-//! MIT OR Apache-2.0); each module names the Serein file it comes from. Video, screen share,
-//! camera, Go Live, echo cancellation and noise suppression are not ported.
+//! Adapted from Serein's `discord-voice` crate (`vendor/serein/crates/discord-voice`, MIT OR Apache-2.0); each
+//! module names the Serein file it comes from.
+//!
+//! # A call
 //!
 //! ```no_run
 //! # async fn call() {
@@ -27,6 +27,29 @@
 //! let _ = task.await;
 //! # }
 //! ```
+//!
+//! # Video
+//!
+//! * **Seeing pictures.** [`Controls::set_video_sink`] registers a [`VideoSink`]. It is called on decoder threads
+//!   with a [`RemoteFrame`] for every decoded picture of a participant's camera ([`VideoSource::Camera`]) and of a
+//!   watched stream ([`VideoSource::Stream`]), and with our own camera as the local preview (`user` is our id). It must
+//!   return quickly. The sink is shared with the stream connections that take [`Controls::hub`].
+//! * **Camera.** [`camera_devices`] lists them. [`Controls::set_camera`] turns ours on (`Some(device id)`, empty for
+//!   the default camera) or off (`None`). [`Event::VideoState`] says when the camera is really on or off, and is the
+//!   cue to put `self_video` into the main gateway's voice state (op 4). [`Event::CameraFailed`] says why it did not
+//!   start.
+//! * **Go Live, main gateway.** [`streams`] has the stream keys, the payloads of ops 18 to 22 and the parser of the
+//!   four dispatches. [`streams::Tracker`] turns the dispatches and the connection's events into
+//!   [`streams::StreamUpdate`] values (starting, connecting, live, paused, viewers, ended and why) and says when to
+//!   connect.
+//! * **Go Live, voice side.** [`connect_stream`] starts the second voice connection of a stream from a
+//!   [`streams::StreamJoin`]: as the sender with a [`StreamSource`] (a display or window, or a test pattern), or as a
+//!   watcher, whose pictures reach the sink and whose audio joins the call's mix at [`VideoHub::set_stream_volume`].
+//!   [`StreamControls`] stops it, pauses it and switches previews; [`StreamEvent::Preview`] carries a JPEG for
+//!   `POST /streams/<key>/preview`.
+//!
+//! Nothing video blocks the audio loop: pictures are dropped, never queued without bound, and a failing decoder or
+//! capture ends only its own source.
 mod activity;
 mod audio;
 mod capture;
@@ -44,6 +67,11 @@ mod rtp;
 mod session;
 mod signal;
 pub mod sound;
+mod stream_conn;
+pub mod streams;
+mod video;
+pub use stream_conn::{StreamEvent, StreamSource};
+pub use video::{RemoteFrame, VideoHub, VideoSink, VideoSource};
 
 pub use audio::{
     Prefs, Preview, default_input_device, default_output_device, input_devices, output_devices,
@@ -53,7 +81,7 @@ pub use gate::FLOOR_DB;
 pub use process::{ProcessingPrefs, Suppression};
 pub use rtp::Mode;
 
-use session::{ControlState, Credentials};
+use session::{ControlState, Credentials, Shared};
 use std::{fmt, sync::Arc};
 use tokio::{
     sync::{mpsc, watch},
@@ -87,7 +115,10 @@ impl fmt::Debug for Join {
 /// App-side handle for a running connection. Cheap to clone; every clone controls the same
 /// state. Dropping every clone ends the call, like `disconnect`.
 #[derive(Clone)]
-pub struct Controls(Arc<watch::Sender<ControlState>>);
+pub struct Controls {
+    state: Arc<watch::Sender<ControlState>>,
+    shared: Arc<Shared>,
+}
 impl Default for Controls {
     fn default() -> Self {
         Self::new()
@@ -95,29 +126,102 @@ impl Default for Controls {
 }
 impl Controls {
     pub fn new() -> Self {
-        Self(Arc::new(watch::channel(ControlState::default()).0))
+        Self {
+            state: Arc::new(watch::channel(ControlState::default()).0),
+            shared: Arc::new(Shared::default()),
+        }
     }
     /// Stop sending microphone audio. The main gateway's voice state still has to report it.
     pub fn set_self_mute(&self, muted: bool) {
-        self.0
+        self.state
             .send_if_modified(|state| std::mem::replace(&mut state.self_mute, muted) != muted);
     }
     /// Stop playback and sending. The main gateway's voice state still has to report it.
     pub fn set_self_deaf(&self, deafened: bool) {
-        self.0.send_if_modified(|state| {
+        self.state.send_if_modified(|state| {
             std::mem::replace(&mut state.self_deaf, deafened) != deafened
         });
     }
     /// Close the voice connection. Leaving the channel itself is a main gateway voice state.
     pub fn disconnect(&self) {
-        self.0
+        self.state
             .send_if_modified(|state| !std::mem::replace(&mut state.disconnect, true));
     }
     pub fn self_mute(&self) -> bool {
-        self.0.borrow().self_mute
+        self.state.borrow().self_mute
     }
     pub fn self_deaf(&self) -> bool {
-        self.0.borrow().self_deaf
+        self.state.borrow().self_deaf
+    }
+    /// Turns our camera on with `Some(device id from [`camera_devices`])` (an empty id picks the default camera) or
+    /// off with `None`. The call opens the device only after this; [`Event::VideoState`] reports the result.
+    pub fn set_camera(&self, device: Option<String>) {
+        *self.shared.camera.lock().unwrap_or_else(|e| e.into_inner()) = device;
+        self.state.send_modify(|state| {
+            state.video_request = state.video_request.wrapping_add(1);
+        });
+    }
+    /// Whether the camera is wanted (requested and not yet turned off), not whether it has opened.
+    pub fn camera_wanted(&self) -> bool {
+        self.shared
+            .camera
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+    /// Registers (or with `None` removes) the receiver of decoded pictures; see [`VideoSink`]. The call tells the
+    /// server whether it wants video (op 15) from this.
+    pub fn set_video_sink(&self, sink: Option<VideoSink>) {
+        self.shared.hub.set_sink(sink);
+        self.state.send_modify(|state| {
+            state.video_request = state.video_request.wrapping_add(1);
+        });
+    }
+    /// The hub that carries pictures and watched stream audio; pass it to [`connect_stream`].
+    pub fn hub(&self) -> VideoHub {
+        self.shared.hub.clone()
+    }
+}
+
+/// The cameras this machine offers, for [`Controls::set_camera`]. Enumeration opens no device.
+pub fn camera_devices() -> Vec<dc_media::camera::CameraDevice> {
+    dc_media::camera::devices().unwrap_or_default()
+}
+
+/// Handle of one stream connection (see [`connect_stream`]).
+#[derive(Clone)]
+pub struct StreamControls(Arc<watch::Sender<stream_conn::StreamControlState>>);
+impl Default for StreamControls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl StreamControls {
+    /// Previews are on, the default of `audio.stream_previews`.
+    pub fn new() -> Self {
+        Self(Arc::new(
+            watch::channel(stream_conn::StreamControlState {
+                stop: false,
+                paused: false,
+                previews: true,
+            })
+            .0,
+        ))
+    }
+    /// Ends the stream connection. The main gateway's `STREAM_DELETE` (op 19) is separate.
+    pub fn stop(&self) {
+        self.0
+            .send_if_modified(|state| !std::mem::replace(&mut state.stop, true));
+    }
+    /// A sender stops sending media while paused.
+    pub fn set_paused(&self, paused: bool) {
+        self.0
+            .send_if_modified(|state| std::mem::replace(&mut state.paused, paused) != paused);
+    }
+    /// Whether the sender uploads previews (`audio.stream_previews`).
+    pub fn set_previews(&self, previews: bool) {
+        self.0
+            .send_if_modified(|state| std::mem::replace(&mut state.previews, previews) != previews);
     }
 }
 
@@ -151,6 +255,14 @@ pub enum Event {
     },
     ClientDisconnected {
         user_id: u64,
+    },
+    /// Our camera opened (true) or is off (false). Report it as `self_video` in the main gateway's voice state.
+    VideoState {
+        camera: bool,
+    },
+    /// The camera could not start or stopped by itself; `VideoState { camera: false }` follows.
+    CameraFailed {
+        reason: String,
     },
     /// Always the last event, unless the task was aborted.
     Disconnected {
@@ -197,7 +309,8 @@ pub fn connect(
     let _ = rustls::crypto::ring::default_provider().install_default();
     // Event sources are rate bounded: signaling at 256 messages/s, speaking at 10 Hz.
     let (events, receiver) = mpsc::unbounded_channel();
-    let state = controls.0.subscribe();
+    let state = controls.state.subscribe();
+    let shared = controls.shared.clone();
     let credentials = Credentials {
         endpoint: join.endpoint,
         token: Zeroizing::new(join.token),
@@ -209,12 +322,38 @@ pub fn connect(
     let session_events = events.clone();
     let task = tokio::spawn(async move {
         let result = clock::isolated("dc-voice", move || {
-            session::run(credentials, state, session_events)
+            session::run(credentials, state, session_events, shared)
         })
         .await;
         let reason = result.unwrap_or_else(DisconnectReason::Failed);
         tracing::info!(?reason, "voice connection ended");
         let _ = events.send(Event::Disconnected { reason });
+    });
+    (task, receiver)
+}
+
+/// Starts the second voice connection of a Go Live stream on the current tokio runtime: as the sender with
+/// `source`, or as a watcher with `None`. The stream's key, role, endpoint and token come from a
+/// [`streams::Tracker`]. Pictures and audio of a watched stream reach `hub`.
+pub fn connect_stream(
+    join: streams::StreamJoin,
+    source: Option<StreamSource>,
+    hub: &VideoHub,
+    controls: &StreamControls,
+) -> (JoinHandle<()>, mpsc::UnboundedReceiver<StreamEvent>) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (events, receiver) = mpsc::unbounded_channel();
+    let state = controls.0.subscribe();
+    let hub = hub.clone();
+    let session_events = events.clone();
+    let task = tokio::spawn(async move {
+        let result = clock::isolated("dc-voice-stream", move || {
+            stream_conn::run(join, source, state, hub, session_events)
+        })
+        .await;
+        let reason = result.unwrap_or_else(DisconnectReason::Failed);
+        tracing::info!(?reason, "stream connection ended");
+        let _ = events.send(StreamEvent::Ended { reason });
     });
     (task, receiver)
 }
@@ -226,7 +365,7 @@ mod tests {
     #[test]
     fn controls_coalesce_and_debug_hides_secrets() {
         let controls = Controls::new();
-        let mut state = controls.0.subscribe();
+        let mut state = controls.state.subscribe();
         controls.set_self_mute(false);
         assert!(
             !state.has_changed().unwrap(),

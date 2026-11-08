@@ -2,8 +2,9 @@
 //!
 //! Adapted from Serein `crates/discord-voice/src/crypto.rs` (`Encryption`, `Rtp`) and
 //! `crates/discord-voice/src/transport.rs` (`discovery`, `udp_keepalive`, `public_ip`),
-//! MIT OR Apache-2.0. Changes: audio only (no RTCP feedback, video payload types, RTX or
-//! soundshare extension), and AES-256-GCM added beside XChaCha20-Poly1305.
+//! MIT OR Apache-2.0. Changes: AES-256-GCM added beside XChaCha20-Poly1305; packets are routed by payload type (Opus,
+//! H.264 and its RTX stream); RTCP feedback builders and parsers (PLI, NACK, receiver reports, REMB); the soundshare
+//! extension for Go Live audio. The Rust here stays `unsafe`-free.
 use aes_gcm::Aes256Gcm;
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305,
@@ -15,6 +16,10 @@ use std::net::IpAddr;
 pub(crate) const MAX_PACKET: usize = 4096;
 /// Opus payload type, as advertised in SELECT_PROTOCOL's `codecs`.
 pub(crate) const OPUS_PAYLOAD_TYPE: u8 = 120;
+/// H.264 and its RTX stream. The official client lists `[AV1], [H265], H264, VP8` and gives entry `i` payload type
+/// `101 + 2 * i` with RTX `102 + 2 * i` (module 31595, `codecs`); this client offers H.264 alone, so it is entry 0.
+pub(crate) const H264_PAYLOAD_TYPE: u8 = 101;
+pub(crate) const H264_RTX_PAYLOAD_TYPE: u8 = 102;
 /// One 20 ms frame at 48 kHz.
 pub(crate) const FRAME_SAMPLES: u32 = 960;
 const TAG: usize = 16;
@@ -125,11 +130,214 @@ pub(crate) fn outbound_loss(mut remaining: &[u8], ssrc: u32) -> Option<f32> {
     lost.map(|fraction| f32::from(fraction) * 100. / 256.)
 }
 
-/// One authenticated, transport-decrypted RTP packet; the payload is still DAVE ciphertext.
+/// A reception report block for one source (RFC 3550 section 6.4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReportBlock {
+    pub ssrc: u32,
+    /// Share of packets lost since the last report, over 256.
+    pub fraction_lost: u8,
+    /// Signed 24-bit total.
+    pub cumulative_lost: i32,
+    /// Extended highest sequence number received.
+    pub highest: u32,
+    pub jitter: u32,
+    /// Middle 32 bits of the last sender report's NTP time, and the delay since it in 1/65536 s.
+    pub last_sender_report: u32,
+    pub delay: u32,
+}
+
+/// RTCP receiver report: the header the transport leaves in the clear (eight bytes) and the sealed rest.
+pub(crate) fn receiver_report(sender: u32, blocks: &[ReportBlock]) -> ([u8; 8], Vec<u8>) {
+    let blocks = &blocks[..blocks.len().min(31)];
+    let mut header = [0x80 | blocks.len() as u8, 201, 0, 0, 0, 0, 0, 0];
+    header[2..4].copy_from_slice(&((1 + 6 * blocks.len()) as u16).to_be_bytes());
+    header[4..].copy_from_slice(&sender.to_be_bytes());
+    let mut body = Vec::with_capacity(blocks.len() * 24);
+    for block in blocks {
+        body.extend_from_slice(&block.ssrc.to_be_bytes());
+        let loss =
+            (u32::from(block.fraction_lost) << 24) | (block.cumulative_lost as u32 & 0x00ff_ffff);
+        for word in [
+            loss,
+            block.highest,
+            block.jitter,
+            block.last_sender_report,
+            block.delay,
+        ] {
+            body.extend_from_slice(&word.to_be_bytes());
+        }
+    }
+    (header, body)
+}
+
+/// RFC 4585 picture loss indication: the sender must send a keyframe.
+// Serein (MIT OR Apache-2.0): `pli` in discord-voice/src/video_receive.rs.
+pub(crate) fn pli(sender: u32, media: u32) -> ([u8; 8], [u8; 4]) {
+    let mut header = [0x81, 206, 0, 2, 0, 0, 0, 0];
+    header[4..].copy_from_slice(&sender.to_be_bytes());
+    (header, media.to_be_bytes())
+}
+
+/// RFC 4585 generic NACK for up to 64 sequence numbers of `media`, packed as pid + 16-bit mask pairs.
+// Serein (MIT OR Apache-2.0): `Window::nack` in discord-voice/src/video_reorder.rs.
+pub(crate) fn nack(sender: u32, media: u32, sequences: &[u16]) -> Option<([u8; 8], Vec<u8>)> {
+    if sequences.is_empty() {
+        return None;
+    }
+    let mut body = media.to_be_bytes().to_vec();
+    let sequences = &sequences[..sequences.len().min(64)];
+    let mut at = 0;
+    while at < sequences.len() {
+        let pid = sequences[at];
+        at += 1;
+        let mut mask = 0u16;
+        while at < sequences.len() {
+            let distance = sequences[at].wrapping_sub(pid);
+            if !(1..=16).contains(&distance) {
+                break;
+            }
+            mask |= 1 << (distance - 1);
+            at += 1;
+        }
+        body.extend_from_slice(&pid.to_be_bytes());
+        body.extend_from_slice(&mask.to_be_bytes());
+    }
+    let mut header = [0x81, 205, 0, 0, 0, 0, 0, 0];
+    header[2..4].copy_from_slice(&((body.len() / 4 + 1) as u16).to_be_bytes());
+    header[4..].copy_from_slice(&sender.to_be_bytes());
+    Some((header, body))
+}
+
+/// What a viewer's authenticated RTCP asks of the sender of `video_ssrc`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Feedback {
+    /// The worst loss fraction (over 256) the reports name for this source.
+    pub loss: Option<u8>,
+    /// A picture loss indication for this source.
+    pub keyframe: bool,
+    /// Sequence numbers to resend, at most 128.
+    pub nacks: Vec<u16>,
+    /// REMB estimate in bits per second.
+    pub bitrate: Option<u32>,
+}
+
+/// Parses a decrypted compound RTCP packet: reports (RFC 3550), PLI and NACK (RFC 4585) and REMB, keeping what names
+/// `video_ssrc`. A malformed trailing packet discards everything before it.
+// Serein (MIT OR Apache-2.0): `parse_feedback` in discord-voice/src/crypto.rs.
+pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback> {
+    if video_ssrc == 0 {
+        return None;
+    }
+    let mut feedback = Feedback::default();
+    while !remaining.is_empty() {
+        if remaining.len() < 4 || !is_rtcp(remaining) {
+            return None;
+        }
+        let size = (usize::from(u16::from_be_bytes([remaining[2], remaining[3]])) + 1) * 4;
+        if size > remaining.len() {
+            return None;
+        }
+        let mut content = &remaining[..size];
+        if content[0] & 0x20 != 0 {
+            let padding = usize::from(content[size - 1]);
+            if size != remaining.len() || padding == 0 || padding > size - 4 {
+                return None;
+            }
+            content = &content[..size - padding];
+        }
+        let count = usize::from(content[0] & 0x1f);
+        match content[1] {
+            kind @ (200 | 201) => {
+                let start = if kind == 200 { 28 } else { 8 };
+                let end = start + count * 24;
+                if content.len() < end || !content.len().is_multiple_of(4) {
+                    return None;
+                }
+                for report in content[start..end].as_chunks::<24>().0 {
+                    if report[..4] == video_ssrc.to_be_bytes() {
+                        feedback.loss =
+                            Some(feedback.loss.map_or(report[4], |loss| loss.max(report[4])));
+                    }
+                }
+            }
+            kind @ (205 | 206) => {
+                if content.len() < 12 || !content.len().is_multiple_of(4) {
+                    return None;
+                }
+                let matching = content[8..12] == video_ssrc.to_be_bytes();
+                match (kind, count) {
+                    (206, 1) => {
+                        if content.len() != 12 {
+                            return None;
+                        }
+                        feedback.keyframe |= matching;
+                    }
+                    (205, 1) => {
+                        if content.len() == 12 {
+                            return None;
+                        }
+                        if matching {
+                            for item in content[12..].as_chunks::<4>().0 {
+                                let pid = u16::from_be_bytes([item[0], item[1]]);
+                                let mask = u16::from_be_bytes([item[2], item[3]]);
+                                for offset in 0..=16u16 {
+                                    if (offset == 0 || mask & (1 << (offset - 1)) != 0)
+                                        && feedback.nacks.len() < 128
+                                    {
+                                        let sequence = pid.wrapping_add(offset);
+                                        if !feedback.nacks.contains(&sequence) {
+                                            feedback.nacks.push(sequence);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (206, 15) if content.get(12..16) == Some(b"REMB") => {
+                        if content.len() < 20 || content.len() != 20 + usize::from(content[16]) * 4
+                        {
+                            return None;
+                        }
+                        let exponent = u32::from(content[17] >> 2);
+                        let mantissa = (u32::from(content[17] & 3) << 16)
+                            | (u32::from(content[18]) << 8)
+                            | u32::from(content[19]);
+                        let bitrate = if mantissa == 0 {
+                            0
+                        } else {
+                            if exponent >= 32 || mantissa > (u32::MAX >> exponent) {
+                                return None;
+                            }
+                            mantissa << exponent
+                        };
+                        if content[20..]
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|ssrc| *ssrc == video_ssrc.to_be_bytes())
+                        {
+                            feedback.bitrate =
+                                Some(feedback.bitrate.map_or(bitrate, |old| old.min(bitrate)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        remaining = &remaining[size..];
+    }
+    Some(feedback)
+}
+
+// One authenticated, transport-decrypted RTP packet; the payload is still DAVE ciphertext.
 #[derive(Debug)]
 pub(crate) struct Rtp {
+    pub payload_type: u8,
+    pub marker: bool,
     pub ssrc: u32,
     pub sequence: u16,
+    pub timestamp: u32,
     pub payload: Vec<u8>,
 }
 
@@ -150,7 +358,33 @@ impl Transport {
         Self { cipher, counter: 0 }
     }
     pub fn seal(&mut self, header: &[u8; 12], frame: &[u8]) -> Result<Vec<u8>, &'static str> {
-        if frame.len() > MAX_PACKET - 12 - TAG - NONCE_SUFFIX {
+        self.seal_packet(header, frame)
+    }
+    /// Go Live audio: RFC 8285 extension 9 marks it as soundshare. The extension preamble is authenticated; its body is
+    /// sealed with the payload.
+    // Serein (MIT OR Apache-2.0): `seal_soundshare` in discord-voice/src/crypto.rs. The extension is unofficial there
+    // too: the native module that sends it cannot be read from the pinned build.
+    pub fn seal_soundshare(
+        &mut self,
+        header: &[u8; 12],
+        frame: &[u8],
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut extended = [0; 16];
+        extended[..12].copy_from_slice(header);
+        extended[0] |= 0x10;
+        extended[12..].copy_from_slice(&[0xbe, 0xde, 0, 1]);
+        let mut payload = Vec::with_capacity(4 + frame.len());
+        payload.extend([0x90, 0x04, 0, 0]);
+        payload.extend_from_slice(frame);
+        self.seal_packet(&extended, &payload)
+    }
+    /// One RTCP packet: the eight-byte header stays clear as associated data, the rest is sealed, and the four-byte
+    /// nonce trails, as in `rtpsize` RTP.
+    pub fn seal_rtcp(&mut self, header: &[u8; 8], body: &[u8]) -> Result<Vec<u8>, &'static str> {
+        self.seal_packet(header, body)
+    }
+    fn seal_packet(&mut self, header: &[u8], frame: &[u8]) -> Result<Vec<u8>, &'static str> {
+        if frame.len() > MAX_PACKET - header.len() - TAG - NONCE_SUFFIX {
             return Err("Voice packet exceeds transport limit");
         }
         // Serein: a wrapped counter would reuse a nonce under the same key.
@@ -187,13 +421,20 @@ impl Transport {
         compound.extend_from_slice(&body);
         Some(compound)
     }
-    /// Authenticate and decrypt one Opus RTP packet. Anything else (RTCP, video, malformed or
-    /// forged datagrams) is `None`.
+    /// A viewer's RTCP about our video source, authenticated and parsed.
+    pub fn feedback(&self, packet: &[u8], video_ssrc: u32) -> Option<Feedback> {
+        feedback(&self.open_rtcp(packet)?, video_ssrc)
+    }
+    /// Authenticate and decrypt one RTP packet of a payload type this client offered: Opus, H.264 or H.264 RTX.
+    /// Anything else (RTCP, other payload types, malformed or forged datagrams) is `None`.
     pub fn open(&self, packet: &[u8]) -> Option<Rtp> {
         if packet.len() < 12 + TAG + NONCE_SUFFIX
             || packet.len() > MAX_PACKET
             || packet[0] >> 6 != 2
-            || packet[1] & 0x7f != OPUS_PAYLOAD_TYPE
+            || !matches!(
+                packet[1] & 0x7f,
+                OPUS_PAYLOAD_TYPE | H264_PAYLOAD_TYPE | H264_RTX_PAYLOAD_TYPE
+            )
         {
             return None;
         }
@@ -226,8 +467,11 @@ impl Transport {
             frame.truncate(frame.len() - padding);
         }
         Some(Rtp {
+            payload_type: packet[1] & 0x7f,
+            marker: packet[1] & 0x80 != 0,
             ssrc: u32::from_be_bytes(packet[8..12].try_into().ok()?),
             sequence: u16::from_be_bytes(packet[2..4].try_into().ok()?),
+            timestamp: u32::from_be_bytes(packet[4..8].try_into().ok()?),
             payload: frame,
         })
     }
@@ -238,6 +482,23 @@ pub(crate) fn header(sequence: u16, timestamp: u32, ssrc: u32) -> [u8; 12] {
     let mut header = [0; 12];
     header[0] = 0x80;
     header[1] = OPUS_PAYLOAD_TYPE;
+    header[2..4].copy_from_slice(&sequence.to_be_bytes());
+    header[4..8].copy_from_slice(&timestamp.to_be_bytes());
+    header[8..12].copy_from_slice(&ssrc.to_be_bytes());
+    header
+}
+
+/// RTP version 2 header of a video packet: `marker` ends an access unit.
+pub(crate) fn video_header(
+    payload_type: u8,
+    marker: bool,
+    sequence: u16,
+    timestamp: u32,
+    ssrc: u32,
+) -> [u8; 12] {
+    let mut header = [0; 12];
+    header[0] = 0x80;
+    header[1] = payload_type | u8::from(marker) << 7;
     header[2..4].copy_from_slice(&sequence.to_be_bytes());
     header[4..8].copy_from_slice(&timestamp.to_be_bytes());
     header[8..12].copy_from_slice(&ssrc.to_be_bytes());
@@ -487,12 +748,140 @@ mod tests {
             let wire = transport.seal(&padded, &[4, 5, 0]).unwrap();
             assert!(transport.open(&wire).is_none(), "zero padding length");
 
-            // Video and RTCP never reach the audio path.
-            let mut video = header(8, 0, 42);
-            video[1] = 101;
+            // Video is routed by payload type, with its marker; other payload types never open.
+            let video = video_header(H264_PAYLOAD_TYPE, true, 8, 90_000, 42);
             let wire = transport.seal(&video, b"h264").unwrap();
+            let rtp = transport.open(&wire).unwrap();
+            assert_eq!(
+                (rtp.payload_type, rtp.marker, rtp.sequence, rtp.timestamp),
+                (101, true, 8, 90_000)
+            );
+            assert_eq!(rtp.payload, b"h264");
+            let rtx = video_header(H264_RTX_PAYLOAD_TYPE, false, 9, 90_000, 43);
+            let wire = transport.seal(&rtx, b"x").unwrap();
+            let rtp = transport.open(&wire).unwrap();
+            assert_eq!((rtp.payload_type, rtp.marker), (102, false));
+            let wire = transport.seal(&header(1, 960, 42), b"a").unwrap();
+            assert_eq!(
+                transport.open(&wire).unwrap().payload_type,
+                OPUS_PAYLOAD_TYPE
+            );
+            let other = video_header(96, true, 8, 0, 42);
+            let wire = transport.seal(&other, b"p").unwrap();
             assert!(transport.open(&wire).is_none());
         }
+    }
+
+    #[test]
+    fn pli_nack_and_receiver_report_builders() {
+        let (header, body) = pli(0x0102_0304, 0x0a0b_0c0d);
+        assert_eq!(header, [0x81, 206, 0, 2, 1, 2, 3, 4]);
+        assert_eq!(body, [0x0a, 0x0b, 0x0c, 0x0d]);
+
+        // 10, 11, 13 share one pid with a mask; 40 and 65535 -> 1 start new items.
+        let (header, body) = nack(7, 9, &[10, 11, 13, 40, 65_535, 0]).unwrap();
+        assert_eq!(&header[..4], &[0x81, 205, 0, 5]);
+        assert_eq!(&header[4..], &7u32.to_be_bytes());
+        assert_eq!(&body[..4], &9u32.to_be_bytes());
+        assert_eq!(&body[4..8], &[0, 10, 0, 0b0000_0101]);
+        assert_eq!(&body[8..12], &[0, 40, 0, 0]);
+        assert_eq!(
+            &body[12..16],
+            &[0xff, 0xff, 0, 1],
+            "65535 then 0 across the wrap"
+        );
+        assert!(nack(7, 9, &[]).is_none());
+
+        let block = ReportBlock {
+            ssrc: 5,
+            fraction_lost: 64,
+            cumulative_lost: -2,
+            highest: 70_000,
+            jitter: 3,
+            last_sender_report: 0x1111,
+            delay: 0x2222,
+        };
+        let (header, body) = receiver_report(77, &[block]);
+        assert_eq!(&header[..4], &[0x81, 201, 0, 7]);
+        assert_eq!(body.len(), 24);
+        // Our own parser agrees with the builder: the loss of source 5 is 64 over 256.
+        let mut compound = header.to_vec();
+        compound.extend(&body);
+        assert_eq!(feedback(&compound, 5).unwrap().loss, Some(64));
+        assert_eq!(outbound_loss(&compound, 5), Some(25.));
+        assert_eq!(&body[5..8], &[0xff, 0xff, 0xfe], "signed 24-bit total");
+    }
+
+    #[test]
+    fn viewer_feedback_is_parsed_for_our_source_only() {
+        let ours = 0x0000_0102u32;
+        let mut compound = Vec::new();
+        let (header, body) = pli(9, ours);
+        compound.extend(header);
+        compound.extend(body);
+        let (header, body) = nack(9, ours, &[100, 101, 117]).unwrap();
+        compound.extend(header);
+        compound.extend(&body);
+        let (header, body) = nack(9, ours + 1, &[500]).unwrap();
+        compound.extend(header);
+        compound.extend(&body);
+        let found = feedback(&compound, ours).unwrap();
+        assert!(found.keyframe);
+        assert_eq!(found.nacks, [100, 101, 117]);
+        assert_eq!(found.bitrate, None);
+        // A PLI for someone else's source asks nothing of us.
+        let (header, body) = pli(9, ours + 5);
+        let mut other = header.to_vec();
+        other.extend(body);
+        assert!(!feedback(&other, ours).unwrap().keyframe);
+
+        // REMB: 8 bytes unique id + exponent 4, mantissa 1000 -> 16000 bit/s, naming our source.
+        let mut remb = vec![0x8f, 206, 0, 5];
+        remb.extend(9u32.to_be_bytes());
+        remb.extend(0u32.to_be_bytes());
+        remb.extend(b"REMB");
+        remb.extend([
+            1,
+            (4 << 2) | (1000 >> 16) as u8,
+            (1000 >> 8) as u8,
+            1000u16 as u8,
+        ]);
+        remb.extend(ours.to_be_bytes());
+        assert_eq!(feedback(&remb, ours).unwrap().bitrate, Some(16_000));
+
+        // Garbage after a good packet discards the lot, and a zero SSRC is never ours.
+        compound.extend([0x80, 201, 0]);
+        assert!(feedback(&compound, ours).is_none());
+        assert!(feedback(&remb, 0).is_none());
+    }
+
+    #[test]
+    fn feedback_travels_sealed_and_only_authenticated_counts() {
+        let key = [3; 32];
+        let mut viewer = Transport::new(Mode::Aes256GcmRtpSize, &key);
+        let sender = Transport::new(Mode::Aes256GcmRtpSize, &key);
+        let (header, body) = pli(9, 55);
+        let wire = viewer.seal_rtcp(&header, &body).unwrap();
+        assert!(sender.feedback(&wire, 55).unwrap().keyframe);
+        let mut forged = wire.clone();
+        let last = forged.len() - 6;
+        forged[last] ^= 1;
+        assert!(sender.feedback(&forged, 55).is_none());
+    }
+
+    #[test]
+    fn soundshare_audio_carries_an_encrypted_extension_that_open_strips() {
+        let mut transport = Transport::new(Mode::XChaCha20Poly1305RtpSize, &[7; 32]);
+        let wire = transport
+            .seal_soundshare(&header(3, 960, 8), b"opus")
+            .unwrap();
+        assert_eq!(wire[0] & 0x10, 0x10, "extension bit");
+        assert_eq!(&wire[12..16], &[0xbe, 0xde, 0, 1], "preamble in the clear");
+        let rtp = transport.open(&wire).unwrap();
+        assert_eq!(
+            (rtp.payload_type, rtp.payload.as_slice()),
+            (120, &b"opus"[..])
+        );
     }
 
     #[test]

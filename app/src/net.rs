@@ -30,6 +30,11 @@ pub enum Update {
     Voice(dc_voice::Event),
     /// The system-wide push to talk keybind went down or up.
     PushToTalk(bool),
+    /// An event of a Go Live stream's own voice connection.
+    Stream {
+        key: dc_voice::streams::StreamKey,
+        event: dc_voice::StreamEvent,
+    },
     /// The body of a `Request::Fetch`.
     Fetched {
         key: String,
@@ -44,7 +49,22 @@ pub enum Request {
         channel: Option<u64>,
         self_mute: bool,
         self_deaf: bool,
+        self_video: bool,
         flags: u64,
+    },
+    /// A stream op on the main gateway: 18 create, 19 delete, 20 watch, 21 ping, 22 set paused (the payloads come
+    /// from `dc_voice::streams`).
+    StreamOp {
+        op: Op,
+        data: Value,
+    },
+    /// Opens the second voice connection of a stream. Its events come back as `Update::Stream`; a sender's preview
+    /// thumbnails are uploaded here (`POST /streams/<key>/preview`).
+    StreamConnect {
+        join: dc_voice::streams::StreamJoin,
+        source: Option<dc_voice::StreamSource>,
+        hub: dc_voice::VideoHub,
+        controls: dc_voice::StreamControls,
     },
     /// Opens the voice connection once the gateway named the server.
     VoiceConnect {
@@ -711,6 +731,7 @@ pub async fn run(
                 channel,
                 self_mute,
                 self_deaf,
+                self_video,
                 flags,
             } => {
                 let data = json!({
@@ -718,12 +739,44 @@ pub async fn run(
                     "channel_id": channel.map(|channel| channel.to_string()),
                     "self_mute": self_mute,
                     "self_deaf": self_deaf,
-                    "self_video": false,
+                    "self_video": self_video,
                     "flags": flags,
                 });
                 let _ = commands.send(Command::Send {
                     op: Op::VoiceStateUpdate,
                     data,
+                });
+            }
+            Request::StreamOp { op, data } => {
+                let _ = commands.send(Command::Send { op, data });
+            }
+            Request::StreamConnect {
+                join,
+                source,
+                hub,
+                controls,
+            } => {
+                let key = join.key;
+                let (task, mut events) = dc_voice::connect_stream(join, source, &hub, &controls);
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        if let dc_voice::StreamEvent::Preview { jpeg } = &event {
+                            let client = client.clone();
+                            let body = preview_body(jpeg);
+                            tokio::spawn(async move {
+                                let route = format!("/streams/{key}/preview");
+                                if let Err(error) = client.post(&route, &body).await {
+                                    warn!("stream preview failed: {error}");
+                                }
+                            });
+                            continue;
+                        }
+                        if updates.send(Update::Stream { key, event }).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = task.await;
                 });
             }
             Request::VoiceConnect { join, controls } => {
@@ -855,5 +908,21 @@ mod tests {
     fn a_dm_reply_has_no_guild() {
         let body = send_body(5, "hi", Some((None, 7)));
         assert!(body["message_reference"].get("guild_id").is_none());
+    }
+}
+
+/// The preview upload's body: `{thumbnail: "data:image/jpeg;base64,..."}`.
+fn preview_body(jpeg: &[u8]) -> Value {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(jpeg);
+    json!({"thumbnail": format!("data:image/jpeg;base64,{encoded}")})
+}
+
+#[cfg(test)]
+mod preview_tests {
+    #[test]
+    fn the_preview_body_is_a_jpeg_data_uri() {
+        let body = super::preview_body(&[0xff, 0xd8, 0xff]);
+        assert_eq!(body["thumbnail"], "data:image/jpeg;base64,/9j/");
     }
 }

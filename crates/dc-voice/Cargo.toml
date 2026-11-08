@@ -11,9 +11,12 @@ chacha20poly1305.workspace = true
 cpal.workspace = true
 davey.workspace = true
 deep_filter.workspace = true
+dc-media.workspace = true
 dc-proto.workspace = true
 dc-winaudio.workspace = true
 futures-util.workspace = true
+# JPEG for the Go Live preview thumbnail.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 ndarray.workspace = true
 openmls.workspace = true
 opus2.workspace = true
@@ -36,6 +39,11 @@ tokio-tungstenite.workspace = true
 tracing.workspace = true
 url.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+# The local MLS delivery service of the video loopback test (Serein's test_mls.rs).
+openmls_basic_credential = "=0.5.0"
+openmls_rust_crypto = "=0.5.1"
 
 [lints.rust]
 unsafe_code = "forbid"

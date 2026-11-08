@@ -17,6 +17,7 @@ dc-gateway.workspace = true
 dc-hotkey.workspace = true
 dc-http.workspace = true
 dc-markdown.workspace = true
+dc-media.workspace = true
 dc-proto.workspace = true
 dc-state.workspace = true
 dc-tokens.workspace = true

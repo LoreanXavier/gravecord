@@ -49,8 +49,27 @@ pub(crate) struct Ids<'a> {
     pub token: &'a str,
 }
 
-/// Op 0. Audio only: no video, no simulcast streams.
-pub(crate) fn identify(ids: &Ids) -> String {
+/// What a voice connection carries; the official client names the one stream it announces in
+/// identify after this (`getVideoStreamParameters` in module 754712).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Context {
+    /// A call: the camera is a "video" source.
+    Call,
+    /// A Go Live stream connection: the source is "screen".
+    Stream,
+}
+impl Context {
+    fn source(self) -> &'static str {
+        match self {
+            Self::Call => "video",
+            Self::Stream => "screen",
+        }
+    }
+}
+
+/// Op 0 with video support and the single simulcast layer (rid "100", quality 100) the
+/// official client announces.
+pub(crate) fn identify(ids: &Ids, context: Context) -> String {
     op(
         VoiceOp::Identify,
         json!({
@@ -60,8 +79,8 @@ pub(crate) fn identify(ids: &Ids) -> String {
             "session_id": ids.session_id,
             "token": ids.token,
             "max_dave_protocol_version": DAVE_PROTOCOL_VERSION,
-            "video": false,
-            "streams": [],
+            "video": true,
+            "streams": [{"type": context.source(), "rid": "100", "quality": 100}],
         }),
     )
 }
@@ -89,16 +108,77 @@ pub(crate) fn heartbeat(nonce: u64, seq_ack: i64, server_version: u64) -> String
     }
 }
 
-/// Op 1 with our discovered external address and the single Opus codec.
+/// The codec list of ops 1 and 14: Opus, then H264 with the official payload types (`101 + 2 * i`
+/// and the RTX type after it; priorities are 1000 times the position, module 921747 `ez`).
+fn codecs() -> Value {
+    json!([
+        {"name": "opus", "type": "audio", "priority": 1000, "payload_type": crate::rtp::OPUS_PAYLOAD_TYPE},
+        {"name": "H264", "type": "video", "priority": 1000,
+         "payload_type": crate::rtp::H264_PAYLOAD_TYPE,
+         "rtx_payload_type": crate::rtp::H264_RTX_PAYLOAD_TYPE,
+         "encode": true, "decode": true},
+    ])
+}
+
+/// Op 1 with our discovered external address and the Opus and H264 codecs.
 pub(crate) fn select_protocol(address: IpAddr, port: u16, mode: Mode) -> String {
     op(
         VoiceOp::SelectProtocol,
         json!({
             "protocol": "udp",
             "data": {"address": address.to_string(), "port": port, "mode": mode.as_str()},
-            "codecs": [{"name": "opus", "type": "audio", "priority": 1000, "payload_type": crate::rtp::OPUS_PAYLOAD_TYPE}],
+            "codecs": codecs(),
         }),
     )
+}
+
+/// Op 14, `updateSession`: the codec list again. The official client sends it only after an encoder or decoder
+/// fell back; this client's list does not change then, so only the tests build it.
+#[cfg(test)]
+pub(crate) fn session_update() -> String {
+    op(VoiceOp::SessionUpdate, json!({"codecs": codecs()}))
+}
+
+/// The `max_*` quality fields of a Go Live stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Limits {
+    pub bitrate: u32,
+    pub framerate: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Op 12 announcing our video source: `{audio_ssrc, video_ssrc, rtx_ssrc, streams}` with the
+/// official stream fields (`eq` in module 921747). `limits` adds `max_*` for Go Live; the official
+/// camera path leaves them out. `None` switches the source off (zero SSRCs, no streams).
+pub(crate) fn video(
+    audio_ssrc: u32,
+    source: Option<(u32, u32, Context, Option<Limits>)>,
+) -> String {
+    let (video_ssrc, rtx_ssrc, streams) = match source {
+        None => (0, 0, json!([])),
+        Some((video, rtx, context, limits)) => {
+            let mut stream = json!({"type": context.source(), "rid": "100", "ssrc": video,
+                "active": true, "quality": 100, "rtx_ssrc": rtx});
+            if let Some(limits) = limits {
+                stream["max_bitrate"] = limits.bitrate.into();
+                stream["max_framerate"] = limits.framerate.into();
+                stream["max_resolution"] =
+                    json!({"type": "fixed", "width": limits.width, "height": limits.height});
+            }
+            (video, rtx, json!([stream]))
+        }
+    };
+    op(
+        VoiceOp::Video,
+        json!({"audio_ssrc": audio_ssrc, "video_ssrc": video_ssrc, "rtx_ssrc": rtx_ssrc, "streams": streams}),
+    )
+}
+
+/// Op 15 media sink wants: `{any: 100}` asks for every video source at full quality, `{any: 0}`
+/// for none (`e5` and `e7` in module 921747).
+pub(crate) fn media_sink_wants(any: u8) -> String {
+    op(VoiceOp::MediaSinkWants, json!({"any": any}))
 }
 
 /// Op 5. Flag 1 is microphone speech.
@@ -106,6 +186,14 @@ pub(crate) fn speaking(speaking: bool, ssrc: u32) -> String {
     op(
         VoiceOp::Speaking,
         json!({"speaking": u8::from(speaking), "delay": 0, "ssrc": ssrc}),
+    )
+}
+
+/// Op 5 with explicit flags: 2 is soundshare, the audio of a Go Live stream.
+pub(crate) fn speaking_flags(flags: u8, ssrc: u32) -> String {
+    op(
+        VoiceOp::Speaking,
+        json!({"speaking": flags, "delay": 0, "ssrc": ssrc}),
     )
 }
 
@@ -210,6 +298,10 @@ pub(crate) fn hello(data: &Value) -> Result<Hello, &'static str> {
 #[derive(Debug, PartialEq)]
 pub(crate) struct Ready {
     pub ssrc: u32,
+    /// Our video and RTX sources: from `streams[0]`, else `ssrc + 1` and `ssrc + 2` like the
+    /// official `_handleReady`.
+    pub video_ssrc: u32,
+    pub rtx_ssrc: u32,
     pub ip: IpAddr,
     pub port: u16,
     pub mode: Mode,
@@ -230,8 +322,21 @@ pub(crate) fn ready(data: &Value) -> Result<Ready, &'static str> {
         .ok_or("Missing voice encryption modes")?;
     let mode = Mode::choose(modes.iter().filter_map(Value::as_str))
         .ok_or("Required voice transport encryption is unavailable")?;
+    let first = data["streams"]
+        .as_array()
+        .and_then(|streams| streams.first());
+    let source = |key: &str| {
+        first
+            .and_then(|stream| stream[key].as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v != 0)
+    };
+    let video_ssrc = source("ssrc").unwrap_or(ssrc.wrapping_add(1));
+    let rtx_ssrc = source("rtx_ssrc").unwrap_or(ssrc.wrapping_add(2));
     Ok(Ready {
         ssrc,
+        video_ssrc,
+        rtx_ssrc,
         ip,
         port,
         mode,
@@ -273,6 +378,51 @@ pub(crate) fn client_connect(data: &Value) -> Result<Vec<u64>, &'static str> {
         return Err("Voice channel exceeds the 64 participant limit");
     }
     ids.iter().map(parse_id).collect()
+}
+
+/// Op 12 from another participant: their sources. No stream (SSRC 0) switches the source off.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RemoteVideo {
+    pub user: u64,
+    pub audio_ssrc: u32,
+    /// Video and RTX SSRC; `None` when the user stopped sending video.
+    pub video: Option<(u32, u32)>,
+}
+pub(crate) fn remote_video(data: &Value) -> Result<RemoteVideo, &'static str> {
+    let user = id(data, "user_id")?;
+    let ssrc = |value: &Value| {
+        value
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v != 0)
+    };
+    let audio_ssrc = ssrc(&data["audio_ssrc"]).unwrap_or(0);
+    // The quality 100 stream names the source (`_handleVideo`); without streams, video_ssrc and
+    // the SSRC after it.
+    let stream = data["streams"].as_array().and_then(|streams| {
+        streams
+            .iter()
+            .find(|s| s["quality"].as_u64().unwrap_or(100) == 100 && s["active"] != false)
+    });
+    let video = match stream {
+        Some(stream) => ssrc(&stream["ssrc"]).map(|video| {
+            (
+                video,
+                ssrc(&stream["rtx_ssrc"]).unwrap_or(video.wrapping_add(1)),
+            )
+        }),
+        None => ssrc(&data["video_ssrc"]).map(|video| {
+            (
+                video,
+                ssrc(&data["rtx_ssrc"]).unwrap_or(video.wrapping_add(1)),
+            )
+        }),
+    };
+    Ok(RemoteVideo {
+        user,
+        audio_ssrc,
+        video,
+    })
 }
 
 /// Whether a heartbeat acknowledgement names the latest outstanding nonce or one of the
@@ -330,7 +480,7 @@ mod tests {
 
     #[test]
     fn identify_and_resume_fields() {
-        let identify = parsed(&identify(&ids()));
+        let identify = parsed(&identify(&ids(), Context::Call));
         assert_eq!(identify["op"], 0);
         let d = &identify["d"];
         assert_eq!(d["server_id"], "1");
@@ -339,8 +489,13 @@ mod tests {
         assert_eq!(d["session_id"], "session");
         assert_eq!(d["token"], "token");
         assert_eq!(d["max_dave_protocol_version"], 1);
-        assert_eq!(d["video"], false);
-        assert_eq!(d["streams"], json!([]));
+        assert_eq!(d["video"], true);
+        assert_eq!(
+            d["streams"],
+            json!([{"type": "video", "rid": "100", "quality": 100}])
+        );
+        let stream = parsed(&super::identify(&ids(), Context::Stream));
+        assert_eq!(stream["d"]["streams"][0]["type"], "screen");
 
         let resume = parsed(&resume(&ids(), 41));
         assert_eq!(resume["op"], 7);
@@ -371,12 +526,24 @@ mod tests {
         );
         assert_eq!(select["d"]["codecs"][0]["payload_type"], 120);
         assert_eq!(
+            select["d"]["codecs"][1],
+            json!({"name": "H264", "type": "video", "priority": 1000, "payload_type": 101,
+                "rtx_payload_type": 102, "encode": true, "decode": true})
+        );
+        let update = parsed(&session_update());
+        assert_eq!(update["op"], 14);
+        assert_eq!(update["d"]["codecs"], select["d"]["codecs"]);
+        assert_eq!(
             parsed(&speaking(true, 9)),
             json!({"op": 5, "d": {"speaking": 1, "delay": 0, "ssrc": 9}})
         );
         assert_eq!(
             parsed(&transition_ready(4)),
             json!({"op": 23, "d": {"transition_id": 4}})
+        );
+        assert_eq!(
+            parsed(&speaking_flags(2, 9)),
+            json!({"op": 5, "d": {"speaking": 2, "delay": 0, "ssrc": 9}})
         );
         assert_eq!(parsed(&invalid_commit_welcome(4))["op"], 31);
         assert_eq!(parsed(&backend_version()), json!({"op": 16, "d": {}}));
@@ -456,6 +623,71 @@ mod tests {
         ] {
             assert!(session_description(&mut bad, mode).is_err());
         }
+    }
+
+    #[test]
+    fn video_announcements_and_sink_wants() {
+        let on = parsed(&video(7, Some((8, 9, Context::Call, None))));
+        assert_eq!(
+            on,
+            json!({"op": 12, "d": {"audio_ssrc": 7, "video_ssrc": 8, "rtx_ssrc": 9, "streams": [
+                {"type": "video", "rid": "100", "ssrc": 8, "active": true, "quality": 100, "rtx_ssrc": 9}]}})
+        );
+        let limits = Limits {
+            bitrate: 2_500_000,
+            framerate: 30,
+            width: 1280,
+            height: 720,
+        };
+        let live = parsed(&video(7, Some((8, 9, Context::Stream, Some(limits)))));
+        let stream = &live["d"]["streams"][0];
+        assert_eq!(stream["type"], "screen");
+        assert_eq!(stream["max_bitrate"], 2_500_000);
+        assert_eq!(stream["max_framerate"], 30);
+        assert_eq!(
+            stream["max_resolution"],
+            json!({"type": "fixed", "width": 1280, "height": 720})
+        );
+        assert_eq!(
+            parsed(&video(7, None)),
+            json!({"op": 12, "d": {"audio_ssrc": 7, "video_ssrc": 0, "rtx_ssrc": 0, "streams": []}})
+        );
+        assert_eq!(
+            parsed(&media_sink_wants(100)),
+            json!({"op": 15, "d": {"any": 100}})
+        );
+    }
+
+    #[test]
+    fn ready_streams_and_remote_video() {
+        let base = |streams: Value| {
+            let mut data = json!({"ssrc": 42, "ip": "203.0.113.9", "port": 1, "modes": ["aead_aes256_gcm_rtpsize"]});
+            data["streams"] = streams;
+            data
+        };
+        let named = ready(&base(
+            json!([{"type": "video", "rid": "100", "ssrc": 50, "rtx_ssrc": 60, "quality": 100}]),
+        ))
+        .unwrap();
+        assert_eq!((named.video_ssrc, named.rtx_ssrc), (50, 60));
+        let fallback = ready(&base(json!([]))).unwrap();
+        assert_eq!((fallback.video_ssrc, fallback.rtx_ssrc), (43, 44));
+
+        let user = json!({"user_id": "5", "audio_ssrc": 10, "video_ssrc": 11, "rtx_ssrc": 12,
+            "streams": [{"ssrc": 11, "rtx_ssrc": 12, "quality": 100, "active": true}]});
+        assert_eq!(
+            remote_video(&user).unwrap(),
+            RemoteVideo {
+                user: 5,
+                audio_ssrc: 10,
+                video: Some((11, 12))
+            }
+        );
+        let off = json!({"user_id": "5", "audio_ssrc": 10, "video_ssrc": 0, "streams": []});
+        assert_eq!(remote_video(&off).unwrap().video, None);
+        let bare = json!({"user_id": "5", "audio_ssrc": 10, "video_ssrc": 20});
+        assert_eq!(remote_video(&bare).unwrap().video, Some((20, 21)));
+        assert!(remote_video(&json!({"audio_ssrc": 1})).is_err());
     }
 
     #[test]

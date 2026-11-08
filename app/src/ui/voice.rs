@@ -16,7 +16,7 @@ const ALLOW_VOICE_RECORDING: u64 = 2;
 pub(crate) struct Call {
     pub guild: Id,
     pub channel: Id,
-    controls: dc_voice::Controls,
+    pub(super) controls: dc_voice::Controls,
     /// The connection was handed to `dc-voice`.
     started: bool,
     pub connected: bool,
@@ -28,6 +28,8 @@ pub(crate) struct Call {
     tracker: super::voice_sounds::RtcTracker,
     /// `RTCConnection`'s measurements, for the panel.
     pub stats: super::voice_panel::CallStats,
+    /// Our camera is on (`Event::VideoState`), reported as `self_video` in op 4.
+    pub camera: bool,
 }
 
 impl Call {
@@ -68,12 +70,13 @@ impl Root {
         if allowed { ALLOW_VOICE_RECORDING } else { 0 }
     }
 
-    fn send_voice_state(&self, guild: Id, channel: Option<Id>) {
+    pub(super) fn send_voice_state(&self, guild: Id, channel: Option<Id>) {
         let _ = self.requests.send(Request::VoiceState {
             guild,
             channel,
             self_mute: self.self_mute,
             self_deaf: self.self_deaf,
+            self_video: self.call.as_ref().is_some_and(|call| call.camera),
             flags: self.voice_flags(),
         });
     }
@@ -94,6 +97,7 @@ impl Root {
         controls.set_self_deaf(self.self_deaf);
         self.call = Some(Call {
             stats: Default::default(),
+            camera: false,
             guild,
             channel,
             controls,
@@ -111,6 +115,7 @@ impl Root {
             crate::sounds::play_event(sound);
         }
         self.send_voice_state(guild, Some(channel));
+        self.video_call_started(cx);
         self.sync_ptt_hook();
         self.vv.invite_dismissed = false;
         self.open_voice_view(guild, channel, cx);
@@ -119,6 +124,7 @@ impl Root {
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
         self.soundboard_stop();
+        self.stream_stop(cx);
         if let Some(call) = self.call.take() {
             if call.connected
                 && let Some(sound) =
@@ -295,7 +301,9 @@ impl Root {
                 self.rtc_step();
                 self.sync_ptt_hook();
             }
-            _ => {}
+            other => {
+                self.on_video_event(&other);
+            }
         }
         cx.notify();
     }

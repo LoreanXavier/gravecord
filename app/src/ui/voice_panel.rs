@@ -758,9 +758,6 @@ impl Root {
         self.open_voice_view(guild, channel, cx);
     }
 
-    /// The camera button of the panel and the bar. Video is not built yet: this does nothing visible.
-    pub(super) fn voice_camera_clicked(&mut self, _cx: &mut Context<Self>) {}
-
     /// Share Your Screen, panel and bar. Screen sharing is not built yet: this does nothing visible.
     pub(super) fn voice_screen_clicked(&mut self, _cx: &mut Context<Self>) {}
 

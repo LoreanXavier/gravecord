@@ -2,8 +2,8 @@
 //!
 //! Adapted from Serein `crates/discord-voice/src/transport.rs` (`run_inner`, `send`,
 //! `json_send`, `UdpFailures`, `transient_receive`, `negotiation_timeout`), MIT OR
-//! Apache-2.0. Changes: audio only (no camera, Go Live, video receive, RTCP feedback or
-//! diagnostics), protocol URL `v=9` with `channel_id` in IDENTIFY and RESUME, op 16 after
+//! Apache-2.0. Changes: cameras in the call (send with viewer RTCP honoured, receive with NACK/PLI
+//! and one decoder thread per source; no diagnostics), protocol URL `v=9` with `channel_id` in IDENTIFY and RESUME, op 16 after
 //! READY on server version 6+, a 20 s HELLO timeout, AES-256-GCM preferred over XChaCha20,
 //! Origin/User-Agent of the pinned build on the socket, audio devices owned by the session,
 //! and app-facing events in place of Serein's `Status`.
@@ -17,12 +17,26 @@ use crate::{
     dave::Dave,
     mixer::Mixer,
     rtp::{self, MAX_PACKET, Mode, Transport},
-    signal::{self, CLOSE_DISCONNECTED, Ids, MAX_SIGNAL},
+    signal::{self, CLOSE_DISCONNECTED, Context, Ids, MAX_SIGNAL},
+    video::{
+        RemoteFrame, VideoHub, VideoSource,
+        receive::{Decoders, Offer, Receivers},
+        sender::VideoSender,
+    },
+};
+use dc_media::{
+    EncodedFrame,
+    camera::{self, Camera, CameraFrame},
 };
 use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::{SinkExt, StreamExt};
 use opus2::{Application, Bitrate, Channels, Encoder, SoftClip};
-use std::{collections::BTreeSet, net::SocketAddr, sync::mpsc as std_mpsc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    net::SocketAddr,
+    sync::{Arc, Mutex, mpsc as std_mpsc},
+    time::Duration,
+};
 use tokio::{
     net::{TcpStream, UdpSocket},
     sync::{mpsc, watch},
@@ -40,20 +54,20 @@ use tokio_tungstenite::{
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Time a sole member gives the roster announcement before waiting for a peer (Serein).
-const PEER_GRACE: Duration = Duration::from_millis(500);
+pub(crate) const PEER_GRACE: Duration = Duration::from_millis(500);
 /// HELLO timeout of the pinned build (`tools/voice-notes.md`).
-const HELLO_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(20);
 /// Serein's bound for reaching a secured call, and for recovering one after a change.
-const NEGOTIATION: Duration = Duration::from_secs(90);
-const RENEGOTIATION: Duration = Duration::from_secs(30);
+pub(crate) const NEGOTIATION: Duration = Duration::from_secs(90);
+pub(crate) const RENEGOTIATION: Duration = Duration::from_secs(30);
 /// Serein: only a path that keeps failing this long ends the call.
 const UDP_OUTAGE: Duration = Duration::from_secs(10);
-const UDP_KEEPALIVE: Duration = Duration::from_secs(5);
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
-const MAX_RESUMES: u8 = 2;
+pub(crate) const UDP_KEEPALIVE: Duration = Duration::from_secs(5);
+pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const MAX_RESUMES: u8 = 2;
 
 pub(crate) struct Credentials {
     pub endpoint: String,
@@ -80,19 +94,32 @@ pub(crate) struct ControlState {
     pub self_mute: bool,
     pub self_deaf: bool,
     pub disconnect: bool,
+    /// Bumped when the camera wish or the video sink changed, so the loop looks at `Shared` again.
+    pub video_request: u32,
 }
 
-async fn send(ws: &mut Socket, message: Message) -> Result<(), &'static str> {
+/// What the app hands the call besides the copyable control state.
+#[derive(Default)]
+pub(crate) struct Shared {
+    /// The camera wish: `Some(device id)`, empty for the default camera, `None` for off.
+    pub camera: Mutex<Option<String>>,
+    pub hub: VideoHub,
+}
+
+/// Video senders announce this much; the camera encoder runs at `camera::BITRATE`.
+const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
+
+pub(crate) async fn send(ws: &mut Socket, message: Message) -> Result<(), &'static str> {
     timeout(Duration::from_secs(5), ws.send(message))
         .await
         .map_err(|_| "Voice signaling write timed out")?
         .map_err(|_| "Voice signaling disconnected")
 }
-async fn text(ws: &mut Socket, value: String) -> Result<(), &'static str> {
+pub(crate) async fn text(ws: &mut Socket, value: String) -> Result<(), &'static str> {
     send(ws, Message::Text(value.into())).await
 }
 
-async fn open(url: &str) -> Result<Socket, &'static str> {
+pub(crate) async fn open(url: &str) -> Result<Socket, &'static str> {
     let mut request = url
         .into_client_request()
         .map_err(|_| "Invalid Discord voice endpoint")?;
@@ -123,9 +150,9 @@ async fn open(url: &str) -> Result<Socket, &'static str> {
 /// Media datagrams are lossy by design: a full buffer or a stray ICMP unreachable drops
 /// one packet. Never wait for socket capacity, that would stall audio and signaling.
 #[derive(Default)]
-struct UdpFailures(Option<Instant>);
+pub(crate) struct UdpFailures(Option<Instant>);
 impl UdpFailures {
-    fn send(
+    pub(crate) fn send(
         &mut self,
         socket: &UdpSocket,
         data: &[u8],
@@ -144,7 +171,7 @@ impl UdpFailures {
 }
 
 /// Receive errors that describe one lost or rejected datagram rather than a dead socket.
-fn transient_receive(error: &std::io::Error) -> bool {
+pub(crate) fn transient_receive(error: &std::io::Error) -> bool {
     // WSAEMSGSIZE: Windows fails an oversized datagram instead of truncating it.
     const WSAEMSGSIZE: i32 = 10040;
     matches!(
@@ -210,7 +237,7 @@ impl Drop for Presence {
     }
 }
 
-fn emit(events: &mpsc::UnboundedSender<Event>, event: Event) {
+pub(crate) fn emit(events: &mpsc::UnboundedSender<Event>, event: Event) {
     // A dropped receiver is the app not listening; the call itself is ended through Controls.
     let _ = events.send(event);
 }
@@ -219,6 +246,7 @@ pub(crate) async fn run(
     credentials: Credentials,
     mut controls: watch::Receiver<ControlState>,
     events: mpsc::UnboundedSender<Event>,
+    shared: Arc<Shared>,
 ) -> Result<DisconnectReason, &'static str> {
     let url = signal::endpoint_url(&credentials.endpoint)?;
     if controls.borrow_and_update().disconnect {
@@ -227,7 +255,7 @@ pub(crate) async fn run(
     let own = credentials.user_id;
     let mut ws = open(&url).await?;
     // Only voice-scoped credentials go to this validated endpoint.
-    text(&mut ws, signal::identify(&credentials.ids())).await?;
+    text(&mut ws, signal::identify(&credentials.ids(), Context::Call)).await?;
 
     let mut dave = Dave::new(own, credentials.channel_id)?;
     let mut mode: Option<Mode> = None;
@@ -296,6 +324,26 @@ pub(crate) async fn run(
     let mut last_speakers = BTreeSet::new();
     let mut clients = BTreeSet::new();
 
+    // Video: what arrives from the others, and our camera.
+    let hub = shared.hub.clone();
+    let mut receivers = Receivers::default();
+    let mut decoders = Decoders::new(hub.clone(), |_| VideoSource::Camera);
+    let mut wants_video = false;
+    let mut wants_video_at = Instant::now();
+    let mut video_request_seen = 0u32;
+    let mut camera_wish: Option<String> = None;
+    let mut camera: Option<Camera> = None;
+    let mut camera_task: Option<tokio::task::JoinHandle<Result<Camera, String>>> = None;
+    let (camera_send, mut camera_frames) = mpsc::channel::<EncodedFrame>(4);
+    let mut video_sender: Option<VideoSender> = None;
+    let mut video_ssrc = 0u32;
+    let mut rtx_ssrc = 0u32;
+    let mut video_announced = false;
+    let mut secure = false;
+    let mut was_secure = false;
+    let mut camera_sent_keyframe = false;
+    let mut video_tally = [0u32; 3];
+
     loop {
         if let Some(reason) = reconnect.take() {
             if transport.is_none() || resume_attempts >= MAX_RESUMES {
@@ -322,6 +370,41 @@ pub(crate) async fn run(
                 if changed.is_err() || controls.borrow().disconnect {
                     let _ = timeout(Duration::from_secs(1), ws.close(None)).await;
                     return Ok(DisconnectReason::Requested);
+                }
+                let request = controls.borrow().video_request;
+                if request != video_request_seen {
+                    video_request_seen = request;
+                    camera_wish = shared.camera.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                }
+            },
+            _ = async { match video_sender.as_ref().and_then(VideoSender::deadline) { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+                if let (Some(sender), Some(crypto), Some(socket)) = (video_sender.as_mut(), transport.as_mut(), udp.as_ref()) {
+                    sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Voice UDP send failed"))?;
+                }
+            },
+            frame = camera_frames.recv(), if video_sender.as_ref().is_some_and(VideoSender::ready) => {
+                let Some(frame) = frame else { continue };
+                if !secure || (!camera_sent_keyframe && !frame.keyframe) {
+                    // Nothing can leave yet: ask for a keyframe to start from once it can.
+                    camera_sent_keyframe = false;
+                    if let Some(camera) = &camera {
+                        camera.force_keyframe();
+                    }
+                    continue;
+                }
+                if let Some(sender) = video_sender.as_mut() {
+                    match sender.offer(&frame, &mut dave, Instant::now()) {
+                        Ok(true) => camera_sent_keyframe |= frame.keyframe,
+                        Ok(false) => {}
+                        Err(error) => {
+                            // A bad picture costs that picture, never the call.
+                            debug!(error, "camera picture dropped");
+                            camera_sent_keyframe = false;
+                            if let Some(camera) = &camera {
+                                camera.force_keyframe();
+                            }
+                        }
+                    }
                 }
             },
             tick = ticks.recv() => {
@@ -489,15 +572,154 @@ pub(crate) async fn run(
                 if enabled && !control.self_deaf {
                     if stalled {
                         mixer.clear();
+                        hub.clear_stream_audio();
                     }
-                    if let Some(frame) = mixer.pop() {
+                    let mut frame = mixer.pop();
+                    // Watched stream audio joins the mix at its own level.
+                    if let Some(extra) = hub.pop_stream_audio() {
+                        match frame.as_mut() {
+                            Some(frame) => {
+                                for (sample, extra) in frame.iter_mut().zip(extra) {
+                                    *sample = (*sample + extra).clamp(-1.0, 1.0);
+                                }
+                            }
+                            None => frame = Some(extra),
+                        }
+                    }
+                    if let Some(frame) = frame {
                         // A full queue means the device is behind; drop rather than block.
                         let _ = playback.try_send(frame);
                     }
                 } else {
                     mixer.clear();
+                    hub.clear_stream_audio();
                 }
+                // Video never gates audio: every step here fails alone.
+                secure = enabled && dave.session.is_ready() && !dave.transitioning();
+                if !secure {
+                    if let Some(sender) = video_sender.as_mut() {
+                        sender.clear();
+                    }
+                    camera_sent_keyframe = false;
+                }
+                let wants = hub.has_sink() && server_version >= 5 && transport.is_some() && !discovering && !resuming;
+                if wants != wants_video || (wants && now >= wants_video_at) {
+                    wants_video = wants;
+                    wants_video_at = now + SINK_WANTS_INTERVAL;
+                    text(&mut ws, signal::media_sink_wants(if wants { 100 } else { 0 })).await?;
+                }
+                if secure {
+                    let mut ready = Vec::new();
+                    receivers.drain(now, &mut ready);
+                    for unit in ready {
+                        if !dave.contains(unit.user) {
+                            continue;
+                        }
+                        let Ok(plain) = dave.session.decrypt(unit.user, davey::MediaType::VIDEO, &unit.data) else {
+                            receivers.require_keyframe(unit.user);
+                            continue;
+                        };
+                        let keyframe = dc_media::h264::is_keyframe(&plain);
+                        if !receivers.accept(unit.user, keyframe) {
+                            continue;
+                        }
+                        video_tally[2] += 1;
+                        if decoders.offer(unit.user, plain, now) == Offer::Dropped {
+                            receivers.require_keyframe(unit.user);
+                        }
+                    }
+                    for user in decoders.take_lost() {
+                        receivers.require_keyframe(user);
+                    }
+                    if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
+                        for (header, body) in receivers.feedback(ssrc, now) {
+                            // Feedback is best effort: a failed send is only a lost datagram.
+                            if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
+                                let _ = socket.try_send(&wire);
+                            }
+                        }
+                    }
+                }
+                // Our camera: start, announce, stop.
+                if let Some(device) = camera_wish.clone() {
+                    if camera.is_none() && camera_task.is_none() && transport.is_some() && !discovering && !resuming {
+                        let (frames, hub, own) = (camera_send.clone(), hub.clone(), own);
+                        camera_task = Some(tokio::task::spawn_blocking(move || {
+                            let device = (!device.is_empty()).then_some(device);
+                            Camera::start(device.as_deref(), move |frame: CameraFrame| {
+                                hub.deliver(RemoteFrame { user: own, source: VideoSource::Camera, picture: frame.preview });
+                                if let Some(encoded) = frame.encoded {
+                                    let _ = frames.try_send(encoded);
+                                }
+                            })
+                            .map_err(|error| error.to_string())
+                        }));
+                    }
+                    if camera_task.as_ref().is_some_and(|task| task.is_finished()) {
+                        let task = camera_task.take().ok_or("Camera task missing")?;
+                        match task.await {
+                            Ok(Ok(started)) => {
+                                camera = Some(started);
+                                emit(&events, Event::VideoState { camera: true });
+                            }
+                            other => {
+                                let reason = match other {
+                                    Ok(Err(reason)) => reason,
+                                    _ => "the camera task failed".to_owned(),
+                                };
+                                emit(&events, Event::CameraFailed { reason });
+                                emit(&events, Event::VideoState { camera: false });
+                                *shared.camera.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                camera_wish = None;
+                            }
+                        }
+                    }
+                    if let Some(started) = &camera && started.finished() {
+                        let reason = started.error().unwrap_or_else(|| "the camera stopped".to_owned());
+                        emit(&events, Event::CameraFailed { reason });
+                        *shared.camera.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        camera_wish = None;
+                    }
+                }
+                if camera_wish.is_none() && (camera.is_some() || video_announced) {
+                    camera = None;
+                    video_sender = None;
+                    camera_sent_keyframe = false;
+                    while camera_frames.try_recv().is_ok() {}
+                    if video_announced {
+                        text(&mut ws, signal::video(ssrc, None)).await?;
+                        video_announced = false;
+                    }
+                    emit(&events, Event::VideoState { camera: false });
+                }
+                if camera.is_some() && !video_announced && transport.is_some() && !discovering && !resuming {
+                    video_sender = Some(VideoSender::new(video_ssrc, rtx_ssrc, camera::BITRATE));
+                    text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Call, None)))).await?;
+                    video_announced = true;
+                    debug!("camera announced");
+                }
+                if let Some(sender) = video_sender.as_mut() {
+                    if sender.stale(now) {
+                        sender.clear();
+                        camera_sent_keyframe = false;
+                    }
+                    // The camera encoder keeps its own rate; the target only paces what leaves.
+                    if let Some(bitrate) = sender.tick_rate(now) {
+                        debug!(bitrate, "camera send rate steered");
+                    }
+                }
+                if secure && !was_secure && let Some(started) = &camera {
+                    started.force_keyframe();
+                }
+                was_secure = secure;
                 if now >= tally_at {
+                    debug!(
+                        video_packets = video_tally[0],
+                        video_pictures = video_tally[2],
+                        camera = camera.is_some(),
+                        "voice video tally"
+                    );
+                    video_tally = [0; 3];
                     debug!(
                         received = tally[0],
                         opened = tally[1],
@@ -553,15 +775,33 @@ pub(crate) async fn run(
                 }
                 let Some(crypto) = &transport else { continue };
                 if rtp::is_rtcp(&packet[..length]) {
-                    if let Some(percent) = crypto
-                        .open_rtcp(&packet[..length])
-                        .and_then(|compound| rtp::outbound_loss(&compound, ssrc))
-                    {
-                        emit(&events, Event::OutboundLoss { percent });
+                    if let Some(compound) = crypto.open_rtcp(&packet[..length]) {
+                        if let Some(percent) = rtp::outbound_loss(&compound, ssrc) {
+                            emit(&events, Event::OutboundLoss { percent });
+                        }
+                        // A viewer of our camera: keyframe requests, repairs and rate hints.
+                        if let Some(sender) = video_sender.as_mut()
+                            && let Some(feedback) = rtp::feedback(&compound, sender.video_ssrc())
+                            && video_announced
+                            && dave.ready
+                            && !dave.transitioning()
+                            && sender.feedback(&feedback, Instant::now())
+                            && let Some(started) = &camera
+                        {
+                            started.force_keyframe();
+                        }
                     }
                     continue;
                 }
                 let Some(rtp) = crypto.open(&packet[..length]) else { continue };
+                if rtp.payload_type != rtp::OPUS_PAYLOAD_TYPE {
+                    // Video and its retransmissions; ignored while nobody wants pictures.
+                    if dave.ready && hub.has_sink() {
+                        video_tally[0] += 1;
+                        receivers.push(rtp, Instant::now());
+                    }
+                    continue;
+                }
                 tally[1] += 1;
                 let Some(user) = mixer.user(rtp.ssrc) else { continue };
                 tally[2] += 1;
@@ -630,6 +870,8 @@ pub(crate) async fn run(
                                     return Err("Voice server advertised a nonpublic address");
                                 }
                                 ssrc = ready.ssrc;
+                                video_ssrc = ready.video_ssrc;
+                                rtx_ssrc = ready.rtx_ssrc;
                                 mode = Some(ready.mode);
                                 if server_version >= 6 {
                                     text(&mut ws, signal::backend_version()).await?;
@@ -660,6 +902,12 @@ pub(crate) async fn run(
                                 // Register the audio SSRC without sending media.
                                 text(&mut ws, signal::speaking(false, ssrc)).await?;
                                 send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                // Ask for pictures from the start when someone is listening for them.
+                                if hub.has_sink() && server_version >= 5 {
+                                    text(&mut ws, signal::media_sink_wants(100)).await?;
+                                    wants_video = true;
+                                    wants_video_at = Instant::now() + SINK_WANTS_INTERVAL;
+                                }
                             }
                             Some(VoiceOp::Speaking) => {
                                 debug!(ssrc = data["ssrc"].as_u64(), "voice speaking op");
@@ -690,6 +938,8 @@ pub(crate) async fn run(
                             Some(VoiceOp::ClientDisconnect) => {
                                 let user = signal::id(data, "user_id")?;
                                 mixer.remove(user);
+                                receivers.remove(user);
+                                decoders.remove(user);
                                 if clients.remove(&user) {
                                     emit(&events, Event::ClientDisconnected { user_id: user });
                                 }
@@ -759,13 +1009,24 @@ pub(crate) async fn run(
                                 resuming = false;
                             }
                             Some(VoiceOp::Video) => {
-                                // Audio only: just the sender's audio SSRC.
-                                let user = signal::id(data, "user_id")?;
-                                if user != own
-                                    && dave.contains(user)
-                                    && let Some(value) = data["audio_ssrc"].as_u64().and_then(|v| u32::try_from(v).ok()).filter(|v| *v != 0)
-                                {
-                                    mixer.announce(user, value)?;
+                                // Another participant's sources: their audio SSRC, and their camera if they send one.
+                                let remote = signal::remote_video(data)?;
+                                if remote.user != own {
+                                    if remote.audio_ssrc != 0 && dave.contains(remote.user) {
+                                        mixer.announce(remote.user, remote.audio_ssrc)?;
+                                    }
+                                    match remote.video {
+                                        Some((video, rtx)) => {
+                                            // A bad assignment from one sender costs only that picture.
+                                            if let Err(error) = receivers.announce(remote.user, video, rtx) {
+                                                debug!(error, "video source refused");
+                                            }
+                                        }
+                                        None => {
+                                            receivers.remove(remote.user);
+                                            decoders.remove(remote.user);
+                                        }
+                                    }
                                 }
                             }
                             // Session updates, sink wants, versions, flags, platform, SFU updates.

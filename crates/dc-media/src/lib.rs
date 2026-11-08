@@ -12,6 +12,7 @@ pub mod camera;
 pub mod decode;
 pub mod h264;
 pub mod screen;
+pub mod synthetic;
 
 mod convert;
 mod encode;
