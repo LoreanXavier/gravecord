@@ -2567,7 +2567,13 @@ impl Root {
         } else {
             "--channels-default"
         };
-        let name = if channel.kind == ChannelKind::Voice {
+        let rules = self
+            .current_guild()
+            .and_then(|guild| guild.rules_channel_id)
+            == Some(channel.id);
+        let name = if rules {
+            "ob_rules"
+        } else if channel.kind == ChannelKind::Voice {
             "voice_channel"
         } else if channel.is_forum() {
             "forum_channel"
@@ -2602,6 +2608,28 @@ impl Root {
                 .child(text)
         });
         let target = channel.id;
+        let glyph = div().when(dim, |this| this.opacity(0.5)).child(icon(
+            name,
+            20.,
+            if in_call {
+                "--icon-voice-connected"
+            } else if dim {
+                "--icon-muted"
+            } else {
+                tint
+            },
+        ));
+        let glyph = if rules {
+            self.with_tip(
+                format!("rules-channel-icon-{target}"),
+                Tip::text("Rules", Side::Top),
+                glyph,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            glyph.into_any_element()
+        };
         div()
             .flex_none()
             .relative()
@@ -2675,17 +2703,7 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().when(dim, |this| this.opacity(0.5)).child(icon(
-                                name,
-                                20.,
-                                if in_call {
-                                    "--icon-voice-connected"
-                                } else if dim {
-                                    "--icon-muted"
-                                } else {
-                                    tint
-                                },
-                            )))
+                            .child(glyph)
                             .child(
                                 div()
                                     .flex_1()
@@ -3237,7 +3255,14 @@ impl Root {
             .bg(color("--background-base-lower"))
             .when(self.guild.is_some(), |this| {
                 this.child(icon(
-                    if self.current_channel().is_some_and(Channel::is_forum) {
+                    if self.channel.is_some()
+                        && self
+                            .current_guild()
+                            .and_then(|guild| guild.rules_channel_id)
+                            == self.channel
+                    {
+                        "ob_rules"
+                    } else if self.current_channel().is_some_and(Channel::is_forum) {
                         "forum_header_icon"
                     } else {
                         "header_hash"
