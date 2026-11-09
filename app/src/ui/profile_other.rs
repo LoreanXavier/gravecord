@@ -5,14 +5,14 @@
 
 use super::profile::Popout;
 use super::profile_menu::Which;
-use super::{Root, avatar_source, status_dot_large};
+use super::{Root, avatar_source, color, icon, status_dot_large};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
     AnyElement, BoxShadow, Context, Entity, FontWeight, Hsla, IntoElement, Pixels, Point,
     Subscription, anchored, deferred, div, hsla, img, linear_color_stop, linear_gradient, point,
-    prelude::*, px,
+    prelude::*, px, rgb,
 };
 
 /// The popout's message field and its subscription.
@@ -21,7 +21,77 @@ pub(crate) struct PopoutMessage {
     _events: Subscription,
 }
 
+fn ordered_roles(guild: &dc_state::Guild, member: &dc_state::members::Member) -> Vec<Id> {
+    let mut roles: Vec<_> = member
+        .roles
+        .iter()
+        .copied()
+        .filter(|id| *id != guild.id && guild.roles.contains_key(id))
+        .collect();
+    roles.sort_by_key(|id| {
+        let role = guild.role_info.get(id).copied().unwrap_or_default();
+        (role.guild_connection, std::cmp::Reverse(role.position), *id)
+    });
+    roles
+}
+
 impl Root {
+    pub(super) fn profile_role_chips(&self, user: Id, strong: Hsla) -> Option<AnyElement> {
+        let guild = self.current_guild()?;
+        let member = self.stores.members.get(guild.id, user)?;
+        let roles = ordered_roles(guild, member);
+        if roles.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .parity("profile-roles")
+                .mt(px(2.))
+                .flex()
+                .flex_wrap()
+                .gap(px(4.))
+                .children(roles.into_iter().map(|id| {
+                    let role = guild.role_info.get(&id).copied().unwrap_or_default();
+                    let tint = if role.color == 0 {
+                        color("--primary-300")
+                    } else {
+                        rgb(role.color)
+                    };
+                    div()
+                        .h(px(24.))
+                        .max_w_full()
+                        .pl(px(2.))
+                        .pr(px(8.))
+                        .border_1()
+                        .border_color(hsla(0., 0., 1., 0.08))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .mx(px(4.))
+                                .size(px(12.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(tint),
+                        )
+                        .when(role.guild_connection, |this| {
+                            this.child(icon("share_link", 12., "--text-default"))
+                        })
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .text_ellipsis()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(strong)
+                                .child(guild.roles[&id].clone()),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// The "Message @name" field for `user`'s popout.
     pub(super) fn popout_message(&mut self, user: Id, cx: &mut Context<Self>) -> PopoutMessage {
         let name = self
@@ -92,6 +162,7 @@ impl Root {
         let palette = self.dm_palette(id);
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
+        let private = body.is_some_and(|body| body["private"] == true);
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let presence = self.stores.status(id).to_owned();
         let banner = if palette.themed {
@@ -278,7 +349,14 @@ impl Root {
             .child(names)
             .when(friends > 0 || servers > 0, |this| this.child(mutuals))
             .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
+            .when(private, |this| this.child(
+                div().parity("private-profile-notice").p(px(12.)).rounded(px(8.))
+                    .bg(color("--background-mod-normal"))
+                    .text_size(px(14.)).line_height(px(18.)).text_color(strong)
+                    .child(format!("{}'s profile is private, so some info is hidden. Add them as a friend to see more.", user.username))
+            ))
             .children(self.live_activity_cards(id, false, strong, subtle, cx))
+            .children(self.profile_role_chips(id, strong))
             .into_any_element();
         let message: Option<AnyElement> = popout.message.as_ref().map(|message| {
             div()
@@ -330,7 +408,7 @@ impl Root {
             .id("profile-popout")
             .occlude()
             .w(px(304.))
-            .max_h(window.viewport_size().height - px(16.))
+            .max_h(window.viewport_size().height - px(20.))
             .p(px(2.))
             .rounded(px(8.))
             .bg(linear_gradient(
@@ -357,12 +435,34 @@ impl Root {
             .child(
                 div()
                     .rounded(px(6.))
-                    .max_h(window.viewport_size().height - px(20.))
+                    .max_h(window.viewport_size().height - px(24.))
                     .bg(palette.overlay)
                     .pb(px(4.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
+                    .when(private, |this| {
+                        this.child(
+                            div()
+                                .parity("private-profile-heading")
+                                .h(px(32.))
+                                .flex_none()
+                                .mb(px(-8.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(4.))
+                                .child(icon("access_lock", 16., "--text-strong"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(strong)
+                                        .child("Private Profile"),
+                                ),
+                        )
+                    })
                     .child(header)
                     .child(
                         div()
@@ -374,7 +474,7 @@ impl Root {
                     .children(message.map(|message| div().flex_none().child(message))),
             );
         let at: Point<Pixels> = if popout.left {
-            point(popout.anchor.left() - px(312.), popout.anchor.top())
+            point(popout.anchor.left() - px(320.), popout.anchor.top())
         } else {
             point(popout.anchor.right() + px(8.), popout.anchor.top())
         };
@@ -398,7 +498,7 @@ impl Root {
                     .child(
                         anchored()
                             .position(at)
-                            .snap_to_window_with_margin(px(8.))
+                            .snap_to_window_with_margin(px(12.))
                             .child(card),
                     ),
             )
@@ -460,5 +560,31 @@ impl Root {
                 this.open_profile_menu_at(user, Which::Overflow, probe, false, cx)
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn profile_roles_follow_hierarchy_and_put_linked_roles_last() {
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch("GUILD_CREATE", &json!({
+            "id":"100", "name":"fixture", "channels":[],
+            "roles":[
+                {"id":"100","name":"everyone","position":0},
+                {"id":"101","name":"lower","position":1},
+                {"id":"102","name":"older","position":5},
+                {"id":"103","name":"newer","position":5},
+                {"id":"104","name":"linked","position":10,"tags":{"guild_connections":null}}
+            ],
+            "members":[{"user":{"id":"200","username":"member"},"roles":["104","103","999","101","100","102"]}]
+        }));
+        assert_eq!(
+            ordered_roles(&stores.guilds[0], stores.members.get(100, 200).unwrap()),
+            [102, 103, 101, 104]
+        );
     }
 }

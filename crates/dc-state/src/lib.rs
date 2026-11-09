@@ -342,6 +342,7 @@ pub struct RoleInfo {
     /// The role's colour as `0xRRGGBB`; 0 is none.
     pub color: u32,
     pub mentionable: bool,
+    pub guild_connection: bool,
 }
 
 impl RoleInfo {
@@ -350,6 +351,7 @@ impl RoleInfo {
             position: role["position"].as_i64().unwrap_or(0),
             color: role["color"].as_u64().unwrap_or(0) as u32,
             mentionable: role["mentionable"].as_bool().unwrap_or(false),
+            guild_connection: role["tags"].get("guild_connections").is_some(),
         }
     }
 

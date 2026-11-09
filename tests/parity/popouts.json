@@ -1,5 +1,8 @@
 {
   "titlebar": { "class": "bar_3zSH5d" },
   "pins-popout": { "class": "messagesPopoutWrap_6bgemo" },
-  "live-activity-card": { "class": "card_Bu4Al8" }
+  "live-activity-card": { "class": "card_Bu4Al8" },
+  "private-profile-heading": { "class": "banner_B_p0HC" },
+  "private-profile-notice": { "class": "banner_98tF3N" },
+  "profile-roles": { "class": "roleListContainer_xL50-d" }
 }
