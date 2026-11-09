@@ -4871,6 +4871,8 @@ fn window_controls() -> impl IntoElement {
             .flex()
             .items_center()
             .justify_center()
+            // gpui answers with the first control area under the pointer: the drag area behind must not count.
+            .occlude()
             .window_control_area(area)
             .child(icon(name, 12., "--interactive-text-default"))
     };
