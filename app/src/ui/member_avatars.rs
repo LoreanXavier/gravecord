@@ -1,4 +1,4 @@
-//! Member avatars and collectible artwork with the source's transparent SVG masks (97808).
+//! Avatar artwork with the source's transparent SVG masks and size table (97808/778712).
 use super::{Root, color};
 use crate::parity::Parity;
 use dc_state::{Id, User, collectibles::AvatarDecoration};
@@ -10,8 +10,37 @@ use std::{
     time::Duration,
 };
 
-const ART_SIZE: f32 = 38.4;
-const ART_OFFSET: f32 = 3.2;
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Size {
+    Member,
+    Profile,
+}
+
+impl Size {
+    fn geometry(self) -> Geometry {
+        let (base, status, stroke, offset) = match self {
+            Self::Member => (32., 10., 3., 0.),
+            Self::Profile => (80., 16., 6., 4.),
+        };
+        Geometry {
+            base,
+            art: base * 1.2,
+            inset: base * 0.1,
+            status,
+            center: base - offset - status / 2.,
+            hole: status / 2. + stroke,
+        }
+    }
+}
+
+struct Geometry {
+    base: f32,
+    art: f32,
+    inset: f32,
+    status: f32,
+    center: f32,
+    hole: f32,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Status {
@@ -42,6 +71,7 @@ impl Status {
 
 #[derive(Clone, Copy, PartialEq)]
 struct Spec {
+    size: Size,
     pixels: u32,
     status: Status,
     tint: [u8; 4],
@@ -59,7 +89,7 @@ type PaintedFrame = (Arc<RenderImage>, Option<Arc<RenderImage>>);
 #[derive(Default)]
 pub(super) struct Cache {
     decoded: HashMap<u64, Option<Arc<RgbaImage>>>,
-    frames: HashMap<Id, CachedFrame>,
+    frames: HashMap<(Id, Size), CachedFrame>,
     expiry: Option<f64>,
     generation: u64,
 }
@@ -76,7 +106,7 @@ impl Cache {
             .clone()
     }
 
-    fn retain(&mut self, users: &HashSet<Id>) -> Vec<Arc<RenderImage>> {
+    fn retain(&mut self, users: &HashSet<(Id, Size)>) -> Vec<Arc<RenderImage>> {
         let mut retired = Vec::new();
         self.frames.retain(|user, frame| {
             if users.contains(user) {
@@ -103,7 +133,7 @@ impl Cache {
         spec: Spec,
     ) -> Option<PaintedFrame> {
         let decoration_id = decoration.map(Image::id);
-        if let Some(frame) = self.frames.get(&user)
+        if let Some(frame) = self.frames.get(&(user, spec.size))
             && frame.avatar == avatar.id()
             && frame.decoration == decoration_id
             && frame.spec == spec
@@ -120,7 +150,7 @@ impl Cache {
         let retired = self
             .frames
             .insert(
-                user,
+                (user, spec.size),
                 CachedFrame {
                     avatar: avatar.id(),
                     decoration: decoration_id,
@@ -161,30 +191,55 @@ fn over(base: &mut [f32; 4], pixel: Rgba<u8>, coverage: f32) {
 }
 
 fn compose(avatar: &RgbaImage, decoration: Option<&RgbaImage>, spec: Spec) -> RgbaImage {
-    let feather = ART_SIZE / spec.pixels as f32;
+    let geometry = spec.size.geometry();
+    let feather = geometry.art / spec.pixels as f32;
     RgbaImage::from_fn(spec.pixels, spec.pixels, |x, y| {
         let x = (x as f32 + 0.5) * feather;
         let y = (y as f32 + 0.5) * feather;
-        let ax = x - ART_OFFSET;
-        let ay = y - ART_OFFSET;
-        let cutout = 1. - circle(ax, ay, 27., 27., 8., feather);
+        let ax = x - geometry.inset;
+        let ay = y - geometry.inset;
+        let cutout = 1.
+            - circle(
+                ax,
+                ay,
+                geometry.center,
+                geometry.center,
+                geometry.hole,
+                feather,
+            );
         let mut output = [0.; 4];
-        if let Some(pixel) = image::imageops::sample_bilinear(avatar, ax / 32., ay / 32.) {
+        if let Some(pixel) =
+            image::imageops::sample_bilinear(avatar, ax / geometry.base, ay / geometry.base)
+        {
             over(
                 &mut output,
                 pixel,
-                circle(ax, ay, 16., 16., 16., feather) * cutout,
+                circle(
+                    ax,
+                    ay,
+                    geometry.base / 2.,
+                    geometry.base / 2.,
+                    geometry.base / 2.,
+                    feather,
+                ) * cutout,
             );
         }
-        if let Some(pixel) = decoration
-            .and_then(|art| image::imageops::sample_bilinear(art, x / ART_SIZE, y / ART_SIZE))
-        {
+        if let Some(pixel) = decoration.and_then(|art| {
+            image::imageops::sample_bilinear(art, x / geometry.art, y / geometry.art)
+        }) {
             over(&mut output, pixel, cutout);
         }
+        let origin = geometry.center - geometry.status / 2.;
+        let to_mask = 10. / geometry.status;
         over(
             &mut output,
             Rgba(spec.tint),
-            status_mask(ax - 22., ay - 22., spec.status, feather),
+            status_mask(
+                (ax - origin) * to_mask,
+                (ay - origin) * to_mask,
+                spec.status,
+                feather * to_mask,
+            ),
         );
         let alpha = output[3];
         if alpha > 0. {
@@ -212,7 +267,7 @@ impl Root {
     }
 
     pub(super) fn prepare_member_avatars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let members: Vec<_> = self
+        let mut members: Vec<_> = self
             .guild
             .and_then(|guild| self.stores.member_lists.get(&guild))
             .into_iter()
@@ -224,7 +279,16 @@ impl Root {
                 _ => None,
             })
             .collect();
-        let users = members.iter().map(|(user, _)| *user).collect();
+        let mut users: HashSet<_> = members
+            .iter()
+            .map(|(user, _)| (*user, Size::Member))
+            .collect();
+        if let Some(profile) = &self.profile {
+            users.insert((profile.user, Size::Profile));
+            if let Some(user) = self.stores.users.get(&profile.user) {
+                members.push((user.id, self.equipped_decoration(user).cloned()));
+            }
+        }
         for image in self.member_avatars.borrow_mut().retain(&users) {
             cx.drop_image(image, Some(window));
         }
@@ -279,6 +343,15 @@ impl Root {
     }
 
     pub(super) fn member_avatar(&self, user: &User, status: &str, probe: bool) -> gpui::Div {
+        self.decorated_avatar(user, status, Size::Member, probe)
+    }
+
+    pub(super) fn profile_avatar(&self, user: &User, status: &str) -> gpui::Div {
+        self.decorated_avatar(user, status, Size::Profile, false)
+            .parity("profile-avatar")
+    }
+
+    fn decorated_avatar(&self, user: &User, status: &str, size: Size, probe: bool) -> gpui::Div {
         let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
         let decoration = self
             .equipped_decoration(user)
@@ -292,15 +365,16 @@ impl Root {
         let status = Status::parse(status);
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
-        div().relative().size(px(32.)).flex_none().child(
+        let geometry = size.geometry();
+        div().relative().size(px(geometry.base)).flex_none().child(
             div()
-                .absolute()
-                .left(px(-ART_OFFSET))
-                .top(px(-ART_OFFSET))
-                .size(px(ART_SIZE))
                 .when(probe && decoration.is_some(), |this| {
                     this.parity("member-avatar-decoration")
                 })
+                .absolute()
+                .left(px(-geometry.inset))
+                .top(px(-geometry.inset))
+                .size(px(geometry.art))
                 .child(
                     canvas(
                         |bounds, _, _| bounds,
@@ -313,7 +387,8 @@ impl Root {
                                 return;
                             };
                             let spec = Spec {
-                                pixels: (ART_SIZE * window.scale_factor() * 2.).ceil() as u32,
+                                size,
+                                pixels: (geometry.art * window.scale_factor() * 2.).ceil() as u32,
                                 status,
                                 tint,
                             };
@@ -351,6 +426,7 @@ mod tests {
         let avatar = RgbaImage::from_pixel(32, 32, Rgba([255, 0, 0, 255]));
         let decoration = RgbaImage::from_pixel(32, 32, Rgba([0, 255, 0, 255]));
         let spec = Spec {
+            size: Size::Member,
             pixels: 384,
             status: Status::Dnd,
             tint: [0, 0, 255, 255],
@@ -384,6 +460,7 @@ mod tests {
         let source = Image::from_bytes(gpui::ImageFormat::Png, bytes.into_inner());
         let mut cache = Cache::default();
         let spec = Spec {
+            size: Size::Member,
             pixels: 77,
             status: Status::Online,
             tint: [1, 2, 3, 255],
@@ -406,9 +483,44 @@ mod tests {
             )
             .unwrap();
         assert!(Arc::ptr_eq(&first, &retired.unwrap()));
+        let (large, retired) = cache
+            .frame(
+                1,
+                &source,
+                None,
+                Spec {
+                    size: Size::Profile,
+                    pixels: 192,
+                    ..spec
+                },
+            )
+            .unwrap();
+        assert!(retired.is_none());
+        assert!(!Arc::ptr_eq(&next, &large));
+        let retired = cache.retain(&HashSet::from([(1, Size::Member)]));
+        assert_eq!(retired.len(), 1);
+        assert!(Arc::ptr_eq(&large, &retired[0]));
         let retired = cache.retain(&HashSet::new());
         assert_eq!(retired.len(), 1);
         assert!(Arc::ptr_eq(&next, &retired[0]));
         assert!(cache.frames.is_empty() && cache.decoded.is_empty());
+    }
+
+    #[test]
+    fn profile_mask_uses_the_source_28px_hole_in_96px_artwork() {
+        let source = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 255]));
+        let image = compose(
+            &source,
+            Some(&source),
+            Spec {
+                size: Size::Profile,
+                pixels: 960,
+                status: Status::Online,
+                tint: [0, 255, 0, 255],
+            },
+        );
+        assert_eq!(image.get_pixel(760, 630)[3], 0); // 13px from center, inside the 14px cutout.
+        assert_eq!(image.get_pixel(760, 760).0, [0, 255, 0, 255]);
+        assert_eq!(image.get_pixel(760, 610).0, [255, 255, 255, 255]);
     }
 }

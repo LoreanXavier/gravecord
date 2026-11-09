@@ -91,6 +91,7 @@ mod picker;
 mod pins;
 mod plaintext_extensions;
 mod profile;
+mod profile_art;
 mod profile_menu;
 mod profile_other;
 mod quickswitcher;
@@ -1698,8 +1699,15 @@ impl Root {
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         let notification_events = crate::notifications::events();
         let nameplates = self.nameplate_status();
+        let profile = self.profile.as_ref().map(|profile| {
+            let body = self.fetched.get(&format!("profile:{}", profile.user));
+            (
+                body.is_some(),
+                body.and_then(|body| body["private"].as_bool()),
+            )
+        });
         format!(
-            "notifications={notification_events:?} nameplates=[{nameplates}] status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "notifications={notification_events:?} nameplates=[{nameplates}] profile_loaded_private={profile:?} status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
             self.stores.status,
             self.stores
                 .status_state()

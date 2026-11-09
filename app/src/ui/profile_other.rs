@@ -5,7 +5,7 @@
 
 use super::profile::Popout;
 use super::profile_menu::Which;
-use super::{Root, color, icon, status_dot_large};
+use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
 use dc_state::Id;
@@ -163,7 +163,7 @@ impl Root {
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
         let private = body.is_some_and(|body| body["private"] == true);
-        let avatar = self.images.get(&self.guild_avatar_source(&user).0).cloned();
+        let display_name = self.guild_display_name(&user);
         let presence = self.stores.status(id).to_owned();
         let banner = if palette.themed {
             palette.top
@@ -193,58 +193,60 @@ impl Root {
                 format!("{count} {many}")
             }
         };
-        let header: AnyElement =
-            div()
-                .relative()
-                .h(px(138.))
-                .flex_none()
-                .child(div().h(px(105.)).rounded_t(px(6.)).bg(banner))
-                .child(
-                    // `avatar_WRLIGC clickable`: "View Full Profile".
-                    div()
-                        .id("popout-avatar")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.profile = None;
-                            this.open_full_profile(id, window, cx);
-                        }))
-                        .absolute()
-                        .left(px(8.))
-                        .top(px(53.))
-                        .size(px(92.))
-                        .rounded_full()
-                        .bg(palette.top)
-                        .child(
-                            div()
-                                .size(px(92.))
-                                .rounded_full()
-                                .bg(palette.overlay)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .relative()
-                                        .size(px(80.))
-                                        .rounded_full()
-                                        .children(avatar.map(|picture| {
-                                            img(picture).size(px(80.)).rounded_full()
-                                        }))
-                                        .child(status_dot_large(&presence, "--black")),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(6.))
-                        .right(px(10.))
-                        .flex()
-                        .gap(px(8.))
-                        .child(self.profile_friend_button_at(id, "popout-friend", cx))
-                        .child(self.profile_more_button_at(id, "popout-more", cx)),
-                )
-                .into_any_element();
+        let header: AnyElement = div()
+            .relative()
+            .h(px(138.))
+            .flex_none()
+            .child(
+                div()
+                    .parity("profile-banner")
+                    .h(px(105.))
+                    .rounded_t(px(6.))
+                    .overflow_hidden()
+                    .bg(banner)
+                    .children(
+                        self.profile_banner_image(id)
+                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    ),
+            )
+            .child(
+                // `avatar_WRLIGC clickable`: "View Full Profile".
+                div()
+                    .id("popout-avatar")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.profile = None;
+                        this.open_full_profile(id, window, cx);
+                    }))
+                    .absolute()
+                    .left(px(8.))
+                    .top(px(53.))
+                    .size(px(92.))
+                    .rounded_full()
+                    .bg(palette.top)
+                    .child(
+                        div()
+                            .size(px(92.))
+                            .rounded_full()
+                            .bg(palette.overlay)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.profile_avatar(&user, &presence)),
+                    ),
+            )
+            .child(
+                div()
+                    .parity("profile-actions")
+                    .absolute()
+                    .top(px(14.))
+                    .right(px(10.))
+                    .flex()
+                    .gap(px(8.))
+                    .child(self.profile_friend_button_at(id, "popout-friend", cx))
+                    .child(self.profile_more_button_at(id, "popout-more", cx)),
+            )
+            .into_any_element();
         let names: AnyElement = div()
             .flex()
             .flex_col()
@@ -255,7 +257,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(strong)
-                    .child(user.display_name().to_owned()),
+                    .child(display_name.clone()),
             )
             .child(
                 div()
@@ -353,7 +355,7 @@ impl Root {
                 div().parity("private-profile-notice").p(px(12.)).rounded(px(8.))
                     .bg(color("--background-mod-normal"))
                     .text_size(px(14.)).line_height(px(18.)).text_color(strong)
-                    .child(format!("{}'s profile is private, so some info is hidden. Add them as a friend to see more.", user.username))
+                    .child(format!("{display_name}'s profile is private, so some info is hidden. Add them as a friend to see more."))
             ))
             .children(self.live_activity_cards(id, false, strong, subtle, cx))
             .children(self.profile_role_chips(id, strong))

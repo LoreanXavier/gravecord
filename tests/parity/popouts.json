@@ -4,5 +4,8 @@
   "live-activity-card": { "class": "card_Bu4Al8" },
   "private-profile-heading": { "class": "banner_B_p0HC" },
   "private-profile-notice": { "class": "banner_98tF3N" },
-  "profile-roles": { "class": "roleListContainer_xL50-d" }
+  "profile-roles": { "class": "roleListContainer_xL50-d" },
+  "profile-avatar": { "class": "avatar_WRLIGC" },
+  "profile-banner": { "class": "banner_vNEdYY" },
+  "profile-actions": { "class": "wrapper_xpwejc" }
 }

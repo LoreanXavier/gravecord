@@ -205,7 +205,8 @@ impl Root {
             .filter_map(super::dm_profile::mutual_user)
             .map(|user| super::avatar_source(&user))
             .collect();
-        for (key, url) in wanted.into_iter().chain(mutuals) {
+        let banner = super::profile_art::banner_source(user, self.guild, body);
+        for (key, url) in wanted.into_iter().chain(mutuals).chain(banner) {
             self.request_image(key, url);
         }
         if let Some(user) = self.stores.users.get(&user).cloned() {
