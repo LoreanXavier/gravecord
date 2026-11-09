@@ -38,12 +38,18 @@ fn empty_row(id: &'static str, text: &'static str) -> AnyElement {
 }
 
 impl Root {
-    pub(super) fn billing_custom(&self, key: &'static str) -> Option<AnyElement> {
+    pub(super) fn billing_custom(
+        &self,
+        key: &'static str,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
         Some(match key {
+            "premium_guild_subscriptions_setting" => self.server_boost_body(cx),
+            "nitro_setting" => self.nitro_settings_body(cx),
             "subscriptions_settings" => self.subscriptions_body(),
             "billing_payment_methods" => self.payment_methods_body(),
             "billing_transaction_history" => self.transactions_body(),
-            _ => return None,
+            _ => return self.gift_inventory_custom(key, cx),
         })
     }
 

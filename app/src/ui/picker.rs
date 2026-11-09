@@ -641,6 +641,17 @@ impl Root {
                 format!("{name}:{id}"),
             ),
         };
+        // Emoji of other servers and animated emoji need Nitro in a message: the upsell opens instead.
+        if matches!(
+            target,
+            Target::Composer | Target::ForwardNote | Target::Field
+        ) && let Item::Custom { id, animated, .. } = &item
+            && self.custom_emoji_locked(*id, *animated)
+        {
+            self.picker = None;
+            self.open_nitro(cx);
+            return;
+        }
         let usage_key = match &item {
             Item::Unicode(_) => item.name().to_owned(),
             Item::Custom { id, .. } => id.to_string(),

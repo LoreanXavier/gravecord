@@ -22,6 +22,7 @@ const PLANS_KEY: &str = "nitro:plans:";
 const SOURCES_KEY: &str = "nitro:sources";
 const SUBSCRIPTIONS_KEY: &str = "nitro:subscriptions";
 const PAYMENTS_KEY: &str = "nitro:payments";
+const GIFT_CODES_KEY: &str = "nitro:gift-codes";
 
 /// `font-family` of the `nitro-md` text variants.
 pub(super) const NITRO_FONT: &str = "ABC Ginto Discord Nord";
@@ -64,7 +65,7 @@ const ART: [(&str, &str); 8] = [
 ];
 
 /// Art of the purchase modals: the plan card's clouds and mascot (`discord.com/assets`) and the gift banner icon.
-pub(super) const MODAL_ART: [(&str, &str); 4] = [
+pub(super) const MODAL_ART: [(&str, &str); 9] = [
     (
         "cloud-big",
         "https://discord.com/assets/2752cc3e62a7cfd5.svg",
@@ -77,6 +78,26 @@ pub(super) const MODAL_ART: [(&str, &str); 4] = [
     (
         "gift-box",
         "https://cdn.discordapp.com/assets/content/b88750c7565c6dc55140754c3de85c45809121217d3aefb842e3999f887e1931.png",
+    ),
+    (
+        "gift-champion",
+        "https://cdn.discordapp.com/assets/content/101d1f232a0b465978b0607e2258fbc711806858ab8255b893b164652c8533c1.png",
+    ),
+    (
+        "gift-luminary",
+        "https://cdn.discordapp.com/assets/content/8b43ae51e2e88a961420044d8c2e30316a7dc0f8c3e50d1ea1d6810bdab69fec.png",
+    ),
+    (
+        "gift-icon",
+        "https://cdn.discordapp.com/assets/content/9c25b98950c3a34c327b5e038ccf117f08ac150338bc39398caac7cef8038e25.png",
+    ),
+    (
+        "gift-hero",
+        "https://cdn.discordapp.com/assets/content/ad23878cb00ef0c00e0b7484513f5e1f064b78a6f875dacc549120570f7ec87f.png",
+    ),
+    (
+        "gift-legend",
+        "https://cdn.discordapp.com/assets/content/e063f16d36efcebb21c7057160081afb9c564c93b6df629c61e45613886d1aee.png",
     ),
 ];
 
@@ -102,6 +123,7 @@ pub(crate) struct NitroState {
     pub(super) requested: bool,
     pub(super) billing_requested: bool,
     pub(super) payments: Option<Value>,
+    pub(super) gift_codes: Option<Value>,
     pub(super) scroll: ScrollHandle,
     /// The last offset the page was drawn at, so a scroll redraws the nav bar and the floating bar.
     seen: Rc<Cell<f32>>,
@@ -123,6 +145,7 @@ impl Default for NitroState {
             requested: false,
             billing_requested: false,
             payments: None,
+            gift_codes: None,
             scroll: ScrollHandle::new(),
             seen: Rc::new(Cell::new(f32::NAN)),
             nitro_yearly: Some(true),
@@ -400,6 +423,7 @@ impl Root {
                 "/users/@me/billing/subscriptions?sync_level=1",
             ),
             (PAYMENTS_KEY, "/users/@me/billing/payments?limit=20"),
+            (GIFT_CODES_KEY, "/users/@me/entitlements/gift-codes"),
         ] {
             let _ = self.requests.send(Request::Rest {
                 key: Some(key.to_owned()),
@@ -428,6 +452,10 @@ impl Root {
         } else if key == SOURCES_KEY {
             if report["ok"] == true {
                 self.nitro.sources = Some(report["body"].clone());
+            }
+        } else if key == GIFT_CODES_KEY {
+            if report["ok"] == true {
+                self.nitro.gift_codes = Some(report["body"].clone());
             }
         } else if key == PAYMENTS_KEY {
             if report["ok"] == true {
@@ -1495,6 +1523,22 @@ impl Root {
                 },
             ))
             .into_any_element()
+    }
+
+    /// Whether a custom emoji is locked for the account in a message: another server's emoji need
+    /// `EmojisEverywhere`, animated ones `AnimatedEmojis` (module 722178).
+    pub(super) fn custom_emoji_locked(
+        &self,
+        id: impl PartialEq<u64> + Copy,
+        animated: bool,
+    ) -> bool {
+        let tier = self.premium();
+        let own = self
+            .guild
+            .and_then(|current| self.stores.guilds.iter().find(|guild| guild.id == current))
+            .is_some_and(|guild| guild.emojis.iter().any(|emoji| id == emoji.id));
+        (!own && !tier.has(premium::Feature::EmojisEverywhere))
+            || (animated && !tier.has(premium::Feature::AnimatedEmojis))
     }
 
     /// Capture harness step `premium N`: the account's tier, changed in this process only.

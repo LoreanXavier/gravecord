@@ -4,10 +4,13 @@
 
 mod appearance;
 mod billing;
+mod gift_inventory_page;
 mod model;
+mod nitro_page;
 mod pages;
 pub(super) mod prefs;
 mod render;
+mod server_boost_page;
 mod soundboard;
 pub(crate) use render::radio_dot;
 mod swatches;
@@ -617,7 +620,7 @@ fn info_notice(parts: Runs) -> impl IntoElement {
 impl Root {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = Some(Open::new(Page::Account));
-        self.request_billing();
+        self.request_nitro();
         // The custom theme card's banner (`bannerImage_yH_g_W`).
         self.request_image(
             "theme_upsell_banner".to_owned(),
