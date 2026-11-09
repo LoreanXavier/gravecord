@@ -72,6 +72,10 @@ dc-winaudio = { path = "crates/dc-winaudio" }
 
 [profile.dev]
 debug = "limited"
+incremental = false
+
+[profile.test]
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 1
