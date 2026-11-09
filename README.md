@@ -5,8 +5,8 @@
 > gravecord is built in spare time. If you want to support it, the Patreon is at
 > [patreon.com/loreanxavier](https://www.patreon.com/loreanxavier).
 
-A native desktop client for Discord, written in Rust on GPUI. It is at the very start: the repository holds the extraction
-tooling and the plan, and there is no client to run yet.
+A native desktop client for Discord, written in Rust on GPUI. It is in active development and not released yet: chat, voice, video, Go Live and login work on Windows;
+macOS and Linux are planned.
 
 `the project plan` is the master plan and the working rules holds the working rules.
 
