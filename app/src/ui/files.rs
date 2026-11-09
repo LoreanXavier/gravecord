@@ -289,6 +289,7 @@ mod tests {
             width: None,
             height: None,
             size: 25,
+            flags: 0,
         }
     }
 

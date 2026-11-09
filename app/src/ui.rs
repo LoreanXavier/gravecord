@@ -74,6 +74,7 @@ mod presence;
 pub use logout::RootEvent;
 mod forums;
 mod inline_video;
+mod media_image;
 mod member_avatars;
 mod menu;
 mod modal;
@@ -244,6 +245,7 @@ pub struct Root {
     nameplates: Rc<RefCell<nameplates::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
+    hovered_media: Option<String>,
     hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
@@ -499,6 +501,7 @@ impl Root {
             nameplates: Default::default(),
             member_avatars: Default::default(),
             inline_videos: Default::default(),
+            hovered_media: None,
             hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
@@ -1238,10 +1241,7 @@ impl Root {
                         attachment.width.unwrap_or(1),
                         attachment.height.unwrap_or(1),
                     );
-                    let url = format!(
-                        "{}format=webp&quality=lossless&width={width}&height={height}",
-                        attachment.proxy_url,
-                    );
+                    let url = media_image::attachment_url(attachment, width, height);
                     media.push((format!("attachment:{}", attachment.id), url));
                 }
             }
@@ -3883,6 +3883,7 @@ impl Root {
                     .get(&format!("attachment:{}", attachment.id))
                     .cloned();
                 let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
+                let hovered = key.clone();
                 div()
                     .id(SharedString::from(format!("attachment-{}", attachment.id)))
                     .w(width)
@@ -3890,7 +3891,12 @@ impl Root {
                     .rounded(px(8.))
                     .cursor_pointer()
                     .bg(color("--background-base-low"))
-                    .children(image.map(|image| img(image).w(width).h(height).rounded(px(8.))))
+                    .children(image.map(|image| {
+                        self.media_image(img(image).w(width).h(height).rounded(px(8.)), &key)
+                    }))
+                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                        this.media_hover(&hovered, *inside, cx)
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_lightbox(&clicked, &key, cx);
                     }))
@@ -3932,6 +3938,7 @@ impl Root {
         let cell = |index: usize, size: (f32, f32), cx: &mut Context<Self>| {
             let attachment = pictures[index];
             let key = format!("attachment:{}", attachment.id);
+            let hovered = key.clone();
             let image = self.images.get(&key).cloned();
             let clicked = message.clone();
             let (w, h) = (px(size.0), px(size.1));
@@ -3944,9 +3951,15 @@ impl Root {
                 .overflow_hidden()
                 .cursor_pointer()
                 .bg(color("--background-base-low"))
-                .children(
-                    image.map(|image| img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover)),
-                )
+                .children(image.map(|image| {
+                    self.media_image(
+                        img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover),
+                        &key,
+                    )
+                }))
+                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                    this.media_hover(&hovered, *inside, cx)
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.open_lightbox(&clicked, &key, cx);
                 }))

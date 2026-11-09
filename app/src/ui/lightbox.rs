@@ -34,6 +34,7 @@ pub(super) struct Item {
     pub width: u32,
     pub height: u32,
     pub filename: String,
+    pub animated: bool,
 }
 
 /// The state of the open viewer.
@@ -72,6 +73,9 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
                 width: image.width,
                 height: image.height,
                 filename: filename_of(&image.url),
+                animated: filename_of(&image.url)
+                    .to_ascii_lowercase()
+                    .ends_with(".gif"),
             });
         }
     }
@@ -86,6 +90,7 @@ fn attachment_item(attachment: &Attachment) -> Item {
         width: attachment.width.unwrap_or(1),
         height: attachment.height.unwrap_or(1),
         filename: attachment.filename.clone(),
+        animated: attachment.is_animated(),
     }
 }
 
@@ -188,10 +193,7 @@ impl Root {
                 let (width, height) = stage(many, item.width, item.height, viewport);
                 (
                     format!("lightbox:{}", item.key),
-                    format!(
-                        "{}format=webp&quality=lossless&width={width}&height={height}",
-                        item.proxy
-                    ),
+                    super::media_image::image_url(&item.proxy, item.animated, width, height),
                 )
             })
             .collect();
@@ -439,6 +441,7 @@ impl Root {
                     .cursor_pointer()
                     .children(picture.map(|picture| {
                         img(picture)
+                            .id(SharedString::from(format!("lightbox-image-{}", item.key)))
                             .w(px(width as f32 * scale))
                             .h(px(height as f32 * scale))
                     }))

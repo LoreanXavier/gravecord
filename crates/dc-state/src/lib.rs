@@ -629,6 +629,7 @@ pub struct Attachment {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub size: u64,
+    pub flags: u64,
 }
 
 impl Attachment {
@@ -642,6 +643,7 @@ impl Attachment {
             width: value["width"].as_u64().map(|width| width as u32),
             height: value["height"].as_u64().map(|height| height as u32),
             size: value["size"].as_u64().unwrap_or(0),
+            flags: value["flags"].as_u64().unwrap_or(0),
         })
     }
 
@@ -652,6 +654,15 @@ impl Attachment {
                 .content_type
                 .as_deref()
                 .is_some_and(|kind| kind.starts_with("image/"))
+    }
+
+    /// LazyImage (619517) and attachment flags (652215): GIF, or flagged WebP/AVIF.
+    pub fn is_animated(&self) -> bool {
+        let extension = self.filename.rsplit('.').next().unwrap_or("");
+        extension.eq_ignore_ascii_case("gif")
+            || self.flags & 32 != 0
+                && (extension.eq_ignore_ascii_case("webp")
+                    || extension.eq_ignore_ascii_case("avif"))
     }
 }
 
@@ -1873,6 +1884,18 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attachment_animation_flags_survive_message_parsing() {
+        let attachment = super::Attachment::from_value(&serde_json::json!({
+            "id":"1", "filename":"motion.webp", "url":"https://example.com/motion.webp",
+            "width":160, "height":96, "content_type":"image/webp", "flags":32
+        }))
+        .unwrap();
+        assert!(attachment.is_image());
+        assert!(attachment.is_animated());
+        assert_eq!(attachment.flags, 32);
+    }
+
     #[test]
     fn gifv_keeps_video_and_proxy_separate_from_its_poster() {
         let embed = super::Embed::from_value(&serde_json::json!({
