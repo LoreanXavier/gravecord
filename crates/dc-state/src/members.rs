@@ -10,6 +10,7 @@ use std::collections::HashMap;
 pub struct Member {
     pub user: User,
     pub nick: Option<String>,
+    pub avatar: Option<String>,
     pub roles: Vec<Id>,
     /// `pending`: still in rules screening, so not mentionable (`isPending`).
     pub pending: bool,
@@ -22,6 +23,7 @@ impl Member {
         Some(Self {
             user,
             nick: text(&member["nick"]),
+            avatar: text(&member["avatar"]),
             roles: member["roles"]
                 .as_array()
                 .into_iter()
@@ -30,6 +32,15 @@ impl Member {
                 .collect(),
             pending: member["pending"].as_bool().unwrap_or(false),
         })
+    }
+
+    /// `GUILD_MEMBER_AVATAR`, module 486020. No override means use the user's global avatar.
+    pub fn avatar_url(&self, guild: Id) -> Option<String> {
+        let hash = self.avatar.as_ref()?;
+        Some(format!(
+            "https://cdn.discordapp.com/guilds/{guild}/users/{}/avatars/{hash}.webp?size=128",
+            self.user.id
+        ))
     }
 }
 
@@ -46,6 +57,18 @@ impl GuildMembers {
 
     pub fn get(&self, guild: Id, user: Id) -> Option<&Member> {
         self.of(guild).iter().find(|member| member.user.id == user)
+    }
+
+    /// Message member objects may omit the avatar; only an explicit null removes it.
+    pub fn apply_member(&mut self, guild: Id, value: &Value, user: Option<&Value>) {
+        if let Some(mut member) = Member::from_value(value, user) {
+            if value.get("avatar").is_none() {
+                member.avatar = self
+                    .get(guild, member.user.id)
+                    .and_then(|known| known.avatar.clone());
+            }
+            self.upsert(guild, member);
+        }
     }
 
     /// Adds the member, or replaces the one already known (keeping its place).
@@ -73,9 +96,7 @@ impl GuildMembers {
     /// `GUILD_MEMBERS_CHUNK`, `GUILD_CREATE` and anything else that carries a `members` array for one guild.
     pub fn apply_list(&mut self, guild: Id, members: &Value) {
         for member in members.as_array().into_iter().flatten() {
-            if let Some(member) = Member::from_value(member, None) {
-                self.upsert(guild, member);
-            }
+            self.apply_member(guild, member, None);
         }
     }
 
@@ -88,11 +109,8 @@ impl GuildMembers {
                 .flatten()
                 .chain(std::iter::once(&op["item"]));
             for item in items {
-                if let Some(member) = item
-                    .get("member")
-                    .and_then(|member| Member::from_value(member, None))
-                {
-                    self.upsert(guild, member);
+                if let Some(member) = item.get("member") {
+                    self.apply_member(guild, member, None);
                 }
             }
         }
@@ -106,9 +124,7 @@ impl GuildMembers {
             "GUILD_CREATE" => self.apply_list(guild, &data["members"]),
             "GUILD_MEMBERS_CHUNK" => self.apply_list(guild, &data["members"]),
             "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" => {
-                if let Some(member) = Member::from_value(data, None) {
-                    self.upsert(guild, member);
-                }
+                self.apply_member(guild, data, None);
             }
             "GUILD_MEMBER_REMOVE" => {
                 if let Some(user) = id(&data["user"]["id"]) {
@@ -117,9 +133,7 @@ impl GuildMembers {
             }
             "GUILD_DELETE" => self.drop_guild(guild),
             "MESSAGE_CREATE" if data["member"].is_object() => {
-                if let Some(member) = Member::from_value(&data["member"], Some(&data["author"])) {
-                    self.upsert(guild, member);
-                }
+                self.apply_member(guild, &data["member"], Some(&data["author"]));
             }
             _ => {}
         }
@@ -163,5 +177,51 @@ mod tests {
             &json!({"guild_id": "9", "author": {"id": "3", "username": "cy"}, "member": {"roles": ["7"]}}),
         );
         assert_eq!(store.get(9, 3).unwrap().roles, vec![7]);
+    }
+
+    #[test]
+    fn guild_avatars_survive_partial_members_and_explicit_removal_restores_global() {
+        let mut store = GuildMembers::default();
+        let user = json!({"id":"3", "username":"cy", "avatar":"global"});
+        store.apply_list_update(
+            9,
+            &json!({"ops":[{"op":"SYNC", "items":[
+                {"member":{"user":user, "avatar":"server", "roles":[]}}
+            ]}]}),
+        );
+        let member = store.get(9, 3).unwrap();
+        assert_eq!(member.user.avatar.as_deref(), Some("global"));
+        assert_eq!(
+            member.avatar_url(9).as_deref(),
+            Some("https://cdn.discordapp.com/guilds/9/users/3/avatars/server.webp?size=128")
+        );
+        store.dispatch(
+            "MESSAGE_CREATE",
+            &json!({
+                "guild_id":"9", "author":user, "member":{"roles":[]}
+            }),
+        );
+        assert_eq!(store.get(9, 3).unwrap().avatar.as_deref(), Some("server"));
+        store.apply_member(10, &json!({"user":user, "avatar":"other"}), None);
+        assert!(
+            store
+                .get(10, 3)
+                .unwrap()
+                .avatar_url(10)
+                .unwrap()
+                .contains("/10/users/3/avatars/other.")
+        );
+        store.dispatch(
+            "GUILD_MEMBER_UPDATE",
+            &json!({
+                "guild_id":"9", "user":user, "avatar":null, "roles":[]
+            }),
+        );
+        assert_eq!(store.get(9, 3).unwrap().avatar_url(9), None);
+        assert_eq!(
+            store.get(9, 3).unwrap().user.avatar.as_deref(),
+            Some("global")
+        );
+        assert_eq!(store.get(10, 3).unwrap().avatar.as_deref(), Some("other"));
     }
 }

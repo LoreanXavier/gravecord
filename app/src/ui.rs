@@ -745,7 +745,10 @@ impl Root {
                 if matches!(name.as_str(), "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") {
                     self.maybe_connect_voice();
                 }
-                if name == "GUILD_MEMBER_LIST_UPDATE" {
+                if matches!(
+                    name.as_str(),
+                    "GUILD_MEMBER_LIST_UPDATE" | "GUILD_MEMBER_UPDATE" | "GUILD_MEMBERS_CHUNK"
+                ) {
                     self.request_member_images();
                 }
                 if name == "GUILD_CREATE"
@@ -1263,6 +1266,8 @@ impl Root {
         for user in users {
             let (key, url) = avatar_source(&user);
             self.request_image(key, url);
+            let (key, url) = self.guild_avatar_source(&user);
+            self.request_image(key, url);
             if let Some(url) = user.tag.as_ref().and_then(dc_state::ServerTag::badge_url) {
                 self.request_image(url.clone(), url);
             }
@@ -1288,12 +1293,19 @@ impl Root {
             if let Some(plate) = &user.nameplate {
                 self.request_image(format!("nameplate:{}", plate.sku_id), plate.static_url());
             }
-            let (key, url) = avatar_source(&user);
+            let (key, url) = self.guild_avatar_source(&user);
             self.request_image(key, url);
             if let Some(url) = user.tag.as_ref().and_then(dc_state::ServerTag::badge_url) {
                 self.request_image(url.clone(), url);
             }
         }
+    }
+
+    fn guild_avatar_source(&self, user: &User) -> (String, String) {
+        self.guild
+            .and_then(|guild| self.stores.members.get(guild, user.id)?.avatar_url(guild))
+            .map(|url| (url.clone(), url))
+            .unwrap_or_else(|| avatar_source(user))
     }
 
     fn guild_author_color(&self, user: Id, fallback: &str) -> Rgba {
@@ -1362,7 +1374,7 @@ impl Root {
                         .presence
                         .get(user.id, self.guild)
                         .map_or(status.as_str(), |p| p.status.as_str());
-                    let avatar = self.images.get(&avatar_source(user).0).cloned();
+                    let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
                     let name = nick
                         .clone()
                         .unwrap_or_else(|| user.display_name().to_owned());
@@ -1927,7 +1939,7 @@ impl Root {
     fn reply_preview(&self, referenced: &Message) -> impl IntoElement {
         let avatar = self
             .images
-            .get(&avatar_source(&referenced.author).0)
+            .get(&self.guild_avatar_source(&referenced.author).0)
             .cloned();
         let text = first_spans(&referenced.content);
         div()
@@ -4327,7 +4339,10 @@ impl Root {
                 if !*head {
                     return row.child(body.child(content)).into_any_element();
                 }
-                let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
+                let avatar = self
+                    .images
+                    .get(&self.guild_avatar_source(&message.author).0)
+                    .cloned();
                 let reply_offset = if message.referenced.is_some() {
                     22.
                 } else {

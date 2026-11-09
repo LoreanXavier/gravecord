@@ -5,7 +5,7 @@
 
 use super::profile::Popout;
 use super::profile_menu::Which;
-use super::{Root, avatar_source, color, icon, status_dot_large};
+use super::{Root, color, icon, status_dot_large};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
 use dc_state::Id;
@@ -163,7 +163,7 @@ impl Root {
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
         let private = body.is_some_and(|body| body["private"] == true);
-        let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        let avatar = self.images.get(&self.guild_avatar_source(&user).0).cloned();
         let presence = self.stores.status(id).to_owned();
         let banner = if palette.themed {
             palette.top

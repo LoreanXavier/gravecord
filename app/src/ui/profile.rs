@@ -208,6 +208,10 @@ impl Root {
         for (key, url) in wanted.into_iter().chain(mutuals) {
             self.request_image(key, url);
         }
+        if let Some(user) = self.stores.users.get(&user).cloned() {
+            let (key, url) = self.guild_avatar_source(&user);
+            self.request_image(key, url);
+        }
     }
 
     pub(super) fn profile_layer(

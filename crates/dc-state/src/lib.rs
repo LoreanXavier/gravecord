@@ -1850,10 +1850,9 @@ impl Stores {
             };
             if let Some(guild) = guild
                 && value["member"].is_object()
-                && let Some(member) =
-                    members::Member::from_value(&value["member"], Some(&value["author"]))
             {
-                self.members.upsert(guild, member);
+                self.members
+                    .apply_member(guild, &value["member"], Some(&value["author"]));
             }
             message.channel_id = channel;
             self.insert_message(message);
