@@ -11,5 +11,6 @@
   "messages": { "class": "messagesWrapper_8AE1Qq" },
   "composer": { "class": "channelTextArea_z_gUBg" },
   "composer-text": { "class": "textArea_2x8-Qn" },
-  "member-nameplate": { "class": "container_AFi54G" }
+  "member-nameplate": { "class": "container_AFi54G" },
+  "member-avatar-decoration": { "class": "avatarDecoration_XpIUHy" }
 }

@@ -626,6 +626,7 @@ mod tests {
             tag: None,
             bot: false,
             nameplate: None,
+            avatar_decoration: None,
         }
     }
 

@@ -45,6 +45,7 @@ pub struct User {
     pub tag: Option<ServerTag>,
     pub bot: bool,
     pub nameplate: Option<collectibles::Nameplate>,
+    pub avatar_decoration: Option<Box<collectibles::AvatarDecoration>>,
 }
 
 /// A user's server tag (`primary_guild` with `identity_enabled`): the guild, its badge hash and the tag text.
@@ -88,6 +89,10 @@ impl User {
             tag: ServerTag::from_value(&value["primary_guild"]),
             bot: value["bot"].as_bool().unwrap_or(false),
             nameplate: collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]),
+            avatar_decoration: collectibles::AvatarDecoration::from_value(
+                &value["avatar_decoration_data"],
+            )
+            .map(Box::new),
         })
     }
 

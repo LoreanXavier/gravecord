@@ -73,6 +73,7 @@ mod logout;
 mod presence;
 pub use logout::RootEvent;
 mod forums;
+mod member_avatars;
 mod menu;
 mod modal;
 mod mosaic;
@@ -239,6 +240,7 @@ pub struct Root {
     slowmode_ticking: bool,
     presence_ticking: bool,
     nameplates: Rc<RefCell<nameplates::Cache>>,
+    member_avatars: Rc<RefCell<member_avatars::Cache>>,
     hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
@@ -443,8 +445,11 @@ impl Root {
         updates: UnboundedSender<Update>,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(|this, cx| this.release_nameplates(cx))
-            .detach();
+        cx.on_release(|this, cx| {
+            this.release_nameplates(cx);
+            this.release_member_avatars(cx);
+        })
+        .detach();
         audio_menu::restore_audio_prefs();
         let voice = settings::VoiceState::restore();
         let mut setting_choices = voice.choices();
@@ -488,6 +493,7 @@ impl Root {
             slowmode_ticking: false,
             presence_ticking: false,
             nameplates: Default::default(),
+            member_avatars: Default::default(),
             hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
@@ -1350,6 +1356,14 @@ impl Root {
                 _ => None,
             })
         });
+        let first_decoration = list.and_then(|list| {
+            list.rows.iter().find_map(|row| match row {
+                MemberRow::Member { user, .. } if self.equipped_decoration(user).is_some() => {
+                    Some(user.id)
+                }
+                _ => None,
+            })
+        });
         let rows: Vec<AnyElement> = list
             .map(|list| list.rows.as_slice())
             .unwrap_or_default()
@@ -1374,7 +1388,6 @@ impl Root {
                         .presence
                         .get(user.id, self.guild)
                         .map_or(status.as_str(), |p| p.status.as_str());
-                    let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
                     let name = nick
                         .clone()
                         .unwrap_or_else(|| user.display_name().to_owned());
@@ -1407,16 +1420,7 @@ impl Root {
                             |this| this.bg(color("--interactive-background-selected")),
                         )
                         .children(nameplate)
-                        .child(
-                            div()
-                                .relative()
-                                .size(px(32.))
-                                .flex_none()
-                                .children(
-                                    avatar.map(|image| img(image).size(px(32.)).rounded_full()),
-                                )
-                                .child(status_dot(status, "--background-base-lower")),
-                        )
+                        .child(self.member_avatar(user, status, first_decoration == Some(user.id)))
                         .child(
                             div()
                                 .relative()
@@ -5185,6 +5189,7 @@ fn avatar_source(user: &User) -> (String, String) {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prepare_nameplate_animations(window, cx);
+        self.prepare_member_avatars(window, cx);
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);

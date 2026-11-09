@@ -11,6 +11,7 @@ pub struct Member {
     pub user: User,
     pub nick: Option<String>,
     pub avatar: Option<String>,
+    pub avatar_decoration: Option<crate::collectibles::AvatarDecoration>,
     pub roles: Vec<Id>,
     /// `pending`: still in rules screening, so not mentionable (`isPending`).
     pub pending: bool,
@@ -24,6 +25,9 @@ impl Member {
             user,
             nick: text(&member["nick"]),
             avatar: text(&member["avatar"]),
+            avatar_decoration: crate::collectibles::AvatarDecoration::from_value(
+                &member["avatar_decoration_data"],
+            ),
             roles: member["roles"]
                 .as_array()
                 .into_iter()
@@ -66,6 +70,11 @@ impl GuildMembers {
                 member.avatar = self
                     .get(guild, member.user.id)
                     .and_then(|known| known.avatar.clone());
+            }
+            if value.get("avatar_decoration_data").is_none() {
+                member.avatar_decoration = self
+                    .get(guild, member.user.id)
+                    .and_then(|known| known.avatar_decoration.clone());
             }
             self.upsert(guild, member);
         }
@@ -223,5 +232,40 @@ mod tests {
             Some("global")
         );
         assert_eq!(store.get(10, 3).unwrap().avatar.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn lazy_members_keep_global_and_guild_decorations_separate() {
+        let mut store = GuildMembers::default();
+        let user = json!({"id":"3", "username":"cy", "avatar_decoration_data":{"sku_id":"42"}});
+        store.apply_list_update(
+            9,
+            &json!({"ops":[{"op":"INSERT", "item":{"member":{
+                "user":user, "avatar_decoration_data":{"sku_id":"43"}
+            }}}]}),
+        );
+        let member = store.get(9, 3).unwrap();
+        assert_eq!(member.user.avatar_decoration.as_ref().unwrap().sku_id, 42);
+        assert_eq!(member.avatar_decoration.as_ref().unwrap().sku_id, 43);
+        store.apply_member(9, &json!({"roles":[]}), Some(&user));
+        assert_eq!(
+            store
+                .get(9, 3)
+                .unwrap()
+                .avatar_decoration
+                .as_ref()
+                .unwrap()
+                .sku_id,
+            43
+        );
+        store.apply_list_update(
+            9,
+            &json!({"ops":[{"op":"UPDATE", "item":{"member":{
+                "user":user, "avatar_decoration_data":null
+            }}}]}),
+        );
+        let member = store.get(9, 3).unwrap();
+        assert!(member.avatar_decoration.is_none());
+        assert_eq!(member.user.avatar_decoration.as_ref().unwrap().sku_id, 42);
     }
 }

@@ -1,6 +1,49 @@
-//! Equipped nameplates, from modules 628856, 641886 and 746002.
+//! Equipped decorations and nameplates, from modules 821956, 628856, 641886 and 746002.
 use crate::Id;
 use serde_json::Value;
+
+/// Equipped avatar decoration metadata (821956); expiry uses seconds since the epoch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AvatarDecoration {
+    pub sku_id: Id,
+    pub asset: Option<String>,
+    pub expires_at: Option<f64>,
+}
+
+impl AvatarDecoration {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            sku_id: crate::id(&value["skuId"])
+                .or_else(|| value["skuId"].as_u64())
+                .or_else(|| crate::id(&value["sku_id"]))
+                .or_else(|| value["sku_id"].as_u64())?,
+            asset: value["asset"].as_str().map(str::to_owned),
+            expires_at: value["expiresAt"]
+                .as_f64()
+                .or_else(|| value["expires_at"].as_f64()),
+        })
+    }
+
+    /// Select the guild override before checking expiry (919395/601255).
+    pub fn equipped<'a>(
+        global: Option<&'a Self>,
+        guild: Option<&'a Self>,
+        now_ms: f64,
+    ) -> Option<&'a Self> {
+        guild.or(global).filter(|decoration| {
+            !decoration
+                .expires_at
+                .is_some_and(|end| end * 1000. < now_ms)
+        })
+    }
+
+    pub fn static_url(&self) -> String {
+        format!(
+            "https://cdn.discordapp.com/media/v1/collectibles-shop/{}/static",
+            self.sku_id
+        )
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nameplate {
@@ -52,6 +95,32 @@ impl Nameplate {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn decoration_override_expires_without_revealing_the_global_decoration() {
+        let global =
+            AvatarDecoration::from_value(&json!({"sku_id":"42", "asset":"global"})).unwrap();
+        let guild =
+            AvatarDecoration::from_value(&json!({"skuId":43, "expires_at":1, "expiresAt":2}))
+                .unwrap();
+        assert!(AvatarDecoration::from_value(&json!({"asset":"missing-sku"})).is_none());
+        assert_eq!(
+            AvatarDecoration::equipped(Some(&global), None, 3000.),
+            Some(&global)
+        );
+        assert_eq!(
+            AvatarDecoration::equipped(Some(&global), Some(&guild), 2000.),
+            Some(&guild)
+        );
+        assert_eq!(
+            AvatarDecoration::equipped(Some(&global), Some(&guild), 2001.),
+            None
+        );
+        assert_eq!(
+            guild.static_url(),
+            "https://cdn.discordapp.com/media/v1/collectibles-shop/43/static"
+        );
+    }
 
     #[test]
     fn nameplates_validate_metadata_and_keep_unknown_palettes_renderable() {

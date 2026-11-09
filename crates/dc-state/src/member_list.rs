@@ -53,6 +53,10 @@ impl Row {
                 nameplate: crate::collectibles::Nameplate::from_value(
                     &user["collectibles"]["nameplate"],
                 ),
+                avatar_decoration: crate::collectibles::AvatarDecoration::from_value(
+                    &user["avatar_decoration_data"],
+                )
+                .map(Box::new),
             },
             nick: member["nick"].as_str().map(str::to_owned),
             roles: member["roles"]
