@@ -1,5 +1,5 @@
 // Minimal CDP client for the clean capture client. Loopback only.
-export const PORT = 9230;
+export const PORT = Number(process.env.CDP_PORT ?? 9230);
 
 export async function connect(match = /discord(app)?\.com/) {
   const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();

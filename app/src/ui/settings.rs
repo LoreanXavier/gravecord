@@ -732,9 +732,9 @@ impl Root {
                 })
             })
             .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(open) = this.settings.as_mut()
-                    && page != Page::LogOut
-                {
+                if page == Page::LogOut {
+                    this.logout_confirm = true;
+                } else if let Some(open) = this.settings.as_mut() {
                     *open = Open::new(page);
                 }
                 cx.notify();

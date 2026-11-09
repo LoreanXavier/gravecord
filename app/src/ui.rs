@@ -67,6 +67,9 @@ mod invite;
 mod invite_embed;
 mod lightbox;
 mod links;
+pub mod login;
+mod logout;
+pub use logout::RootEvent;
 mod menu;
 mod modal;
 mod mosaic;
@@ -339,6 +342,8 @@ pub struct Root {
     snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
     click_at: gpui::Point<gpui::Pixels>,
     leave_guild: Option<Id>,
+    /// The Log Out confirmation of the settings sidebar.
+    logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
     /// The window's size as of the last frame, for the viewer's room.
     viewport: (f32, f32),
@@ -542,6 +547,7 @@ impl Root {
             snooze_menu: None,
             click_at: gpui::Point::default(),
             leave_guild: None,
+            logout_confirm: false,
             poll: None,
             viewport: (1280., 720.),
             unread_from: None,
@@ -682,6 +688,8 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
+            // The shell, which owns the login, takes this one before it reaches the view.
+            Update::AuthFailed => {}
             Update::Fetched { key, body } => {
                 if key.starts_with(activity_launch::ACTIVITY_PREFIX) {
                     self.activity_fetched(&key, &body, cx);
@@ -4976,6 +4984,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.logout_confirm {
+                    this.logout_confirm = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && (this.leave_guild.is_some() || this.snooze_menu.is_some())
                 {
@@ -5448,6 +5462,7 @@ impl Render for Root {
             .children(self.custom_status_modal(cx))
             .children(self.plus_menu_layer(cx))
             .children(self.leave_modal(cx))
+            .children(self.logout_modal(cx))
             .children(self.modify_attachment_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))

@@ -40,6 +40,8 @@ pub enum Update {
         key: String,
         body: Value,
     },
+    /// The gateway closed with 4004 or a request came back 401: the stored login is dead.
+    AuthFailed,
 }
 
 pub enum Request {
@@ -407,13 +409,26 @@ fn emoji_cell(sprite: &[u8], tint: u32) -> image::ImageResult<Vec<u8>> {
     Ok(bytes.into_inner())
 }
 
+struct Shutdown(mpsc::UnboundedSender<Command>);
+
+impl Drop for Shutdown {
+    fn drop(&mut self) {
+        let _ = self.0.send(Command::Shutdown);
+    }
+}
+
 pub async fn run(
     token: Token,
     updates: mpsc::UnboundedSender<Update>,
     mut requests: mpsc::UnboundedReceiver<Request>,
 ) {
     let identity = Identity::new();
-    let client = match Client::new(token.clone(), identity.clone()) {
+    let dead = updates.clone();
+    let client = match Client::new(token.clone(), identity.clone()).map(|client| {
+        client.on_unauthorized(move || {
+            let _ = dead.send(Update::AuthFailed);
+        })
+    }) {
         Ok(client) => Arc::new(client),
         Err(error) => {
             warn!("http client failed: {error}");
@@ -426,6 +441,8 @@ pub async fn run(
         state: IdentifyState::default(),
     });
 
+    // Dropping this future (logging out) closes the gateway.
+    let _gateway = Shutdown(commands.clone());
     let forward = updates.clone();
     tokio::spawn(async move {
         while let Some(event) = events.recv().await {
@@ -433,7 +450,10 @@ pub async fn run(
                 Event::Dispatch { name, data } => {
                     let _ = forward.send(Update::Dispatch { name, data });
                 }
-                Event::AuthenticationFailed => warn!("gateway rejected the token"),
+                Event::AuthenticationFailed => {
+                    warn!("gateway rejected the token");
+                    let _ = forward.send(Update::AuthFailed);
+                }
                 Event::Reconnecting { delay } => warn!("gateway reconnecting in {delay:?}"),
                 Event::Connected | Event::Closed { .. } => {}
             }

@@ -6,6 +6,7 @@ use dc_proto::secrets::Token;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, Response, StatusCode};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -28,13 +29,19 @@ pub enum Error {
     Header,
 }
 
+/// 401 with this code is a step-up (MFA) request for a sensitive action, not a dead token.
+const MFA_REQUIRED: u64 = 60003;
+
 pub struct Client {
     http: reqwest::Client,
     token: Token,
     identity: Identity,
+    /// Called when Discord answers 401: the session is gone (`401` in `interceptResponse`, module 596339).
+    unauthorized: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
+/// The header set every request of the pinned client carries, shared with the login client (`dc-auth`).
+pub fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
     let mut headers = HeaderMap::new();
     let mut add = |name: &'static str, value: &str| -> Result<(), Error> {
         let value = HeaderValue::from_str(value).map_err(|_| Error::Header)?;
@@ -78,7 +85,23 @@ impl Client {
             http,
             token,
             identity,
+            unauthorized: None,
         })
+    }
+
+    /// Runs `hook` whenever a request comes back 401 (not a step-up request), so the app can drop the stored login.
+    pub fn on_unauthorized(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.unauthorized = Some(Arc::new(hook));
+        self
+    }
+
+    fn note_status(&self, status: StatusCode, body: &Value) {
+        if status == StatusCode::UNAUTHORIZED
+            && body["code"].as_u64() != Some(MFA_REQUIRED)
+            && let Some(hook) = &self.unauthorized
+        {
+            hook();
+        }
     }
 
     async fn send(
@@ -128,6 +151,7 @@ impl Client {
             if status.is_success() {
                 return Ok(value);
             }
+            self.note_status(status, &value);
             return Err(Error::Status {
                 route: route.to_owned(),
                 status,
@@ -326,6 +350,25 @@ mod tests {
         assert_eq!(headers["x-discord-timezone"], "Europe/Istanbul");
         assert_eq!(headers["origin"], "https://discordapp.com");
         assert_eq!(headers["referer"], "https://discordapp.com/channels/@me");
+    }
+
+    #[test]
+    fn unauthorized_hook_ignores_step_up_requests() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = calls.clone();
+        let client = Client::new(Token::new("t"), identity())
+            .unwrap()
+            .on_unauthorized(move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        client.note_status(StatusCode::UNAUTHORIZED, &json!({"code": 60003}));
+        client.note_status(StatusCode::FORBIDDEN, &json!({}));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        client.note_status(
+            StatusCode::UNAUTHORIZED,
+            &json!({"message": "401: Unauthorized", "code": 0}),
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

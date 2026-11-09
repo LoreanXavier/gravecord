@@ -57,6 +57,7 @@ realfft = "3"
 url = "2"
 unicode-normalization = "0.1"
 zeroize = "1.8"
+dc-auth = { path = "crates/dc-auth" }
 dc-gateway = { path = "crates/dc-gateway" }
 dc-hotkey = { path = "crates/dc-hotkey" }
 dc-markdown = { path = "crates/dc-markdown" }
@@ -107,6 +108,11 @@ opt-level = 3
 [profile.dev.package.ndarray]
 opt-level = 3
 [profile.dev.package.dc-voice]
+opt-level = 3
+# RSA-2048 key generation for the QR login, in debug builds.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.rsa]
 opt-level = 3
 
 # Same revisions as vendor/zed/Cargo.toml: gpui is built and tested against these forks.

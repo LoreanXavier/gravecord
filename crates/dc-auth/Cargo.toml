@@ -1,0 +1,31 @@
+[package]
+name = "dc-auth"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+dc-http.workspace = true
+dc-proto.workspace = true
+futures-util.workspace = true
+qrcode = { version = "0.14", default-features = false }
+rand.workspace = true
+reqwest.workspace = true
+rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+rsa_rand = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+rustls.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
+[dev-dependencies]
+uuid.workspace = true

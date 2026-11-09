@@ -193,6 +193,41 @@ fn launch(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A second instance of the copy for login goldens: its own empty profile and CDP port, never the signed-in one. The
+/// profile must be a new or empty folder outside `design/client`, so it cannot fall back to the owner's session.
+fn launch_isolated(repo: &Path, profile: &Path, port: u16) -> Result<()> {
+    let paths = layout(repo);
+    if port == CDP_PORT {
+        bail!("port {CDP_PORT} belongs to the signed-in capture client");
+    }
+    let profile_abs = if profile.is_absolute() {
+        profile.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(profile)
+    };
+    if profile_abs.starts_with(&paths.root) {
+        bail!("the isolated profile must be outside design/client");
+    }
+    if profile_abs.exists() && fs::read_dir(&profile_abs)?.next().is_some() {
+        bail!("the isolated profile folder must be empty");
+    }
+    fs::create_dir_all(&profile_abs)?;
+    // Inherited by the child. xtask is single threaded here.
+    unsafe { std::env::set_var("DISCORD_USER_DATA_DIR", &profile_abs) };
+    let args = [
+        format!("--remote-debugging-port={port}"),
+        "--remote-debugging-address=127.0.0.1".to_owned(),
+        "--multi-instance".to_owned(),
+        "--disable-backgrounding-occluded-windows".to_owned(),
+        "--disable-renderer-backgrounding".to_owned(),
+        "--disable-background-timer-throttling".to_owned(),
+        "--mute-audio".to_owned(),
+    ];
+    let pid = headless::spawn(&paths.app.join("Discord.exe"), &args, &paths.app)?;
+    println!("started pid {pid} on the hidden desktop, CDP on 127.0.0.1:{port}");
+    Ok(())
+}
+
 fn check(repo: &Path) -> Result<()> {
     let paths = layout(repo);
     let baseline = fs::read_to_string(&paths.baseline).context("no baseline, run prepare first")?;
@@ -209,6 +244,9 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         ["prepare"] => prepare(repo),
         ["launch"] => launch(repo),
         ["check"] => check(repo),
+        ["launch-isolated", profile, port] => {
+            launch_isolated(repo, Path::new(profile), port.parse()?)
+        }
         other => bail!("usage: cargo xtask client prepare|launch|check, got {other:?}"),
     }
 }

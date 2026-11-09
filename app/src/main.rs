@@ -6,9 +6,11 @@ mod fonts;
 mod harness;
 mod inline;
 mod logging;
+mod login_art;
 mod net;
 mod palette;
 mod parity;
+mod shell;
 mod sounds;
 mod speech;
 mod storage;
@@ -17,7 +19,7 @@ mod ui;
 
 use anyhow::{Context as _, Result};
 use dc_proto::identity::Identity;
-use dc_proto::secrets;
+use dc_proto::secrets::Token;
 use gpui::{
     App, AssetSource, Bounds, SharedString, TextRenderingMode, TitlebarOptions, WindowBounds,
     WindowOptions, prelude::*, px, size,
@@ -25,7 +27,6 @@ use gpui::{
 use gpui_platform::application;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
 
 /// Icons live in `app/assets/icons`, geometry extracted from the pinned build.
 struct Assets {
@@ -162,6 +163,37 @@ fn restore_audio_in_time() {
     let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
 }
 
+/// Where the app starts: the token in the OS credential store, else the login screen. Capture builds read
+/// `secrets.toml` instead (the harness and the parity runs need a signed in client), and `--login <state>` shows one
+/// login state with no network. The normal build never looks for `secrets.toml`.
+fn initial_start() -> shell::Start {
+    #[cfg(feature = "capture")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(state) = args
+            .iter()
+            .position(|arg| arg == "--login")
+            .and_then(|at| args.get(at + 1))
+        {
+            return shell::Start::Preview(state.clone());
+        }
+        if let Some(path) = find_upwards("secrets.toml")
+            && let Ok(token) = dc_proto::secrets::load(&path)
+        {
+            return shell::Start::Token(token);
+        }
+        shell::Start::Login
+    }
+    #[cfg(not(feature = "capture"))]
+    {
+        use dc_auth::credentials::{ACTIVE, Store};
+        match Store::app().load(ACTIVE) {
+            Ok(Some(token)) => shell::Start::Token(token),
+            _ => shell::Start::Login,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Read once by gpui's renderer. Set before any other thread exists.
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
@@ -169,8 +201,6 @@ fn main() -> Result<()> {
     }
     record_panics();
     record_log();
-    let secrets_path = find_upwards("secrets.toml").context("secrets.toml not found")?;
-    let token = secrets::load(&secrets_path).context("loading secrets.toml")?;
     let assets_root = find_upwards("app/assets").context("app/assets not found")?;
     let capture = capture_args();
 
@@ -178,13 +208,11 @@ fn main() -> Result<()> {
         .enable_all()
         .worker_threads(2)
         .build()?;
-    let font_client = dc_http::Client::new(token.clone(), Identity::new())?;
+    // The fonts are public files: no login is needed (or known) yet.
+    let font_client = dc_http::Client::new(Token::new(""), Identity::new())?;
     let faces = runtime.block_on(fonts::load(&font_client))?;
-
-    let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-    let (request_tx, request_rx) = mpsc::unbounded_channel();
-    let hook_tx = update_tx.clone();
-    runtime.spawn(net::run(token, update_tx, request_rx));
+    let start = initial_start();
+    let handle = runtime.handle().clone();
 
     application()
         .with_assets(Assets { root: assets_root })
@@ -206,25 +234,11 @@ fn main() -> Result<()> {
                         }),
                         ..Default::default()
                     },
-                    |window, cx| {
-                        let root = cx.new(|cx| ui::Root::new(request_tx, hook_tx, cx));
-                        ui::bind_focus(&root, window, cx);
-                        root
-                    },
+                    move |window, cx| cx.new(|cx| shell::Shell::new(handle, start, window, cx)),
                 )
                 .expect("the window must open");
-            let root = window.entity(cx).expect("the root view exists");
+            let shell = window.entity(cx).expect("the shell exists");
             cx.activate(true);
-
-            cx.spawn({
-                let root = root.clone();
-                async move |cx| {
-                    while let Some(update) = update_rx.recv().await {
-                        root.update(cx, |root, cx| root.update(update, cx));
-                    }
-                }
-            })
-            .detach();
 
             if let Some(capture) = capture {
                 cx.spawn(async move |cx| {
@@ -232,20 +246,27 @@ fn main() -> Result<()> {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(100))
                             .await;
-                        if root.read_with(cx, |root, _| root.ready) {
+                        if shell.read_with(cx, |shell, cx| shell.ready(cx)) {
                             break;
                         }
                     }
+                    // The harness drives the main view; a login capture has none.
+                    #[cfg(feature = "capture")]
+                    let root = shell.read_with(cx, |shell, _| shell.root());
                     #[cfg(feature = "capture")]
                     if let Some(text) = &capture.send {
                         let script = format!("click 700 683; type {text}; key enter");
                         let log = capture.path.with_extension("log");
-                        harness::run(&script, window.into(), root.clone(), log, cx).await;
+                        if let Some(root) = root.clone() {
+                            harness::run(&script, window.into(), root, log, cx).await;
+                        }
                     }
                     #[cfg(feature = "capture")]
                     if let Some(script) = &capture.script {
                         let log = capture.path.with_extension("log");
-                        harness::run(script, window.into(), root.clone(), log, cx).await;
+                        if let Some(root) = root.clone() {
+                            harness::run(script, window.into(), root, log, cx).await;
+                        }
                     }
                     #[cfg(feature = "capture")]
                     if let Some(follow) = &capture.follow {
@@ -268,8 +289,9 @@ fn main() -> Result<()> {
                                     cx.update(|cx| write_capture(cx, window.into(), &shot));
                                     continue;
                                 }
-                                harness::run(line, window.into(), root.clone(), log.clone(), cx)
-                                    .await;
+                                if let Some(root) = root.clone() {
+                                    harness::run(line, window.into(), root, log.clone(), cx).await;
+                                }
                             }
                         }
                     }

@@ -45,6 +45,73 @@ window.relay={open:s=>{fr.src=s},post:(d,o)=>{if(fr&&fr.contentWindow)fr.content
 if(document.getElementById('frame'))start();else document.addEventListener('DOMContentLoaded',start);
 })();"#;
 
+/// The origin the captcha page reports its messages under, in place of a framed page's origin.
+pub const CAPTCHA_ORIGIN: &str = "gravecord-captcha";
+
+/// The captcha page: renders hCaptcha's own widget (its script, loaded from hCaptcha) for the sitekey the server sent,
+/// and reports the result to Rust over the same IPC the relay uses. The page decides nothing and solves nothing: the
+/// token comes from a person completing the widget. `host=discord.com` is the hostname hCaptcha checks the sitekey
+/// against, as the official page's own origin does. `__SITEKEY__` and `__RQDATA__` are JSON strings ([`captcha_page`]).
+const CAPTCHA_TEMPLATE: &str = r#"<!doctype html>
+<meta charset="utf-8">
+<style>html,body{margin:0;background:transparent;overflow:hidden}#c{display:flex;justify-content:center}</style>
+<div id="c"></div>
+<script>
+const ipc=m=>window.chrome.webview.postMessage(JSON.stringify({t:'msg',origin:'gravecord-captcha',data:m}));
+window.captchaReady=function(){
+const id=hcaptcha.render('c',{sitekey:__SITEKEY__,theme:'dark',
+callback:t=>ipc({token:t}),
+'expired-callback':()=>ipc({expired:true}),
+'error-callback':e=>ipc({error:String(e)})});
+const rq=__RQDATA__;
+if(rq)hcaptcha.setData(id,{rqdata:rq});
+ipc({rendered:true});
+};
+</script>
+<script src="https://js.hcaptcha.com/1/api.js?render=explicit&onload=captchaReady&host=discord.com" async defer onerror="ipc({error:'script'})"></script>"#;
+
+/// The captcha page for one challenge. The values are put in as JSON strings, so nothing the server sends can end the
+/// string or the script.
+pub fn captcha_page(sitekey: &str, rqdata: Option<&str>) -> String {
+    let quote = |text: &str| json!(text).to_string().replace("</", "<\\/");
+    CAPTCHA_TEMPLATE
+        .replace("__SITEKEY__", &quote(sitekey))
+        .replace("__RQDATA__", &rqdata.map_or("null".to_owned(), quote))
+}
+
+/// What the captcha page said, from a [`HostEvent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptchaEvent {
+    /// The widget is on screen.
+    Rendered,
+    /// A person solved it: the response token (`captcha_key`).
+    Solved(String),
+    Expired,
+    /// The widget or its script failed.
+    Failed,
+}
+
+/// Reads a captcha page's message. Only messages under [`CAPTCHA_ORIGIN`] count: nothing a framed page posts can pass
+/// for a solution.
+pub fn captcha_event(event: &HostEvent) -> Option<CaptchaEvent> {
+    let HostEvent::Message { origin, data } = event else {
+        return None;
+    };
+    if origin != CAPTCHA_ORIGIN {
+        return None;
+    }
+    if let Some(token) = data["token"].as_str().filter(|token| !token.is_empty()) {
+        return Some(CaptchaEvent::Solved(token.to_owned()));
+    }
+    if data["expired"].as_bool() == Some(true) {
+        return Some(CaptchaEvent::Expired);
+    }
+    if data["rendered"].as_bool() == Some(true) {
+        return Some(CaptchaEvent::Rendered);
+    }
+    data.get("error").map(|_| CaptchaEvent::Failed)
+}
+
 /// What the surface reports.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
@@ -211,6 +278,7 @@ fn run(
     parent: Parent,
     data_dir: PathBuf,
     bounds: (f32, f32, f32, f32),
+    html: String,
     commands: Receiver<Command>,
     sender: Sender<HostEvent>,
 ) {
@@ -238,7 +306,7 @@ fn run(
         .with_bounds(rect(0., 0., bounds.2, bounds.3))
         .with_transparent(true)
         .with_autoplay(true)
-        .with_html(RELAY_PAGE)
+        .with_html(html)
         .with_initialization_script(RELAY_SCRIPT)
         .with_ipc_handler(move |request| {
             let Ok(message) = serde_json::from_str::<Value>(request.body()) else {
@@ -312,6 +380,26 @@ impl WebHost {
         data_dir: PathBuf,
         bounds: (f32, f32, f32, f32),
     ) -> Result<Self, Error> {
+        Self::with_page(window, data_dir, bounds, RELAY_PAGE.to_owned())
+    }
+
+    /// A surface showing the captcha page of one challenge ([`captcha_page`]); its answers are [`captcha_event`]s.
+    pub fn captcha(
+        window: &impl HasWindowHandle,
+        data_dir: PathBuf,
+        bounds: (f32, f32, f32, f32),
+        sitekey: &str,
+        rqdata: Option<&str>,
+    ) -> Result<Self, Error> {
+        Self::with_page(window, data_dir, bounds, captcha_page(sitekey, rqdata))
+    }
+
+    fn with_page(
+        window: &impl HasWindowHandle,
+        data_dir: PathBuf,
+        bounds: (f32, f32, f32, f32),
+        html: String,
+    ) -> Result<Self, Error> {
         let RawWindowHandle::Win32(handle) = window
             .window_handle()
             .map_err(|_| Error::NoHandle)?
@@ -324,7 +412,16 @@ impl WebHost {
         let (event_sender, events) = channel();
         let thread = std::thread::Builder::new()
             .name("dc-webhost".to_owned())
-            .spawn(move || run(parent, data_dir, bounds, command_receiver, event_sender))
+            .spawn(move || {
+                run(
+                    parent,
+                    data_dir,
+                    bounds,
+                    html,
+                    command_receiver,
+                    event_sender,
+                )
+            })
             .map_err(|_| Error::NoHandle)?;
         Ok(Self {
             commands: command_sender,
@@ -370,5 +467,66 @@ impl Drop for WebHost {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_page_carries_the_sitekey_and_rqdata_as_strings() {
+        let page = captcha_page("test-key", Some("rq-data"));
+        assert!(page.contains("sitekey:\"test-key\""));
+        assert!(page.contains("const rq=\"rq-data\";"));
+        assert!(page.contains("js.hcaptcha.com/1/api.js"));
+        assert!(captcha_page("k", None).contains("const rq=null;"));
+    }
+
+    #[test]
+    fn nothing_the_server_sends_can_break_out_of_the_script() {
+        let page = captcha_page(
+            "\"};alert(1);//",
+            Some("</script><script>alert(2)</script>"),
+        );
+        assert!(!page.contains("</script><script>alert(2)"));
+        assert!(page.contains(r"<\/script>"));
+        assert!(page.contains("\\\"};alert(1);//"));
+    }
+
+    #[test]
+    fn only_the_captcha_origin_can_report_a_token() {
+        let message = |origin: &str, data: Value| HostEvent::Message {
+            origin: origin.to_owned(),
+            data,
+        };
+        assert_eq!(
+            captcha_event(&message(
+                CAPTCHA_ORIGIN,
+                json!({"token": "FAKE-TEST-TOKEN"})
+            )),
+            Some(CaptchaEvent::Solved("FAKE-TEST-TOKEN".to_owned()))
+        );
+        assert_eq!(
+            captcha_event(&message("https://evil.example", json!({"token": "x"}))),
+            None
+        );
+        assert_eq!(
+            captcha_event(&message(CAPTCHA_ORIGIN, json!({"token": ""}))),
+            None
+        );
+        assert_eq!(
+            captcha_event(&message(CAPTCHA_ORIGIN, json!({"rendered": true}))),
+            Some(CaptchaEvent::Rendered)
+        );
+        assert_eq!(
+            captcha_event(&message(CAPTCHA_ORIGIN, json!({"expired": true}))),
+            Some(CaptchaEvent::Expired)
+        );
+        assert_eq!(
+            captcha_event(&message(CAPTCHA_ORIGIN, json!({"error": "script"}))),
+            Some(CaptchaEvent::Failed)
+        );
+        assert_eq!(captcha_event(&HostEvent::Ready), None);
     }
 }

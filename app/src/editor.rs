@@ -43,9 +43,33 @@ struct Laid {
     /// Each paragraph with the byte offset it starts at.
     lines: Vec<(WrappedLine, usize)>,
     bounds: Option<Bounds<Pixels>>,
+    /// A masked field (a password) shows one bullet per character: the real text, to map offsets into the bullets.
+    masked_text: Option<String>,
 }
 
+/// The bullet a masked field shows for each character.
+const MASK: char = '\u{2022}';
+
 impl Laid {
+    /// An offset in the real text as an offset in the shown text.
+    fn shown_offset(&self, offset: usize) -> usize {
+        match &self.masked_text {
+            Some(text) => text[..offset.min(text.len())].chars().count() * MASK.len_utf8(),
+            None => offset,
+        }
+    }
+
+    /// An offset in the shown text as an offset in the real text.
+    fn real_offset(&self, shown: usize) -> usize {
+        match &self.masked_text {
+            Some(text) => text
+                .char_indices()
+                .nth(shown / MASK.len_utf8())
+                .map_or(text.len(), |(at, _)| at),
+            None => shown,
+        }
+    }
+
     fn line_height(&self) -> Pixels {
         if self.line_height > px(0.) {
             self.line_height
@@ -70,7 +94,8 @@ impl Laid {
         let tops = self.paragraph_tops();
         for (index, (line, start)) in self.lines.iter().enumerate().rev() {
             if offset >= *start {
-                let position = line.position_for_index(offset - start, self.line_height())?;
+                let local = self.shown_offset(offset) - self.shown_offset(*start);
+                let position = line.position_for_index(local, self.line_height())?;
                 return Some(point(position.x, tops[index] + position.y));
             }
         }
@@ -85,7 +110,8 @@ impl Laid {
         };
         let local = point(position.x, position.y - tops[index]);
         let found = line.closest_index_for_position(local, self.line_height());
-        start + found.unwrap_or_else(|nearest| nearest)
+        let shown = self.shown_offset(*start) + found.unwrap_or_else(|nearest| nearest);
+        self.real_offset(shown)
     }
 }
 
@@ -100,6 +126,10 @@ pub struct Editor {
     enter_inserts_newline: bool,
     /// `Edited` also follows deleting, pasting, cutting and undoing, not only typing.
     reports_all_edits: bool,
+    /// A password field: bullets on screen, no copy or cut.
+    masked: bool,
+    /// A form field: Enter reports `Submit` with no text and leaves the field as it is.
+    keeps_text: bool,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -121,7 +151,20 @@ impl Editor {
             dragging: false,
             enter_inserts_newline: false,
             reports_all_edits: false,
+            masked: false,
+            keeps_text: false,
         }
+    }
+
+    /// Shows one bullet per character and refuses copy and cut.
+    pub fn set_masked(&mut self, on: bool) {
+        self.masked = on;
+    }
+
+    /// Enter in a form field submits the form, not the text: the field keeps what was typed (a failed login keeps the
+    /// password), and the text does not travel through the event.
+    pub fn set_keeps_text(&mut self, on: bool) {
+        self.keeps_text = on;
     }
 
     pub fn set_enter_inserts_newline(&mut self, on: bool) {
@@ -172,6 +215,10 @@ impl Editor {
 
     /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
+        if self.keeps_text {
+            cx.emit(EditorEvent::Submit(String::new()));
+            return;
+        }
         let text = self.buffer.text().trim().to_owned();
         self.buffer.clear();
         cx.emit(EditorEvent::Submit(text));
@@ -188,6 +235,7 @@ impl Editor {
             .reports_all_edits
             .then(|| self.buffer.text().to_owned());
         let enter_inserts_newline = self.enter_inserts_newline;
+        let masked = self.masked;
         let buffer = &mut self.buffer;
         let move_to = |buffer: &mut TextBuffer, at: usize| {
             if shift {
@@ -230,6 +278,7 @@ impl Editor {
             "z" if control && shift => buffer.redo(),
             "z" if control => buffer.undo(),
             "y" if control => buffer.redo(),
+            "c" | "x" if control && masked => {}
             "c" if control && !buffer.selection().is_empty() => {
                 cx.write_to_clipboard(ClipboardItem::new_string(buffer.selected_text().to_owned()));
             }
@@ -465,9 +514,18 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Wrappe
     let text = editor.buffer.text();
     let marked = editor.buffer.marked();
     for paragraph in text.split('\n') {
-        let runs = runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style);
+        let shown = if editor.masked {
+            paragraph.chars().map(|_| MASK).collect::<String>()
+        } else {
+            paragraph.to_owned()
+        };
+        let runs = if editor.masked {
+            runs_for(0, shown.len(), None, &editor.style)
+        } else {
+            runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style)
+        };
         let shaped = system.shape_text(
-            SharedString::from(paragraph.to_owned()),
+            SharedString::from(shown),
             px(editor.style.size),
             &runs,
             width,
@@ -541,7 +599,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, style, laid, placeholder, selection, caret, multiline) = {
+        let (focus, style, laid, placeholder, selection, caret, multiline, masked) = {
             let editor = self.editor.read(cx);
             (
                 editor.focus.clone(),
@@ -551,6 +609,7 @@ impl Element for EditorElement {
                 editor.buffer.selection(),
                 editor.buffer.caret(),
                 editor.enter_inserts_newline,
+                editor.masked,
             )
         };
         window.handle_input(
@@ -563,6 +622,7 @@ impl Element for EditorElement {
         {
             let mut laid = laid.borrow_mut();
             laid.lines = lines;
+            laid.masked_text = masked.then(|| self.editor.read(cx).buffer.text().to_owned());
             laid.bounds = Some(bounds);
             laid.line_height = px(style.line_height);
         }
