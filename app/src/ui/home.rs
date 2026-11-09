@@ -238,17 +238,29 @@ impl Root {
                                 .flex_1()
                                 .min_w(px(0.))
                                 .flex()
-                                .items_center()
+                                .flex_col()
                                 .child(
                                     div()
-                                        .text_size(px(16.))
-                                        .line_height(px(20.))
-                                        .font_weight(FontWeight(500.))
-                                        .child(recipient.display_name().to_owned()),
+                                        .flex()
+                                        .items_center()
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .text_ellipsis()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(500.))
+                                                .child(recipient.display_name().to_owned()),
+                                        )
+                                        .children(
+                                            recipient
+                                                .tag
+                                                .as_ref()
+                                                .map(|tag| self.server_tag_chip(tag)),
+                                        ),
                                 )
-                                .children(
-                                    recipient.tag.as_ref().map(|tag| self.server_tag_chip(tag)),
-                                ),
+                                .children(self.presence_line(&recipient, None, true)),
                         )
                         .when(marked, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.

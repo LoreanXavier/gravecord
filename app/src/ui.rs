@@ -69,6 +69,7 @@ mod lightbox;
 mod links;
 pub mod login;
 mod logout;
+mod presence;
 pub use logout::RootEvent;
 mod forums;
 mod menu;
@@ -653,6 +654,17 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                if matches!(
+                    name.as_str(),
+                    "READY"
+                        | "READY_SUPPLEMENTAL"
+                        | "PRESENCE_UPDATE"
+                        | "GUILD_MEMBER_LIST_UPDATE"
+                        | "GUILD_MEMBERS_CHUNK"
+                        | "GUILD_CREATE"
+                ) {
+                    self.request_presence_images();
+                }
                 if name == "MESSAGE_CREATE" {
                     self.notify_message(&data, cx);
                 }
@@ -1283,12 +1295,23 @@ impl Root {
             .and_then(|guild| self.stores.member_lists.get(&guild));
         let owner = self.current_guild().and_then(|guild| guild.owner_id);
         let roles = self.current_guild().map(|guild| &guild.roles);
+        let first_activity = list.and_then(|list| {
+            list.rows.iter().find_map(|row| match row {
+                MemberRow::Member { user, .. }
+                    if self.presence_line(user, self.guild, true).is_some() =>
+                {
+                    Some(user.id)
+                }
+                _ => None,
+            })
+        });
         let rows: Vec<AnyElement> = list
             .map(|list| list.rows.as_slice())
             .unwrap_or_default()
             .iter()
             .map(|row| match row {
                 MemberRow::Group { id, count } => div()
+                    .flex_none()
                     .h(px(42.))
                     .pt(px(20.))
                     .pl(px(16.))
@@ -1301,14 +1324,22 @@ impl Root {
                 MemberRow::Member {
                     user, nick, status, ..
                 } => {
+                    let status = self
+                        .stores
+                        .presence
+                        .get(user.id, self.guild)
+                        .map_or(status.as_str(), |p| p.status.as_str());
                     let avatar = self.images.get(&avatar_source(user).0).cloned();
                     let name = nick
                         .clone()
                         .unwrap_or_else(|| user.display_name().to_owned());
+                    let activity = self.presence_line(user, self.guild, true);
+                    let height = if activity.is_some() { 42. } else { 40. };
                     let item = div()
-                        .h(px(40.))
+                        .h(px(height))
                         .w(px(248.))
                         .pl(px(8.))
+                        .pr(px(8.))
                         .rounded(px(8.))
                         .flex()
                         .items_center()
@@ -1327,26 +1358,51 @@ impl Root {
                             div()
                                 .ml(px(12.))
                                 .min_w(px(0.))
-                                .text_ellipsis()
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(self.guild_author_color(user.id, "--channels-default"))
-                                .child(name),
-                        )
-                        .children(
-                            user.tag
-                                .as_ref()
-                                .map(|tag| self.server_tag_chip(tag).ml(px(4.)).flex_none()),
-                        )
-                        .when(owner == Some(user.id), |this| {
-                            this.child(div().ml(px(4.)).child(icon(
-                                "owner_crown",
-                                14.,
-                                "--status-warning",
-                            )))
-                        });
+                                .max_w(px(188.))
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .min_w(px(0.))
+                                        .h(px(20.))
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .text_ellipsis()
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(self.guild_author_color(
+                                                    user.id,
+                                                    "--channels-default",
+                                                ))
+                                                .child(name),
+                                        )
+                                        .children(user.tag.as_ref().map(|tag| {
+                                            self.server_tag_chip(tag).ml(px(4.)).flex_none()
+                                        }))
+                                        .when(owner == Some(user.id), |this| {
+                                            this.child(div().ml(px(4.)).child(icon(
+                                                "owner_crown",
+                                                14.,
+                                                "--status-warning",
+                                            )))
+                                        }),
+                                )
+                                .children(activity.map(|line| {
+                                    div()
+                                        .mt(px(-2.))
+                                        .when(first_activity == Some(user.id), |this| {
+                                            this.parity("presence-line")
+                                        })
+                                        .child(line)
+                                })),
+                        );
                     div()
-                        .h(px(42.))
+                        .flex_none()
+                        .h(px(height + 2.))
                         .pt(px(1.))
                         .pl(px(8.))
                         .child(self.profile_trigger_side(
@@ -1358,7 +1414,7 @@ impl Root {
                         ))
                         .into_any_element()
                 }
-                MemberRow::Unknown => div().h(px(42.)).into_any_element(),
+                MemberRow::Unknown => div().flex_none().h(px(42.)).into_any_element(),
             })
             .collect();
         div()
@@ -3081,12 +3137,7 @@ impl Root {
             })
             .when_some(dm_user.clone(), |this, user| {
                 // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
-                let presence = self
-                    .stores
-                    .presences
-                    .get(&user.id)
-                    .cloned()
-                    .unwrap_or_else(|| "offline".to_owned());
+                let presence = self.stores.status(user.id).to_owned();
                 let picture = self.images.get(&avatar_source(&user).0).cloned();
                 this.child(
                     div()

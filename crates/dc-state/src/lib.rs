@@ -12,6 +12,7 @@ pub mod members;
 pub mod notifications;
 pub mod permissions;
 pub mod premium;
+pub mod presence;
 pub mod read_state;
 pub mod slowmode;
 pub mod unread;
@@ -1056,6 +1057,7 @@ pub struct Stores {
     pub member_lists: HashMap<Id, member_list::MemberList>,
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
+    pub presence: presence::PresenceStore,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
@@ -1081,6 +1083,7 @@ pub struct Stores {
 
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
+        self.presence.dispatch(name, data);
         self.members.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
@@ -1774,7 +1777,11 @@ impl Stores {
 
     /// `offline` when nothing says otherwise, as the official presence store answers.
     pub fn status(&self, user: Id) -> &str {
-        self.presences.get(&user).map_or("offline", String::as_str)
+        self.presence
+            .get(user, None)
+            .map(|presence| presence.status.as_str())
+            .or_else(|| self.presences.get(&user).map(String::as_str))
+            .unwrap_or("offline")
     }
 
     pub fn friends(&self) -> Vec<&User> {

@@ -534,7 +534,13 @@ impl Root {
                                     .line_height(px(17.5))
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-muted"))
-                                    .child(subtitle),
+                                    .child(if kind == RELATIONSHIP_FRIEND {
+                                        self.presence_line(user, None, false).unwrap_or_else(|| {
+                                            div().child(subtitle.clone()).into_any_element()
+                                        })
+                                    } else {
+                                        div().child(subtitle).into_any_element()
+                                    }),
                             ),
                     )
                     .child(div().flex_1())

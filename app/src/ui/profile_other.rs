@@ -92,12 +92,7 @@ impl Root {
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
-        let presence = self
-            .stores
-            .presences
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| "offline".to_owned());
+        let presence = self.stores.status(id).to_owned();
         let banner = if palette.themed {
             palette.top
         } else {

@@ -153,12 +153,7 @@ impl Root {
             .and_then(|body| body["mutual_guilds"].as_array().map(Vec::len))
             .unwrap_or(0);
         let badges = self.badges(user.id);
-        let presence = self
-            .stores
-            .presences
-            .get(&user.id)
-            .cloned()
-            .unwrap_or_else(|| "offline".to_owned());
+        let presence = self.stores.status(user.id).to_owned();
         let text = palette.text;
         let subtle = palette.subtle;
         let dot = |tint: Hsla| div().size(px(4.)).rounded_full().bg(tint);
