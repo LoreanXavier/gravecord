@@ -316,6 +316,7 @@ impl Root {
                     .child(mutuals),
             )
             .when_some(bio, |this, bio| this.child(self.bio(&bio, text, cx)))
+            .children(self.live_activity_cards(user_id, false, text, subtle, cx))
             .child(
                 div()
                     .flex()

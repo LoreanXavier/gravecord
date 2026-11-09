@@ -407,12 +407,7 @@ impl Root {
         let strong: Hsla = palette.text;
         let subtle: Hsla = hsla(0., 0., 1., 0.88);
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
-        let presence = self
-            .stores
-            .presences
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| "offline".to_owned());
+        let presence = self.stores.status(id).to_owned();
         let friends: Vec<dc_state::User> = body
             .and_then(|body| body["mutual_friends"].as_array())
             .into_iter()
@@ -736,6 +731,7 @@ impl Root {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let panel: AnyElement = match tab {
             Tab::Activity => {
+                let current = self.live_activity_cards(id, true, strong, subtle, cx);
                 let cards: Vec<AnyElement> = self
                     .fetched
                     .get(&format!("outbox:{id}"))
@@ -749,6 +745,10 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
+                    .when(!current.is_empty(), |this| {
+                        this.child(Self::section_heading("Current activity", subtle))
+                            .child(div().flex().flex_col().gap(px(8.)).children(current))
+                    })
                     .when(!cards.is_empty(), |this| {
                         this.child(Self::section_heading("Recent activity", subtle))
                             .child(div().flex().flex_col().gap(px(8.)).children(cards))

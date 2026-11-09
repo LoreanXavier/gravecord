@@ -210,7 +210,11 @@ impl Root {
         }
     }
 
-    pub(super) fn profile_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn profile_layer(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let popout = self.profile.as_ref()?;
         let user = self.profile_user(popout.user);
         let own = self
@@ -219,7 +223,7 @@ impl Root {
             .as_ref()
             .is_some_and(|current| current.id == user.id);
         if !own {
-            return self.other_popout(popout, cx);
+            return self.other_popout(popout, window, cx);
         }
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let banner = self.banner_color(&user);

@@ -84,6 +84,7 @@ impl Root {
     pub(super) fn other_popout(
         &self,
         popout: &Popout,
+        window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let user = self.stores.users.get(&popout.user)?.clone();
@@ -125,6 +126,7 @@ impl Root {
             div()
                 .relative()
                 .h(px(138.))
+                .flex_none()
                 .child(div().h(px(105.)).rounded_t(px(6.)).bg(banner))
                 .child(
                     // `avatar_WRLIGC clickable`: "View Full Profile".
@@ -267,7 +269,8 @@ impl Root {
         let content: AnyElement = div()
             .pl(px(16.))
             .pt(px(4.))
-            .pr(px(8.))
+            // The reference reserves an additional 8px scrollbar gutter.
+            .pr(px(16.))
             .pb(px(8.))
             .flex()
             .flex_col()
@@ -275,6 +278,7 @@ impl Root {
             .child(names)
             .when(friends > 0 || servers > 0, |this| this.child(mutuals))
             .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
+            .children(self.live_activity_cards(id, false, strong, subtle, cx))
             .into_any_element();
         let message: Option<AnyElement> = popout.message.as_ref().map(|message| {
             div()
@@ -326,6 +330,7 @@ impl Root {
             .id("profile-popout")
             .occlude()
             .w(px(304.))
+            .max_h(window.viewport_size().height - px(16.))
             .p(px(2.))
             .rounded(px(8.))
             .bg(linear_gradient(
@@ -352,14 +357,21 @@ impl Root {
             .child(
                 div()
                     .rounded(px(6.))
+                    .max_h(window.viewport_size().height - px(20.))
                     .bg(palette.overlay)
                     .pb(px(4.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
                     .child(header)
-                    .child(content)
-                    .children(message),
+                    .child(
+                        div()
+                            .id("profile-body-scroll")
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .child(content),
+                    )
+                    .children(message.map(|message| div().flex_none().child(message))),
             );
         let at: Point<Pixels> = if popout.left {
             point(popout.anchor.left() - px(312.), popout.anchor.top())

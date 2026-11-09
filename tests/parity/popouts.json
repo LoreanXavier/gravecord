@@ -1,4 +1,5 @@
 {
   "titlebar": { "class": "bar_3zSH5d" },
-  "pins-popout": { "class": "messagesPopoutWrap_6bgemo" }
+  "pins-popout": { "class": "messagesPopoutWrap_6bgemo" },
+  "live-activity-card": { "class": "card_Bu4Al8" }
 }

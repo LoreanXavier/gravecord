@@ -67,6 +67,7 @@ mod invite;
 mod invite_embed;
 mod lightbox;
 mod links;
+mod live_activity;
 pub mod login;
 mod logout;
 mod presence;
@@ -234,6 +235,7 @@ pub struct Root {
     screening: Option<screening::Screening>,
     slowmode: dc_state::slowmode::SlowmodeStore,
     slowmode_ticking: bool,
+    presence_ticking: bool,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
@@ -478,6 +480,7 @@ impl Root {
             screening: None,
             slowmode: Default::default(),
             slowmode_ticking: false,
+            presence_ticking: false,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
@@ -772,6 +775,16 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if key.starts_with("presence-button:") {
+                    self.live_button_fetched(&key, body, cx);
+                    return;
+                }
+                if key.starts_with("presence-app:") {
+                    self.live_application_fetched(&body);
+                    self.fetched.insert(key, body);
+                    cx.notify();
+                    return;
+                }
                 if self.screening_fetched(&key, &body, cx) {
                     return;
                 }
@@ -5104,6 +5117,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);
         // The formatting functions without a `Root` read the Time format from here.
@@ -5532,7 +5546,7 @@ impl Render for Root {
             .children(self.add_target_popout(cx))
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
-            .children(self.profile_layer(cx))
+            .children(self.profile_layer(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))
