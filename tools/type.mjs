@@ -1,6 +1,6 @@
 // node tools/type.mjs "<text>" [--enter]
 // Focuses the clean client's message composer, inserts the text as typed input and optionally presses Enter. Only for
-// the gravecord fixture guild and the designated test DM (the working rules "Never").
+// the gravecord fixture guild and the designated test DM.
 import { connect } from './cdp.mjs';
 
 const args = process.argv.slice(2);

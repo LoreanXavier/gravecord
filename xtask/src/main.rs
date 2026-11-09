@@ -28,7 +28,7 @@ fn main() -> Result<()> {
         ["report"] => report::run(&repo_root()),
         ["parity", rest @ ..] => parity::run(&repo_root(), rest),
         ["headless", rest @ ..] => headless::run(&repo_root(), rest),
-        [] => bail!("usage: cargo xtask <command>, see the working rules"),
+        [] => bail!("usage: cargo xtask <command>"),
         other => bail!("not implemented yet: {}", other.join(" ")),
     }
 }
