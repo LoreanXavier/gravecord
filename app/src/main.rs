@@ -329,8 +329,13 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "capture")]
 fn write_capture(cx: &mut App, window: gpui::AnyWindowHandle, path: &Path) {
-    parity::write(&path.with_extension("layout.json"));
-    let result = window.update(cx, |_, window, _| window.render_to_image());
+    let result = window.update(cx, |_, window, cx| {
+        parity::clear();
+        window.refresh();
+        window.draw(cx).clear(cx);
+        parity::write(&path.with_extension("layout.json"));
+        window.render_to_image()
+    });
     match result {
         Ok(Ok(image)) => {
             if let Err(error) = save_frame(&image, path) {

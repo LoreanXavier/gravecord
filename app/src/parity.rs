@@ -23,6 +23,10 @@ mod registry {
         BOUNDS.with(|map| map.borrow_mut().insert(id.to_owned(), value));
     }
 
+    pub fn clear() {
+        BOUNDS.with(|map| map.borrow_mut().clear());
+    }
+
     pub fn write(path: &std::path::Path) {
         let body = BOUNDS.with(|map| {
             let lines: Vec<String> = map
@@ -39,7 +43,7 @@ mod registry {
 }
 
 #[cfg(feature = "capture")]
-pub use registry::write;
+pub use registry::{clear, write};
 
 pub trait Parity: ParentElement + Styled + Sized {
     /// Call before `.absolute()`: it makes the element a positioning parent for its probe.
