@@ -73,7 +73,7 @@ fn setup(options: Options, exe: &Path) -> anyhow::Result<i32> {
         if let Some(name) = &options.shortcut_name {
             plan.shortcut_name = name.clone();
         }
-        ui::close_running(&plan.dir.join("gravecord.exe"), None)?;
+        close_running(&plan.dir.join("gravecord.exe"), true)?;
         install::install(&archive, &stub, &plan, &mut |_, _| {})?;
         if options.launch {
             winsys::launch(&plan.dir.join("gravecord.exe"), &plan.dir);
@@ -119,7 +119,7 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
         );
         purge = !keep;
     }
-    ui::close_running(&dir.join("gravecord.exe"), None)?;
+    close_running(&dir.join("gravecord.exe"), options.silent)?;
     install::uninstall(
         &dir,
         &install::Removal {
@@ -140,4 +140,16 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
         );
     }
     Ok(0)
+}
+
+fn close_running(exe: &Path, silent: bool) -> anyhow::Result<()> {
+    if silent {
+        anyhow::ensure!(
+            winsys::ask_to_close(exe, std::time::Duration::from_secs(8)),
+            "gravecord is still running; close it and run setup again."
+        );
+        Ok(())
+    } else {
+        ui::close_running(exe, None)
+    }
 }

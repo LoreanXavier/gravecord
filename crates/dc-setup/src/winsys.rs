@@ -333,13 +333,23 @@ pub fn ask_to_close(exe: &Path, wait: Duration) -> bool {
 
 /// Deletes the running uninstaller and then its folder (when empty), after this process has exited.
 pub fn delete_self_later(exe: &Path, dir: &Path) {
-    let line = format!(
-        "/C ping 127.0.0.1 -n 4 >nul & del /f /q \"{}\" & rmdir \"{}\"",
-        exe.display(),
-        dir.display()
-    );
-    let _ = std::process::Command::new("cmd.exe")
-        .raw_arg(line)
+    if !exe.is_absolute()
+        || exe.parent() != Some(dir)
+        || !exe
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(crate::paths::UNINSTALLER))
+    {
+        return;
+    }
+    // Paths are data, not shell source: percent signs, quotes and ampersands in a chosen folder stay literal.
+    // Directory.Delete without recursion leaves any files the user added in place.
+    let script = "Start-Sleep -Seconds 4; \
+        Remove-Item -LiteralPath $env:GRAVECORD_REMOVE_EXE -Force -ErrorAction SilentlyContinue; \
+        try { [System.IO.Directory]::Delete($env:GRAVECORD_REMOVE_DIR, $false) } catch {}";
+    let _ = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("GRAVECORD_REMOVE_EXE", exe)
+        .env("GRAVECORD_REMOVE_DIR", dir)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 }

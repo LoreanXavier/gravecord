@@ -108,9 +108,14 @@ pub fn run(repo: &Path) -> Result<()> {
     // The portable folder. The exe may be locked because the owner has it open; the setup is written either way.
     match std::fs::copy(&app_exe, dist.join("gravecord.exe")) {
         Ok(_) => println!("portable: {}", dist.join("gravecord.exe").display()),
-        Err(error) => println!(
-            "portable gravecord.exe NOT refreshed ({error}); it is probably open. Close it and run package again."
-        ),
+        Err(error) => {
+            let alternate = dist.join("gravecord-next.exe");
+            write_replacing(&alternate, &std::fs::read(&app_exe)?)?;
+            println!(
+                "portable gravecord.exe NOT refreshed ({error}); replacement written to {}",
+                alternate.display()
+            );
+        }
     }
     mirror(&assets, &dist.join("app").join("assets"))?;
     Ok(())

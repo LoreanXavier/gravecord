@@ -21,3 +21,19 @@
 ## Test options
 
 `--silent --dir <folder> --no-register` installs without a window and without shortcuts or registry. `--reg-key <name>` and `--shortcut-name <name>` change the names used, `--desktop` adds the desktop shortcut. The uninstaller takes `--silent`, `--purge-data` and `--data-dir <folder>`. `--screenshot <png> [--state welcome|welcome-webview|progress|done|failed]` renders a page and exits.
+
+Silent install and uninstall return failure if the running app does not close; they do not open a Retry dialog.
+Uninstaller cleanup passes paths as environment data to a hidden helper, removes the executable by literal path,
+and removes the install directory only when empty. If the portable executable is open during packaging, the new
+binary is saved beside it as `gravecord-next.exe`.
+
+## Verification, 2026-11-09
+
+- Unit test: the 18 setup tests passed (payload, paths, manifest, update/removal and icon encoding).
+- Ran live on the hidden desktop: silent install and reinstall of the packaged payload into a scratch folder with
+  `--no-register`; removal with the rebuilt uninstaller preserved a foreign file and removed its own executable.
+- Frame read: the welcome window captured on the hidden desktop. Other installer pages and interactive installation
+  are unverified.
+- Import inspection: the existing packaged app and setup import no VCRUNTIME or MSVCP140 DLL. This checks direct
+  imports on this machine, not operation on a clean Windows installation.
+- Registration, shortcuts, running-app refusal, locked portable fallback and data deletion are not live-tested.
