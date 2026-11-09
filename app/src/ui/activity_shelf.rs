@@ -41,6 +41,8 @@ pub(crate) struct ShelfCard {
     /// The asset named `embedded_cover` of this application.
     pub banner: Option<String>,
     pub promoted: bool,
+    /// `label_type` while its window is open: 1 NEW, 2 UPDATED, else 0.
+    pub label: u64,
     pub requires_age_gate: bool,
 }
 
@@ -72,8 +74,8 @@ fn label_active(web: &Value, now: chrono::DateTime<chrono::Utc>) -> bool {
             .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
             .map(|time| time.with_timezone(&chrono::Utc))
     };
-    at("label_from").is_none_or(|from| now >= from)
-        && at("label_until").is_none_or(|until| now <= until)
+    // `D` (735991): both ends have to be set, and `now` strictly between them.
+    matches!((at("label_from"), at("label_until")), (Some(from), Some(until)) if now > from && now < until)
 }
 
 /// 994428: the configs in server order, resolved against their applications; kept when the application supports
@@ -118,6 +120,11 @@ pub(crate) fn parse_shelf(body: &Value, now: chrono::DateTime<chrono::Utc>) -> V
                 icon: application["icon"].as_str().map(str::to_owned),
                 banner,
                 promoted: flag_bits(application) & PROMOTED_FLAG != 0,
+                label: if labelled {
+                    web["label_type"].as_u64().unwrap_or(0)
+                } else {
+                    0
+                },
                 requires_age_gate: config["requires_age_gate"].as_bool().unwrap_or(false),
             },
             rank,
@@ -349,24 +356,46 @@ impl Root {
                     .children(
                         banner.map(|banner| img(banner).size_full().object_fit(ObjectFit::Cover)),
                     )
-                    .when(card.promoted, |this| {
-                        this.child(
+                    .when(card.promoted || card.label != 0, |this| {
+                        // `bannerUpperRightContainer`: a row, 4px apart, 8px from the top and the right.
+                        let pill = |text: &'static str, background, border, ink| {
                             div()
-                                .absolute()
-                                .top(px(8.))
-                                .right(px(8.))
                                 .h(px(16.))
                                 .px(px(8.))
                                 .rounded_full()
                                 .flex()
                                 .items_center()
-                                .bg(color("--badge-expressive-background"))
-                                .border_color(color("--badge-expressive-border"))
-                                .text_color(color("--badge-expressive-text"))
+                                .bg(color(background))
+                                .border_color(color(border))
+                                .text_color(color(ink))
                                 .text_size(px(12.))
                                 .line_height(px(16.))
                                 .font_weight(FontWeight(600.))
-                                .child("PROMOTED"),
+                                .child(text)
+                        };
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(8.))
+                                .right(px(8.))
+                                .flex()
+                                .gap(px(4.))
+                                .when(card.promoted, |row| {
+                                    row.child(pill(
+                                        "PROMOTED",
+                                        "--badge-expressive-background",
+                                        "--badge-expressive-border",
+                                        "--badge-expressive-text",
+                                    ))
+                                })
+                                .when(card.label != 0, |row| {
+                                    row.child(pill(
+                                        if card.label == 1 { "NEW" } else { "UPDATED" },
+                                        "--badge-primary-background",
+                                        "--badge-primary-border",
+                                        "--badge-primary-text",
+                                    ))
+                                }),
                         )
                     }),
             )
@@ -410,14 +439,14 @@ impl Root {
     }
 
     fn shelf_icon(&self, picture: Option<std::sync::Arc<gpui::Image>>, size: f32) -> AnyElement {
+        // The picture is clipped by its own radius: 12px outside, 11px inside the 1px border.
         div()
             .size(px(size))
             .flex_none()
             .rounded(px(12.))
-            .overflow_hidden()
             .border_1()
             .border_color(color("--border-subtle"))
-            .children(picture.map(|picture| img(picture).size_full()))
+            .children(picture.map(|picture| img(picture).size_full().rounded(px(11.))))
             .into_any_element()
     }
 
@@ -522,9 +551,10 @@ impl Root {
         let field = div()
             .h(px(40.))
             .w_full()
-            .pl(px(4.))
+            // The focused ring is 2px (golden: the 1px border and the focus ring), inside the same 40px.
+            .pl(px(3.))
             .rounded(px(8.))
-            .border_1()
+            .border_2()
             .border_color(color("--input-border-active"))
             .bg(color("--input-background-default"))
             .flex()
@@ -652,7 +682,7 @@ mod tests {
             "application_id": id,
             "supported_platforms": platforms,
             "shelf_rank": rank,
-            "client_platform_config": {"web": {"label_type": label, "label_from": null, "label_until": null}},
+            "client_platform_config": {"web": {"label_type": label, "label_from": "2026-01-01T00:00:00+00:00", "label_until": "2027-01-01T00:00:00+00:00"}},
         })
     }
 
@@ -690,6 +720,22 @@ mod tests {
     }
 
     #[test]
+    fn a_label_needs_both_ends_of_its_window() {
+        let mut shelf = body();
+        shelf["activities"][3]["client_platform_config"]["web"]["label_from"] = json!(null);
+        let names: Vec<String> = parse_shelf(&shelf, now())
+            .into_iter()
+            .map(|card| card.name)
+            .collect();
+        assert_eq!(names, ["Wordle", "Watch Together", "Chess"]);
+        let open = parse_shelf(&body(), now());
+        assert_eq!(
+            open.iter().map(|card| card.label).collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+    }
+
+    #[test]
     fn an_expired_label_does_not_reorder() {
         let mut shelf = body();
         shelf["activities"][3]["client_platform_config"]["web"]["label_until"] =
@@ -708,6 +754,7 @@ mod tests {
             icon: None,
             banner: None,
             promoted: false,
+            label: 0,
             requires_age_gate: false,
         };
         let cards = vec![
@@ -733,6 +780,7 @@ mod tests {
             icon: None,
             banner: None,
             promoted: false,
+            label: 0,
             requires_age_gate: false,
         };
         let cards = vec![card("Chess A"), card("Chess B"), card("Chess C")];

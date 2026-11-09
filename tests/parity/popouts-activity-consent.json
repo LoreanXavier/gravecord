@@ -1,0 +1,8 @@
+{
+  "oauth-modal": { "class": "container_dvN-MP" },
+  "oauth-header": { "class": "header_QssfB5" },
+  "oauth-scopes": { "class": "scopes_hSg5_A" },
+  "oauth-details": { "class": "applicationDetails_-Dikns" },
+  "activity-panel": { "class": "panel_8eCwJY" },
+  "activity-pip": { "class": "pictureInPictureWindow_69M0s9" }
+}

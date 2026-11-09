@@ -4,12 +4,14 @@
 //! Compositing (Appendix C spike 5): the surface paints above GPUI, so it is hidden whenever one of the app's overlays
 //! (a menu, a modal, the shelf) is open, and when the call view is not the page on screen.
 
-use super::Root;
 use super::activity_launch::ACTIVITY_PREFIX;
+use super::tooltip::{Side, Tip};
+use super::{Root, color, icon};
 use crate::net::Request;
+use crate::parity::Parity;
 use dc_webhost::sdk::{self, Action, Ask, Bridge};
 use dc_webhost::{HostEvent, WebHost};
-use gpui::{Context, Task, Window};
+use gpui::{AnyElement, Context, FontWeight, Task, Window, deferred, div, img, prelude::*, px};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -30,6 +32,18 @@ pub(crate) struct ActivityHost {
     /// The commands the page sent, for the harness.
     seen: Vec<String>,
     _poll: Task<()>,
+}
+
+/// The picture-in-picture window (`pictureInPictureWindow_69M0s9`): 320 by 180, measured at 400 from the right edge and
+/// 312 from the bottom of the 1280 by 720 frame.
+fn pip_bounds(window: &Window) -> (f32, f32, f32, f32) {
+    let size = window.viewport_size();
+    (
+        f32::from(size.width) - 400.,
+        f32::from(size.height) - 312.,
+        320.,
+        180.,
+    )
 }
 
 fn user_json(user: &dc_state::User) -> Value {
@@ -66,7 +80,141 @@ impl ActivityHost {
     }
 }
 
+/// `renderTime` of the elapsed counter (module 492684): hours only when there are some, every part two digits.
+pub(super) fn elapsed_text(seconds: u64) -> String {
+    let (hours, minutes, seconds) = ((seconds / 3600) % 24, (seconds / 60) % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02} elapsed")
+    } else {
+        format!("{minutes:02}:{seconds:02} elapsed")
+    }
+}
+
 impl Root {
+    /// `panel_8eCwJY activityPanel`: the activity's icon and name, how long we have been in it, and Leave. It sits
+    /// above the call panel (golden: 57px, a 12px pad, the 32px row, a 1px rule).
+    pub(super) fn activity_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let running = self.activities.running.as_ref()?;
+        let app = running.application_id.clone();
+        let name = if running.name.is_empty() {
+            self.activities.names.get(&app).cloned().unwrap_or_default()
+        } else {
+            running.name.clone()
+        };
+        let picture = self.images.get(&format!("shelf-icon:{app}")).cloned();
+        let elapsed = elapsed_text(running.started.elapsed().as_secs());
+        let leave = self.with_tip(
+            "activity-leave-tip",
+            Tip::text("Leave Activity", Side::Top),
+            div()
+                .id("activity-leave")
+                .size(px(32.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(color("--interactive-background-hover")))
+                .child(icon("activity_leave", 20., "--interactive-icon-default"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.leave_activity(cx);
+                    cx.notify();
+                })),
+            cx,
+        );
+        Some(
+            div()
+                .parity_below("activity-panel", 1.)
+                .id("activity-panel")
+                .w_full()
+                .h(px(57.))
+                .flex_none()
+                .px(px(12.))
+                .py(px(12.))
+                .bg(color("--background-surface-high"))
+                .border_b_1()
+                .border_color(color("--background-mod-subtle"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .size(px(32.))
+                                .flex_none()
+                                .rounded(px(8.))
+                                .overflow_hidden()
+                                .children(
+                                    picture
+                                        .map(|picture| img(picture).size(px(32.)).rounded(px(8.))),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(13.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(elapsed),
+                                ),
+                        ),
+                )
+                .child(leave)
+                .into_any_element(),
+        )
+    }
+
+    /// What shows in the picture-in-picture window until the page paints over it: the application's cover on the
+    /// card's own ground. Drawn above the consent scrim, like the window.
+    pub(super) fn activity_pip_layer(&self, window: &Window) -> Option<AnyElement> {
+        if !self.activities.pip {
+            return None;
+        }
+        let running = self.activities.running.as_ref()?;
+        let (x, y, width, height) = pip_bounds(window);
+        let cover = self
+            .images
+            .get(&format!("shelf-banner:{}", running.application_id))
+            .cloned();
+        Some(
+            deferred(
+                div()
+                    .parity("activity-pip")
+                    .id("activity-pip")
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(width))
+                    .h(px(height))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(color("--background-surface-high"))
+                    .children(
+                        cover
+                            .map(|cover| img(cover).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     fn activity_context(&self) -> Option<sdk::Context> {
         let running = self.activities.running.as_ref()?;
         let me = self.stores.current_user.as_ref()?;
@@ -100,11 +248,13 @@ impl Root {
         })
     }
 
-    /// Whether one of the app's own overlays is up (the surface would cover it).
-    fn overlay_open(&self) -> bool {
+    /// Whether one of the app's own overlays is up (the surface would cover it). The picture-in-picture window sits
+    /// above the consent modal, as in the official frame, so that one does not hide it.
+    fn overlay_open(&self, pip: bool) -> bool {
         self.vv.menu.is_some()
             || self.activity_shelf.is_some()
             || self.activities.dialog_open()
+            || (self.oauth_open() && !pip)
             || self.voice_dialog_open()
             || self.quick_switcher.is_some()
     }
@@ -129,6 +279,7 @@ impl Root {
             .as_ref()
             .and_then(|running| Some((running.launch_id.clone(), running.url.clone()?)));
         let stage_seen = std::mem::take(&mut self.activities.stage_seen);
+        self.activities.pip = self.activities.running.is_some() && !stage_seen;
         let Some((launch_id, url)) = wanted else {
             if self.activities.host.take().is_some() {
                 cx.notify();
@@ -143,8 +294,14 @@ impl Root {
         {
             self.activities.host = None;
         }
-        let visible = stage_seen && !self.overlay_open();
-        let stage = self.activity_stage();
+        // With the call view's stage out of sight the page is the picture-in-picture window.
+        let pip = !stage_seen;
+        let visible = !self.overlay_open(pip);
+        let stage = if pip {
+            Some(pip_bounds(window))
+        } else {
+            self.activity_stage()
+        };
         if self.activities.host.is_none() {
             let (Some(bounds), Some(ctx)) = (stage, self.activity_context()) else {
                 return;
@@ -211,10 +368,22 @@ impl Root {
             host.web.set_visible(visible);
             host.visible = visible;
         }
+        let actions = host.bridge.set_pip(pip);
+        self.activity_actions(actions, cx);
     }
 
     /// The relay page's events since the last poll.
     fn activity_host_poll(&mut self, cx: &mut Context<Self>) {
+        // The panel's counter shows whole seconds.
+        let seconds = self
+            .activities
+            .running
+            .as_ref()
+            .map(|running| running.started.elapsed().as_secs());
+        if seconds != self.activities.shown_seconds {
+            self.activities.shown_seconds = seconds;
+            cx.notify();
+        }
         let Some(host) = self.activities.host.as_mut() else {
             return;
         };
@@ -321,23 +490,7 @@ impl Root {
             return;
         };
         match ask {
-            Ask::Authorize { nonce, args } => {
-                // The consent UI (OAuth2AuthorizeModal) is not built, and nothing is granted without the owner's own
-                // action, so the request ends as a cancelled authorization (BLOCKED.md).
-                tracing::info!(
-                    scopes = args["scope"].to_string().len(),
-                    "activity asked to authorize: no consent UI, answered as cancelled"
-                );
-                let action = host.bridge.answer(
-                    "AUTHORIZE",
-                    &nonce,
-                    Err((
-                        sdk::code::OAUTH2_ERROR,
-                        "User cancelled authorization".to_owned(),
-                    )),
-                );
-                self.activity_actions(vec![action], cx);
-            }
+            Ask::Authorize { nonce, args } => self.oauth_begin(nonce, &args, cx),
             Ask::Authenticate { nonce, token } => {
                 host.pending.insert(
                     nonce.clone(),
@@ -382,6 +535,21 @@ impl Root {
                 self.activity_actions(vec![action], cx);
             }
         }
+    }
+
+    /// Answers a command of the page that waited for the user or the network.
+    pub(super) fn activity_reply(
+        &mut self,
+        cmd: &str,
+        nonce: &str,
+        result: Result<Value, (u32, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.activities.host.as_mut() else {
+            return;
+        };
+        let action = host.bridge.answer(cmd, nonce, result);
+        self.activity_actions(vec![action], cx);
     }
 
     /// The network answer to an `Ask`.
@@ -451,5 +619,17 @@ impl Root {
         };
         let action = host.bridge.answer(&cmd, nonce, result);
         self.activity_actions(vec![action], cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elapsed_text;
+
+    #[test]
+    fn the_counter_reads_like_the_official_one() {
+        assert_eq!(elapsed_text(3), "00:03 elapsed");
+        assert_eq!(elapsed_text(75), "01:15 elapsed");
+        assert_eq!(elapsed_text(3600 + 61), "01:01:01 elapsed");
     }
 }

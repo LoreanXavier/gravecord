@@ -60,6 +60,8 @@ pub(crate) struct Running {
     pub url: Option<String>,
     /// The `frame_id` the page is given and has to repeat in its handshake.
     pub frame_id: String,
+    /// When this session joined: the panel's "elapsed" counts from here.
+    pub started: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -88,10 +90,16 @@ pub(crate) struct Activities {
     launching: Option<Launching>,
     dialog: Option<Dialog>,
     pub(super) host: Option<super::activity_host::ActivityHost>,
+    /// The consent flow an SDK `AUTHORIZE` started.
+    pub(super) oauth: Option<super::oauth::Flow>,
     /// Application names the shelf has told, for rows of activities running in other channels.
     pub(super) names: std::collections::HashMap<String, String>,
     /// The call view painted the stage this frame.
     pub(super) stage_seen: bool,
+    /// The whole seconds the panel last showed, so a tick repaints it.
+    pub(super) shown_seconds: Option<u64>,
+    /// The page is in the picture-in-picture window (the call view's stage is not on screen).
+    pub(super) pip: bool,
 }
 
 impl Activities {
@@ -503,6 +511,9 @@ impl Root {
                 cx.notify();
             }
             "ask" => self.activity_ask_answered(&app, body, cx),
+            "oauth-public" | "oauth-get" | "oauth-disc" | "oauth-post" | "oauth-ack" => {
+                self.oauth_fetched(step, &app, body, cx)
+            }
             "leave" => {}
             _ => {}
         }
@@ -579,6 +590,7 @@ impl Root {
                     ticket: None,
                     url: None,
                     frame_id: frame_id(),
+                    started: std::time::Instant::now(),
                 });
                 let _ = self.requests.send(Request::Rest {
                     key: Some(format!("{ACTIVITY_PREFIX}ticket:{app}")),
@@ -610,6 +622,7 @@ impl Root {
         let Some(running) = self.activities.running.take() else {
             return;
         };
+        self.activities.oauth = None;
         let session = self.stores.session_id.clone().unwrap_or_default();
         let (route, body) = leave_request(&running, &session);
         let _ = self.requests.send(Request::Rest {
@@ -741,7 +754,7 @@ impl Root {
     pub(crate) fn activity_state_line(&self) -> String {
         let a = &self.activities;
         format!(
-            "shelf={} launching={} instances={} running={} ticket={} url={} host=[{}] dialog={}",
+            "shelf={} launching={} instances={} running={} ticket={} url={} host=[{}] dialog={} oauth=[{}]",
             self.activity_shelf.is_some(),
             a.launching.is_some(),
             a.instances.len(),
@@ -755,7 +768,11 @@ impl Root {
                 Some(Dialog::AgeGate { .. }) => "age-gate",
                 Some(Dialog::HeadsUp { .. }) => "heads-up",
                 Some(Dialog::Failed { .. }) => "failed",
-            }
+            },
+            a.oauth
+                .as_ref()
+                .map(|flow| flow.describe())
+                .unwrap_or_default()
         )
     }
 
@@ -884,6 +901,7 @@ mod tests {
             ticket: None,
             url: None,
             frame_id: "f".into(),
+            started: std::time::Instant::now(),
         };
         assert_eq!(
             leave_request(&running, "sess"),

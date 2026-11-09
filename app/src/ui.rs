@@ -63,6 +63,8 @@ mod links;
 mod menu;
 mod modal;
 mod notify;
+mod oauth;
+mod oauth_spec;
 mod permission_spec;
 mod picker;
 mod pins;
@@ -2573,6 +2575,7 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .flex_col()
+            .children(self.activity_panel(cx))
             .children(self.voice_panel(cx))
             .child(row)
     }
@@ -4462,7 +4465,9 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape"
-                    && (this.activity_dialog_escape(cx) || this.activity_shelf_escape(cx))
+                    && (this.oauth_escape(cx)
+                        || this.activity_dialog_escape(cx)
+                        || this.activity_shelf_escape(cx))
                 {
                     cx.stop_propagation();
                     return;
@@ -4784,6 +4789,8 @@ impl Render for Root {
             .children(self.quick_switcher_modal(window, cx))
             .children(self.activity_shelf_layer(window, cx))
             .children(self.activity_dialog_layer(cx))
+            .children(self.oauth_layer(window, cx))
+            .children(self.activity_pip_layer(window))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))

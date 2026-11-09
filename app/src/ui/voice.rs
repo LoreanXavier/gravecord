@@ -611,11 +611,14 @@ impl Root {
         let activity = self.with_tip(
             "voice-activity-tip",
             Tip::text("Start An Activity", Side::Top),
-            wide("voice-activity", "voice_activity")
-                .cursor_pointer()
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx)),
-                ),
+            if self.activities.running.is_some() {
+                // `greyButtonActive`: green while this session is in an activity.
+                wide_active("voice-activity", "voice_activity")
+            } else {
+                wide("voice-activity", "voice_activity")
+            }
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx))),
             cx,
         );
         // `greyButtonActive` while the picker is open, `disabled` (opacity .3) under a server mute, suppression or deafening.

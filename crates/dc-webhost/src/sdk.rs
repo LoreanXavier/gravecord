@@ -80,6 +80,10 @@ pub enum Action {
 pub struct Bridge {
     origin: Option<String>,
     authenticated: bool,
+    /// An AUTHORIZE waits for the user (`authorization.authing`).
+    authing: bool,
+    /// The page sits in the picture-in-picture window.
+    pip: bool,
     scopes: BTreeSet<String>,
     subscriptions: BTreeSet<String>,
 }
@@ -279,15 +283,36 @@ impl Bridge {
         };
         match cmd {
             "AUTHORIZE" => {
+                // Module 596339 `[AUTHORIZE]` handler, in its order.
+                let client = args["client_id"].as_str().unwrap_or_default();
+                if client.is_empty() {
+                    return post(error(
+                        cmd,
+                        nonce,
+                        code::INVALID_CLIENTID,
+                        "No client id provided",
+                    ));
+                }
                 if self.authenticated {
                     return post(error(
                         cmd,
                         nonce,
-                        code::OAUTH2_ERROR,
+                        code::INVALID_COMMAND,
                         "Already authenticated",
                     ));
                 }
-                if args["client_id"].as_str() != Some(ctx.application_id.as_str()) {
+                if self.authing {
+                    return post(error(cmd, nonce, code::INVALID_COMMAND, "Already authing"));
+                }
+                if args["response_type"].as_str() == Some("token") {
+                    return post(error(
+                        cmd,
+                        nonce,
+                        code::INVALID_COMMAND,
+                        "Authorization response_type \"token\" is not supported",
+                    ));
+                }
+                if client != ctx.application_id {
                     return post(error(
                         cmd,
                         nonce,
@@ -295,14 +320,7 @@ impl Bridge {
                         "Application does not match the connection's",
                     ));
                 }
-                if args["response_type"].as_str().is_some_and(|t| t != "code") {
-                    return post(error(
-                        cmd,
-                        nonce,
-                        code::INVALID_COMMAND,
-                        "Invalid response type",
-                    ));
-                }
+                self.authing = true;
                 vec![Action::Ask(Ask::Authorize {
                     nonce: nonce.to_owned(),
                     args: args.clone(),
@@ -432,9 +450,10 @@ impl Bridge {
                         "ACTIVITY_LAYOUT_MODE_UPDATE" => {
                             out.push(Action::Post(dispatch(evt, json!({"layout_mode": 0}))))
                         }
-                        "ACTIVITY_PIP_MODE_UPDATE" => {
-                            out.push(Action::Post(dispatch(evt, json!({"is_pip_mode": false}))))
-                        }
+                        "ACTIVITY_PIP_MODE_UPDATE" => out.push(Action::Post(dispatch(
+                            evt,
+                            json!({"is_pip_mode": self.pip}),
+                        ))),
                         "ACTIVITY_INSTANCE_PARTICIPANTS_UPDATE" => out.push(Action::Post(
                             dispatch(evt, json!({"participants": ctx.participants})),
                         )),
@@ -464,6 +483,9 @@ impl Bridge {
         nonce: &str,
         result: Result<Value, (u32, String)>,
     ) -> Action {
+        if cmd == "AUTHORIZE" {
+            self.authing = false;
+        }
         match result {
             Ok(data) => {
                 if cmd == "AUTHENTICATE" {
@@ -477,6 +499,22 @@ impl Bridge {
                 Action::Post(reply(cmd, nonce, data))
             }
             Err((code, message)) => Action::Post(error(cmd, nonce, code, &message)),
+        }
+    }
+
+    /// The page moved into or out of the picture-in-picture window: subscribers are told.
+    pub fn set_pip(&mut self, pip: bool) -> Vec<Action> {
+        if self.pip == pip {
+            return Vec::new();
+        }
+        self.pip = pip;
+        if self.subscriptions.contains("ACTIVITY_PIP_MODE_UPDATE") {
+            vec![Action::Post(dispatch(
+                "ACTIVITY_PIP_MODE_UPDATE",
+                json!({"is_pip_mode": pip}),
+            ))]
+        } else {
+            Vec::new()
         }
     }
 
@@ -737,6 +775,10 @@ mod tests {
             panic!()
         };
         assert_eq!(message[1]["data"]["code"], 4002);
+        assert_eq!(
+            message[1]["data"]["message"],
+            "Authorization response_type \"token\" is not supported"
+        );
         let out = command(
             &mut bridge,
             &ctx,
@@ -744,6 +786,49 @@ mod tests {
             json!({"client_id": "880", "scope": ["identify"], "response_type": "code"}),
         );
         assert!(matches!(&out[0], Action::Ask(Ask::Authorize { nonce, .. }) if nonce == "n1"));
+        // Until the user has answered, a second AUTHORIZE is refused; the answer frees it.
+        let out = command(
+            &mut bridge,
+            &ctx,
+            "AUTHORIZE",
+            json!({"client_id": "880", "scope": ["identify"], "response_type": "code"}),
+        );
+        let Action::Post(message) = &out[0] else {
+            panic!()
+        };
+        assert_eq!(message[1]["data"]["message"], "Already authing");
+        bridge.answer(
+            "AUTHORIZE",
+            "n1",
+            Err((
+                code::OAUTH2_ERROR,
+                "User cancelled authorization".to_owned(),
+            )),
+        );
+        let out = command(
+            &mut bridge,
+            &ctx,
+            "AUTHORIZE",
+            json!({"client_id": "880", "scope": ["identify"], "response_type": "code"}),
+        );
+        assert!(matches!(&out[0], Action::Ask(Ask::Authorize { .. })));
+    }
+
+    #[test]
+    fn the_pip_state_is_pushed_to_subscribers_when_it_changes() {
+        let (mut bridge, ctx) = shaken();
+        assert!(bridge.set_pip(true).is_empty());
+        let out = command_evt(&mut bridge, &ctx, "SUBSCRIBE", "ACTIVITY_PIP_MODE_UPDATE");
+        let Action::Post(pushed) = &out[1] else {
+            panic!()
+        };
+        assert_eq!(pushed[1]["data"]["is_pip_mode"], true);
+        assert!(bridge.set_pip(true).is_empty());
+        let out = bridge.set_pip(false);
+        let Action::Post(pushed) = &out[0] else {
+            panic!()
+        };
+        assert_eq!(pushed[1]["data"]["is_pip_mode"], false);
     }
 
     #[test]
