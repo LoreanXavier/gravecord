@@ -1196,87 +1196,89 @@ impl Root {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        div()
-                            .mx(px(8.))
-                            .mt(px(4.))
-                            .h(px(24.))
-                            .w(px(1.))
-                            .flex_none()
-                            .bg(color("--border-subtle")),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_wrap()
-                            .h(px(32.))
-                            .gap(px(8.))
-                            .overflow_hidden()
-                            .children(channel.available_tags.iter().map(|tag| {
-                                let tag_id = tag.id;
-                                div()
-                                    .id(SharedString::from(format!("forum-tag-{tag_id}")))
-                                    .flex_none()
-                                    .h(px(32.))
-                                    .px(px(12.))
-                                    .rounded_full()
-                                    .cursor_pointer()
-                                    .bg(color(if tags.contains(&tag_id) {
-                                        "--brand-500"
-                                    } else {
-                                        "--background-mod-subtle"
-                                    }))
-                                    .text_size(px(14.))
-                                    .line_height(px(32.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
-                                    .child(tag.name.clone())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(v) = this.forums.get_mut(&id)
-                                            && !v.tags.remove(&tag_id)
-                                        {
-                                            v.tags.insert(tag_id);
-                                        }
-                                        this.reload_forum(id);
-                                        cx.notify();
-                                    }))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("forum-all-tags")
-                            .relative()
-                            .child(self.anchor_probe("forum-tags-anchor"))
-                            .flex_none()
-                            .h(px(32.))
-                            .px(px(12.))
-                            .rounded_full()
-                            .bg(color("--background-mod-subtle"))
-                            .cursor_pointer()
-                            .text_size(px(14.))
-                            .text_color(color("--text-default"))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(if tags.is_empty() {
-                                "All".to_owned()
-                            } else {
-                                tags.len().to_string()
-                            })
-                            .child(icon("chevron_down", 20., "--text-muted"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(v) = this.forums.get_mut(&id) {
-                                    v.menu = if v.menu == Some("tags") {
-                                        None
-                                    } else {
-                                        Some("tags")
-                                    };
-                                }
-                                cx.notify();
-                            })),
-                    ),
+                    .when(!channel.available_tags.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .mx(px(8.))
+                                .mt(px(4.))
+                                .h(px(24.))
+                                .w(px(1.))
+                                .flex_none()
+                                .bg(color("--border-subtle")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_wrap()
+                                .h(px(32.))
+                                .gap(px(8.))
+                                .overflow_hidden()
+                                .children(channel.available_tags.iter().map(|tag| {
+                                    let tag_id = tag.id;
+                                    div()
+                                        .id(SharedString::from(format!("forum-tag-{tag_id}")))
+                                        .flex_none()
+                                        .h(px(32.))
+                                        .px(px(12.))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .bg(color(if tags.contains(&tag_id) {
+                                            "--brand-500"
+                                        } else {
+                                            "--background-mod-subtle"
+                                        }))
+                                        .text_size(px(14.))
+                                        .line_height(px(32.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(tag.name.clone())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(v) = this.forums.get_mut(&id)
+                                                && !v.tags.remove(&tag_id)
+                                            {
+                                                v.tags.insert(tag_id);
+                                            }
+                                            this.reload_forum(id);
+                                            cx.notify();
+                                        }))
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("forum-all-tags")
+                                .relative()
+                                .child(self.anchor_probe("forum-tags-anchor"))
+                                .flex_none()
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded_full()
+                                .bg(color("--background-mod-subtle"))
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .text_color(color("--text-default"))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(if tags.is_empty() {
+                                    "All".to_owned()
+                                } else {
+                                    tags.len().to_string()
+                                })
+                                .child(icon("chevron_down", 20., "--text-muted"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(v) = this.forums.get_mut(&id) {
+                                        v.menu = if v.menu == Some("tags") {
+                                            None
+                                        } else {
+                                            Some("tags")
+                                        };
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1345,9 +1347,10 @@ impl Root {
                 "forum-tags-anchor"
             })
             .copied()?;
-        let top = f32::from(anchor.bottom()) + 8.;
+        // The sort probe is inside its 1px border; popouts align to the button's outer box.
+        let top = f32::from(anchor.bottom()) + if menu == "sort" { 9. } else { 8. };
         let left = if menu == "sort" {
-            f32::from(anchor.left())
+            f32::from(anchor.left()) - 1.
         } else {
             (f32::from(anchor.right()) - 370.).max(0.)
         };
@@ -1408,12 +1411,28 @@ impl Root {
                                 });
                                 div()
                                     .id(SharedString::from(format!("forum-menu-{index}")))
-                                    .h(px(36.))
+                                    .relative()
+                                    .h(px(if index == 9 { 34. } else { 36. }))
                                     .px(px(8.))
+                                    .when(matches!(index, 3 | 6 | 9), |row| {
+                                        row.mt(px(17.)).child(
+                                            div()
+                                                .absolute()
+                                                .top(px(-9.))
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(1.))
+                                                .bg(color("--border-subtle")),
+                                        )
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
                                     .text_size(px(14.))
-                                    .line_height(px(36.))
+                                    .line_height(px(if action.is_some() { 18. } else { 20. }))
+                                    .font_weight(FontWeight(500.))
                                     .text_color(color(if action.is_some() {
-                                        "--text-default"
+                                        "--text-strong"
                                     } else {
                                         "--text-muted"
                                     }))
@@ -1421,11 +1440,10 @@ impl Root {
                                         row.cursor_pointer()
                                             .hover(|s| s.bg(color("--background-mod-subtle")))
                                     })
-                                    .child(format!(
-                                        "{}{}",
-                                        label,
-                                        if selected { "  •" } else { "" }
-                                    ))
+                                    .child(div().flex_1().child(label))
+                                    .when(action.is_some() && index != 9, |row| {
+                                        row.child(super::settings::radio_dot(selected))
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if let Some((kind, value)) = action {
                                             if let Some(v) = this.forums.get_mut(&id) {
