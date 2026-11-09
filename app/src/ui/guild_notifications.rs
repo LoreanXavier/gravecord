@@ -25,7 +25,7 @@ impl Root {
     }
 
     /// One field of the guild's settings, changed here at once and sent to the server.
-    fn patch_guild_setting(&mut self, guild: Id, field: &'static str, value: Value) {
+    pub(super) fn patch_guild_setting(&mut self, guild: Id, field: &'static str, value: Value) {
         if let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) {
             settings.apply(field, &value);
         } else {

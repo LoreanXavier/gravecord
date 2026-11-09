@@ -92,6 +92,17 @@ impl Root {
                 let guild = self.guild;
                 div()
                     .id(SharedString::from(format!("thread-row-{id}")))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::Thread(id),
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .relative()
                     .ml(px(8.))
                     .w(px(286.))

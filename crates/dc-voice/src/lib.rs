@@ -177,6 +177,20 @@ impl Controls {
             state.video_request = state.video_request.wrapping_add(1);
         });
     }
+    /// Sets how one person sounds to us: a volume factor (1.0 is 100%, up to 2.0) and a local mute. Applies from
+    /// the next 20 ms frame, and holds for the rest of the call.
+    pub fn set_user_mix(&self, user: u64, volume: f32, muted: bool) {
+        let mut table = self
+            .shared
+            .user_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if volume == 1.0 && !muted {
+            table.remove(&user);
+        } else {
+            table.insert(user, (volume.clamp(0.0, 2.0), muted));
+        }
+    }
     /// The hub that carries pictures and watched stream audio; pass it to [`connect_stream`].
     pub fn hub(&self) -> VideoHub {
         self.shared.hub.clone()

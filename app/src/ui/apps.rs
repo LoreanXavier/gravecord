@@ -17,6 +17,11 @@ impl Root {
         }
     }
 
+    pub(super) fn command_index_value(&self) -> Option<&Value> {
+        self.command_index_key()
+            .and_then(|key| self.fetched.get(&key))
+    }
+
     pub(super) fn request_command_index(&mut self) {
         let Some(key) = self.command_index_key() else {
             return;

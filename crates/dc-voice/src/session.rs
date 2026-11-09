@@ -104,6 +104,8 @@ pub(crate) struct Shared {
     /// The camera wish: `Some(device id)`, empty for the default camera, `None` for off.
     pub camera: Mutex<Option<String>>,
     pub hub: VideoHub,
+    /// Per-user volume (a factor, 1.0 is 100%) and local mute, as chosen in a user's menu.
+    pub user_mix: Mutex<std::collections::HashMap<u64, (f32, bool)>>,
 }
 
 /// Video senders announce this much; the camera encoder runs at `camera::BITRATE`.
@@ -574,6 +576,7 @@ pub(crate) async fn run(
                         mixer.clear();
                         hub.clear_stream_audio();
                     }
+                    mixer.set_table(&shared.user_mix.lock().unwrap_or_else(|e| e.into_inner()));
                     let mut frame = mixer.pop();
                     // Watched stream audio joins the mix at its own level.
                     if let Some(extra) = hub.pop_stream_audio(frame.as_ref()) {

@@ -42,6 +42,7 @@ mod blocked;
 mod channel_settings;
 mod channel_settings_pages;
 mod composer_plus;
+mod context_menu;
 mod create_channel;
 mod dm;
 mod dm_profile;
@@ -92,6 +93,7 @@ mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_discovery;
+mod slash;
 mod status_menu;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
@@ -221,6 +223,9 @@ pub struct Root {
     composer: Entity<Editor>,
     /// The composer's `@`, `#` and `:` suggestions.
     autocomplete: autocomplete::State,
+    slash: slash::State,
+    /// The right-click menu of a server, channel, DM or person.
+    context: context_menu::State,
     /// A message over the length limit, held while the "too long" dialog asks what to do.
     too_long: Option<String>,
     focus: FocusHandle,
@@ -405,6 +410,9 @@ impl Root {
         setting_choices.extend(settings::prefs::restore());
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, composer, event, cx| match event {
+            EditorEvent::Submit(_) if this.slash.pending.is_some() => {
+                this.submit_pending(cx);
+            }
             EditorEvent::Submit(content) => {
                 if this.hold_too_long(content, cx) {
                     return;
@@ -437,6 +445,8 @@ impl Root {
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             composer,
             autocomplete: autocomplete::State::default(),
+            slash: slash::State::default(),
+            context: context_menu::State::default(),
             too_long: None,
             focus: cx.focus_handle(),
             images: HashMap::new(),
@@ -685,7 +695,7 @@ impl Root {
                     self.voice_logs_uploaded(&body, cx);
                     return;
                 }
-                if self.friends_fetched(&key, &body, cx) {
+                if self.friends_fetched(&key, &body, cx) || self.slash_fetched(&key, &body, cx) {
                     return;
                 }
                 if self.full_profile.is_some()
@@ -1476,6 +1486,9 @@ impl Root {
             || keys.modifiers.alt
             || keys.modifiers.shift
             || keys.modifiers.platform);
+        if self.slash_key(keys, window, cx) {
+            return true;
+        }
         if self.autocomplete_key(keys, window, cx) {
             return true;
         }
@@ -1971,6 +1984,13 @@ impl Root {
         let group = SharedString::from(format!("guild-row-{id}"));
         let tile = div()
             .id(SharedString::from(format!("guild-{id}")))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_context_menu(context_menu::Target::Guild(id), event.position, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .size(px(40.))
             .rounded(px(12.))
             .overflow_hidden()
@@ -2141,6 +2161,17 @@ impl Root {
             let (guild, category) = (self.guild, channel.id);
             return div()
                 .id(SharedString::from(format!("category-{}", channel.id)))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.open_context_menu(
+                            context_menu::Target::Category(category),
+                            event.position,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }),
+                )
                 .flex_none()
                 .pt(px(16.))
                 .h(px(40.))
@@ -2275,6 +2306,17 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("channel-row-{}", channel.id)))
                     .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                context_menu::Target::Channel(target),
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if voice {
                             // The clicked row keeps its action icons until a press lands elsewhere (`:focus-within`).
@@ -2480,7 +2522,7 @@ impl Root {
                             rows.extend(self.thread_rows(row.id, cx));
                         }
                         if row.kind == ChannelKind::Voice {
-                            rows.extend(self.voice_members(guild.id, row.id));
+                            rows.extend(self.voice_members(guild.id, row.id, cx));
                             rows.extend(self.voice_activity_rows(row.id, cx));
                             rows.extend(self.voice_invite_row(guild.id, row.id, cx));
                         }
@@ -4466,7 +4508,9 @@ impl Root {
         let docked = self.voice_chat_docked();
         let gift_button = tool("gift");
         let sticker_button = tool("sticker");
-        let apps_button = tool("apps");
+        let apps_button = tool("apps").on_click(cx.listener(|this, _, window, cx| {
+            this.open_launcher(window, cx);
+        }));
         // The form overlaps the list by 16px, as the official layout does.
         div()
             .relative()
@@ -4481,6 +4525,10 @@ impl Root {
                     .relative()
                     .child(self.anchor_probe("composer-box"))
                     .children(self.autocomplete_popup(cx))
+                    .children(self.slash_popup(cx))
+                    .children(self.option_popup(cx))
+                    .children(self.launcher_popup(cx))
+                    .children(self.length_counter(cx))
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))
@@ -4513,7 +4561,13 @@ impl Root {
                                     .min_w(px(0.))
                                     .py(px(17.))
                                     .parity("composer-text")
-                                    .child(self.composer.clone()),
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .children(self.pending_chips(cx))
+                                    .child(
+                                        div().flex_1().min_w(px(80.)).child(self.composer.clone()),
+                                    ),
                             )
                             .child(
                                 div()
@@ -5324,6 +5378,7 @@ impl Render for Root {
             .children(self.voice_dialog_layer(cx))
             .children(self.pin_modal(cx))
             .children(self.too_long_modal(cx))
+            .children(self.context_menu_layer(window, cx))
             .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))

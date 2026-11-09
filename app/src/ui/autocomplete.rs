@@ -67,7 +67,7 @@ pub(super) struct Open {
 pub(super) struct State {
     pub open: Option<Open>,
     /// Escape hides the list until the text changes: the text it was hidden at.
-    hidden: Option<String>,
+    pub(super) hidden: Option<String>,
     /// The text and caret the list was last built for.
     signature: Option<(String, usize)>,
     /// `guild:query` (or `ids:...`) to when op 8 was asked, so a repeat inside a minute is skipped.
@@ -139,14 +139,23 @@ impl Root {
             return;
         }
         self.autocomplete.signature = signature;
+        if self.slash_convert(&text, cx) {
+            return;
+        }
         if self.autocomplete.hidden.as_ref() != Some(&text) {
             self.autocomplete.hidden = None;
         }
         let trigger = match (caret, &self.autocomplete.hidden) {
             (Some(caret), None) => ac::detect(&text, caret, self.guild.is_none()),
             _ => None,
-        }
-        .filter(|trigger| trigger.kind != Kind::Command);
+        };
+        // `/` has its own list, with its own rail and rows.
+        let slash_query = trigger
+            .as_ref()
+            .filter(|trigger| trigger.kind == Kind::Command)
+            .map(|trigger| trigger.query.clone());
+        let trigger = trigger.filter(|trigger| trigger.kind != Kind::Command);
+        self.refresh_slash(slash_query.as_deref(), cx);
         let previous = self.autocomplete.open.take();
         self.autocomplete.query = trigger
             .as_ref()
@@ -206,7 +215,7 @@ impl Root {
     }
 
     /// The people `@` can offer, with the name each is ranked and shown by.
-    fn mention_candidates(&self) -> Vec<(User, Option<String>)> {
+    pub(super) fn mention_candidates(&self) -> Vec<(User, Option<String>)> {
         let mut out: Vec<(User, Option<String>)> = Vec::new();
         if let Some(guild) = self.current_guild() {
             let channel = self.autocomplete_channel();
@@ -583,7 +592,17 @@ impl Root {
         let (height_pad, content): (f32, AnyElement) = match entry {
             Entry::User { user, name } => {
                 let (key, _) = avatar_source(user);
-                let status = self.stores.status(user.id).to_owned();
+                // The account's own presence is its settings status; others come from presences and member chunks.
+                let status = if self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user.id)
+                {
+                    self.stores.status.clone()
+                } else {
+                    self.stores.status(user.id).to_owned()
+                };
                 let avatar = div()
                     .relative()
                     .size(px(24.))

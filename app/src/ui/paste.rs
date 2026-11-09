@@ -116,6 +116,65 @@ impl Root {
         cx.notify();
     }
 
+    /// The count of characters over the limit (`characterCount`, measured in the too-long golden) with the Nitro hint
+    /// under it, at the composer's bottom right.
+    pub(super) fn length_counter(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let max = self.max_message_length();
+        let over = self
+            .composer
+            .read(cx)
+            .text()
+            .chars()
+            .count()
+            .checked_sub(max)?;
+        if over == 0 {
+            return None;
+        }
+        let hint = (max == MAX_LENGTH).then(|| {
+            div()
+                .mt(px(8.))
+                .h(px(28.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .bg(color("--background-surface-highest"))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child(super::icon("nitro_mark", 18., "--text-link"))
+                .child("Send longer messages with ")
+                .child(
+                    div()
+                        .text_color(color("--text-link"))
+                        .child("Discord Nitro!"),
+                )
+        });
+        Some(
+            div()
+                .absolute()
+                .right(px(14.))
+                .bottom(px(10.))
+                .flex()
+                .flex_col()
+                .items_end()
+                .child(
+                    div()
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(format!("-{over}")),
+                )
+                .children(hint)
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn too_long_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let text = self.too_long.clone()?;
         let max = self.max_message_length();
@@ -128,8 +187,14 @@ impl Root {
                 div()
                     .font_weight(FontWeight(400.))
                     .text_color(color("--text-default"))
+                    .child("Speak your mind with 2x longer messages, send larger file uploads, ")
                     .child(
-                        "Speak your mind with 2x longer messages, send larger file uploads, and more with Discord Nitro!",
+                        div()
+                            .id("too-long-learn-more")
+                            .cursor_pointer()
+                            .text_color(color("--text-link"))
+                            .child("and more with Discord Nitro!")
+                            .on_click(|_, _, cx| cx.open_url(NITRO_URL)),
                     ),
             );
         }

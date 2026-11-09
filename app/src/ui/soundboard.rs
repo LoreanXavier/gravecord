@@ -719,7 +719,7 @@ impl Root {
                     self.call.as_ref().map(|call| call.channel),
                     me,
                     self.self_deaf,
-                    &HashSet::new(),
+                    &self.context.soundboard_muted,
                 ) && let Some(sound) = &effect.sound_id
                 {
                     self.soundboard_play(sound, effect.volume, effect.user, 1.);

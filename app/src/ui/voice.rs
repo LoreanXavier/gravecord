@@ -938,7 +938,12 @@ impl Root {
     }
 
     /// Members in a voice channel, under its row: 24px avatar and name. A green ring marks who speaks.
-    pub(super) fn voice_members(&self, guild: Id, channel: Id) -> Vec<AnyElement> {
+    pub(super) fn voice_members(
+        &self,
+        guild: Id,
+        channel: Id,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         self.stores
             .voice_members(guild, channel)
             .into_iter()
@@ -959,7 +964,23 @@ impl Root {
                 let (muted, deaf) = (state.self_mute || state.mute, state.self_deaf || state.deaf);
                 let speaking = self.speaking.contains(&state.user_id)
                     || self.soundboard.user_playing(state.user_id);
+                let member = state.user_id;
                 div()
+                    .id(gpui::SharedString::from(format!("voice-member-{member}")))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::User {
+                                    user: member,
+                                    guild: Some(guild),
+                                },
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .flex_none()
                     .h(px(32.))
                     .pl(px(44.))

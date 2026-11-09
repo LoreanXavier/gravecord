@@ -52,6 +52,18 @@ impl Root {
             .id(SharedString::from(format!("profile-trigger-{key}")))
             .relative()
             .cursor_pointer()
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    let guild = this.guild;
+                    this.open_context_menu(
+                        super::context_menu::Target::User { user, guild },
+                        event.position,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
             .child(target)
             .child(
                 canvas(

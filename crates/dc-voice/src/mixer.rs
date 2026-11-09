@@ -2,7 +2,7 @@
 //! 20 ms clock.
 //!
 //! Adapted from Serein `crates/discord-voice/src/mixer.rs`, MIT OR Apache-2.0. Changes: no
-//! per-user volume table (unity gain), so `pop_with_volumes` became `pop`.
+//! per-user volume table at first (unity gain); a table now sets each user's gain and local mute, see `set_user`.
 use crate::{Frame, dave::MAX_PARTICIPANTS, jitter::Jitter};
 use opus2::{Channels, Decoder};
 
@@ -19,8 +19,23 @@ struct Speaker {
 #[derive(Default)]
 pub(crate) struct Mixer {
     speakers: Vec<Speaker>,
+    /// User to (volume as a factor, muted here): what the person chose in that user's menu.
+    mix: std::collections::HashMap<u64, (f32, bool)>,
 }
 impl Mixer {
+    /// Replaces the per-user table; users without an entry play at unity.
+    pub fn set_table(&mut self, table: &std::collections::HashMap<u64, (f32, bool)>) {
+        if self.mix != *table {
+            self.mix.clone_from(table);
+        }
+    }
+    fn gain(&self, user: u64) -> f32 {
+        match self.mix.get(&user) {
+            Some((_, true)) => 0.0,
+            Some((volume, false)) => volume.clamp(0.0, 2.0),
+            None => 1.0,
+        }
+    }
     pub fn announce(&mut self, user: u64, ssrc: u32) -> Result<(), &'static str> {
         if self
             .speakers
@@ -87,7 +102,8 @@ impl Mixer {
     pub fn pop(&mut self) -> Option<Frame> {
         let mut output = [0.0; 960];
         let mut active = false;
-        for speaker in &mut self.speakers {
+        let gains: Vec<f32> = self.speakers.iter().map(|s| self.gain(s.user)).collect();
+        for (speaker, gain) in self.speakers.iter_mut().zip(gains) {
             let mut energy = 0.0;
             let mut filled = 0;
             let mut decoded = 0;
@@ -127,7 +143,8 @@ impl Mixer {
                     .zip(&speaker.pcm[speaker.offset..speaker.offset + count])
                 {
                     if sample.is_finite() {
-                        *mixed += sample;
+                        *mixed += sample * gain;
+                        // Speaking indicators follow the voice itself, not the local volume.
                         energy += sample * sample;
                     }
                 }
@@ -156,6 +173,33 @@ mod tests {
         let mut encoded = [0; 1275];
         let length = encoder.encode_float(&pcm, &mut encoded).unwrap();
         encoded[..length].to_vec()
+    }
+
+    #[test]
+    fn a_user_can_be_muted_or_turned_down_here() {
+        let mut full = Mixer::default();
+        let mut half = Mixer::default();
+        let mut muted = Mixer::default();
+        for mixer in [&mut full, &mut half, &mut muted] {
+            mixer.announce(1, 11).unwrap();
+            mixer.push(11, 7, opus(0.05));
+        }
+        half.set_table(&[(1, (0.5, false))].into());
+        muted.set_table(&[(1, (1.0, true))].into());
+        for _ in 0..2 {
+            assert!(full.pop().is_none() && half.pop().is_none() && muted.pop().is_none());
+        }
+        let (a, b, c) = (
+            full.pop().unwrap(),
+            half.pop().unwrap(),
+            muted.pop().unwrap(),
+        );
+        for i in 0..960 {
+            assert!((b[i] - a[i] * 0.5).abs() < 0.0001);
+            assert_eq!(c[i], 0.0);
+        }
+        // The speaking indicator still sees the voice.
+        assert_eq!(muted.speaking().count(), 1);
     }
 
     #[test]

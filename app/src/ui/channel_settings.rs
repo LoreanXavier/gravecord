@@ -64,7 +64,7 @@ pub(crate) struct ChannelSettings {
     archive: u64,
     saved: Values,
     open_select: Option<Select>,
-    confirm_delete: bool,
+    pub(super) confirm_delete: bool,
     /// Advanced permissions: the role or member shown, and overwrites changed but not saved (allow, deny, type).
     pub(super) perm_target: Option<Id>,
     pub(super) perm_edits: std::collections::HashMap<Id, (u64, u64, u64)>,

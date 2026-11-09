@@ -175,6 +175,17 @@ impl Root {
         Some(
             div()
                 .id(SharedString::from(format!("dm-{id}")))
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        this.open_context_menu(
+                            super::context_menu::Target::Dm(id),
+                            event.position,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }),
+                )
                 .group(group.clone())
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                     if *inside {

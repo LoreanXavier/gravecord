@@ -46,7 +46,12 @@ impl Root {
     }
 
     /// Writes one channel override field and mirrors it locally until the gateway's update arrives.
-    fn patch_channel_override(&mut self, guild: Id, channel: Id, settings: serde_json::Value) {
+    pub(super) fn patch_channel_override(
+        &mut self,
+        guild: Id,
+        channel: Id,
+        settings: serde_json::Value,
+    ) {
         {
             let entry = self
                 .stores
