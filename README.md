@@ -125,7 +125,7 @@ cargo build --release -p gravecord
 
 Then run `target\release\gravecord.exe` from the repository, so that it finds `app\assets`.
 
-A few things come from the network when it runs, not from this repository: fonts and some artwork load from Discord's own servers, as they do in the official client. Nothing of Discord's is stored here.
+A few things come from the network when it runs: fonts and member artwork load from Discord's own servers, as they do in the official client. Application branding is bundled: Gravecord artwork is the default, with an Original option under Settings → Appearance. The executable and installer retain the Gravecord icon.
 
 ## Support
 
