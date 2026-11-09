@@ -413,6 +413,10 @@ impl Root {
 }
 
 /// `upsellContainer_vJa-rc`: "Amp up your profile" with Get Nitro and Shop, inside a two-color gradient edge.
+pub(super) fn upsell_card() -> impl IntoElement {
+    upsell()
+}
+
 fn upsell() -> impl IntoElement {
     let button = |icon_name: &'static str, label: &'static str| {
         div()

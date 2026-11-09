@@ -184,6 +184,7 @@ impl Root {
         let _ = self.requests.send(crate::net::Request::Download {
             url: attachment.url.clone(),
             filename: attachment.filename.clone(),
+            done: None,
         });
         cx.notify();
     }

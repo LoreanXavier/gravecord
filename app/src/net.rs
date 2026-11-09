@@ -167,6 +167,8 @@ pub enum Request {
     Download {
         url: String,
         filename: String,
+        /// When set, the outcome comes back as `Update::Fetched { key, body: {"ok": bool} }`.
+        done: Option<String>,
     },
     /// `GET` with an application's own access token as the bearer (never the account token). The outcome comes
     /// back as `Update::Fetched { key, body }` shaped like `Request::Rest`'s.
@@ -681,32 +683,19 @@ pub async fn run(
                     let _ = updates.send(Update::Fetched { key, body: report });
                 });
             }
-            Request::Download { url, filename } => {
+            Request::Download {
+                url,
+                filename,
+                done,
+            } => {
+                let updates = updates.clone();
                 tokio::spawn(async move {
-                    let Some(folder) = std::env::var_os("USERPROFILE")
-                        .map(|home| std::path::PathBuf::from(home).join("Downloads"))
-                    else {
-                        return;
-                    };
-                    let bytes = match reqwest::get(&url).await {
-                        Ok(response) => match response.bytes().await {
-                            Ok(bytes) => bytes,
-                            Err(error) => return warn!("download failed: {error}"),
-                        },
-                        Err(error) => return warn!("download failed: {error}"),
-                    };
-                    let (stem, extension) = match filename.rsplit_once('.') {
-                        Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
-                        None => (filename.clone(), String::new()),
-                    };
-                    let mut target = folder.join(&filename);
-                    let mut copy = 1;
-                    while target.exists() {
-                        target = folder.join(format!("{stem} ({copy}){extension}"));
-                        copy += 1;
-                    }
-                    if let Err(error) = std::fs::write(&target, &bytes) {
-                        warn!("download not saved: {error}");
+                    let saved = save_download(&url, &filename).await;
+                    if let Some(key) = done {
+                        let _ = updates.send(Update::Fetched {
+                            key,
+                            body: json!({"ok": saved}),
+                        });
                     }
                 });
             }
@@ -951,6 +940,55 @@ pub async fn run(
     }
 }
 
+/// Fetches `url` and writes it into the Downloads folder under a free name; whether it was saved.
+async fn save_download(url: &str, filename: &str) -> bool {
+    let Some(folder) = std::env::var_os("USERPROFILE")
+        .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+    else {
+        return false;
+    };
+    let bytes = match reqwest::get(url).await {
+        Ok(response) => match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!("download failed: {error}");
+                return false;
+            }
+        },
+        Err(error) => {
+            warn!("download failed: {error}");
+            return false;
+        }
+    };
+    let target = free_name(&folder, filename, |path| path.exists());
+    match std::fs::write(&target, &bytes) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!("download not saved: {error}");
+            false
+        }
+    }
+}
+
+/// `name`, or `name (1)`, `name (2)` ... until `taken` says the path is free.
+fn free_name(
+    folder: &std::path::Path,
+    filename: &str,
+    taken: impl Fn(&std::path::Path) -> bool,
+) -> std::path::PathBuf {
+    let (stem, extension) = match filename.rsplit_once('.') {
+        Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
+        None => (filename.to_owned(), String::new()),
+    };
+    let mut target = folder.join(filename);
+    let mut copy = 1;
+    while taken(&target) {
+        target = folder.join(format!("{stem} ({copy}){extension}"));
+        copy += 1;
+    }
+    target
+}
+
 #[cfg(test)]
 mod tests {
     use super::{percent_encode, send_body};
@@ -1028,6 +1066,33 @@ mod preview_tests {
             attachment_entry(1, "a", "b", Some("  "))
                 .get("description")
                 .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::free_name;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_taken_name_gets_a_counter_before_the_extension() {
+        let taken: Vec<PathBuf> = ["a/cat.png", "a/cat (1).png"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let free = |path: &Path| taken.iter().any(|known| known == path);
+        assert_eq!(
+            free_name(Path::new("a"), "dog.png", free),
+            PathBuf::from("a/dog.png")
+        );
+        assert_eq!(
+            free_name(Path::new("a"), "cat.png", free),
+            PathBuf::from("a/cat (2).png")
+        );
+        assert_eq!(
+            free_name(Path::new("a"), "cat", |_| false),
+            PathBuf::from("a/cat")
         );
     }
 }

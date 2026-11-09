@@ -50,6 +50,8 @@ pub(super) enum Select {
     System,
     AfkChannel,
     AfkTimeout,
+    /// The widget's invite channel (`Ae` in module 989433).
+    WidgetChannel,
 }
 
 #[derive(Default)]
@@ -387,6 +389,11 @@ impl Root {
                 .into_iter()
                 .find(|(known, _, _)| known == id)
         });
+        let widget_channel = now.widget_channel.as_ref().and_then(|id| {
+            self.channels_of_kind(guild, false)
+                .into_iter()
+                .find(|(known, _, _)| known == id)
+        });
         let timeout = TIMEOUTS
             .iter()
             .find(|(seconds, _)| *seconds == now.afk_timeout)
@@ -540,6 +547,35 @@ impl Root {
             .child(heading("Server Widget"))
             .child(note("Embed an HTML widget on your website to display your online members, voice channels, and invite link."))
             .child(div().mt(px(16.)).child(Self::engagement_switch("Enable Server Widget", now.widget, "engagement-widget", cx, |values| values.widget = !values.widget)))
+            .when(now.widget, |this| {
+                this.child(
+                    div()
+                        .mt(px(24.))
+                        .child(Self::field_label("Invite Channel"))
+                        .child(self.engagement_select_box(
+                            "engagement-widget-channel",
+                            Select::WidgetChannel,
+                            (
+                                widget_channel.is_some().then_some("channel_type_text"),
+                                widget_channel
+                                    .as_ref()
+                                    .map_or("No Invite".to_owned(), |(_, name, _)| name.clone()),
+                                widget_channel.as_ref().and_then(|(_, _, category)| category.clone()),
+                            ),
+                            false,
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child("If a channel is selected then an invite link will be generated with the widget,
+otherwise only online members and voice channels will be provided."),
+                        ),
+                )
+            })
             .when(widget_private && !now.widget, |this| {
                 this.child(
                     div()
@@ -567,6 +603,7 @@ impl Root {
             Select::System => "engagement-system",
             Select::AfkChannel => "engagement-afk",
             Select::AfkTimeout => "engagement-timeout",
+            Select::WidgetChannel => "engagement-widget-channel",
         };
         let field = self.tip_anchors.borrow().get(key).copied()?.dilate(px(1.));
         let row = |id: String,
@@ -660,6 +697,28 @@ impl Root {
                         picked,
                         cx,
                         Box::new(move |values| values.afk_channel = Some(chosen.clone())),
+                    ));
+                }
+            }
+            Select::WidgetChannel => {
+                rows.push(row(
+                    "none".to_owned(),
+                    "No Invite".to_owned(),
+                    None,
+                    state.now.widget_channel.is_none(),
+                    cx,
+                    Box::new(|values| values.widget_channel = None),
+                ));
+                for (id, name, category) in self.channels_of_kind(guild, false) {
+                    let picked = state.now.widget_channel.as_deref() == Some(id.as_str());
+                    let chosen = id.clone();
+                    rows.push(row(
+                        id,
+                        name,
+                        category,
+                        picked,
+                        cx,
+                        Box::new(move |values| values.widget_channel = Some(chosen.clone())),
                     ));
                 }
             }

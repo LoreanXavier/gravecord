@@ -33,16 +33,19 @@ mod activity_host;
 mod activity_launch;
 mod activity_shelf;
 mod apps;
+mod attachment_modal;
 mod audio_menu;
 mod audit_spec;
 mod badge_paths;
 mod blocked;
 mod channel_settings;
 mod channel_settings_pages;
+mod composer_plus;
 mod create_channel;
 mod dm;
 mod dm_profile;
 mod embed;
+mod emoticons;
 mod file_actions;
 mod files;
 mod forward;
@@ -59,6 +62,7 @@ mod home;
 mod inbox;
 mod invite;
 mod invite_embed;
+mod lightbox;
 mod links;
 mod menu;
 mod modal;
@@ -85,6 +89,7 @@ mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_discovery;
+mod status_menu;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -303,6 +308,20 @@ pub struct Root {
     /// The open submenu of the message menu: the row it hangs off.
     submenu: Option<menu::Submenu>,
     custom_reminder: Option<reminder_modal::CustomReminder>,
+    /// The media viewer over a picture of a message.
+    lightbox: Option<lightbox::Lightbox>,
+    /// The account popout of the user panel and the status menu hanging off it.
+    status_popout: Option<status_menu::StatusPopout>,
+    /// The "Set your status" modal.
+    custom_status: Option<status_menu::CustomStatusModal>,
+    plus_menu: bool,
+    modify_attachment: Option<attachment_modal::ModifyAttachment>,
+    snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
+    click_at: gpui::Point<gpui::Pixels>,
+    leave_guild: Option<Id>,
+    poll: Option<composer_plus::PollForm>,
+    /// The window's size as of the last frame, for the viewer's room.
+    viewport: (f32, f32),
     /// The open channel and the ack its unread messages started after, for the NEW divider.
     unread_from: Option<(Id, Id)>,
     /// The expression picker, open from the composer or for a reaction.
@@ -374,12 +393,19 @@ impl Root {
         let mut setting_choices = voice.choices();
         setting_choices.extend(settings::prefs::restore());
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
-        cx.subscribe(&composer, |this, _, event, _| match event {
+        cx.subscribe(&composer, |this, composer, event, cx| match event {
             EditorEvent::Submit(content) => {
                 this.last_typing_sent = None;
                 this.send(content.clone());
             }
-            EditorEvent::Edited => this.notify_typing(),
+            EditorEvent::Edited => {
+                if this.pref_on("chat_emoji_convert_emoticons", true)
+                    && let Some(converted) = emoticons::convert(composer.read(cx).text())
+                {
+                    composer.update(cx, |editor, _| editor.set_text(&converted));
+                }
+                this.notify_typing()
+            }
             EditorEvent::Cancel => {}
         })
         .detach();
@@ -467,6 +493,16 @@ impl Root {
             app_toast: None,
             submenu: None,
             custom_reminder: None,
+            lightbox: None,
+            status_popout: None,
+            custom_status: None,
+            plus_menu: false,
+            modify_attachment: None,
+            snooze_menu: None,
+            click_at: gpui::Point::default(),
+            leave_guild: None,
+            poll: None,
+            viewport: (1280., 720.),
             unread_from: None,
             picker: None,
             emoji_used: Vec::new(),
@@ -613,6 +649,10 @@ impl Root {
                 }
                 if key.starts_with("soundboard:") {
                     self.soundboard_fetched(&key, &body, cx);
+                    return;
+                }
+                if key == lightbox::SAVED_KEY {
+                    self.lightbox_saved(&body, cx);
                     return;
                 }
                 if key == "voice-logs-upload" {
@@ -1351,7 +1391,15 @@ impl Root {
             .as_ref()
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         format!(
-            "profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            self.stores.status,
+            self.stores
+                .status_state()
+                .map_or(0, |state| state.expires_at_ms),
+            self.stores
+                .status_state()
+                .and_then(|state| state.custom)
+                .map(|custom| custom.text),
             self.profile_menu
                 .as_ref()
                 .map(|menu| (menu.user, menu.invite, menu.sent.len())),
@@ -1611,6 +1659,12 @@ impl Root {
                 .map(|switcher| switcher.search.clone()),
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
+        list.extend(self.custom_status.as_ref().map(|open| open.input.clone()));
+        list.extend(self.modify_attachment_editors());
+        if let Some(form) = self.poll.as_ref() {
+            list.push(form.question.clone());
+            list.extend(form.answers.iter().cloned());
+        }
         list.extend(
             self.member_view
                 .as_ref()
@@ -2561,15 +2615,21 @@ impl Root {
             .pl(px(11.))
             .child(
                 div()
+                    .id("panel-avatar")
                     .relative()
                     .size(px(32.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
                     .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
                     .child(status_dot(&self.stores.status, "--background-base-low")),
             )
             .child(
                 div()
+                    .id("panel-names")
                     .ml(px(8.))
                     .w(px(136.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
                     .flex()
                     .flex_col()
                     .child(
@@ -3374,7 +3434,7 @@ impl Root {
     }
 
     /// Images in their grid: 2px above, 4px between, natural size up to the official limits, 8px corners.
-    fn attachments(&self, message: &Message) -> Option<AnyElement> {
+    fn attachments(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         // "When uploaded directly to Discord" off: pictures come as file cards instead (see `files`).
         let inline = self.pref_on("chat_inline_media_uploads", true);
         let images: Vec<AnyElement> = message
@@ -3393,12 +3453,18 @@ impl Root {
                     .images
                     .get(&format!("attachment:{}", attachment.id))
                     .cloned();
+                let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
                 div()
+                    .id(SharedString::from(format!("attachment-{}", attachment.id)))
                     .w(width)
                     .h(height)
                     .rounded(px(8.))
+                    .cursor_pointer()
                     .bg(color("--background-base-low"))
                     .children(image.map(|image| img(image).w(width).h(height).rounded(px(8.))))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_lightbox(&clicked, &key, cx);
+                    }))
                     .into_any_element()
             })
             .collect();
@@ -3520,9 +3586,9 @@ impl Root {
 
     fn accessories(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         let parts: Vec<AnyElement> = [
-            self.attachments(message),
+            self.attachments(message, cx),
             self.files(message, cx),
-            self.embeds(message),
+            self.embeds(message, cx),
             self.invite_cards(message, cx),
         ]
         .into_iter()
@@ -4203,7 +4269,9 @@ impl Root {
                                     .id("attach")
                                     .pt(px(12.))
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
+                                    )
                                     .child(tool("attach")),
                             )
                             .child(
@@ -4541,6 +4609,10 @@ impl Render for Root {
             0.
         };
         self.content_width = f32::from(window.viewport_size().width) - 375. - members - 112.;
+        self.viewport = (
+            f32::from(window.viewport_size().width),
+            f32::from(window.viewport_size().height),
+        );
         if self.voice_chat_docked() {
             // The docked voice chat is 450 wide with its 1px border.
             self.content_width = 450. - 2. - 112.;
@@ -4575,6 +4647,61 @@ impl Render for Root {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
                 if !event.is_held && this.voice_key_down(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                // The media viewer is the top layer: Escape and the arrows are its.
+                if this.lightbox_key(event, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.modify_attachment.is_some() {
+                    this.modify_attachment = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && (this.leave_guild.is_some() || this.snooze_menu.is_some())
+                {
+                    if this.snooze_menu.take().is_none() {
+                        this.leave_guild = None;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && (this.plus_menu || this.poll.is_some()) {
+                    if this.poll.as_ref().is_some_and(|form| form.duration_open) {
+                        if let Some(form) = this.poll.as_mut() {
+                            form.duration_open = false;
+                        }
+                    } else if this.poll.is_some() {
+                        this.poll = None;
+                    } else {
+                        this.plus_menu = false;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && (this.custom_status.is_some() || this.status_popout.is_some())
+                {
+                    if this
+                        .custom_status
+                        .as_ref()
+                        .is_some_and(|open| open.clear_open)
+                    {
+                        if let Some(open) = this.custom_status.as_mut() {
+                            open.clear_open = false;
+                        }
+                    } else if this.custom_status.is_some() {
+                        this.custom_status = None;
+                    } else {
+                        this.status_popout = None;
+                    }
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -4991,6 +5118,14 @@ impl Render for Root {
             .children(self.remediation_modal(cx))
             .children(self.report_modal(cx))
             .children(self.custom_reminder_modal(cx))
+            .children(self.status_popout_layer(cx))
+            .children(self.custom_status_modal(cx))
+            .children(self.plus_menu_layer(cx))
+            .children(self.leave_modal(cx))
+            .children(self.modify_attachment_modal(cx))
+            .children(self.snooze_layer(cx))
+            .children(self.poll_modal(cx))
+            .children(self.lightbox_layer(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))

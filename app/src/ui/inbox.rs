@@ -500,7 +500,8 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.click_at = window.mouse_position();
                 run(this, cx);
                 cx.notify();
             }))
@@ -530,14 +531,9 @@ impl Root {
                 format!("snooze-{id}"),
                 "inbox_snooze",
                 cx,
-                move |this, cx| {
-                    // Snooze moves the reminder an hour on, the first of the snooze choices.
-                    this.set_reminder(
-                        channel,
-                        id,
-                        chrono::Local::now() + chrono::Duration::hours(1),
-                        cx,
-                    );
+                move |this, _cx| {
+                    // The edit menu (module 243656), labelled Snooze Reminder once the reminder is overdue.
+                    this.snooze_menu = Some((channel, id, overdue, this.click_at));
                 },
             ),
             self.inbox_button(format!("jump-{id}"), "inbox_jump", cx, move |this, cx| {
@@ -1506,6 +1502,98 @@ impl Root {
                 .with_priority(2)
                 .into_any_element(),
         )
+    }
+}
+
+impl Root {
+    /// The snooze menu under the card's button: its label, the times of the reminder menu and Custom...
+    pub(super) fn snooze_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (channel, message, overdue, at) = self.snooze_menu?;
+        let now = chrono::Local::now();
+        let item = |id: SharedString, text: &'static str| {
+            div()
+                .id(id)
+                .h(px(34.))
+                .p(px(8.))
+                .rounded(px(2.))
+                .cursor_pointer()
+                .hover(|style| {
+                    style
+                        .bg(color("--interactive-background-hover"))
+                        .rounded(px(4.))
+                })
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .child(text)
+        };
+        let mut rows: Vec<AnyElement> = vec![
+            div()
+                .min_h(px(32.))
+                .p(px(8.))
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-muted"))
+                .child(if overdue {
+                    "Snooze Reminder"
+                } else {
+                    "Remind Me"
+                })
+                .into_any_element(),
+        ];
+        for (index, (text, time)) in super::saved::reminder_choices(now).into_iter().enumerate() {
+            rows.push(
+                item(SharedString::from(format!("snooze-choice-{index}")), text)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.snooze_menu = None;
+                        this.set_reminder(channel, message, time, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        rows.push(
+            item("snooze-custom".into(), "Custom...")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.snooze_menu = None;
+                    this.custom_reminder =
+                        Some(super::reminder_modal::CustomReminder::new(channel, message));
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+        let layer = div()
+            .id("snooze-layer")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.snooze_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .id("snooze-menu")
+                    .occlude()
+                    .absolute()
+                    .left(px((f32::from(at.x) - 180.).max(8.)))
+                    .top(px(f32::from(at.y) + 16.))
+                    .w(px(222.))
+                    .p(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            );
+        Some(gpui::deferred(layer).with_priority(3).into_any_element())
     }
 }
 

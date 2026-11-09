@@ -170,7 +170,7 @@ pub(crate) struct Pending {
 }
 
 /// The prefix that marks an attachment as a spoiler (`SPOILER_` in module 453771).
-const SPOILER_PREFIX: &str = "SPOILER_";
+pub(super) const SPOILER_PREFIX: &str = "SPOILER_";
 
 /// The name with the spoiler mark switched: added when absent, taken off when present.
 pub(super) fn toggle_spoiler(name: &str) -> String {
@@ -209,6 +209,13 @@ impl Pending {
             picture,
             description: None,
         })
+    }
+
+    /// The picture and the size it is drawn at in Modify Attachment (240 by 150 at most).
+    pub(super) fn preview_image(&self) -> Option<(Arc<Image>, f32, f32)> {
+        let (width, height) = (self.picture?.0 as f32, self.picture?.1 as f32);
+        let scale = (240. / width).min(150. / height);
+        Some((self.preview.clone()?, width * scale, height * scale))
     }
 
     pub fn is_spoiler(&self) -> bool {
@@ -378,11 +385,18 @@ impl Root {
                             cx.notify();
                         })),
                     )
-                    .child(action(
-                        format!("upload-modify-{index}"),
-                        "upload_modify",
-                        "--interactive-text-default",
-                    ))
+                    .child(
+                        action(
+                            format!("upload-modify-{index}"),
+                            "upload_modify",
+                            "--interactive-text-default",
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.open_modify_attachment(index, window, cx)
+                            },
+                        )),
+                    )
                     .child(
                         action(
                             format!("upload-remove-{index}"),

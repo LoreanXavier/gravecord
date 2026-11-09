@@ -5,7 +5,7 @@ use super::{Root, color, hsla, rgba};
 use crate::parity::Parity;
 use dc_markdown::{Block, Kind, Span, parse};
 use dc_state::{Embed, EmbedMedia, Id, Message};
-use gpui::{AnyElement, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
 /// `gridContainer_XyW1ZT` max-width.
 const GRID_MAX: f32 = 516.;
@@ -95,7 +95,7 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn embeds(&self, message: &Message) -> Option<AnyElement> {
+    pub(super) fn embeds(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         // "Show embeds and link previews" off hides them under every message.
         if !self.pref_on("chat_embeds_render_embeds", true) {
             return None;
@@ -104,7 +104,7 @@ impl Root {
             .embeds
             .iter()
             .enumerate()
-            .map(|(index, embed)| self.embed(message.id, index, embed))
+            .map(|(index, embed)| self.embed(message, index, embed, cx))
             .collect();
         (!cards.is_empty()).then(|| {
             div()
@@ -118,7 +118,13 @@ impl Root {
     }
 
     /// `inlineMediaEmbed_XyW1ZT`: the media alone, fitted into 400x300, radius 4, 2px under the line above.
-    fn inline_media(&self, message: Id, index: usize, embed: &Embed) -> Option<AnyElement> {
+    fn inline_media(
+        &self,
+        message: &Message,
+        index: usize,
+        embed: &Embed,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         // "When posted as links to chat" off leaves only the link.
         if !self.pref_on("chat_inline_media_links", true) {
             return None;
@@ -130,13 +136,19 @@ impl Root {
         let size = (px(shown), px(height as f32 * shown / width as f32));
         let picture = self
             .images
-            .get(&image_key(message, index, "image"))
+            .get(&image_key(message.id, index, "image"))
             .cloned();
+        let (clicked, key) = (message.clone(), image_key(message.id, index, "image"));
         Some(
             div()
                 .pt(px(2.))
                 .child(
                     div()
+                        .id(SharedString::from(key.clone()))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_lightbox(&clicked, &key, cx);
+                        }))
                         .w(size.0)
                         .h(size.1)
                         .rounded(px(4.))
@@ -150,9 +162,16 @@ impl Root {
         )
     }
 
-    fn embed(&self, message: Id, index: usize, embed: &Embed) -> AnyElement {
+    fn embed(
+        &self,
+        message: &Message,
+        index: usize,
+        embed: &Embed,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let message_id = message.id;
         if embed.is_inline_media()
-            && let Some(media) = self.inline_media(message, index, embed)
+            && let Some(media) = self.inline_media(message, index, embed, cx)
         {
             return media;
         }
@@ -161,7 +180,7 @@ impl Root {
             .map_or(GRID_MAX + BORDERS, |width| width as f32);
         let content_width = max_width - BORDERS - PADDING_X;
         // Text keys start past the message's own blocks so selections never collide.
-        let text_key = (message, 1000 + index as u32 * 100);
+        let text_key = (message_id, 1000 + index as u32 * 100);
         let edge = match embed.color {
             Some(value) if value != 0x00ff_ffff => rgba((value << 8) | 0xff),
             _ => color("--border-normal"),
@@ -196,7 +215,9 @@ impl Root {
             let root = self.weak.clone();
             column = column.child(
                 div()
-                    .id(SharedString::from(format!("embed-title-{message}-{index}")))
+                    .id(SharedString::from(format!(
+                        "embed-title-{message_id}-{index}"
+                    )))
                     .mt(px(8.))
                     .text_size(px(16.))
                     .line_height(px(22.))
@@ -250,10 +271,18 @@ impl Root {
             let size = (px(shown), px(height as f32 * scale));
             let picture = self
                 .images
-                .get(&image_key(message, index, "image"))
+                .get(&image_key(message_id, index, "image"))
                 .cloned();
+            let (clicked, key) = (message.clone(), image_key(message_id, index, "image"));
             column = column.child(
                 div()
+                    .id(SharedString::from(format!(
+                        "embed-image-{message_id}-{index}"
+                    )))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_lightbox(&clicked, &key, cx);
+                    }))
                     .mt(px(16.))
                     .w(size.0)
                     .h(size.1)
@@ -279,7 +308,7 @@ impl Root {
             let size = (px(width as f32), px(height as f32));
             let picture = self
                 .images
-                .get(&image_key(message, index, "thumbnail"))
+                .get(&image_key(message_id, index, "thumbnail"))
                 .cloned();
             div()
                 .flex_none()

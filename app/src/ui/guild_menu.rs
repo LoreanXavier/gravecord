@@ -27,7 +27,11 @@ enum Entry {
     Privacy,
     Profile,
     HideMuted,
+    Leave,
 }
+
+/// Members who are not the owner can leave: the owner has to transfer or delete the server instead.
+const LEAVE: &[(Entry, &str, &str)] = &[(Entry::Leave, "guild_menu_leave", "Leave Server")];
 
 const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
     &[(Entry::Boost, "guild_menu_premium_subscribe", "Server Boost")],
@@ -136,6 +140,7 @@ impl Root {
             Entry::Invite => self.open_invite(cx),
             Entry::Settings => self.open_server_settings(guild, cx),
             // Their pages are being built: Create Event and App Directory.
+            Entry::Leave => self.leave_guild = Some(guild),
             Entry::CreateEvent | Entry::AppDirectory => {}
         }
         cx.notify();
@@ -148,7 +153,20 @@ impl Root {
         let guild = self.guild?;
         let hidden = self.hide_muted(guild);
         let mut items: Vec<AnyElement> = Vec::new();
-        for (group, entries) in ENTRIES.iter().enumerate() {
+        let owner = self
+            .stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .is_some_and(|known| {
+                known.owner_id.is_some()
+                    && known.owner_id == self.stores.current_user.as_ref().map(|me| me.id)
+            });
+        let mut groups: Vec<&[(Entry, &str, &str)]> = ENTRIES.to_vec();
+        if !owner {
+            groups.push(LEAVE);
+        }
+        for (group, entries) in groups.iter().enumerate() {
             if group > 0 {
                 items.push(
                     div()
@@ -180,7 +198,11 @@ impl Root {
                         .child(div().mr(px(8.)).child(icon(
                             name,
                             20.,
-                            "--interactive-text-default",
+                            if entry == Entry::Leave {
+                                "--text-feedback-critical"
+                            } else {
+                                "--interactive-text-default"
+                            },
                         )))
                         .child(
                             div()
@@ -188,7 +210,11 @@ impl Root {
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(color("--text-strong"))
+                                .text_color(if entry == Entry::Leave {
+                                    color("--text-feedback-critical")
+                                } else {
+                                    color("--text-strong")
+                                })
                                 .child(*label),
                         )
                         .when(entry == Entry::HideMuted, |this| {
@@ -249,5 +275,79 @@ impl Root {
             .with_priority(2)
             .into_any_element(),
         )
+    }
+}
+
+/// The request behind Leave Server (`GUILD_LEAVE`, module 652215; `leaveGuild` sends `lurking`).
+pub(super) fn leave_request(guild: Id) -> Request {
+    Request::Rest {
+        key: None,
+        method: reqwest::Method::DELETE,
+        route: format!("/users/@me/guilds/{guild}"),
+        body: Some(json!({"lurking": false})),
+    }
+}
+
+impl Root {
+    /// The confirm dialog (`ZEXC0r`): the name in bold, and the way back is Cancel.
+    pub(super) fn leave_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let guild = self.leave_guild?;
+        let name = self
+            .stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .map(|known| known.name.clone())?;
+        let subtitle = div()
+            .child("Are you sure you want to leave ")
+            .child(div().font_weight(FontWeight(600.)).child(name.clone()))
+            .child("? You won't be able to rejoin this server unless you are re-invited.");
+        let spec = super::modal::Spec {
+            id: "leave-server",
+            title: format!("Leave '{name}'").into(),
+            subtitle: Some(subtitle.into_any_element()),
+            body: None,
+            buttons: vec![
+                super::modal::button(
+                    "leave-cancel",
+                    "Cancel",
+                    super::modal::Tone::Secondary,
+                    |this, _, _| this.leave_guild = None,
+                ),
+                super::modal::button(
+                    "leave-confirm",
+                    "Leave Server",
+                    super::modal::Tone::Critical,
+                    move |this, _, _| {
+                        let _ = this.requests.send(leave_request(guild));
+                        this.leave_guild = None;
+                    },
+                ),
+            ],
+            close: Box::new(|this, _, _| this.leave_guild = None),
+        };
+        Some(super::modal::render(spec, cx))
+    }
+}
+
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+
+    #[test]
+    fn leaving_is_the_guild_leave_request() {
+        match leave_request(42) {
+            Request::Rest {
+                method,
+                route,
+                body,
+                ..
+            } => {
+                assert_eq!(method, reqwest::Method::DELETE);
+                assert_eq!(route, "/users/@me/guilds/42");
+                assert_eq!(body, Some(json!({"lurking": false})));
+            }
+            _ => panic!("not a REST request"),
+        }
     }
 }

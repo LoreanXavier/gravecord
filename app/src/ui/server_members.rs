@@ -454,7 +454,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-muted"))
-                            .child("Unknown"),
+                            .child(join_method(entry)),
                     )
                     .into_any_element()
             })
@@ -1014,6 +1014,24 @@ impl Root {
     }
 }
 
+/// The Join Method cell (`CI` in module 11541): the member's `join_source_type`, and for a vanity URL its code.
+fn join_method(entry: &Value) -> String {
+    match entry["join_source_type"].as_u64() {
+        Some(1) => "Bot Invite".to_owned(),
+        Some(2) => "Integration".to_owned(),
+        Some(3) => "Server Discovery".to_owned(),
+        Some(4) => "Student Hub".to_owned(),
+        Some(5) => "Server Invite".to_owned(),
+        Some(6) => match entry["source_invite_code"].as_str() {
+            Some(code) => format!("{code} (Vanity)"),
+            None => "Vanity URL".to_owned(),
+        },
+        Some(7) => "Manual Verification".to_owned(),
+        Some(8) => "Linked Channel".to_owned(),
+        _ => "Unknown".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1033,5 +1051,20 @@ mod tests {
             search_body("903573240566399026", 1)["and_query"]["user_id"]["or_query"],
             serde_json::json!(["903573240566399026"])
         );
+    }
+
+    #[test]
+    fn the_join_method_reads_the_join_source() {
+        use serde_json::json;
+        assert_eq!(
+            join_method(&json!({"join_source_type": 5})),
+            "Server Invite"
+        );
+        assert_eq!(
+            join_method(&json!({"join_source_type": 6, "source_invite_code": "gf"})),
+            "gf (Vanity)"
+        );
+        assert_eq!(join_method(&json!({"join_source_type": 6})), "Vanity URL");
+        assert_eq!(join_method(&json!({})), "Unknown");
     }
 }
