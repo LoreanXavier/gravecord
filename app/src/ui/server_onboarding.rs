@@ -9012,6 +9012,7 @@ mod tests {
             overwrites: Vec::new(),
             topic: None,
             rate_limit_per_user: 0,
+            user_limit: 0,
             flags: 0,
             default_auto_archive_duration: None,
             available_tags: Vec::new(),
