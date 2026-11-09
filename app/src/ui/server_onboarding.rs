@@ -3390,7 +3390,7 @@ fn icon_button(
 }
 
 /// `ni.P`, the indicator 20 square with its 18 check.
-fn checkbox(checked: bool, disabled: bool) -> gpui::Div {
+pub(super) fn checkbox(checked: bool, disabled: bool) -> gpui::Div {
     div()
         .relative()
         .flex_none()

@@ -367,6 +367,10 @@ pub async fn run(
                 crate::branding::select(crate::branding::IconSet::from_name(Some(choice)));
                 root.update(cx, |_, cx| cx.notify());
             }
+            ["browser", action] => {
+                let state = root.update(cx, |root, cx| root.script_browser(action, cx));
+                let _ = writeln!(output, "browser: {state}");
+            }
             ["slowmode", millis] => {
                 if let Ok(millis) = millis.parse::<u64>() {
                     root.update(cx, |root, cx| root.script_slowmode(millis, cx));

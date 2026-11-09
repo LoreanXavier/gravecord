@@ -72,6 +72,7 @@ pub mod login;
 mod logout;
 mod presence;
 pub use logout::RootEvent;
+mod channel_browser;
 mod forums;
 mod guild_guide;
 mod guild_navigation;
@@ -250,6 +251,8 @@ pub struct Root {
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
+    channel_browser_open: bool,
+    channel_browser: Option<channel_browser::Browser>,
     hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
@@ -508,6 +511,8 @@ impl Root {
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
+            channel_browser_open: false,
+            channel_browser: None,
             hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
@@ -1168,10 +1173,12 @@ impl Root {
                 channel,
                 nitro: false,
                 guild_guide: false,
+                channel_browser: false,
             },
         );
         self.nitro_open = false;
         self.guild_guide_open = false;
+        self.channel_browser_open = false;
         self.guild = Some(guild);
         self.channel = channel;
         self.member_view = None;
@@ -2052,6 +2059,13 @@ impl Root {
     #[cfg(feature = "capture")]
     pub fn open_editors(&self) -> Vec<Entity<Editor>> {
         let mut list: Vec<Entity<Editor>> = Vec::new();
+        if self.channel_browser_open {
+            list.extend(
+                self.channel_browser
+                    .as_ref()
+                    .map(|browser| browser.search.clone()),
+            );
+        }
         list.extend(self.forum_editors());
         list.extend(self.group_dm.as_ref().map(|picker| picker.search.clone()));
         list.extend(
@@ -2831,26 +2845,22 @@ impl Root {
                 guild
                     .sidebar_rows()
                     .into_iter()
-                    // Hide Muted Channels drops muted channels, except the open one.
+                    .filter(|row| self.followed_sidebar_row(guild, row))
+                    // Selected channels and mentions precede mute/collapse filtering (791513.eA).
                     .filter(|row| {
                         !self.hide_muted(guild.id)
                             || row.kind == ChannelKind::Category
-                            || self.channel == Some(row.id)
+                            || self.sidebar_channel_attention(guild, row)
                             || !self.stores.guild_settings.channel_muted(
                                 guild.id,
                                 row.id,
                                 chrono::Utc::now(),
                             )
                     })
-                    // A collapsed category keeps only the open channel and the call this client is in.
                     .filter(|row| {
                         row.kind == ChannelKind::Category
                             || !collapsed(row.parent_id)
-                            || self.channel == Some(row.id)
-                            || self
-                                .call
-                                .as_ref()
-                                .is_some_and(|call| call.channel == row.id)
+                            || self.sidebar_channel_attention(guild, row)
                     })
                     .flat_map(|row| {
                         let mut rows = vec![self.channel_row(row, cx)];
@@ -2953,6 +2963,7 @@ impl Root {
             )
             .child(div().flex_none().h(px(12.)))
             .children(self.guild_guide_rows(cx))
+            .children(self.channel_browser_row(cx))
             .when(self.sidebar_has_events(), |sidebar| {
                 sidebar.child(plain_row("events", "Events"))
             })
@@ -2980,6 +2991,7 @@ impl Root {
             .child(
                 div()
                     .id("sidebar-rows")
+                    .when(self.has_channel_browser(), |rows| rows.pt(px(12.)))
                     .flex_1()
                     .min_h(px(0.))
                     .flex()
@@ -5261,6 +5273,7 @@ impl Render for Root {
         self.prepare_inline_videos(window, cx);
         self.prepare_guild_guide();
         self.prepare_sidebar_events();
+        self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);
@@ -5715,6 +5728,8 @@ impl Render for Root {
                     self.voice_view(window, cx)
                 } else if self.guild_guide_open && self.guild.is_some() {
                     self.guild_guide_view(cx)
+                } else if self.channel_browser_open && self.guild.is_some() {
+                    self.channel_browser_view(window, cx)
                 } else if self.current_channel().is_some_and(Channel::is_forum) {
                     self.forum_view(cx)
                 } else {

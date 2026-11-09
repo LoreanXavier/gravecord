@@ -1,0 +1,8 @@
+{
+  "browser-link": { "class": "link_TNyK-N", "tag": "DIV", "ancestor": "modeSelected_TNyK-N" },
+  "browser-header": { "class": "header_xTP3zy" },
+  "browser-search": { "class": "wrapper_UcGqzv" },
+  "browser-intro": { "class": "container_oQmK1h" },
+  "browser-first-category": { "class": "categoryRow_kU9idL" },
+  "browser-first-channel": { "class": "channelRow_kU9idL" }
+}

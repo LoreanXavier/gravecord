@@ -192,10 +192,12 @@ impl Root {
         let mut to = from;
         to.channel = None;
         to.guild_guide = true;
+        to.channel_browser = false;
         self.history.visit(from, to);
         self.channel = None;
         self.member_view = None;
         self.guild_guide_open = true;
+        self.channel_browser_open = false;
         cx.notify();
     }
 

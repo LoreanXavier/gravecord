@@ -13,6 +13,7 @@ pub(crate) struct Route {
     /// The Nitro page on Home (`/store`).
     pub nitro: bool,
     pub guild_guide: bool,
+    pub channel_browser: bool,
 }
 
 #[derive(Default)]
@@ -49,6 +50,7 @@ impl Root {
             channel: self.channel,
             nitro: self.nitro_open,
             guild_guide: self.guild_guide_open,
+            channel_browser: self.channel_browser_open,
         }
     }
 
@@ -58,6 +60,7 @@ impl Root {
             Some(guild) if self.stores.guilds.iter().any(|known| known.id == guild) => {
                 self.select(guild, route.channel);
                 self.guild_guide_open = route.guild_guide && self.has_guild_guide();
+                self.channel_browser_open = route.channel_browser && self.has_channel_browser();
             }
             Some(_) => {}
             None => {
@@ -153,6 +156,7 @@ mod tests {
             channel: Some(2),
             nitro: false,
             guild_guide: false,
+            channel_browser: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());

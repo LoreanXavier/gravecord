@@ -18,10 +18,12 @@ impl Root {
                 channel,
                 nitro: false,
                 guild_guide: false,
+                channel_browser: false,
             },
         );
         self.nitro_open = false;
         self.guild_guide_open = false;
+        self.channel_browser_open = false;
         self.guild = None;
         self.channel = channel;
         self.unread_from = None;
