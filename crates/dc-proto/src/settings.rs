@@ -354,6 +354,164 @@ pub fn merge_update(current: &mut Vec<u8>, update: &[u8], partial: bool) {
     *current = merged;
 }
 
+/// `status` is message 11 of `PreloadedUserSettings` (`StatusSettings`): status 1 (a `StringValue`), custom_status 2,
+/// show_current_game 3, status_expires_at_ms 4 (fixed64), status_created_at_ms 5 (a `UInt64Value`).
+const FIELD_STATUS: u64 = 11;
+
+/// `CustomStatus`: text 1, emoji_id 2 (fixed64), emoji_name 3, expires_at_ms 4 (fixed64), created_at_ms 5 (fixed64).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomStatus {
+    pub text: String,
+    pub emoji_id: u64,
+    pub emoji_name: String,
+    pub expires_at_ms: u64,
+}
+
+/// The account's status as the proto settings hold it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusState {
+    /// `online`, `idle`, `dnd` or `invisible`; `None` while the account never chose one.
+    pub status: Option<String>,
+    /// When the chosen status lapses, milliseconds since the epoch; zero for no end.
+    pub expires_at_ms: u64,
+    pub custom: Option<CustomStatus>,
+}
+
+fn fixed64_of(bytes: &[u8], number: u64) -> Option<u64> {
+    let mut reader = Reader { bytes };
+    while !reader.bytes.is_empty() {
+        let tag = reader.varint()?;
+        let (field, wire) = (tag >> 3, tag & 7);
+        match wire {
+            WIRE_VARINT => {
+                reader.varint()?;
+            }
+            WIRE_FIXED64 => {
+                let chunk = reader.take(8)?;
+                if field == number {
+                    return Some(u64::from_le_bytes(chunk.try_into().ok()?));
+                }
+            }
+            WIRE_BYTES => {
+                let length = usize::try_from(reader.varint()?).ok()?;
+                reader.take(length)?;
+            }
+            WIRE_FIXED32 => {
+                reader.take(4)?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn string_of(bytes: &[u8], number: u64) -> Option<String> {
+    fields(bytes)
+        .find(|(field, _)| *field == number)
+        .map(|(_, text)| String::from_utf8_lossy(text).into_owned())
+}
+
+/// The status part of the settings in `settings` (raw bytes), `None` when the account has none.
+pub fn read_status(settings: &[u8]) -> Option<StatusState> {
+    let (_, message) = fields(settings).find(|(number, _)| *number == FIELD_STATUS)?;
+    let custom = fields(message)
+        .find(|(number, _)| *number == 2)
+        .map(|(_, custom)| CustomStatus {
+            text: string_of(custom, 1).unwrap_or_default(),
+            emoji_id: fixed64_of(custom, 2).unwrap_or(0),
+            emoji_name: string_of(custom, 3).unwrap_or_default(),
+            expires_at_ms: fixed64_of(custom, 4).unwrap_or(0),
+        })
+        .filter(|custom| {
+            !custom.text.is_empty() || !custom.emoji_name.is_empty() || custom.emoji_id != 0
+        });
+    Some(StatusState {
+        status: fields(message)
+            .find(|(number, _)| *number == 1)
+            .and_then(|(_, wrapper)| string_of(wrapper, 1)),
+        expires_at_ms: fixed64_of(message, 4).unwrap_or(0),
+        custom,
+    })
+}
+
+fn push_bytes_field(out: &mut Vec<u8>, number: u64, payload: &[u8]) {
+    push_varint(out, number << 3 | WIRE_BYTES);
+    push_varint(out, payload.len() as u64);
+    out.extend_from_slice(payload);
+}
+
+fn push_fixed64_field(out: &mut Vec<u8>, number: u64, value: u64) {
+    push_varint(out, number << 3 | WIRE_FIXED64);
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+/// `settings` with the status message rebuilt: the fields in `drop` are removed from it and `add` is appended; the
+/// rest of it (Show current activity) is kept byte for byte. The patch is the whole status message, as the server
+/// replaces a top-level message it is sent.
+fn with_status_fields(settings: &[u8], drop: &[u64], add: &[u8]) -> (String, Vec<u8>) {
+    let existing = fields(settings)
+        .find(|(number, _)| *number == FIELD_STATUS)
+        .map_or(&[][..], |(_, message)| message);
+    let mut message: Vec<u8> = raw_fields(existing)
+        .into_iter()
+        .filter(|(number, _)| !drop.contains(number))
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    message.extend_from_slice(add);
+    let mut part = Vec::new();
+    push_bytes_field(&mut part, FIELD_STATUS, &message);
+    let mut updated: Vec<u8> = raw_fields(settings)
+        .into_iter()
+        .filter(|(number, _)| *number != FIELD_STATUS)
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    updated.extend_from_slice(&part);
+    (STANDARD.encode(part), updated)
+}
+
+/// `updateStatus` (module 827827): the status, when it lapses (zero for never) and when it was chosen. Returns the
+/// PATCH body value and the settings as they are from now on.
+pub fn set_status(
+    current: &[u8],
+    status: &str,
+    expires_at_ms: u64,
+    now_ms: u64,
+) -> (String, Vec<u8>) {
+    let mut add = Vec::new();
+    let mut wrapper = Vec::new();
+    push_bytes_field(&mut wrapper, 1, status.as_bytes());
+    push_bytes_field(&mut add, 1, &wrapper);
+    push_fixed64_field(&mut add, 4, expires_at_ms);
+    let mut created = Vec::new();
+    push_varint(&mut created, 1 << 3 | WIRE_VARINT);
+    push_varint(&mut created, now_ms);
+    push_bytes_field(&mut add, 5, &created);
+    with_status_fields(current, &[1, 4, 5], &add)
+}
+
+/// Saving the custom status, or clearing it with `None`.
+pub fn set_custom_status(
+    current: &[u8],
+    custom: Option<&CustomStatus>,
+    now_ms: u64,
+) -> (String, Vec<u8>) {
+    let mut add = Vec::new();
+    if let Some(custom) = custom {
+        let mut body = Vec::new();
+        push_bytes_field(&mut body, 1, custom.text.as_bytes());
+        if custom.emoji_id != 0 {
+            push_fixed64_field(&mut body, 2, custom.emoji_id);
+        }
+        if !custom.emoji_name.is_empty() {
+            push_bytes_field(&mut body, 3, custom.emoji_name.as_bytes());
+        }
+        push_fixed64_field(&mut body, 4, custom.expires_at_ms);
+        push_fixed64_field(&mut body, 5, now_ms);
+        push_bytes_field(&mut add, 2, &body);
+    }
+    with_status_fields(current, &[2], &add)
+}
+
 /// Guild ids in sidebar order, from `guild_folders`. Folders win over the legacy flat list.
 pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
     let settings = STANDARD.decode(settings_base64).ok()?;
@@ -557,5 +715,47 @@ mod tests {
         assert_eq!(varint_at(&encoded, &[13], 1), Some(3));
         merge_update(&mut current, &update, false);
         assert_eq!(current, update);
+    }
+
+    #[test]
+    fn a_status_change_keeps_the_custom_status() {
+        let custom = CustomStatus {
+            text: "busy".into(),
+            emoji_id: 0,
+            emoji_name: "x".into(),
+            expires_at_ms: 0,
+        };
+        let (_, first) = set_custom_status(&[], Some(&custom), 5);
+        let (patch, second) = set_status(&first, "idle", 1_000, 7);
+        let read = read_status(&second).expect("status");
+        assert_eq!(read.status.as_deref(), Some("idle"));
+        assert_eq!(read.expires_at_ms, 1_000);
+        assert_eq!(read.custom, Some(custom));
+        // The patch is the whole top-level message, as the server swaps it in.
+        let patched = read_status(&STANDARD.decode(patch).unwrap()).expect("patch");
+        assert_eq!(patched, read);
+    }
+
+    #[test]
+    fn clearing_the_custom_status_leaves_the_status() {
+        let custom = CustomStatus {
+            text: "hi".into(),
+            ..CustomStatus::default()
+        };
+        let (_, with) = set_custom_status(&[], Some(&custom), 1);
+        let (_, with) = set_status(&with, "dnd", 0, 2);
+        let (_, without) = set_custom_status(&with, None, 3);
+        let read = read_status(&without).expect("status");
+        assert_eq!(read.status.as_deref(), Some("dnd"));
+        assert_eq!(read.custom, None);
+        assert_eq!(read_status(&[]), None);
+    }
+
+    #[test]
+    fn other_top_level_messages_survive_a_status_write() {
+        let mut appearance = Vec::new();
+        push_bytes_field(&mut appearance, 13, &[0x08, 0x03]);
+        let (_, updated) = set_status(&appearance, "online", 0, 1);
+        assert_eq!(theme(&STANDARD.encode(&updated)), Some(3));
     }
 }

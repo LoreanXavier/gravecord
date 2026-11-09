@@ -155,7 +155,10 @@ impl Root {
                         picker.query = editor.read(cx).text().to_owned();
                         picker.row = 0;
                     }
-                    EditorEvent::Submit(_) => this.group_dm_toggle_row(cx),
+                    EditorEvent::Submit(text) => {
+                        editor.update(cx, |editor, _| editor.set_text(text));
+                        this.group_dm_toggle_row(cx)
+                    }
                     EditorEvent::Cancel => this.group_dm = None,
                 }
             }

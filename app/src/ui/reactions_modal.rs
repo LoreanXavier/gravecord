@@ -76,12 +76,20 @@ impl Root {
     fn reactor_row(&self, user: &User, mine: bool, cx: &mut Context<Self>) -> AnyElement {
         let avatar = self.images.get(&avatar_source(user).0).cloned();
         let group = SharedString::from(format!("reactor-{}", user.id));
+        let user_id = user.id;
         div()
+            .id(SharedString::from(format!("reactor-row-{}", user.id)))
             .group(group.clone())
             .h(px(52.))
             .pl(px(16.))
             .flex()
             .items_center()
+            .cursor_pointer()
+            // A reactor opens their profile.
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.view_reactions = None;
+                this.open_full_profile(user_id, window, cx);
+            }))
             .child(
                 div()
                     .size(px(32.))
@@ -121,7 +129,10 @@ impl Root {
                         .justify_center()
                         .opacity(0.)
                         .group_hover(group, |style| style.opacity(1.))
-                        .on_click(cx.listener(|this, _, _, cx| this.remove_own_reaction(cx)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_own_reaction(cx)
+                        }))
                         .child(icon("friend_ignore", 16., "--text-subtle")),
                 )
             })

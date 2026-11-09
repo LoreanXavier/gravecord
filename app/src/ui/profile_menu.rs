@@ -497,7 +497,10 @@ impl Root {
             _ => ("user_plus", "Add Friend"),
         };
         // An outgoing request has no actions: the button is disabled.
-        let disabled = relationship == Some(RELATIONSHIP_OUTGOING);
+        let disabled = matches!(
+            relationship,
+            Some(RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
+        );
         // The probe sits beside the button, not inside its border.
         let button = div()
             .id("dm-profile-friend-button")
@@ -508,7 +511,7 @@ impl Root {
             .when(!disabled, |this| this.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| match relationship {
                 None => this.set_relationship(user, Some(0), cx),
-                Some(RELATIONSHIP_OUTGOING) => {}
+                Some(RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED) => {}
                 Some(_) => this.open_profile_menu(user, Which::Friend, cx),
             }));
         self.with_tip(

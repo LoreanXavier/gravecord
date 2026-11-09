@@ -333,6 +333,7 @@ impl Root {
         };
         let probe_key = format!("menu-row-{index}");
         let hover_key = probe_key.clone();
+        let click_key = probe_key.clone();
         div()
             .id(SharedString::from(format!("menu-{index}")))
             .relative()
@@ -377,7 +378,20 @@ impl Root {
                         this.run_unconfirmed(run, target, cx);
                     } else {
                         if matches!(run, Action::Reminder | Action::Apps) {
-                            // These rows only open their submenus.
+                            // These rows open their submenus, on a click as on a hover.
+                            let kind = if run == Action::Apps {
+                                this.request_command_index();
+                                SubmenuKind::Apps
+                            } else {
+                                SubmenuKind::Reminder
+                            };
+                            let row = this.tip_anchors.borrow().get(click_key.as_str()).copied();
+                            this.submenu = row.map(|row| Submenu {
+                                kind,
+                                message: target,
+                                row,
+                            });
+                            cx.notify();
                             return;
                         }
                         this.run_action(run, target, window, cx);

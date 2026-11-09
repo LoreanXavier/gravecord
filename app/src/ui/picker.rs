@@ -48,6 +48,8 @@ pub(crate) enum Target {
     Composer,
     /// The forward dialog's optional message.
     ForwardNote,
+    /// Any other text field with its own emoji button (New Thread, Create Channel, the profile popout).
+    Field,
     Reaction {
         channel: Id,
         message: Id,
@@ -421,6 +423,7 @@ impl Root {
                 match target {
                     Target::Composer
                     | Target::ForwardNote
+                    | Target::Field
                     | Target::Trait(_)
                     | Target::SoundEmoji
                     | Target::StickerEmoji
@@ -646,6 +649,12 @@ impl Root {
                 self.emoji_used.push((usage_key, now_ms()));
                 if let Some(note) = self.forward.as_ref().map(super::forward::Forward::note) {
                     note.update(cx, |editor, cx| editor.insert(&text, cx));
+                }
+            }
+            Target::Field => {
+                self.emoji_used.push((usage_key, now_ms()));
+                if let Some(editor) = self.picker_field.clone() {
+                    editor.update(cx, |editor, cx| editor.insert(&text, cx));
                 }
             }
             Target::SoundEmoji => {

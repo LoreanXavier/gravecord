@@ -270,9 +270,19 @@ impl Root {
             .when(mutual_friends > 0, |this| {
                 this.child(
                     div()
+                        .id("dm-profile-mutual-friends")
                         .flex()
                         .items_center()
                         .gap(px(4.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile_tab(
+                                user_id,
+                                super::full_profile::Tab::Friends,
+                                window,
+                                cx,
+                            )
+                        }))
                         .child(self.mutual_avatars(body))
                         .child(plural(mutual_friends, "Mutual Friend", "Mutual Friends")),
                 )
@@ -281,7 +291,20 @@ impl Root {
                 this.child(dot(subtle))
             })
             .when(mutual_servers > 0, |this| {
-                this.child(plural(mutual_servers, "Mutual Server", "Mutual Servers"))
+                this.child(
+                    div()
+                        .id("dm-profile-mutual-servers")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile_tab(
+                                user_id,
+                                super::full_profile::Tab::Servers,
+                                window,
+                                cx,
+                            )
+                        }))
+                        .child(plural(mutual_servers, "Mutual Server", "Mutual Servers")),
+                )
             });
         let sections = div()
             .pl(px(16.))

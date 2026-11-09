@@ -1164,6 +1164,10 @@ impl Stores {
                         &settings::decode(proto),
                         data["partial"] == true,
                     );
+                    // The status chosen in another session (or lapsed on the server) shows here too.
+                    if let Some(status) = self.status_state().and_then(|state| state.status) {
+                        self.status = status;
+                    }
                 }
             }
             "RELATIONSHIP_REMOVE" => {
@@ -1268,6 +1272,32 @@ impl Stores {
         let (patch, updated) = settings::set_pref(&self.settings_raw, pref, value);
         self.settings_raw = updated;
         self.prefs.insert(pref.key, value);
+        patch
+    }
+
+    /// The status the account's proto settings hold: the chosen one, when it lapses, and the custom status.
+    pub fn status_state(&self) -> Option<settings::StatusState> {
+        settings::read_status(&self.settings_raw)
+    }
+
+    /// Chooses a status (`online`, `idle`, `dnd`, `invisible`) until `expires_at_ms` (zero: until changed). The new
+    /// status shows at once; the PATCH body value comes back.
+    pub fn set_status(&mut self, status: &str, expires_at_ms: u64, now_ms: u64) -> String {
+        let (patch, updated) =
+            settings::set_status(&self.settings_raw, status, expires_at_ms, now_ms);
+        self.settings_raw = updated;
+        self.status = status.to_owned();
+        patch
+    }
+
+    /// Saves the custom status, or clears it with `None`; the PATCH body value comes back.
+    pub fn set_custom_status(
+        &mut self,
+        custom: Option<&settings::CustomStatus>,
+        now_ms: u64,
+    ) -> String {
+        let (patch, updated) = settings::set_custom_status(&self.settings_raw, custom, now_ms);
+        self.settings_raw = updated;
         patch
     }
 
@@ -2198,5 +2228,38 @@ mod tests {
         assert_eq!(settings::varint_at(&patch, &[13], 1), Some(3));
         assert_eq!(settings::varint_at(&patch, hour.path, hour.field), Some(2));
         assert_eq!(stores.prefs.get("time_format_setting"), Some(&2));
+    }
+
+    #[test]
+    fn a_status_choice_shows_at_once_and_follows_other_sessions() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &json!({"sessions": [{"status": "dnd"}]}));
+        assert_eq!(stores.status, "dnd");
+        let patch = stores.set_status("idle", 5_000, 1);
+        assert_eq!(stores.status, "idle");
+        let state = stores.status_state().expect("status");
+        assert_eq!(
+            (state.status.as_deref(), state.expires_at_ms),
+            (Some("idle"), 5_000)
+        );
+        // The patch is the whole status message, so the server keeps the rest of it.
+        let sent = settings::read_status(&settings::decode(&patch)).expect("patch");
+        assert_eq!(sent, state);
+        // Another session chooses invisible.
+        let (other, _) = settings::set_status(&[], "invisible", 0, 2);
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": other}, "partial": true}),
+        );
+        assert_eq!(stores.status, "invisible");
+        let custom = settings::CustomStatus {
+            text: "afk".into(),
+            ..Default::default()
+        };
+        stores.set_custom_status(Some(&custom), 3);
+        assert_eq!(
+            stores.status_state().and_then(|state| state.custom),
+            Some(custom)
+        );
     }
 }

@@ -33,7 +33,6 @@ pub(super) enum Plus {
     Upload,
     Thread,
     Poll,
-    Apps,
 }
 
 pub(super) struct PollForm {
@@ -91,12 +90,6 @@ impl Root {
             Plus::Upload => self.pick_files(cx),
             Plus::Thread => self.open_new_thread(window, cx),
             Plus::Poll => self.open_poll(window, cx),
-            // The app launcher is the slash-command list: "/" in the composer opens it.
-            Plus::Apps => {
-                self.composer
-                    .update(cx, |editor, cx| editor.insert("/", cx));
-                window.focus(&self.composer.read(cx).focus_handle(cx), cx);
-            }
         }
         cx.notify();
     }
@@ -123,7 +116,10 @@ impl Root {
                         }
                     }
                     // Enter in the last answer adds one, as the official editor does.
-                    EditorEvent::Submit(_) => this.add_poll_answer(cx),
+                    EditorEvent::Submit(text) => {
+                        editor.update(cx, |editor, _| editor.set_text(text));
+                        this.add_poll_answer(cx)
+                    }
                     EditorEvent::Cancel => this.poll = None,
                 }
                 cx.notify();
@@ -152,7 +148,10 @@ impl Root {
                             form.error = None;
                         }
                     }
-                    EditorEvent::Submit(_) => this.post_poll(cx),
+                    EditorEvent::Submit(text) => {
+                        // Only Ctrl+Enter posts, as in the official editor; Enter keeps the question.
+                        editor.update(cx, |editor, _| editor.set_text(text));
+                    }
                     EditorEvent::Cancel => this.poll = None,
                 }
                 cx.notify();
@@ -299,14 +298,6 @@ impl Root {
                 "cp_poll",
                 "Create Poll",
                 Some(Plus::Poll),
-                false,
-                cx,
-            ))
-            .child(row(
-                "plus-apps",
-                "cp_apps",
-                "Use Apps",
-                Some(Plus::Apps),
                 false,
                 cx,
             ));

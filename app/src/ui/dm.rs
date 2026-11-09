@@ -487,7 +487,17 @@ impl Root {
                     .child("\u{a0}started a thread:\u{a0}")
                     .child(bold(message.content.clone()))
                     .child(".\u{a0}See all\u{a0}")
-                    .child(bold("threads".to_owned()))
+                    .child(
+                        bold("threads".to_owned())
+                            .id("see-all-threads")
+                            .cursor_pointer()
+                            .hover(|this| this.underline())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.thread_browser.is_none() {
+                                    this.toggle_thread_browser(window, cx);
+                                }
+                            })),
+                    )
                     .child(".")
                     .child(
                         div()

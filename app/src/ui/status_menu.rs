@@ -193,6 +193,11 @@ impl Root {
     }
 
     fn patch_settings(&mut self, patch: String) {
+        // Headless runs set this so a scripted click can never change the account's visible status.
+        #[cfg(feature = "capture")]
+        if std::env::var_os("GRAVECORD_NO_SETTINGS_WRITE").is_some() {
+            return;
+        }
         let _ = self.requests.send(Request::Rest {
             key: None,
             method: reqwest::Method::PATCH,
@@ -212,9 +217,13 @@ impl Root {
             }
             editor
         });
-        let events = cx.subscribe(&input, |this, _, event: &EditorEvent, cx| {
+        let events = cx.subscribe(&input, |this, input, event: &EditorEvent, cx| {
             match event {
-                EditorEvent::Submit(_) => this.save_custom_status(cx),
+                // Enter clears the field before it reports, so the text goes back before it is read.
+                EditorEvent::Submit(text) => {
+                    input.update(cx, |editor, _| editor.set_text(text));
+                    this.save_custom_status(cx)
+                }
                 EditorEvent::Cancel => this.custom_status = None,
                 EditorEvent::Edited => {}
             }

@@ -111,7 +111,8 @@ pub enum Request {
         /// Files to upload first, sent with the message.
         files: Vec<Upload>,
         /// Guild, if any, and the message being answered.
-        reply: Option<(Option<u64>, u64)>,
+        /// The guild, the message, and whether the reply pings its author (the reply bar's @ switch).
+        reply: Option<(Option<u64>, u64, bool)>,
     },
     Edit {
         channel: u64,
@@ -355,7 +356,7 @@ pub(crate) fn nonce() -> String {
     pin::nonce_at(now)
 }
 
-fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> Value {
+fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64, bool)>) -> Value {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64);
@@ -365,7 +366,7 @@ fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> 
         "nonce": pin::nonce_at(now),
         "tts": false,
     });
-    if let Some((guild, message)) = reply {
+    if let Some((guild, message, ping)) = reply {
         let mut reference =
             json!({"channel_id": channel.to_string(), "message_id": message.to_string()});
         if let Some(guild) = guild {
@@ -373,7 +374,7 @@ fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64)>) -> 
         }
         body["message_reference"] = reference;
         body["allowed_mentions"] =
-            json!({"parse": ["users", "roles", "everyone"], "replied_user": false});
+            json!({"parse": ["users", "roles", "everyone"], "replied_user": ping});
     }
     body["flags"] = json!(0);
     body
@@ -1015,16 +1016,18 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_adds_the_reference_without_pinging() {
-        let body = send_body(5, "hi", Some((Some(9), 7)));
+    fn a_reply_adds_the_reference_and_pings_by_the_switch() {
+        let body = send_body(5, "hi", Some((Some(9), 7, false)));
         assert_eq!(body["message_reference"]["guild_id"], "9");
         assert_eq!(body["message_reference"]["message_id"], "7");
         assert_eq!(body["allowed_mentions"]["replied_user"], false);
+        let pinging = send_body(5, "hi", Some((Some(9), 7, true)));
+        assert_eq!(pinging["allowed_mentions"]["replied_user"], true);
     }
 
     #[test]
     fn a_dm_reply_has_no_guild() {
-        let body = send_body(5, "hi", Some((None, 7)));
+        let body = send_body(5, "hi", Some((None, 7, true)));
         assert!(body["message_reference"].get("guild_id").is_none());
     }
 }

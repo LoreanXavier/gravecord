@@ -150,7 +150,10 @@ impl Root {
                     });
                     let events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
                         match event {
-                            EditorEvent::Submit(_) => this.search_bans(cx),
+                            EditorEvent::Submit(text) => {
+                                editor.update(cx, |editor, _| editor.set_text(text));
+                                this.search_bans(cx)
+                            }
                             // Emptying the field shows every ban again (`EO`'s onChange).
                             EditorEvent::Edited => {
                                 if editor.read(cx).text().trim().is_empty()

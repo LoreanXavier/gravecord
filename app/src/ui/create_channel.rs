@@ -371,11 +371,26 @@ impl Root {
                             .child(div().flex_1().min_w(px(0.)).child(form.name.clone()))
                             // The emoji button, grey until hovered (`spriteGreyscale_SjG8Ug`).
                             .children(self.images.get("emoji_button").cloned().map(|image| {
+                                let field = form.name.clone();
                                 div()
+                                    .id("create-channel-emoji")
                                     .w(px(32.))
                                     .h(px(30.))
                                     .flex()
                                     .items_center()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, window, cx| {
+                                            let at = event.position();
+                                            this.picker_field = Some(field.clone());
+                                            this.open_picker(
+                                                super::picker::Target::Field,
+                                                gpui::point(at.x, at.y - px(24.)),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
                                     .child(gpui::img(image).size(px(18.)).grayscale(true))
                             })),
                     ),

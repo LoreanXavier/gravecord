@@ -66,6 +66,7 @@ mod lightbox;
 mod links;
 mod menu;
 mod modal;
+mod mosaic;
 mod notify;
 mod oauth;
 mod oauth_spec;
@@ -225,6 +226,8 @@ pub struct Root {
     editing: Option<(Id, Entity<Editor>)>,
     /// The message the next send answers.
     replying: Option<Message>,
+    /// The reply bar's @ switch: whether the reply pings its author.
+    reply_ping: bool,
     menu: Option<menu::OpenMenu>,
     /// The menu that ran the last action, for actions that open beside it.
     last_menu: Option<menu::OpenMenu>,
@@ -325,6 +328,8 @@ pub struct Root {
     /// The open channel and the ack its unread messages started after, for the NEW divider.
     unread_from: Option<(Id, Id)>,
     /// The expression picker, open from the composer or for a reaction.
+    /// The text field the picker was opened from when its target is `Target::Field`.
+    picker_field: Option<Entity<Editor>>,
     picker: Option<picker::Picker>,
     /// Emoji picked this session, for the frecency list until the stored settings catch up.
     emoji_used: Vec<(String, u64)>,
@@ -424,6 +429,7 @@ impl Root {
             hovered: None,
             editing: None,
             replying: None,
+            reply_ping: true,
             menu: None,
             last_menu: None,
             confirm_delete: None,
@@ -504,6 +510,7 @@ impl Root {
             poll: None,
             viewport: (1280., 720.),
             unread_from: None,
+            picker_field: None,
             picker: None,
             emoji_used: Vec::new(),
             confirm_pin: None,
@@ -1435,6 +1442,46 @@ impl Root {
             )
     }
 
+    /// Keys the focused composer answers itself: Escape drops the reply, Up in an empty field edits the last message
+    /// of yours in the channel. True when the key was used.
+    fn composer_key(
+        &mut self,
+        keys: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.composer.read(cx).focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        let plain = !(keys.modifiers.control
+            || keys.modifiers.alt
+            || keys.modifiers.shift
+            || keys.modifiers.platform);
+        if keys.key == "escape" && self.replying.is_some() {
+            self.replying = None;
+            cx.notify();
+            return true;
+        }
+        if keys.key == "up" && plain && self.composer.read(cx).text().is_empty() {
+            let me = self.stores.current_user.as_ref().map(|user| user.id);
+            let last = self
+                .channel
+                .and_then(|channel| self.stores.messages.get(&channel))
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|message| Some(message.author.id) == me && message.kind == 0)
+                })
+                .map(|message| (message.id, message.content.clone()));
+            if let Some((id, content)) = last {
+                self.begin_edit(id, &content, window, cx);
+                return true;
+            }
+        }
+        false
+    }
+
     fn begin_edit(&mut self, message: Id, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let editor = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
@@ -1537,7 +1584,11 @@ impl Root {
         if content.is_empty() && self.pending_files.is_empty() {
             return;
         }
-        let reply = self.replying.take().map(|message| (self.guild, message.id));
+        let ping = self.reply_ping;
+        let reply = self
+            .replying
+            .take()
+            .map(|message| (self.guild, message.id, ping));
         let files = self
             .pending_files
             .drain(..)
@@ -1560,6 +1611,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.replying = Some(message);
+        self.reply_ping = true;
         window.focus(&self.composer.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
@@ -3468,6 +3520,14 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let pictures: Vec<&dc_state::Attachment> = message
+            .attachments
+            .iter()
+            .filter(|attachment| inline && attachment.is_image())
+            .collect();
+        if pictures.len() > 1 {
+            return Some(self.mosaic(message, &pictures, cx));
+        }
         (!images.is_empty()).then(|| {
             // 3px under each image is the inline-block baseline gap of the official mosaic.
             div()
@@ -3478,6 +3538,103 @@ impl Root {
                 .children(images)
                 .into_any_element()
         })
+    }
+
+    /// Several pictures of one message as the official mosaic lays them out (`mosaic.rs`).
+    fn mosaic(
+        &self,
+        message: &Message,
+        pictures: &[&dc_state::Attachment],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let sizes: Vec<(u32, u32)> = pictures
+            .iter()
+            .map(|picture| (picture.width.unwrap_or(1), picture.height.unwrap_or(1)))
+            .collect();
+        let width = self.content_width.max(1.);
+        let cell = |index: usize, size: (f32, f32), cx: &mut Context<Self>| {
+            let attachment = pictures[index];
+            let key = format!("attachment:{}", attachment.id);
+            let image = self.images.get(&key).cloned();
+            let clicked = message.clone();
+            let (w, h) = (px(size.0), px(size.1));
+            div()
+                .id(SharedString::from(format!("mosaic-{}", attachment.id)))
+                .w(w)
+                .h(h)
+                .flex_none()
+                .rounded(px(8.))
+                .overflow_hidden()
+                .cursor_pointer()
+                .bg(color("--background-base-low"))
+                .children(
+                    image.map(|image| img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_lightbox(&clicked, &key, cx);
+                }))
+                .into_any_element()
+        };
+        let mut next = 0;
+        let mut blocks: Vec<AnyElement> = Vec::new();
+        for (block, count) in mosaic::layout(&sizes, width) {
+            let start = next;
+            next += count;
+            blocks.push(match block {
+                mosaic::Block::Row(cells) => div()
+                    .flex()
+                    .gap(px(4.))
+                    .children(
+                        cells
+                            .into_iter()
+                            .enumerate()
+                            .map(|(offset, size)| cell(start + offset, size, cx)),
+                    )
+                    .into_any_element(),
+                mosaic::Block::Three { left, right } => div()
+                    .flex()
+                    .gap(px(4.))
+                    .child(cell(start, left, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(cell(start + 1, right, cx))
+                            .child(cell(start + 2, right, cx)),
+                    )
+                    .into_any_element(),
+                mosaic::Block::Grid {
+                    columns,
+                    cell: size,
+                    count,
+                } => {
+                    let cells: Vec<AnyElement> = (0..count)
+                        .map(|offset| cell(start + offset, size, cx))
+                        .collect();
+                    let mut rows: Vec<AnyElement> = Vec::new();
+                    let mut pending = cells.into_iter().peekable();
+                    while pending.peek().is_some() {
+                        let line: Vec<AnyElement> = pending.by_ref().take(columns).collect();
+                        rows.push(div().flex().gap(px(4.)).children(line).into_any_element());
+                    }
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .children(rows)
+                        .into_any_element()
+                }
+            });
+        }
+        // 3px under the block is the inline-block baseline gap of the official mosaic.
+        div()
+            .pb(px(3.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .children(blocks)
+            .into_any_element()
     }
 
     /// `container_YUQhib`: pictures, files and embeds in one grid, 2px above and below, 4px between them.
@@ -4154,7 +4311,13 @@ impl Root {
         };
         self.composer
             .update(cx, |composer, _| composer.set_placeholder(placeholder));
+        let ping = self.reply_ping;
         let reply_bar = self.replying.as_ref().map(|message| {
+            let own = self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|me| me.id == message.author.id);
             div()
                 .h(px(36.))
                 .rounded_t(px(8.))
@@ -4172,6 +4335,42 @@ impl Root {
                         .child(message.author.display_name().to_owned()),
                 )
                 .child(div().flex_1())
+                .children((!own).then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .id("reply-ping")
+                                .px(px(12.))
+                                .py(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(if ping {
+                                    color("--text-link")
+                                } else {
+                                    color("--text-muted")
+                                })
+                                .child(
+                                    div()
+                                        .w(px(16.))
+                                        .text_size(px(16.))
+                                        .line_height(px(16.))
+                                        .child("@"),
+                                )
+                                .child(if ping { "ON" } else { "OFF" })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reply_ping = !this.reply_ping;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().w(px(1.)).h(px(20.)).bg(color("--border-subtle")))
+                }))
                 .child(
                     div()
                         .id("reply-close")
@@ -4775,6 +4974,10 @@ impl Render for Root {
                         || this.activity_dialog_escape(cx)
                         || this.activity_shelf_escape(cx))
                 {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.composer_key(keys, window, cx) {
                     cx.stop_propagation();
                     return;
                 }

@@ -67,6 +67,21 @@ fn snowflake_ms(id: Id) -> i64 {
 }
 
 impl Root {
+    /// The profile on one of its tabs: the Mutual Friends and Mutual Servers links open it there.
+    pub(super) fn open_full_profile_tab(
+        &mut self,
+        user: Id,
+        tab: Tab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_full_profile(user, window, cx);
+        if let Some(open) = self.full_profile.as_mut() {
+            open.tab = tab;
+        }
+        cx.notify();
+    }
+
     pub(super) fn open_full_profile(
         &mut self,
         user: Id,

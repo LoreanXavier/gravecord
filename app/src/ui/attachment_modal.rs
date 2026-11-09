@@ -63,21 +63,29 @@ impl Root {
             }
             editor
         });
-        let on_event = |this: &mut Root, event: &EditorEvent, cx: &mut Context<Root>| {
+        let on_event = |this: &mut Root,
+                        editor: Entity<Editor>,
+                        event: &EditorEvent,
+                        cx: &mut Context<Root>| {
             match event {
-                EditorEvent::Submit(_) => this.save_modify_attachment(cx),
+                // Enter clears the field before it reports, so the text goes back before it is read.
+                EditorEvent::Submit(text) => {
+                    editor.update(cx, |editor, _| editor.set_text(text));
+                    this.save_modify_attachment(cx)
+                }
                 EditorEvent::Cancel => this.modify_attachment = None,
                 EditorEvent::Edited => {}
             }
             cx.notify();
         };
         let events = [
-            cx.subscribe(&name, move |this, _, event: &EditorEvent, cx| {
-                on_event(this, event, cx)
+            cx.subscribe(&name, move |this, editor, event: &EditorEvent, cx| {
+                on_event(this, editor, event, cx)
             }),
-            cx.subscribe(&description, move |this, _, event: &EditorEvent, cx| {
-                on_event(this, event, cx)
-            }),
+            cx.subscribe(
+                &description,
+                move |this, editor, event: &EditorEvent, cx| on_event(this, editor, event, cx),
+            ),
         ];
         window.focus(&name.read(cx).focus_handle(cx), cx);
         self.modify_attachment = Some(ModifyAttachment {

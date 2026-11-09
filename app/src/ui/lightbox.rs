@@ -248,7 +248,8 @@ impl Root {
 
     /// Escape closes, the arrows page. True when the key was the viewer's.
     pub(super) fn lightbox_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        if self.lightbox.is_none() {
+        // The Forward dialog stacked over the viewer takes the keys first.
+        if self.lightbox.is_none() || self.forward.is_some() {
             return false;
         }
         match event.keystroke.key.as_str() {
@@ -372,7 +373,6 @@ impl Root {
                 "lightbox-forward",
                 "lb_forward",
                 move |this, window, cx| {
-                    this.lightbox = None;
                     this.open_forward(forward_message.clone(), window, cx);
                 },
                 cx,

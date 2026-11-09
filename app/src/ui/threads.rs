@@ -862,8 +862,23 @@ impl Root {
                                     .child(form.message.clone()),
                             )
                             .children(self.images.get("emoji_button").cloned().map(|image| {
+                                let field = form.message.clone();
                                 div()
+                                    .id("new-thread-emoji")
                                     .ml(px(8.))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, window, cx| {
+                                            let at = event.position();
+                                            this.picker_field = Some(field.clone());
+                                            this.open_picker(
+                                                super::picker::Target::Field,
+                                                gpui::point(at.x, at.y - px(24.)),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
                                     .child(img(image).size(px(18.)).grayscale(true))
                             })),
                     ),

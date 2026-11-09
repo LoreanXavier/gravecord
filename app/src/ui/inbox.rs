@@ -439,15 +439,23 @@ impl Root {
     }
 
     /// `singleMessage_0JZW4Z`: the message as the list draws a group's first line, 72px in, 12px above and below.
-    fn inbox_message(&self, message: &Message) -> AnyElement {
+    fn inbox_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let jump = message.clone();
         let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
         let time = super::settings::prefs::clock(&message.local_time());
         div()
+            .id(SharedString::from(format!("inbox-message-{}", message.id)))
             .relative()
             .my(px(12.))
             .pl(px(72.))
             .pr(px(16.))
             .py(px(2.))
+            .cursor_pointer()
+            // The message itself jumps to it, like the Jump button.
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.inbox = None;
+                this.jump_to_message(&jump, cx);
+            }))
             .child(
                 div()
                     .absolute()
@@ -579,7 +587,7 @@ impl Root {
                     ),
             )
             .child(self.inbox_channel_header(message, buttons))
-            .child(self.inbox_message(message))
+            .child(self.inbox_message(message, cx))
             .into_any_element()
     }
 
@@ -609,7 +617,7 @@ impl Root {
             .bg(color("--background-surface-higher"))
             .overflow_hidden()
             .child(self.inbox_channel_header(message, buttons))
-            .child(self.inbox_message(message))
+            .child(self.inbox_message(message, cx))
             .into_any_element()
     }
 
@@ -1030,7 +1038,7 @@ impl Root {
     }
 
     /// A message of an unread card: a join line with the green arrow, or the message as the list draws it.
-    fn unread_message(&self, message: &Message) -> AnyElement {
+    fn unread_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
         if message.kind == USER_JOIN {
             let (before, after) = Self::join_line(message);
             let arrow = self.images.get("inbox:join").cloned();
@@ -1075,7 +1083,7 @@ impl Root {
                 )
                 .into_any_element();
         }
-        self.inbox_message(message)
+        self.inbox_message(message, cx)
     }
 
     /// One unread channel: the header with Notification Settings, Mark As Read and Collapse, then its new messages
@@ -1184,7 +1192,11 @@ impl Root {
                                             .child(date),
                                     ),
                             )
-                            .children(messages.iter().map(|message| self.unread_message(message))),
+                            .children(
+                                messages
+                                    .iter()
+                                    .map(|message| self.unread_message(message, cx)),
+                            ),
                     )
                 })
                 .into_any_element(),
@@ -1290,7 +1302,7 @@ impl Root {
                             .bg(color("--background-surface-higher"))
                             .overflow_hidden()
                             .child(self.inbox_channel_header(message, buttons))
-                            .child(self.inbox_message(message))
+                            .child(self.inbox_message(message, cx))
                             .into_any_element()
                     })
                     .collect()

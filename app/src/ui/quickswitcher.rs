@@ -121,7 +121,10 @@ impl Root {
                         switcher.selected = 0;
                     }
                 }
-                EditorEvent::Submit(_) => this.choose_switcher_result(None, cx),
+                EditorEvent::Submit(text) => {
+                    editor.update(cx, |editor, _| editor.set_text(text));
+                    this.choose_switcher_result(None, cx)
+                }
                 EditorEvent::Cancel => this.quick_switcher = None,
             }
             cx.notify();

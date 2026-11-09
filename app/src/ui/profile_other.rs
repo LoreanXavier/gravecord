@@ -230,9 +230,20 @@ impl Root {
             .when(friends > 0, |this| {
                 this.child(
                     div()
+                        .id("popout-mutual-friends")
                         .flex()
                         .items_center()
                         .gap(px(4.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.profile = None;
+                            this.open_full_profile_tab(
+                                id,
+                                super::full_profile::Tab::Friends,
+                                window,
+                                cx,
+                            )
+                        }))
                         .child(self.mutual_avatars(body))
                         .child(plural(friends, "Mutual Friend", "Mutual Friends")),
                 )
@@ -241,7 +252,21 @@ impl Root {
                 this.child(div().size(px(4.)).rounded_full().bg(subtle))
             })
             .when(servers > 0, |this| {
-                this.child(plural(servers, "Mutual Server", "Mutual Servers"))
+                this.child(
+                    div()
+                        .id("popout-mutual-servers")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.profile = None;
+                            this.open_full_profile_tab(
+                                id,
+                                super::full_profile::Tab::Servers,
+                                window,
+                                cx,
+                            )
+                        }))
+                        .child(plural(servers, "Mutual Server", "Mutual Servers")),
+                )
             })
             .into_any_element();
         let content: AnyElement = div()
@@ -269,20 +294,35 @@ impl Root {
                         .flex()
                         .items_center()
                         .child(div().flex_1().min_w(px(0.)).child(message.editor.clone()))
-                        .child(
+                        .child({
+                            let field = message.editor.clone();
                             div()
+                                .id("popout-emoji")
                                 .size(px(32.))
                                 .mr(px(4.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(
+                                    move |this, event: &gpui::ClickEvent, window, cx| {
+                                        let at = event.position();
+                                        this.picker_field = Some(field.clone());
+                                        this.open_picker(
+                                            super::picker::Target::Field,
+                                            gpui::point(at.x, at.y - px(24.)),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
                                 .children(
                                     self.images
                                         .get("emoji_button")
                                         .cloned()
                                         .map(|picture| img(picture).size(px(18.)).grayscale(true)),
-                                ),
-                        ),
+                                )
+                        }),
                 )
                 .into_any_element()
         });
@@ -375,7 +415,11 @@ impl Root {
             }
             _ => "user_plus",
         };
-        let outgoing = relationship == Some(super::friends::RELATIONSHIP_OUTGOING);
+        // A blocked person has no friend actions either: the button is drawn disabled.
+        let outgoing = matches!(
+            relationship,
+            Some(super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
+        );
         div()
             .id(probe)
             .relative()
@@ -385,7 +429,9 @@ impl Root {
             .when(!outgoing, |this| this.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| match relationship {
                 None | Some(0) => this.set_relationship(user, Some(0), cx),
-                Some(super::friends::RELATIONSHIP_OUTGOING) => {}
+                Some(
+                    super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED,
+                ) => {}
                 Some(_) => this.open_profile_menu_at(user, Which::Friend, probe, false, cx),
             }))
             .into_any_element()

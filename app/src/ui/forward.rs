@@ -832,7 +832,8 @@ impl Root {
                     }))
                     .child(modal),
             )
-            .with_priority(1)
+            // Above the media viewer (priority 2): Forward stacks over it, as the official does.
+            .with_priority(3)
             .into_any_element(),
         )
     }

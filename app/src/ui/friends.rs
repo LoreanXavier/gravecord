@@ -485,6 +485,12 @@ impl Root {
                     .when(kind == RELATIONSHIP_FRIEND, |this| {
                         this.on_click(cx.listener(move |this, _, _, cx| this.open_dm_with(id, cx)))
                     })
+                    // A pending request opens the person's profile.
+                    .when(kind != RELATIONSHIP_FRIEND, |this| {
+                        this.on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile(id, window, cx)
+                        }))
+                    })
                     .child(
                         div()
                             .relative()
