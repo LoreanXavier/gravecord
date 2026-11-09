@@ -180,10 +180,13 @@ impl Root {
 
     pub(super) fn screening_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .relative()
             .flex_none()
             .mt(px(-16.))
             .px(px(8.))
             .pb(px(8.))
+            .children(self.typing_bar())
+            .children(self.slowmode_notice(cx))
             .child(
                 div()
                     .parity_with_border("screening-composer", 1.)

@@ -103,6 +103,7 @@ mod server_boost;
 mod server_community;
 mod server_discovery;
 mod slash;
+mod slowmode;
 mod splash;
 mod status_menu;
 #[cfg(feature = "capture")]
@@ -4630,6 +4631,7 @@ impl Root {
             .px(px(8.))
             .pb(px(8.))
             .children(self.typing_bar())
+            .children(self.slowmode_notice(cx))
             .child(
                 div()
                     .parity_with_border("composer", 1.)

@@ -24,6 +24,7 @@ pub const MANAGE_THREADS: u64 = 1 << 34;
 pub const MODERATE_MEMBERS: u64 = 1 << 40;
 pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
 pub const USE_EXTERNAL_SOUNDS: u64 = 1 << 45;
+pub const BYPASS_SLOWMODE: u64 = 1 << 52;
 
 /// Every bit: what the owner and administrators hold (`R`).
 /// `xBc.CONNECT`, `xBc.MOVE_MEMBERS` (module 375389).
