@@ -14,6 +14,17 @@ use tracing::warn;
 pub enum Update {
     /// The connecting screen's spinner, fetched and decoded.
     Spinner(Arc<crate::spinner::Clip>),
+    /// `None` resets from the channel's interval; a value sets the server's remaining cooldown.
+    Slowmode {
+        channel: u64,
+        kind: dc_state::slowmode::Kind,
+        millis: Option<u64>,
+    },
+    SlowmodeRejected {
+        channel: u64,
+        draft: RejectedDraft,
+        reason: Option<String>,
+    },
     Dispatch {
         name: String,
         data: Value,
@@ -331,6 +342,12 @@ pub(crate) struct Upload {
     pub description: Option<String>,
 }
 
+pub(crate) struct RejectedDraft {
+    pub content: String,
+    pub files: Vec<Upload>,
+    pub reply: Option<(Option<u64>, u64, bool)>,
+}
+
 impl Upload {
     pub fn filename(&self) -> String {
         if !self.name.is_empty() {
@@ -486,19 +503,59 @@ pub async fn run(
                 tokio::spawn(async move {
                     let mut body = send_body(channel, &content, reply);
                     if !files.is_empty() {
+                        let _ = updates.send(Update::Slowmode {
+                            channel,
+                            kind: dc_state::slowmode::Kind::SendMessage,
+                            millis: None,
+                        });
                         match upload_all(&client, channel, &files).await {
                             Ok(attachments) => body["attachments"] = Value::Array(attachments),
                             Err(error) => {
+                                let _ = updates.send(Update::Slowmode {
+                                    channel,
+                                    kind: dc_state::slowmode::Kind::SendMessage,
+                                    millis: Some(0),
+                                });
                                 warn!("upload failed: {error}");
                                 return;
                             }
                         }
                     }
-                    if let Err(error) = client
+                    match client
                         .post(&format!("/channels/{channel}/messages"), &body)
                         .await
                     {
-                        warn!("sending failed: {error}");
+                        Ok(_) => {
+                            let _ = updates.send(Update::Slowmode {
+                                channel,
+                                kind: dc_state::slowmode::Kind::SendMessage,
+                                millis: None,
+                            });
+                        }
+                        Err(error) => {
+                            if let dc_http::Error::Status { body, .. } = &error
+                                && body["code"].as_u64() == Some(20016)
+                                && let Some(seconds) = body["retry_after"]
+                                    .as_f64()
+                                    .filter(|value| value.is_finite() && *value > 0.)
+                            {
+                                let _ = updates.send(Update::Slowmode {
+                                    channel,
+                                    kind: dc_state::slowmode::Kind::SendMessage,
+                                    millis: Some((seconds * 1000.) as u64),
+                                });
+                                let _ = updates.send(Update::SlowmodeRejected {
+                                    channel,
+                                    draft: RejectedDraft {
+                                        content,
+                                        files,
+                                        reply,
+                                    },
+                                    reason: body["message"].as_str().map(str::to_owned),
+                                });
+                            }
+                            warn!("sending failed: {error}");
+                        }
                     }
                 });
             }
@@ -803,8 +860,30 @@ pub async fn run(
             Request::Typing { channel } => {
                 tokio::spawn(async move {
                     let route = format!("/channels/{channel}/typing");
-                    if let Err(error) = client.request(reqwest::Method::POST, &route, None).await {
-                        warn!("typing notice failed: {error}");
+                    match client.request(reqwest::Method::POST, &route, None).await {
+                        Ok(body) => {
+                            for (field, kind) in [
+                                (
+                                    "message_send_cooldown_ms",
+                                    dc_state::slowmode::Kind::SendMessage,
+                                ),
+                                (
+                                    "thread_create_cooldown_ms",
+                                    dc_state::slowmode::Kind::CreateThread,
+                                ),
+                            ] {
+                                if let Some(millis) =
+                                    body[field].as_u64().filter(|millis| *millis > 0)
+                                {
+                                    let _ = updates.send(Update::Slowmode {
+                                        channel,
+                                        kind,
+                                        millis: Some(millis),
+                                    });
+                                }
+                            }
+                        }
+                        Err(error) => warn!("typing notice failed: {error}"),
                     }
                 });
             }

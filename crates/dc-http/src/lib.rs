@@ -137,6 +137,13 @@ impl Client {
             debug!("{method} {route}: {status}");
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
+                if slowmode_rejection(&body) {
+                    return Err(Error::Status {
+                        route: route.to_owned(),
+                        status,
+                        body,
+                    });
+                }
                 let wait = retry_after(&body);
                 warn!("{route} rate limited for {wait:?}, attempt {attempt}");
                 tokio::time::sleep(wait).await;
@@ -322,6 +329,11 @@ fn retry_after(body: &Value) -> Duration {
     Duration::from_secs_f64(body["retry_after"].as_f64().unwrap_or(1.0).clamp(0.0, 60.0))
 }
 
+// Module 138399 handles this in the composer; retrying it here would send a held message later.
+fn slowmode_rejection(body: &Value) -> bool {
+    body["code"].as_u64() == Some(20016)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +394,13 @@ mod tests {
             Duration::from_secs(60)
         );
         assert_eq!(retry_after(&json!({})), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn slowmode_is_not_an_automatic_http_retry() {
+        assert!(slowmode_rejection(&json!({"code":20016,"retry_after":5})));
+        assert!(!slowmode_rejection(&json!({"retry_after":5,"global":true})));
+        assert!(!slowmode_rejection(&json!({"code":20028,"retry_after":5})));
     }
 
     #[test]

@@ -230,6 +230,10 @@ pub struct Root {
     guild: Option<Id>,
     channel: Option<Id>,
     screening: Option<screening::Screening>,
+    slowmode: dc_state::slowmode::SlowmodeStore,
+    slowmode_ticking: bool,
+    slowmode_emphasis: Option<Instant>,
+    slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     rows: Vec<Row>,
     list: ListState,
     composer: Entity<Editor>,
@@ -439,7 +443,7 @@ impl Root {
                 this.submit_pending(cx);
             }
             EditorEvent::Submit(content) => {
-                if this.hold_too_long(content, cx) {
+                if this.hold_too_long(content, cx) || this.hold_slowmode(content, cx) {
                     return;
                 }
                 this.last_typing_sent = None;
@@ -467,6 +471,10 @@ impl Root {
             guild: None,
             channel: None,
             screening: None,
+            slowmode: Default::default(),
+            slowmode_ticking: false,
+            slowmode_emphasis: None,
+            slowmode_rejected: HashMap::new(),
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             composer,
@@ -615,10 +623,35 @@ impl Root {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
+            Update::Slowmode {
+                channel,
+                kind,
+                millis,
+            } => self.set_slowmode(channel, kind, millis, cx),
+            Update::SlowmodeRejected {
+                channel,
+                draft,
+                reason,
+            } => {
+                self.slowmode_rejected
+                    .entry(channel)
+                    .or_default()
+                    .push_back(draft);
+                if let Some(reason) = reason {
+                    self.put_app_toast(reason, false, cx);
+                }
+            }
             Update::Dispatch { name, data } => {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                if name == "CHANNEL_UPDATE"
+                    && let Some(channel) = data["id"].as_str().and_then(|id| id.parse().ok())
+                    && let Some((rate, bypass)) = self.slowmode_channel(channel)
+                {
+                    self.slowmode
+                        .channel_updated(channel, rate, bypass, Instant::now());
+                }
                 if name == "GUILD_MEMBERS_CHUNK" {
                     self.refresh_autocomplete(true, cx);
                 }
@@ -5007,6 +5040,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_slowmode_draft(cx);
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
             self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,

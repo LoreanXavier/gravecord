@@ -352,6 +352,20 @@ pub async fn run(
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
             }
+            // Local cooldown only; no request or channel setting is sent.
+            ["slowmode", "reject"] => {
+                root.update(cx, |root, cx| root.script_slowmode_rejection(cx));
+            }
+            ["slowmode", millis] => {
+                if let Ok(millis) = millis.parse::<u64>() {
+                    root.update(cx, |root, cx| root.script_slowmode(millis, cx));
+                }
+            }
+            ["slowmode", "fixture", millis] => {
+                if let Ok(millis) = millis.parse::<u64>() {
+                    root.update(cx, |root, cx| root.script_slowmode_fixture(millis, cx));
+                }
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

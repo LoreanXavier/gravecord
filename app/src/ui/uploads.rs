@@ -181,6 +181,13 @@ pub(super) fn toggle_spoiler(name: &str) -> String {
 }
 
 impl Pending {
+    pub(super) fn from_upload(upload: crate::net::Upload) -> Option<Self> {
+        let mut pending = Self::new(upload.path)?;
+        pending.name = upload.name;
+        pending.description = upload.description;
+        Some(pending)
+    }
+
     fn new(path: PathBuf) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().into_owned();
         let mime = mime_of(&path);

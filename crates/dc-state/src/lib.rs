@@ -12,6 +12,7 @@ pub mod members;
 pub mod permissions;
 pub mod premium;
 pub mod read_state;
+pub mod slowmode;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
