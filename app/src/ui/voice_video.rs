@@ -450,11 +450,15 @@ impl Root {
     #[cfg(feature = "capture")]
     /// The capture-only start of the harness: the synthetic pattern at the lowest settings, ten seconds at most, and
     /// only when nobody else is in the channel. The answer says what happened.
-    pub(crate) fn stream_start_synthetic(&mut self, cx: &mut Context<Self>) -> &'static str {
+    pub(crate) fn stream_start_synthetic(
+        &mut self,
+        with_others: bool,
+        cx: &mut Context<Self>,
+    ) -> &'static str {
         if self.call.as_ref().is_none_or(|call| !call.connected) {
             return "not in a connected call";
         }
-        if self.others_present() {
+        if self.others_present() && !with_others {
             return "refused: someone else is in the channel";
         }
         let (width, height, fps, bitrate) = HARNESS_SOURCE;
@@ -488,7 +492,12 @@ impl Root {
         });
         if let Some(key) = own {
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(HARNESS_STREAM_LIMIT).await;
+                let limit = if with_others {
+                    Duration::from_secs(120)
+                } else {
+                    HARNESS_STREAM_LIMIT
+                };
+                cx.background_executor().timer(limit).await;
                 let _ = this.update(cx, |root, cx| root.stream_stop_key(key, cx));
             })
             .detach();

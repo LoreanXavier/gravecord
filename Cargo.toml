@@ -38,7 +38,7 @@ rtrb = "=0.4.0"
 # H.264 software encoder and decoder (dc-media), at Serein's pin.
 openh264 = "=0.9.8"
 # The official UI sounds are mp3 (module 696354): crates/dc-voice/src/sound.rs decodes them with Symphonia (MPL-2.0).
-symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac", "isomp4", "aac"] }
 # Microphone processing (crates/dc-voice/src/process.rs): Sonora, a pure Rust port of WebRTC audio processing
 # (BSD-3-Clause); DeepFilterNet 3 through libDF on tract (MIT OR Apache-2.0), with its bundled model; the FFT and
 # arrays libDF uses.

@@ -54,17 +54,68 @@ impl Decoded {
 
 /// Decodes an mp3 file (an ID3 tag in front is fine).
 pub fn decode_mp3(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
-    let source = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("mp3");
+    decode_with(bytes, &hint)
+}
+
+/// Decodes a sound file of any kind a server's soundboard can hold: the official client hands them to the browser's
+/// `decodeAudioData`, so a soundboard file is not always an mp3. The format is read from the file itself.
+pub fn decode_any(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
+    decode_with(bytes, &Hint::new())
+}
+
+/// Ogg Opus: symphonia reads the container but has no Opus decoder, so the packets go to libopus at 48 kHz.
+fn decode_opus(
+    format: &mut Box<dyn symphonia::core::formats::FormatReader>,
+    track_id: u32,
+) -> Result<Decoded, &'static str> {
+    const CHANNELS: usize = 2;
+    let mut decoder = opus2::Decoder::new(48_000, opus2::Channels::Stereo)
+        .map_err(|_| "The Opus decoder is unavailable")?;
+    // The longest Opus packet is 120 ms.
+    let mut frame = vec![0f32; 5760 * CHANNELS];
+    let mut samples = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(DecodeError::IoError(_)) | Err(DecodeError::ResetRequired) => break,
+            Err(_) => return Err("The sound file is damaged"),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        if let Ok(count) = decoder.decode_float(&packet.data, &mut frame, false) {
+            samples.extend_from_slice(&frame[..count * CHANNELS]);
+        }
+        if samples.len() > MAX_SECONDS * 48_000 * CHANNELS {
+            break;
+        }
+    }
+    if samples.is_empty() {
+        return Err("The sound file holds no audio");
+    }
+    Ok(Decoded {
+        rate: 48_000,
+        channels: CHANNELS as u16,
+        samples,
+    })
+}
+
+fn decode_with(bytes: Vec<u8>, hint: &Hint) -> Result<Decoded, &'static str> {
+    let first: Vec<u8> = bytes.iter().copied().take(4).collect();
+    let source = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
     let probed = symphonia::default::get_probe()
         .format(
-            &hint,
+            hint,
             source,
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|_| "Not an mp3 file")?;
+        .map_err(|_| {
+            debug!(?first, "sound file of an unknown kind");
+            "Not a sound file"
+        })?;
     let mut format = probed.format;
     let track = format
         .tracks()
@@ -72,9 +123,12 @@ pub fn decode_mp3(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
         .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or("The file has no audio track")?;
     let track_id = track.id;
+    if track.codec_params.codec == symphonia::core::codecs::CODEC_TYPE_OPUS {
+        return decode_opus(&mut format, track_id);
+    }
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|_| "The mp3 codec is unavailable")?;
+        .map_err(|_| "The sound file's codec is unavailable")?;
     let (mut rate, mut channels, mut samples) = (0u32, 0u16, Vec::new());
     loop {
         let packet = match format.next_packet() {
@@ -313,6 +367,26 @@ mod tests {
         let sound = decode_mp3(silent_mp3(8, true)).expect("mono decodes");
         assert_eq!((sound.rate, sound.channels), (44_100, 1));
         assert!(decode_mp3(b"<html>404</html>".to_vec()).is_err());
+        assert!(decode_any(b"<html>404</html>".to_vec()).is_err());
+        assert!(decode_any(silent_mp3(12, false)).is_ok());
+        // A soundboard file need not be an mp3: a minimal 16-bit mono WAV, a tenth of a second at 8 kHz.
+        let data = vec![0u8; 1600];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8_000u32.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        let sound = decode_any(wav).expect("a wav file decodes");
+        assert_eq!((sound.rate, sound.channels), (8_000, 1));
         assert!(decode_mp3(Vec::new()).is_err());
     }
 

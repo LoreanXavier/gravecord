@@ -976,6 +976,19 @@ impl Stores {
         match name {
             "READY" => self.on_ready(data),
             "READY_SUPPLEMENTAL" => {
+                // Who is in voice comes here for a user account, not in READY: without it, people already in a
+                // channel stay invisible until their state next changes.
+                for guild in data["guilds"].as_array().into_iter().flatten() {
+                    if let (Some(guild_id), Some(states)) =
+                        (id(&guild["id"]), guild["voice_states"].as_array())
+                    {
+                        let list = self.voice_states.entry(guild_id).or_default();
+                        for state in states.iter().filter_map(VoiceState::from_value) {
+                            list.retain(|known| known.user_id != state.user_id);
+                            list.push(state);
+                        }
+                    }
+                }
                 let friends = data["merged_presences"]["friends"].as_array();
                 for presence in friends.into_iter().flatten() {
                     self.set_presence(presence);
@@ -1773,6 +1786,21 @@ mod tests {
             stores.messages[&23][0].embeds[0].title.as_deref(),
             Some("t")
         );
+    }
+
+    #[test]
+    fn people_already_in_voice_come_from_ready_supplemental() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY_SUPPLEMENTAL",
+            &json!({"guilds": [{"id": "5", "voice_states": [
+                {"user_id": "7", "channel_id": "9", "session_id": "s", "self_video": true},
+                {"user_id": "8", "channel_id": "9", "session_id": "t"},
+            ]}]}),
+        );
+        let members = stores.voice_members(5, 9);
+        assert_eq!(members.len(), 2);
+        assert!(members[0].self_video);
     }
 
     #[test]

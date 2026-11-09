@@ -305,7 +305,13 @@ pub async fn run(
             // Go Live from the synthetic pattern, only when nobody else is in the channel; ends by itself after ten
             // seconds. The outcome goes to the log.
             ["stream", "start"] => {
-                let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(cx));
+                let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(false, cx));
+                let _ = writeln!(output, "stream start: {outcome}");
+            }
+            // The same pattern with the owner in the channel, for a live test he asked for: it holds nothing of
+            // this machine. Ends by itself like the other.
+            ["stream", "start", "with-others"] => {
+                let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(true, cx));
                 let _ = writeln!(output, "stream start: {outcome}");
             }
             ["stream", "stop"] => {

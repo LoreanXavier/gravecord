@@ -807,7 +807,7 @@ impl Root {
                                 return;
                             }
                         };
-                        match sound::decode_mp3(bytes) {
+                        match sound::decode_any(bytes) {
                             Ok(decoded) => {
                                 let decoded = Arc::new(decoded);
                                 if let Ok(mut known) = cache.lock() {
