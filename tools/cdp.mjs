@@ -10,6 +10,7 @@ export async function connect(match = /discord(app)?\.com/) {
     socket.onopen = ok;
     socket.onerror = fail;
   });
+  const closed = new Promise((resolve) => socket.addEventListener('close', resolve, { once: true }));
   let next = 0;
   const pending = new Map();
   const listeners = new Map();
@@ -39,5 +40,5 @@ export async function connect(match = /discord(app)?\.com/) {
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
   };
-  return { send, evaluate, on: (method, callback) => listeners.set(method, callback), close: () => socket.close() };
+  return { send, evaluate, on: (method, callback) => listeners.set(method, callback), closed, close: () => socket.close() };
 }
