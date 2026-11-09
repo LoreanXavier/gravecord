@@ -109,7 +109,7 @@ pub enum Request {
         channel: u64,
         content: String,
         /// Files to upload first, sent with the message.
-        files: Vec<std::path::PathBuf>,
+        files: Vec<Upload>,
         /// Guild, if any, and the message being answered.
         reply: Option<(Option<u64>, u64)>,
     },
@@ -202,6 +202,8 @@ pub enum Request {
 }
 
 pub(crate) const MESSAGE_PAGE: u32 = 50;
+/// Held while a settings-proto PATCH is in flight.
+static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// The picker's unicode emoji sheet (module 617057): 40px cells, 42 to a row, drawn at 1680 by 1560.
 const EMOJI_SHEET: &str = "https://cdn.discordapp.com/assets/content/c357d57faac49918709981e6fb30e526fa62b6d440f99fd8bd2b88f0542ad6c5.png";
 /// Emoji with skin tones come from their own sheet (`spritesheet--40.png`, module 125371), 10 to a row
@@ -266,15 +268,12 @@ fn percent_encode(text: &str) -> String {
 async fn upload_all(
     client: &dc_http::Client,
     channel: u64,
-    files: &[std::path::PathBuf],
+    files: &[Upload],
 ) -> Result<Vec<Value>, String> {
     let mut attachments = Vec::new();
-    for (index, path) in files.iter().enumerate() {
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-        let filename = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".to_owned());
+    for (index, file) in files.iter().enumerate() {
+        let bytes = std::fs::read(&file.path).map_err(|error| error.to_string())?;
+        let filename = file.filename();
         let request = json!({"files": [{
             "filename": filename,
             "file_size": bytes.len(),
@@ -296,13 +295,54 @@ async fn upload_all(
             .put_upload(url, bytes)
             .await
             .map_err(|error| error.to_string())?;
-        attachments.push(json!({
-            "id": index.to_string(),
-            "filename": filename,
-            "uploaded_filename": uploaded,
-        }));
+        attachments.push(attachment_entry(
+            index,
+            &filename,
+            uploaded,
+            file.description.as_deref(),
+        ));
     }
     Ok(attachments)
+}
+
+/// A file to upload with a message: where it is, the name it goes by (the composer's Modify and spoiler actions rename
+/// it) and its alt text.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Upload {
+    pub path: std::path::PathBuf,
+    /// The name the message shows; empty means the file's own.
+    pub name: String,
+    pub description: Option<String>,
+}
+
+impl Upload {
+    pub fn filename(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_owned())
+    }
+}
+
+/// One entry of the message's `attachments` (`OW` in module 292348); the description is the image's alt text.
+fn attachment_entry(
+    index: usize,
+    filename: &str,
+    uploaded: &str,
+    description: Option<&str>,
+) -> Value {
+    let mut entry = json!({
+        "id": index.to_string(),
+        "filename": filename,
+        "uploaded_filename": uploaded,
+    });
+    if let Some(description) = description.filter(|text| !text.trim().is_empty()) {
+        entry["description"] = json!(description);
+    }
+    entry
 }
 
 /// A fresh nonce: the snowflake of now, as the client stamps outgoing messages and interactions.
@@ -556,6 +596,13 @@ pub async fn run(
             } => {
                 let updates = updates.clone();
                 tokio::spawn(async move {
+                    // The server merges a settings PATCH into what it read a moment before, so two sent at once lose
+                    // one of them: they go one after the other.
+                    let _turn = if route.starts_with("/users/@me/settings-proto/") {
+                        Some(SETTINGS_PROTO_TURN.lock().await)
+                    } else {
+                        None
+                    };
                     let outcome = client.request(method, &route, body.as_ref()).await;
                     let report = match outcome {
                         Ok(value) => json!({"ok": true, "status": 200, "body": value}),
@@ -953,9 +1000,34 @@ fn preview_body(jpeg: &[u8]) -> Value {
 
 #[cfg(test)]
 mod preview_tests {
+    use super::{Upload, attachment_entry};
     #[test]
     fn the_preview_body_is_a_jpeg_data_uri() {
         let body = super::preview_body(&[0xff, 0xd8, 0xff]);
         assert_eq!(body["thumbnail"], "data:image/jpeg;base64,/9j/");
+    }
+
+    #[test]
+    fn a_renamed_upload_goes_by_its_new_name_with_its_alt_text() {
+        let upload = Upload {
+            path: "cat.png".into(),
+            name: "SPOILER_cat.png".to_owned(),
+            description: Some("a cat".to_owned()),
+        };
+        assert_eq!(upload.filename(), "SPOILER_cat.png");
+        let plain = Upload {
+            path: "cat.png".into(),
+            name: String::new(),
+            description: None,
+        };
+        assert_eq!(plain.filename(), "cat.png");
+        let entry = attachment_entry(0, &upload.filename(), "up/1", upload.description.as_deref());
+        assert_eq!(entry["description"], "a cat");
+        assert_eq!(entry["filename"], "SPOILER_cat.png");
+        assert!(
+            attachment_entry(1, "a", "b", Some("  "))
+                .get("description")
+                .is_none()
+        );
     }
 }

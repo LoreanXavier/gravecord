@@ -96,6 +96,10 @@ impl Root {
     }
 
     pub(super) fn embeds(&self, message: &Message) -> Option<AnyElement> {
+        // "Show embeds and link previews" off hides them under every message.
+        if !self.pref_on("chat_embeds_render_embeds", true) {
+            return None;
+        }
         let cards: Vec<AnyElement> = message
             .embeds
             .iter()
@@ -115,6 +119,10 @@ impl Root {
 
     /// `inlineMediaEmbed_XyW1ZT`: the media alone, fitted into 400x300, radius 4, 2px under the line above.
     fn inline_media(&self, message: Id, index: usize, embed: &Embed) -> Option<AnyElement> {
+        // "When posted as links to chat" off leaves only the link.
+        if !self.pref_on("chat_inline_media_links", true) {
+            return None;
+        }
         let image = embed.image.as_ref()?;
         let (width, height) = Embed::fitted(image);
         // A narrow chat scales the media down to its width.

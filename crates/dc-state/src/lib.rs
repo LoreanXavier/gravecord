@@ -919,6 +919,11 @@ pub struct Stores {
     /// READY's `session_id`, which interactions carry.
     pub session_id: Option<String>,
     pub guild_order: Vec<Id>,
+    /// Client preferences kept in the account's proto settings (`settings::PROTO_PREFS`), by row key: the varint as
+    /// stored. A key that is absent was never set, and the preference keeps its default.
+    pub prefs: HashMap<&'static str, u64>,
+    /// The account's proto settings as the server last gave them, for a change to be built on.
+    settings_raw: Vec<u8>,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
     pub read_states: read_state::ReadStates,
@@ -1153,6 +1158,12 @@ impl Stores {
                     if let Some(theme) = settings::theme(proto) {
                         self.theme = theme;
                     }
+                    self.read_prefs(proto, data["partial"] == true);
+                    settings::merge_update(
+                        &mut self.settings_raw,
+                        &settings::decode(proto),
+                        data["partial"] == true,
+                    );
                 }
             }
             "RELATIONSHIP_REMOVE" => {
@@ -1251,6 +1262,31 @@ impl Stores {
         }
     }
 
+    /// Changes one client preference: the new value shows at once, and the PATCH body value comes back (the whole of
+    /// the top-level message it lives in, see `settings::set_pref`).
+    pub fn set_pref(&mut self, pref: &'static settings::ProtoPref, value: u64) -> String {
+        let (patch, updated) = settings::set_pref(&self.settings_raw, pref, value);
+        self.settings_raw = updated;
+        self.prefs.insert(pref.key, value);
+        patch
+    }
+
+    /// Takes the client preferences out of a settings payload. A full one without a preference clears it (the account
+    /// reset it); a partial one carries only what changed.
+    fn read_prefs(&mut self, proto: &str, partial: bool) {
+        for pref in settings::PROTO_PREFS {
+            match settings::varint_at(proto, pref.path, pref.field) {
+                Some(value) => {
+                    self.prefs.insert(pref.key, value);
+                }
+                None if !partial => {
+                    self.prefs.remove(pref.key);
+                }
+                None => {}
+            }
+        }
+    }
+
     fn on_ready(&mut self, data: &Value) {
         self.current_user = User::from_value(&data["user"]);
         self.experiments = experiments::Assignments::from_ready(
@@ -1270,6 +1306,12 @@ impl Stores {
             .as_str()
             .and_then(settings::guild_order)
             .unwrap_or_default();
+        self.prefs.clear();
+        self.settings_raw.clear();
+        if let Some(proto) = data["user_settings_proto"].as_str() {
+            self.settings_raw = settings::decode(proto);
+            self.read_prefs(proto, false);
+        }
         self.session_id = text(&data["session_id"]);
         self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
         for user in data["users"].as_array().into_iter().flatten() {
@@ -2113,5 +2155,48 @@ mod tests {
             &json!({"settings": {"type": 1, "proto": ""}, "partial": false}),
         );
         assert!(!stores.ignore_speedbump_disabled);
+    }
+
+    #[test]
+    fn settings_proto_carries_client_preferences() {
+        let mut stores = Stores::default();
+        let embeds = settings::PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "chat_embeds_render_embeds")
+            .unwrap();
+        let embeds_off = settings::pref_patch(embeds, 0);
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": embeds_off}, "partial": true}),
+        );
+        assert_eq!(stores.prefs.get("chat_embeds_render_embeds"), Some(&0));
+        // A partial update without the key leaves it; a full one without it resets it.
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": ""}, "partial": true}),
+        );
+        assert_eq!(stores.prefs.get("chat_embeds_render_embeds"), Some(&0));
+        stores.dispatch(
+            "USER_SETTINGS_PROTO_UPDATE",
+            &json!({"settings": {"type": 1, "proto": ""}, "partial": false}),
+        );
+        assert!(stores.prefs.is_empty());
+    }
+
+    #[test]
+    fn a_change_is_built_on_what_the_server_sent() {
+        let mut stores = Stores::default();
+        // READY: appearance holds the theme DARKER.
+        let (ready, _) = settings::set_pref(&[], &settings::THEME, 3);
+        stores.dispatch("READY", &json!({"user_settings_proto": ready}));
+        let hour = settings::PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "time_format_setting")
+            .unwrap();
+        let patch = stores.set_pref(hour, 2);
+        // The patch still names the theme, and the store shows the new hour cycle.
+        assert_eq!(settings::varint_at(&patch, &[13], 1), Some(3));
+        assert_eq!(settings::varint_at(&patch, hour.path, hour.field), Some(2));
+        assert_eq!(stores.prefs.get("time_format_setting"), Some(&2));
     }
 }

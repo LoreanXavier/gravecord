@@ -136,7 +136,36 @@ pub(super) fn radio(picked: bool) -> gpui::Div {
         })
 }
 
+const VIEW_CHANNEL: u64 = 1 << 10;
+const CONNECT: u64 = 1 << 20;
+
+/// `CG(guildId, type, [], true)` of module 147036 plus `n3(userId, type)`: `@everyone` (the guild's own id) loses View
+/// Channel, and Connect for voice and categories; the creator gets it back as a member overwrite unless they own the
+/// server.
+pub(crate) fn private_overwrites(guild: Id, kind: Kind, creator: Option<Id>) -> serde_json::Value {
+    let bits = match kind {
+        Kind::Voice | Kind::Category => VIEW_CHANNEL | CONNECT,
+        Kind::Text | Kind::Forum => VIEW_CHANNEL,
+    };
+    let mut overwrites =
+        vec![json!({"id": guild.to_string(), "type": 0, "allow": "0", "deny": bits.to_string()})];
+    if let Some(creator) = creator {
+        overwrites.push(
+            json!({"id": creator.to_string(), "type": 1, "allow": bits.to_string(), "deny": "0"}),
+        );
+    }
+    serde_json::Value::Array(overwrites)
+}
+
 impl Root {
+    /// The current user may create channels in the open server.
+    pub(super) fn can_manage_channels(&self) -> bool {
+        let (Some(guild), Some(me)) = (self.current_guild(), self.stores.me()) else {
+            return false;
+        };
+        dc_state::permissions::can_in_guild(guild, me, dc_state::permissions::MANAGE_CHANNELS)
+    }
+
     pub(super) fn open_create_channel(
         &mut self,
         category: bool,
@@ -189,7 +218,20 @@ impl Root {
             Kind::Text | Kind::Forum => channel_slug(&typed),
             Kind::Voice | Kind::Category => typed,
         };
-        let mut body = json!({"type": form.kind as u64, "name": name, "permission_overwrites": []});
+        let owner = self
+            .current_guild()
+            .and_then(|guild| guild.owner_id)
+            .is_some_and(|owner| {
+                Some(owner) == self.stores.current_user.as_ref().map(|user| user.id)
+            });
+        let overwrites = if form.private {
+            let me = self.stores.current_user.as_ref().map(|user| user.id);
+            private_overwrites(guild, form.kind, me.filter(|_| !owner))
+        } else {
+            json!([])
+        };
+        let mut body =
+            json!({"type": form.kind as u64, "name": name, "permission_overwrites": overwrites});
         if let Some(parent) = form.parent {
             body["parent_id"] = json!(parent.to_string());
         }
@@ -423,10 +465,31 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::channel_slug;
+    use super::{Kind, channel_slug, private_overwrites};
 
     #[test]
     fn names_take_the_channel_form() {
         assert_eq!(channel_slug("My New  Channel"), "my-new-channel");
+    }
+
+    #[test]
+    fn a_private_text_channel_hides_from_everyone_and_shows_to_its_creator() {
+        let overwrites = private_overwrites(10, Kind::Text, Some(7));
+        assert_eq!(
+            overwrites,
+            serde_json::json!([
+                {"id": "10", "type": 0, "allow": "0", "deny": "1024"},
+                {"id": "7", "type": 1, "allow": "1024", "deny": "0"},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_private_voice_channel_also_denies_connect_and_an_owner_needs_no_overwrite() {
+        let overwrites = private_overwrites(10, Kind::Voice, None);
+        assert_eq!(
+            overwrites,
+            serde_json::json!([{"id": "10", "type": 0, "allow": "0", "deny": "1049600"}])
+        );
     }
 }

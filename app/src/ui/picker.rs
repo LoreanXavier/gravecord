@@ -1246,6 +1246,17 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--control-secondary-text-default"))
+                    // Emoji are uploaded on the server's Emoji page.
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(guild) = this.guild {
+                            this.picker = None;
+                            this.open_server_settings_at(
+                                guild,
+                                super::server_settings::Page::Emoji,
+                                cx,
+                            );
+                        }
+                    }))
                     .child("Add Emoji"),
             );
         let sticky = picker

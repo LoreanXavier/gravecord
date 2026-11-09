@@ -550,18 +550,13 @@ impl Root {
             .into_any_element()
     }
 
+    /// What a page shows: the user's choice, else the account's own value for a proto preference, else the capture's.
     fn choice_on(&self, key: &'static str, captured: bool) -> bool {
-        match self.setting_choices.get(key) {
-            Some(Choice::On(on)) => *on,
-            _ => captured,
-        }
+        self.pref_on(key, captured)
     }
 
     fn choice_index(&self, key: &'static str, captured: usize) -> usize {
-        match self.setting_choices.get(key) {
-            Some(Choice::Index(index)) => *index,
-            _ => captured,
-        }
+        self.pref_index(key, captured)
     }
 
     /// One node, with the 8px vertical padding every `baseSettingWrapper` keeps.

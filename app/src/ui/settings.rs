@@ -5,6 +5,7 @@
 mod appearance;
 mod model;
 mod pages;
+pub(super) mod prefs;
 mod render;
 mod soundboard;
 pub(crate) use render::radio_dot;

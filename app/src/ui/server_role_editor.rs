@@ -90,6 +90,8 @@ pub(crate) struct RolesState {
     pub(super) member_search: Entity<Editor>,
     /// The "..." menu is open, for this role (module 396704).
     pub(super) menu: Option<Id>,
+    /// Which button the menu hangs off: the editor's, or a row's of the Roles list.
+    pub(super) menu_anchor: gpui::SharedString,
     /// "Delete Role" is asking about this role.
     pub(super) confirm_delete: Option<Id>,
     /// The role being duplicated, waiting for its copy to be created.
@@ -162,6 +164,7 @@ impl Root {
                 perm_search,
                 member_search,
                 menu: None,
+                menu_anchor: "server-role-menu".into(),
                 confirm_delete: None,
                 duplicating: None,
                 adding: None,
@@ -561,10 +564,33 @@ impl Root {
                                     cx.listener(move |this, _, _, cx| this.select_role(id, cx)),
                                 ),
                             )
-                            .child(Self::secondary_square(
-                                SharedString::from(format!("server-role-more-{id}")),
-                                "role_more",
-                            )),
+                            // The row's "..." opens the same menu as the editor's: Duplicate Role, Delete.
+                            .child(
+                                div()
+                                    .relative()
+                                    .child(self.anchor_probe(format!("server-role-more-{id}")))
+                                    .child(
+                                        Self::secondary_square(
+                                            SharedString::from(format!("server-role-more-{id}")),
+                                            "role_more",
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(state) = this
+                                                    .server_settings
+                                                    .as_mut()
+                                                    .and_then(|open| open.roles.as_mut())
+                                                {
+                                                    state.menu_anchor =
+                                                        format!("server-role-more-{id}").into();
+                                                    state.menu = Some(id);
+                                                }
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.select_role(id, cx)))
                     .into_any_element()
@@ -876,6 +902,8 @@ impl Root {
                                                         .as_mut()
                                                         .and_then(|open| open.roles.as_mut())
                                                     {
+                                                        state.menu_anchor =
+                                                            "server-role-menu".into();
                                                         state.menu = if state.menu.is_some() {
                                                             None
                                                         } else {
@@ -954,9 +982,10 @@ impl Root {
     /// The editor's "..." (module 396704): Duplicate Role, then Delete under a separator.
     pub(super) fn role_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;
-        let role = open.roles.as_ref()?.menu?;
+        let state = open.roles.as_ref()?;
+        let role = state.menu?;
         let guild = open.guild;
-        let anchor = self.tip_anchors.borrow().get("server-role-menu").copied()?;
+        let anchor = self.tip_anchors.borrow().get(&state.menu_anchor).copied()?;
         let item =
             |id: &'static str, label: &'static str, icon_name: &'static str, tint: &'static str| {
                 div()

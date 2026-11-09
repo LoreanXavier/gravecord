@@ -173,6 +173,187 @@ pub fn ignore_speedbump_disabled_patch() -> String {
     encode_varint_at(&[FIELD_SAFETY], SAFETY_IGNORE_SPEEDBUMP_DISABLED, 1)
 }
 
+/// A client preference that lives in the account's proto settings: where it is, as the nested message numbers from
+/// `PreloadedUserSettings` (`dumps/PROTOS`) and the varint field inside the last one. The wrappers (`BoolValue`,
+/// `UInt32Value`) keep their value in field 1.
+pub struct ProtoPref {
+    /// The settings page row's `data-nav-anchor-key`.
+    pub key: &'static str,
+    pub path: &'static [u64],
+    pub field: u64,
+}
+
+const fn pref(key: &'static str, path: &'static [u64], field: u64) -> ProtoPref {
+    ProtoPref { key, path, field }
+}
+
+/// `text_and_images` is message 6 and `appearance` 13 of `PreloadedUserSettings`.
+pub const PROTO_PREFS: &[ProtoPref] = &[
+    // text_and_images: use_rich_chat_input 2, use_thread_sidebar 3, view_image_descriptions 7,
+    // inline_attachment_media 9, inline_embed_media 10, gif_auto_play 11, render_embeds 12, render_reactions 13,
+    // animate_emoji 14, animate_stickers 15, enable_tts_command 16, message_display_compact 17,
+    // convert_emoticons 21, use_legacy_chat_input 24, include_stickers_in_autocomplete 28.
+    pref("chat_text_box_previews", &[6, 2], 1),
+    pref("chat_threads_split_view", &[6, 3], 1),
+    pref("chat_inline_media_image_descriptions", &[6, 7], 1),
+    pref("chat_inline_media_uploads", &[6, 9], 1),
+    pref("chat_inline_media_links", &[6, 10], 1),
+    pref("animate_gifs", &[6, 11], 1),
+    pref("chat_embeds_render_embeds", &[6, 12], 1),
+    pref("chat_emoji_render_reactions", &[6, 13], 1),
+    pref("animate_emojis", &[6, 14], 1),
+    pref("animate_stickers", &[6, 15], 1),
+    pref("text_to_speech_command", &[6, 16], 1),
+    pref("appearance_message_display_mode", &[6, 17], 1),
+    pref("chat_emoji_convert_emoticons", &[6, 21], 1),
+    pref("enable_legacy_chat_input", &[6, 24], 1),
+    pref("chat_stickers_autocomplete", &[6, 28], 1),
+    // notifications (7): notify_friends_on_go_live 2, enable_friend_online_notifications 12,
+    // enable_friend_anniversary_notifications 14, enable_profile_updates_notifications 16,
+    // enable_upcoming_server_event_notifications 22, notify_friends_on_profile_update 24,
+    // notify_friends_on_come_online 25, notify_server_members_on_go_live 26.
+    pref("go_live_notifications", &[7, 2], 1),
+    pref("friend_online_notifications", &[7, 12], 1),
+    pref("friend_anniversary_notifications", &[7, 14], 1),
+    pref("profile_updates_notifications", &[7, 16], 1),
+    pref("upcoming_server_event_notifications", &[7, 22], 1),
+    pref("notify_friends_on_profile_update_setting", &[7, 24], 1),
+    pref(
+        "activity_privacy_notify_friends_online_setting",
+        &[7, 25],
+        1,
+    ),
+    pref(
+        "activity_privacy_notify_server_members_on_go_live_setting",
+        &[7, 26],
+        1,
+    ),
+    // privacy (8): allow_activity_party_privacy_friends 1, allow_activity_party_privacy_voice_channel 2;
+    // status (11): show_current_game 3.
+    pref("activity_privacy_friends_join_setting", &[8, 1], 1),
+    pref("activity_privacy_voice_join_setting", &[8, 2], 1),
+    pref("activity_privacy_setting", &[11, 3], 1),
+    // appearance: developer_mode 2, timestamp_hour_cycle 9.
+    pref("developer_mode", &[13], 2),
+    pref("time_format_setting", &[13], 9),
+];
+
+/// The varint at `field` of the message found by following `path` from the top: `None` when a message on the way is
+/// missing (the account never set it), zero when the message is there without the field (proto3 leaves defaults out).
+pub fn varint_at(settings_base64: &str, path: &[u64], field: u64) -> Option<u64> {
+    let settings = STANDARD.decode(settings_base64).ok()?;
+    let mut current: &[u8] = &settings;
+    for number in path {
+        current = fields(current)
+            .find(|(known, _)| known == number)
+            .map(|(_, payload)| payload)?;
+    }
+    Some(varint_of(current, field).unwrap_or(0))
+}
+
+/// The PATCH body value that sets one preference on its own. The server swaps in whole any top-level message it is
+/// sent, so a live change goes through `set_pref`, which carries the rest of that message along.
+pub fn pref_patch(pref: &ProtoPref, value: u64) -> String {
+    encode_varint_at(pref.path, pref.field, value)
+}
+
+/// The theme, which the Appearance page's swatches set; kept here so a test and the harness can write it back.
+pub const THEME: ProtoPref = pref("appearance_theme", &[13], 1);
+
+/// The fields of `bytes` as (number, the field's own bytes, tag included), in order. Stops at a malformed one.
+fn raw_fields(bytes: &[u8]) -> Vec<(u64, &[u8])> {
+    let mut out = Vec::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let mut reader = Reader { bytes: rest };
+        let Some(tag) = reader.varint() else { break };
+        let ok = match tag & 7 {
+            WIRE_VARINT => reader.varint().is_some(),
+            WIRE_FIXED64 => reader.take(8).is_some(),
+            WIRE_BYTES => reader
+                .varint()
+                .and_then(|length| usize::try_from(length).ok())
+                .and_then(|length| reader.take(length))
+                .is_some(),
+            WIRE_FIXED32 => reader.take(4).is_some(),
+            _ => false,
+        };
+        if !ok {
+            break;
+        }
+        let used = rest.len() - reader.bytes.len();
+        out.push((tag >> 3, &rest[..used]));
+        rest = reader.bytes;
+    }
+    out
+}
+
+/// `message` with the varint `field` of the nested message at `path` set, everything else kept byte for byte.
+fn with_varint(message: &[u8], path: &[u64], field: u64, value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    let Some((head, tail)) = path.split_first() else {
+        for (number, raw) in raw_fields(message) {
+            if number != field {
+                out.extend_from_slice(raw);
+            }
+        }
+        push_varint(&mut out, field << 3 | WIRE_VARINT);
+        push_varint(&mut out, value);
+        return out;
+    };
+    let inner = fields(message)
+        .find(|(number, _)| number == head)
+        .map_or(&[][..], |(_, payload)| payload);
+    let rebuilt = with_varint(inner, tail, field, value);
+    for (number, raw) in raw_fields(message) {
+        if number != *head {
+            out.extend_from_slice(raw);
+        }
+    }
+    push_varint(&mut out, head << 3 | WIRE_BYTES);
+    push_varint(&mut out, rebuilt.len() as u64);
+    out.extend_from_slice(&rebuilt);
+    out
+}
+
+/// The account's settings as bytes, from the base64 of READY or an update.
+pub fn decode(settings_base64: &str) -> Vec<u8> {
+    STANDARD.decode(settings_base64).unwrap_or_default()
+}
+
+/// Setting one preference: the PATCH body value, and the settings as they are from now on. The server replaces a
+/// top-level message it is sent as a whole, so the patch is the whole of `appearance` or `text_and_images`, built from
+/// `current`; sending only the changed field would wipe the rest of its message (the theme, the other switches).
+pub fn set_pref(current: &[u8], pref: &ProtoPref, value: u64) -> (String, Vec<u8>) {
+    let updated = with_varint(current, pref.path, pref.field, value);
+    let top = pref.path.first().copied().unwrap_or(0);
+    let part: Vec<u8> = raw_fields(&updated)
+        .into_iter()
+        .filter(|(number, _)| *number == top)
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    (STANDARD.encode(part), updated)
+}
+
+/// An update from the gateway folded into `current`: a full one replaces everything, a partial one only the top-level
+/// messages it carries.
+pub fn merge_update(current: &mut Vec<u8>, update: &[u8], partial: bool) {
+    if !partial {
+        *current = update.to_vec();
+        return;
+    }
+    let carried = raw_fields(update);
+    let mut merged: Vec<u8> = raw_fields(current)
+        .into_iter()
+        .filter(|(number, _)| carried.iter().all(|(other, _)| other != number))
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    for (_, raw) in carried {
+        merged.extend_from_slice(raw);
+    }
+    *current = merged;
+}
+
 /// Guild ids in sidebar order, from `guild_folders`. Folders win over the legacy flat list.
 pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
     let settings = STANDARD.decode(settings_base64).ok()?;
@@ -275,5 +456,106 @@ mod tests {
     #[test]
     fn a_runaway_varint_stops() {
         assert_eq!(guild_order(&encoded(&[0xff; 12])), None);
+    }
+
+    #[test]
+    fn every_pref_round_trips_through_a_patch() {
+        for pref in PROTO_PREFS {
+            let patch = pref_patch(pref, 2);
+            assert_eq!(
+                varint_at(&patch, pref.path, pref.field),
+                Some(2),
+                "{}",
+                pref.key
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapper_without_its_value_reads_as_zero_and_a_missing_one_as_unset() {
+        // text_and_images (6) holding an empty render_embeds (12): BoolValue{} is false.
+        let embeds = bytes_field(6, &bytes_field(12, &[]));
+        assert_eq!(varint_at(&encoded(&embeds), &[6, 12], 1), Some(0));
+        assert_eq!(varint_at(&encoded(&embeds), &[6, 13], 1), None);
+        assert_eq!(varint_at(&encoded(&[]), &[6, 12], 1), None);
+    }
+
+    #[test]
+    fn pref_keys_and_places_are_unique() {
+        for (index, pref) in PROTO_PREFS.iter().enumerate() {
+            for other in &PROTO_PREFS[index + 1..] {
+                assert_ne!(pref.key, other.key);
+                assert!(
+                    pref.path != other.path || pref.field != other.field,
+                    "{}",
+                    pref.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn setting_a_pref_keeps_the_rest_of_its_message_and_sends_the_whole_message() {
+        // appearance (13) holds the theme DARKER and an unrelated fixed32 field 7.
+        let appearance = [0x08, 0x03, 0x3d, 1, 2, 3, 4];
+        let mut current = bytes_field(13, &appearance);
+        current.extend(bytes_field(4, &[9, 9]));
+        let hour = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "time_format_setting")
+            .unwrap();
+        let (patch, updated) = set_pref(&current, hour, 2);
+        let patch = STANDARD.decode(patch).unwrap();
+        // The patch is the appearance message alone, theme and all, with the hour cycle added.
+        assert_eq!(raw_fields(&patch).len(), 1);
+        assert_eq!(varint_at(&STANDARD.encode(&patch), &[13], 1), Some(3));
+        assert_eq!(
+            varint_at(&STANDARD.encode(&patch), hour.path, hour.field),
+            Some(2)
+        );
+        // The other top-level message is untouched in the new settings.
+        assert!(
+            raw_fields(&updated)
+                .iter()
+                .any(|(number, raw)| *number == 4 && raw[2..] == [9, 9])
+        );
+        // Setting it again replaces the value instead of stacking another.
+        let (_, again) = set_pref(&updated, hour, 1);
+        assert_eq!(
+            varint_at(&STANDARD.encode(&again), hour.path, hour.field),
+            Some(1)
+        );
+        assert_eq!(
+            raw_fields(&again)
+                .iter()
+                .filter(|(number, _)| *number == 13)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_pref_in_a_missing_message_creates_it() {
+        let reactions = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "chat_emoji_render_reactions")
+            .unwrap();
+        let (patch, updated) = set_pref(&[], reactions, 0);
+        assert_eq!(varint_at(&patch, reactions.path, reactions.field), Some(0));
+        assert_eq!(STANDARD.encode(&updated), patch);
+    }
+
+    #[test]
+    fn updates_fold_into_the_settings() {
+        let mut current = bytes_field(6, &bytes_field(12, &[8, 1]));
+        current.extend(bytes_field(13, &[8, 3]));
+        let update = bytes_field(6, &bytes_field(13, &[8, 0]));
+        merge_update(&mut current, &update, true);
+        let encoded = STANDARD.encode(&current);
+        assert_eq!(varint_at(&encoded, &[6, 13], 1), Some(0));
+        assert_eq!(varint_at(&encoded, &[6, 12], 1), None);
+        assert_eq!(varint_at(&encoded, &[13], 1), Some(3));
+        merge_update(&mut current, &update, false);
+        assert_eq!(current, update);
     }
 }

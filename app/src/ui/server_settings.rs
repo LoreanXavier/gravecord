@@ -374,6 +374,20 @@ impl ServerSettings {
 }
 
 impl Root {
+    /// Server Settings opened on one of its pages, as the picker's Add Emoji button lands on Emoji.
+    pub(super) fn open_server_settings_at(
+        &mut self,
+        guild: Id,
+        page: Page,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_server_settings(guild, cx);
+        if let Some(open) = self.server_settings.as_mut() {
+            open.page = page;
+            self.request_server_page(guild, page, cx);
+        }
+    }
+
     pub(super) fn open_server_settings(&mut self, guild: Id, cx: &mut Context<Self>) {
         if !self.stores.guilds.iter().any(|known| known.id == guild) {
             return;

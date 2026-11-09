@@ -371,7 +371,8 @@ impl Root {
     ) -> Self {
         audio_menu::restore_audio_prefs();
         let voice = settings::VoiceState::restore();
-        let setting_choices = voice.choices();
+        let mut setting_choices = voice.choices();
+        setting_choices.extend(settings::prefs::restore());
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, _, event, _| match event {
             EditorEvent::Submit(content) => {
@@ -1079,6 +1080,7 @@ impl Root {
             .guild
             .and_then(|guild| self.stores.member_lists.get(&guild));
         let owner = self.current_guild().and_then(|guild| guild.owner_id);
+        let roles = self.current_guild().map(|guild| &guild.roles);
         let rows: Vec<AnyElement> = list
             .map(|list| list.rows.as_slice())
             .unwrap_or_default()
@@ -1092,7 +1094,7 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--channels-default"))
-                    .child(format!("{} \u{2014} {count}", group_label(id)))
+                    .child(format!("{} \u{2014} {count}", group_label(id, roles)))
                     .into_any_element(),
                 MemberRow::Member {
                     user, nick, status, ..
@@ -1157,7 +1159,16 @@ impl Root {
             .bg(color("--background-base-lower"))
             .flex()
             .flex_col()
-            .children(rows)
+            .child(
+                div()
+                    .id("member-rows")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
     }
 
     fn rebuild_rows(&mut self) {
@@ -1482,7 +1493,7 @@ impl Root {
         let files = self
             .pending_files
             .drain(..)
-            .map(|pending| pending.path)
+            .map(|pending| pending.upload())
             .collect();
         if let Some(channel) = self.channel {
             let _ = self.requests.send(Request::Send {
@@ -2028,7 +2039,22 @@ impl Root {
                                 }),
                         )
                         .child(div().flex_1())
-                        .child(icon("plus_small", 16., "--channels-default")),
+                        // Create Channel inside this category, for those who may manage channels.
+                        .when(self.can_manage_channels(), |this| {
+                            this.child(
+                                div()
+                                    .id(SharedString::from(format!("category-add-{category}")))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_create_channel(false, window, cx);
+                                        if let Some(form) = this.create_channel.as_mut() {
+                                            form.parent = Some(category);
+                                        }
+                                    }))
+                                    .child(icon("plus_small", 16., "--channels-default")),
+                            )
+                        }),
                 )
                 .into_any_element();
         }
@@ -2195,10 +2221,10 @@ impl Root {
                                             .filter(|name| {
                                                 // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
                                                 let needed = match **name {
-                                                    "settings_small" => {
+                                                    "settings_small" | "voice_action_3" => {
                                                         dc_state::permissions::MANAGE_CHANNELS
                                                     }
-                                                    "invite_small" => {
+                                                    "invite_small" | "voice_action_2" => {
                                                         dc_state::permissions::CREATE_INSTANT_INVITE
                                                     }
                                                     _ => 0,
@@ -2209,7 +2235,11 @@ impl Root {
                                                 // "Create Invite" opens the invite dialog for this channel; the gear opens its
                                                 // settings.
                                                 let invite = *name == "invite_small";
-                                                let gear = *name == "settings_small";
+                                                // A voice row's third icon is the same gear (`voice_action_3`).
+                                                let gear = matches!(
+                                                    *name,
+                                                    "settings_small" | "voice_action_3"
+                                                );
                                                 div()
                                                     .id(SharedString::from(format!(
                                                         "channel-action-{target}-{name}"
@@ -2436,7 +2466,14 @@ impl Root {
             .child(div().flex_none().h(px(12.)))
             .child(plain_row("events", "Events"))
             .children(self.member_safety_row(cx))
-            .child(plain_row("boosts", "Server Boosts"))
+            .child(
+                plain_row("boosts", "Server Boosts")
+                    .id("sidebar-boosts")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_settings_section("Server Boost", cx);
+                    })),
+            )
             .child(
                 div()
                     .flex_none()
@@ -2446,7 +2483,19 @@ impl Root {
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
             )
-            .children(rows)
+            // The rows scroll under the fixed header, as the official channel list does.
+            .child(
+                div()
+                    .id("sidebar-rows")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .children(rows)
+                    // The user panel floats over the bottom of the column.
+                    .child(div().flex_none().h(px(72.))),
+            )
     }
 
     fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3030,7 +3079,9 @@ impl Root {
                 px(size)
             },
             color: tint,
-            underline: style.underline,
+            // `underline_links`: links carry their underline at rest.
+            underline: style.underline
+                || (matches!(span.kind, Kind::Link(_)) && self.underline_links()),
             strike: style.strike,
             boxed,
             image,
@@ -3096,9 +3147,21 @@ impl Root {
         let mut element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
         let links = link_runs(spans);
-        if spoilers.iter().any(Option::is_some) || links.iter().any(Option::is_some) {
+        // A user mention opens that person's profile, a channel mention the channel.
+        let mentions: Vec<Option<(bool, u64)>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::User(id) => Some((true, id)),
+                Kind::Channel(id) => Some((false, id)),
+                _ => None,
+            })
+            .collect();
+        if spoilers.iter().any(Option::is_some)
+            || links.iter().any(Option::is_some)
+            || mentions.iter().any(Option::is_some)
+        {
             let root = self.weak.clone();
-            element = element.on_piece_click(move |piece, _, cx| {
+            element = element.on_piece_click(move |piece, window, cx| {
                 let _ = root.update(cx, |this, cx| {
                     // A hidden spoiler takes the first click; a link inside it follows on the next.
                     if let Some(Some(start)) = spoilers.get(piece).copied()
@@ -3110,10 +3173,29 @@ impl Root {
                     if let Some(Some((url, label))) = links.get(piece).cloned() {
                         this.follow_link(&url, &label, cx);
                     }
+                    match mentions.get(piece).copied().flatten() {
+                        Some((true, user)) => this.open_full_profile(user, window, cx),
+                        Some((false, channel)) => this.open_channel_mention(channel, cx),
+                        None => {}
+                    }
                 });
             });
         }
         element
+    }
+
+    /// `#channel` in a message: the channel opens, in its own server.
+    fn open_channel_mention(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let guild = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+            .map(|guild| guild.id);
+        if let Some(guild) = guild {
+            self.select(guild, Some(channel));
+            cx.notify();
+        }
     }
 
     /// `h1`, `h2` and `h3` from the capture: size and line height per level, all bold.
@@ -3146,6 +3228,10 @@ impl Root {
 
     /// The official pills: 30px tall, a 20px emoji, the count 6px after it, 4px between pills.
     fn reactions(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // "Show emoji reactions" off hides them under every message.
+        if !self.pref_on("chat_emoji_render_reactions", true) {
+            return None;
+        }
         let pills: Vec<AnyElement> = message
             .reactions
             .iter()
@@ -3289,10 +3375,12 @@ impl Root {
 
     /// Images in their grid: 2px above, 4px between, natural size up to the official limits, 8px corners.
     fn attachments(&self, message: &Message) -> Option<AnyElement> {
+        // "When uploaded directly to Discord" off: pictures come as file cards instead (see `files`).
+        let inline = self.pref_on("chat_inline_media_uploads", true);
         let images: Vec<AnyElement> = message
             .attachments
             .iter()
-            .filter(|attachment| attachment.is_image())
+            .filter(|attachment| inline && attachment.is_image())
             .map(|attachment| {
                 let (width, height) = fit_media(
                     attachment.width.unwrap_or(1),
@@ -3678,8 +3766,15 @@ impl Root {
                     0.
                 };
                 let preview = message.referenced.as_ref().map(|referenced| {
+                    let target = (**referenced).clone();
                     div()
+                        .id(SharedString::from(format!("reply-jump-{}", message.id)))
                         .mb(px(4.))
+                        .cursor_pointer()
+                        // The preview jumps to the message replied to.
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.jump_to_message(&target, cx);
+                        }))
                         .child(self.reply_preview(referenced))
                         .into_any_element()
                 });
@@ -3861,6 +3956,23 @@ impl Root {
                             button("msg_edit"),
                             cx,
                         )),
+                )
+            })
+            // Others' messages offer Reply where your own offer Edit.
+            .when(!own, |this| {
+                let found = message.clone();
+                this.child(
+                    self.with_tip(
+                        "toolbar-reply",
+                        Tip::text("Reply", Side::Top),
+                        button("menu_reply"),
+                        cx,
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.tip = None;
+                        this.begin_reply(found.clone(), window, cx);
+                    })),
                 )
             })
             .child(
@@ -4261,8 +4373,8 @@ fn format_timestamp(unix: i64, style: char) -> String {
     };
     let local = time.with_timezone(&chrono::Local);
     match style {
-        't' => local.format("%-I:%M %p").to_string(),
-        'T' => local.format("%-I:%M:%S %p").to_string(),
+        't' => settings::prefs::clock(&local),
+        'T' => settings::prefs::clock_seconds(&local),
         'd' => local.format("%m/%d/%Y").to_string(),
         'D' => local.format("%B %-d, %Y").to_string(),
         'F' => local.format("%A, %B %-d, %Y %-I:%M %p").to_string(),
@@ -4397,6 +4509,10 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The formatting functions without a `Root` read the Time format from here.
+        settings::prefs::set_clock_24(
+            self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
+        );
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
@@ -4895,12 +5011,16 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
     });
 }
 
-/// Built-in sections; anything else is a hoisted role, named once roles are stored.
-fn group_label(id: &str) -> &str {
+/// Built-in sections; anything else is a hoisted role, named from the guild's roles.
+fn group_label(id: &str, roles: Option<&HashMap<Id, String>>) -> String {
     match id {
-        "online" => "Online",
-        "offline" => "Offline",
-        other => other,
+        "online" => "Online".to_owned(),
+        "offline" => "Offline".to_owned(),
+        other => other
+            .parse::<Id>()
+            .ok()
+            .and_then(|role| roles?.get(&role).cloned())
+            .unwrap_or_else(|| other.to_owned()),
     }
 }
 
@@ -5052,7 +5172,7 @@ fn header_time(
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let days = (local.date_naive() - now.date_naive()).num_days();
-    let time = local.format("%-I:%M %p");
+    let time = settings::prefs::clock(&local);
     match days {
         0 => time.to_string(),
         -1 => format!("Yesterday at {time}"),
@@ -5137,5 +5257,14 @@ mod tests {
     fn a_quote_keeps_its_margin_on_both_sides() {
         let blocks = parse("> a\nb");
         assert_eq!(block_gaps(&blocks), [4., 4.]);
+    }
+
+    #[test]
+    fn hoisted_role_groups_carry_the_role_name() {
+        let roles = std::collections::HashMap::from([(42u64, "Moderators".to_owned())]);
+        assert_eq!(super::group_label("online", Some(&roles)), "Online");
+        assert_eq!(super::group_label("offline", None), "Offline");
+        assert_eq!(super::group_label("42", Some(&roles)), "Moderators");
+        assert_eq!(super::group_label("43", Some(&roles)), "43");
     }
 }

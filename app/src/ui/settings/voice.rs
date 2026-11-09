@@ -923,6 +923,9 @@ impl Root {
             self.apply_stream_attenuation();
             return;
         }
+        if self.pref_changed(key, on, index) {
+            return;
+        }
         let effective_mode = self.voice.stored.effective().push_to_talk;
         let stored = &mut self.voice.stored;
         match key {

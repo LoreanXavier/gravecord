@@ -5,7 +5,7 @@
 use super::plaintext_extensions::PLAINTEXT;
 use super::{MONO, Root, color, icon};
 use dc_state::{Attachment, Message};
-use gpui::{AnyElement, FontWeight, IntoElement, div, prelude::*, px};
+use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -214,7 +214,8 @@ impl Root {
     }
 
     /// Generic file card for kinds without a preview.
-    fn file_card(&self, attachment: &Attachment) -> AnyElement {
+    fn file_card(&self, attachment: &Attachment, cx: &mut Context<Self>) -> AnyElement {
+        let download = attachment.clone();
         div()
             .min_w(px(302.))
             .p(px(16.))
@@ -226,10 +227,16 @@ impl Root {
             .flex_col()
             .child(
                 div()
+                    .id(SharedString::from(format!("file-card-{}", attachment.id)))
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-link"))
+                    .cursor_pointer()
+                    // The name is the card's link: it saves the file.
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.download_attachment(&download, cx);
+                    }))
                     .child(attachment.filename.clone()),
             )
             .child(
@@ -248,9 +255,10 @@ impl Root {
             .attachments
             .iter()
             .filter_map(|attachment| match kind(attachment) {
-                Kind::Image => None,
+                Kind::Image if self.pref_on("chat_inline_media_uploads", true) => None,
+                Kind::Image => Some(self.file_card(attachment, cx)),
                 Kind::Plaintext => Some(self.plaintext_card(attachment, cx)),
-                Kind::Audio | Kind::Other => Some(self.file_card(attachment)),
+                Kind::Audio | Kind::Other => Some(self.file_card(attachment, cx)),
             })
             .map(|card| div().flex().child(card).into_any_element())
             .collect();

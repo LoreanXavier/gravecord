@@ -441,7 +441,7 @@ impl Root {
     /// `singleMessage_0JZW4Z`: the message as the list draws a group's first line, 72px in, 12px above and below.
     fn inbox_message(&self, message: &Message) -> AnyElement {
         let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
-        let time = message.local_time().format("%-I:%M %p").to_string();
+        let time = super::settings::prefs::clock(&message.local_time());
         div()
             .relative()
             .my(px(12.))

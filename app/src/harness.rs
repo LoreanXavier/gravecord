@@ -308,6 +308,11 @@ pub async fn run(
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
+            // A preference of the proto settings, read as the account holds it, or changed as its row would.
+            ["pref", rest @ ..] => {
+                let line = root.update(cx, |root, _| root.script_pref(rest));
+                let _ = writeln!(output, "pref: {line}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

@@ -33,6 +33,9 @@ struct Step {
 pub(super) struct Report {
     user: Id,
     guild: Option<Id>,
+    /// What is reported besides a person: a message (`message`, or `first_dm` for a DM's spam report) as its channel,
+    /// id, author's name and text.
+    message: Option<ReportedMessage>,
     menu: Option<Value>,
     node: u64,
     history: Vec<Step>,
@@ -40,6 +43,16 @@ pub(super) struct Report {
     checked: Vec<(String, String, String)>,
     submitting: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ReportedMessage {
+    /// The report's `name`: `message`, or `first_dm` for the Report Spam of a DM's welcome.
+    name: &'static str,
+    channel: Id,
+    id: Id,
+    author: String,
+    text: String,
 }
 
 fn node(menu: &Value, id: u64) -> &Value {
@@ -61,9 +74,15 @@ impl Root {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_report(user, None, cx);
+    }
+
+    fn start_report(&mut self, user: Id, message: Option<ReportedMessage>, cx: &mut Context<Self>) {
+        let name = message.as_ref().map_or("user", |message| message.name);
         self.report = Some(Report {
             user,
             guild: self.guild,
+            message,
             menu: None,
             node: 0,
             history: Vec::new(),
@@ -74,7 +93,7 @@ impl Root {
         let _ = self.requests.send(Request::Rest {
             key: Some(MENU_KEY.to_owned()),
             method: reqwest::Method::GET,
-            route: "/reporting/menu/user".to_owned(),
+            route: format!("/reporting/menu/{name}"),
             body: None,
         });
         if let Some(known) = self.stores.users.get(&user).cloned() {
@@ -83,6 +102,28 @@ impl Root {
         }
         self.request_image(SUCCESS_ART.to_owned(), SUCCESS_ART.to_owned());
         cx.notify();
+    }
+
+    /// Report Message, and Report Spam on a DM's welcome (`first_dm`): `b8` and `V2` in module 928658.
+    pub(super) fn open_report_message(
+        &mut self,
+        message: &dc_state::Message,
+        first_dm: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = window;
+        self.start_report(
+            message.author.id,
+            Some(ReportedMessage {
+                name: if first_dm { "first_dm" } else { "message" },
+                channel: message.channel_id,
+                id: message.id,
+                author: message.author.display_name().to_owned(),
+                text: message.content.clone(),
+            }),
+            cx,
+        );
     }
 
     pub(super) fn report_fetched(
@@ -187,11 +228,21 @@ impl Root {
             "language": menu["language"].as_str().unwrap_or("en"),
             "breadcrumbs": steps.iter().map(|step| step.node).collect::<Vec<_>>(),
             "elements": elements,
-            "name": "user",
-            "user_id": open.user.to_string(),
         });
-        if let Some(guild) = open.guild {
-            body["guild_id"] = json!(guild.to_string());
+        match open.message.as_ref() {
+            // `h` in module 369053: a message report carries its channel and id, and no guild.
+            Some(message) => {
+                body["name"] = json!(message.name);
+                body["channel_id"] = json!(message.channel.to_string());
+                body["message_id"] = json!(message.id.to_string());
+            }
+            None => {
+                body["name"] = json!("user");
+                body["user_id"] = json!(open.user.to_string());
+                if let Some(guild) = open.guild {
+                    body["guild_id"] = json!(guild.to_string());
+                }
+            }
         }
         body
     }
@@ -209,7 +260,7 @@ impl Root {
         let _ = self.requests.send(Request::Rest {
             key: Some(SUBMIT_KEY.to_owned()),
             method: reqwest::Method::POST,
-            route: "/reporting/user".to_owned(),
+            route: format!("/reporting/{}", body["name"].as_str().unwrap_or("user")),
             body: Some(body),
         });
         cx.notify();
@@ -242,6 +293,41 @@ impl Root {
             .font_weight(FontWeight(weight))
             .text_color(color("--text-default"))
             .child(text.into())
+    }
+
+    /// The message under "Selected Message": who wrote it and what it says.
+    fn report_message_preview(message: &ReportedMessage) -> AnyElement {
+        div()
+            .mb(px(8.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(Self::report_heading("Selected Message", 500.))
+            .child(
+                div()
+                    .p(px(16.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(message.author.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-default"))
+                            .child(message.text.clone()),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// `userContainer_SQw-pl` under "Selected User".
@@ -778,6 +864,11 @@ impl Root {
         if element(&current, "user_preview").is_some() {
             body.push(self.report_user_preview(user));
         }
+        if element(&current, "message_preview").is_some()
+            && let Some(message) = open.message.as_ref()
+        {
+            body.push(Self::report_message_preview(message));
+        }
         if let Some(checkbox) = checkbox.as_ref() {
             body.push(self.report_checkboxes(checkbox, cx));
         }
@@ -987,6 +1078,7 @@ mod tests {
         let open = Report {
             user: 7,
             guild: None,
+            message: None,
             menu: Some(menu()),
             node: 25,
             history: vec![
@@ -1021,5 +1113,32 @@ mod tests {
         assert_eq!(body["user_id"], "7");
         assert_eq!(body["language"], "en");
         assert!(body.get("guild_id").is_none());
+    }
+
+    #[test]
+    fn a_message_report_carries_its_channel_and_message_and_posts_to_its_own_route() {
+        let open = Report {
+            user: 7,
+            guild: Some(3),
+            message: Some(ReportedMessage {
+                name: "first_dm",
+                channel: 11,
+                id: 12,
+                author: "a".into(),
+                text: "b".into(),
+            }),
+            menu: Some(menu()),
+            node: 63,
+            history: Vec::new(),
+            checked: Vec::new(),
+            submitting: false,
+            error: None,
+        };
+        let body = Root::report_body(&open, &menu(), 69);
+        assert_eq!(body["name"], "first_dm");
+        assert_eq!(body["channel_id"], "11");
+        assert_eq!(body["message_id"], "12");
+        assert!(body.get("guild_id").is_none());
+        assert!(body.get("user_id").is_none());
     }
 }

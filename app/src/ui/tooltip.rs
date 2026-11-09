@@ -481,11 +481,17 @@ impl Root {
         let active = self.tip.as_ref()?;
         let body = self.tip_body(&active.tip.body)?;
         let key = active.key.clone();
+        // Reduced motion shows a tip at once instead of fading it in.
+        let fade = if self.pref_on("reduced_motion", false) {
+            Duration::from_millis(1)
+        } else {
+            FADE
+        };
         let body = div()
             .child(body)
             .with_animation(
                 ElementId::Name(format!("tip-body-{key}").into()),
-                Animation::new(FADE).with_easing(spring),
+                Animation::new(fade).with_easing(spring),
                 |element, delta| element.opacity(delta),
             )
             .into_any_element();
@@ -493,7 +499,7 @@ impl Root {
             .child(caret(active.tip.side))
             .with_animation(
                 ElementId::Name(format!("tip-caret-{key}").into()),
-                Animation::new(FADE).with_easing(spring),
+                Animation::new(fade).with_easing(spring),
                 |element, delta| element.opacity(delta),
             )
             .into_any_element();

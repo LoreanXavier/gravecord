@@ -249,14 +249,21 @@ impl Root {
             );
         }
         // `s2.I`: a message of theirs in this DM to report (a system line counts: it is theirs too).
-        let wrote_here = self
+        let first_theirs = self
             .stores
             .messages
             .get(&channel)
-            .is_some_and(|messages| messages.iter().any(|message| message.author.id == id));
-        if matches!(relationship, 0 | 2 | 3) && wrote_here {
+            .and_then(|messages| messages.iter().find(|message| message.author.id == id))
+            .cloned();
+        if matches!(relationship, 0 | 2 | 3)
+            && let Some(first) = first_theirs
+        {
             list.push(
                 small_button("welcome-report", "Report Spam", Tone::CriticalPrimary, true)
+                    // `b8`: the first message of theirs is reported as `first_dm`.
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_report_message(&first, true, window, cx);
+                    }))
                     .into_any_element(),
             );
         }

@@ -692,7 +692,7 @@ impl Root {
                                 .text_size(px(12.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-muted"))
-                                .child(message.local_time().format("%-I:%M %p").to_string()),
+                                .child(super::settings::prefs::clock(&message.local_time())),
                         ),
                 )
                 .child(

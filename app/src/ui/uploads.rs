@@ -165,6 +165,19 @@ pub(crate) struct Pending {
     preview: Option<Arc<Image>>,
     /// The picture's own size, for fitting it into the card.
     picture: Option<(u32, u32)>,
+    /// The alt text set in Modify Attachment.
+    pub description: Option<String>,
+}
+
+/// The prefix that marks an attachment as a spoiler (`SPOILER_` in module 453771).
+const SPOILER_PREFIX: &str = "SPOILER_";
+
+/// The name with the spoiler mark switched: added when absent, taken off when present.
+pub(super) fn toggle_spoiler(name: &str) -> String {
+    match name.strip_prefix(SPOILER_PREFIX) {
+        Some(plain) => plain.to_owned(),
+        None => format!("{SPOILER_PREFIX}{name}"),
+    }
 }
 
 impl Pending {
@@ -194,7 +207,21 @@ impl Pending {
             kind,
             preview,
             picture,
+            description: None,
         })
+    }
+
+    pub fn is_spoiler(&self) -> bool {
+        self.name.starts_with(SPOILER_PREFIX)
+    }
+
+    /// What the message sends for this card.
+    pub fn upload(self) -> crate::net::Upload {
+        crate::net::Upload {
+            path: self.path,
+            name: self.name,
+            description: self.description,
+        }
     }
 }
 
@@ -334,11 +361,23 @@ impl Root {
                     .border_1()
                     .border_color(hsla(0., 0., 1., 0.08))
                     .flex()
-                    .child(action(
-                        format!("upload-spoiler-{index}"),
-                        "upload_spoiler",
-                        "--interactive-text-default",
-                    ))
+                    .child(
+                        action(
+                            format!("upload-spoiler-{index}"),
+                            "upload_spoiler",
+                            if pending.is_spoiler() {
+                                "--text-brand"
+                            } else {
+                                "--interactive-text-default"
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(pending) = this.pending_files.get_mut(index) {
+                                pending.name = toggle_spoiler(&pending.name);
+                            }
+                            cx.notify();
+                        })),
+                    )
                     .child(action(
                         format!("upload-modify-{index}"),
                         "upload_modify",
@@ -387,7 +426,13 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::file_kind;
+    use super::{file_kind, toggle_spoiler};
+
+    #[test]
+    fn the_spoiler_mark_switches_on_and_off() {
+        assert_eq!(toggle_spoiler("cat.png"), "SPOILER_cat.png");
+        assert_eq!(toggle_spoiler("SPOILER_cat.png"), "cat.png");
+    }
 
     #[test]
     fn kinds_follow_the_official_table() {
