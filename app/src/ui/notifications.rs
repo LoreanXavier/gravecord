@@ -64,9 +64,31 @@ fn fallback_body(message: &Value) -> String {
 }
 
 impl Root {
+    pub(super) fn refresh_notification_badge(&mut self) {
+        let counts = dc_state::unread::total_counts(&self.stores, chrono::Utc::now());
+        let user = self.stores.current_user.as_ref().map(|user| user.id);
+        let disabled = !crate::notifications::switch_value("enable_unread_message_badge", user)
+            .unwrap_or(true);
+        let count = dc_state::unread::badge_count(
+            counts.high_mentions,
+            dc_state::unread::incoming_requests(&self.stores),
+            counts.unread,
+            disabled,
+        );
+        self.notification_runtime.badge(count);
+    }
     #[cfg(feature = "capture")]
     pub(crate) fn script_notification(&mut self, action: &str, cx: &mut Context<Self>) {
-        if action == "preview" {
+        if action == "badge-art" {
+            #[cfg(windows)]
+            crate::notifications::capture_badge_art();
+        } else if action == "badge-preview" {
+            self.notification_runtime.badge(3);
+            self.notification_runtime.badge(-1);
+            self.notification_runtime.badge(0);
+            self.notification_runtime.flash(true);
+            self.notification_runtime.flash(false);
+        } else if action == "preview" {
             self.notification_runtime.show(Notice {
                 channel: 1568692565136375900,
                 message: 1,
@@ -107,6 +129,9 @@ impl Root {
         );
         if let Some(sound) = decision.sound {
             self.notification_sound(sound, cx);
+        }
+        if decision.flash && !self.notification_focused {
+            self.notification_runtime.flash(true);
         }
         if !decision.desktop {
             return;
@@ -199,6 +224,7 @@ impl Root {
     pub(super) fn notification_focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
         self.notification_focused = focused;
         if focused {
+            self.notification_runtime.flash(false);
             if let Some(channel) = self.channel {
                 self.notification_runtime.clear(channel);
             }

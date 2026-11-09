@@ -47,8 +47,40 @@ impl SoundThrottle {
 }
 
 #[cfg(windows)]
+mod badge_art;
+#[cfg(windows)]
+mod native_icon;
+#[cfg(windows)]
+mod taskbar;
+#[cfg(windows)]
+mod window_hook;
+#[cfg(windows)]
 mod windows;
 pub const APP_ID: &str = "gravecord.desktop";
+
+pub fn configure_process() {
+    if storage::is_capture_run() {
+        return;
+    }
+    #[cfg(windows)]
+    if let Err(error) = unsafe {
+        ::windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            &::windows::core::HSTRING::from(APP_ID),
+        )
+    } {
+        tracing::warn!(code=?error.code(), "desktop application identity unavailable");
+    }
+}
+
+pub fn observe_window(window: &gpui::Window) {
+    if storage::is_capture_run() {
+        return;
+    }
+    #[cfg(windows)]
+    window_hook::install(window);
+    #[cfg(not(windows))]
+    let _ = window;
+}
 
 pub struct Notice {
     pub channel: Id,
@@ -59,32 +91,55 @@ pub struct Notice {
 pub(super) enum Command {
     Show(Notice),
     Clear(Id),
+    Window(usize),
+    Badge(i64),
+    Flash(bool),
+    TaskbarReady,
 }
 
 pub struct Runtime {
     sender: Option<SyncSender<Command>>,
     capture: bool,
+    badge: Option<i64>,
+    #[cfg(windows)]
+    binding: Option<window_hook::Binding>,
+    #[cfg(windows)]
+    taskbar_generation: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 impl Runtime {
     pub fn new(updates: UnboundedSender<Update>) -> Self {
         let capture = storage::is_capture_run();
+        #[cfg(windows)]
+        let taskbar_generation = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         if capture {
             return Self {
                 sender: None,
                 capture,
+                badge: None,
+                #[cfg(windows)]
+                binding: None,
+                #[cfg(windows)]
+                taskbar_generation,
             };
         }
         let (sender, receiver) = sync_channel(20);
         #[cfg(windows)]
+        let worker_generation = taskbar_generation.clone();
+        #[cfg(windows)]
         if std::thread::Builder::new()
             .name("gravecord-notifications".to_owned())
-            .spawn(move || windows::run(receiver, updates))
+            .spawn(move || windows::run(receiver, updates, worker_generation))
             .is_err()
         {
             tracing::warn!("could not start the notification worker");
             return Self {
                 sender: None,
                 capture,
+                badge: None,
+                #[cfg(windows)]
+                binding: None,
+                #[cfg(windows)]
+                taskbar_generation,
             };
         }
         #[cfg(not(windows))]
@@ -92,6 +147,55 @@ impl Runtime {
         Self {
             sender: Some(sender),
             capture,
+            badge: None,
+            #[cfg(windows)]
+            binding: None,
+            #[cfg(windows)]
+            taskbar_generation,
+        }
+    }
+    pub fn attach(&mut self, window: &gpui::Window) {
+        if self.capture {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = HasWindowHandle::window_handle(window)
+                && let RawWindowHandle::Win32(handle) = handle.as_raw()
+                && let Some(sender) = &self.sender
+            {
+                let _ = sender.try_send(Command::Window(handle.hwnd.get() as usize));
+                self.binding = window_hook::bind(window, sender, &self.taskbar_generation);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = window;
+    }
+    pub fn badge(&mut self, count: i64) {
+        if self.badge == Some(count) {
+            return;
+        }
+        if self.capture {
+            record(if count < 0 {
+                "badge-unread"
+            } else if count == 0 {
+                "badge-clear"
+            } else {
+                "badge-count"
+            });
+            self.badge = Some(count);
+        } else if let Some(sender) = &self.sender
+            && sender.try_send(Command::Badge(count)).is_ok()
+        {
+            self.badge = Some(count);
+        }
+    }
+    pub fn flash(&self, enabled: bool) {
+        if self.capture {
+            record(if enabled { "flash-start" } else { "flash-stop" });
+        } else if let Some(sender) = &self.sender {
+            let _ = sender.try_send(Command::Flash(enabled));
         }
     }
     pub fn show(&self, notice: Notice) {
@@ -132,6 +236,31 @@ pub fn events() -> Vec<&'static str> {
         .lock()
         .map(|events| events.clone())
         .unwrap_or_default()
+}
+
+#[cfg(all(windows, feature = "capture"))]
+pub fn capture_badge_art() {
+    let path = std::path::Path::new("design/notification-icons");
+    if std::fs::create_dir_all(path).is_err() {
+        return;
+    }
+    let font = crate::fonts::semibold();
+    for index in [0, 9, 10] {
+        if let Some(mut pixels) = badge_art::raster(index, font.as_deref()) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                let alpha = u16::from(pixel[3]);
+                for channel in &mut pixel[..3] {
+                    *channel = (u16::from(*channel) * 255)
+                        .checked_div(alpha)
+                        .unwrap_or(0)
+                        .min(255) as u8;
+                }
+            }
+            if let Some(image) = image::RgbaImage::from_raw(16, 16, pixels) {
+                let _ = image.save(path.join(format!("rendered-badge-{}.png", index + 1)));
+            }
+        }
+    }
 }
 
 fn setting(key: &str) -> Option<(&'static str, &'static str, bool, bool)> {

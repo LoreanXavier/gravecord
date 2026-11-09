@@ -5053,6 +5053,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
@@ -5670,6 +5671,7 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
     // Without the system-wide hook, push to talk is only seen while the window is active.
     root.update(cx, |this, cx| {
         this.notification_focused = window.is_window_active();
+        this.notification_runtime.attach(window);
         cx.observe_window_activation(window, |this, window, cx| {
             this.notification_focus_changed(window.is_window_active(), cx);
             if !window.is_window_active() {

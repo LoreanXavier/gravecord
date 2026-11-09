@@ -211,6 +211,7 @@ fn main() -> Result<()> {
     }
     record_panics();
     record_log();
+    notifications::configure_process();
     let assets_root = find_assets().context("app/assets not found")?;
     let capture = capture_args();
 
@@ -244,7 +245,10 @@ fn main() -> Result<()> {
                         }),
                         ..Default::default()
                     },
-                    move |window, cx| cx.new(|cx| shell::Shell::new(handle, start, window, cx)),
+                    move |window, cx| {
+                        notifications::observe_window(window);
+                        cx.new(|cx| shell::Shell::new(handle, start, window, cx))
+                    },
                 )
                 .expect("the window must open");
             let shell = window.entity(cx).expect("the shell exists");

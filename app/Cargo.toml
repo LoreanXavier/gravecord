@@ -31,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 md-5 = "0.10"
 openh264.workspace = true
 reqwest.workspace = true
+resvg = "0.46"
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -39,7 +40,8 @@ tts = "0.26"
 wuff = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_WinRT"] }
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_WinRT", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
 
 [build-dependencies]
 embed-resource = "3"

@@ -30,6 +30,11 @@ fn cache_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+#[cfg(windows)]
+pub fn semibold() -> Option<Vec<u8>> {
+    std::fs::read(cache_dir().ok()?.join(format!("{}.ttf", FACES[4]))).ok()
+}
+
 async fn face(client: &dc_http::Client, hash: &str) -> Result<Vec<u8>> {
     let cached = cache_dir()?.join(format!("{hash}.ttf"));
     if let Ok(bytes) = std::fs::read(&cached) {
