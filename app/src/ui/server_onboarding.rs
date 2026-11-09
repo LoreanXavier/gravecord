@@ -8981,6 +8981,7 @@ mod tests {
             icon: None,
             owner_id: None,
             joined_at: String::new(),
+            default_message_notifications: 0,
             channels,
             roles: HashMap::from([(1, "@everyone".to_owned())]),
             role_permissions: HashMap::from([(1, everyone)]),

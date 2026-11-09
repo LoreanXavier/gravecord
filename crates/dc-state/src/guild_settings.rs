@@ -14,6 +14,7 @@ pub const INHERIT: u64 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Override {
+    pub flags: u64,
     pub message_notifications: u64,
     pub muted: bool,
     /// `mute_config.end_time`; none means until turned back on.
@@ -23,6 +24,7 @@ pub struct Override {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GuildSettings {
+    pub flags: u64,
     pub message_notifications: u64,
     pub muted: bool,
     pub mute_end: Option<DateTime<Utc>>,
@@ -62,6 +64,7 @@ impl GuildSettings {
                 Some((
                     snowflake(&channel["channel_id"])?,
                     Override {
+                        flags: channel["flags"].as_u64().unwrap_or(0),
                         message_notifications: channel["message_notifications"]
                             .as_u64()
                             .unwrap_or(INHERIT),
@@ -73,6 +76,7 @@ impl GuildSettings {
             })
             .collect();
         Self {
+            flags: entry["flags"].as_u64().unwrap_or(0),
             message_notifications: entry["message_notifications"]
                 .as_u64()
                 .unwrap_or(ALL_MESSAGES),
@@ -125,7 +129,11 @@ impl GuildSettingsStore {
     }
 
     pub fn update(&mut self, entry: &Value) {
-        if let Some(guild) = snowflake(&entry["guild_id"]) {
+        if let Some(guild) = if entry.get("guild_id").is_some_and(Value::is_null) {
+            Some(0)
+        } else {
+            snowflake(&entry["guild_id"])
+        } {
             self.guilds.insert(guild, GuildSettings::from_value(entry));
         }
     }

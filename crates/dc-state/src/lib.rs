@@ -9,6 +9,7 @@ pub mod grouping;
 pub mod guild_settings;
 pub mod member_list;
 pub mod members;
+pub mod notifications;
 pub mod permissions;
 pub mod premium;
 pub mod read_state;
@@ -213,6 +214,7 @@ pub struct Guild {
     pub icon: Option<String>,
     pub owner_id: Option<Id>,
     pub joined_at: String,
+    pub default_message_notifications: u64,
     pub channels: Vec<Channel>,
     pub roles: HashMap<Id, String>,
     /// Role id to its permission bits (the @everyone role has the guild's id).
@@ -392,6 +394,9 @@ impl Guild {
             name: text(&properties["name"])?,
             icon: text(&properties["icon"]),
             owner_id: id(&properties["owner_id"]),
+            default_message_notifications: properties["default_message_notifications"]
+                .as_u64()
+                .unwrap_or(0),
             joined_at: text(&value["joined_at"]).unwrap_or_default(),
             channels: channels.iter().filter_map(Channel::from_value).collect(),
             roles: value["roles"]
@@ -447,6 +452,9 @@ impl Guild {
         self.icon = text(&value["icon"]);
         self.owner_id = id(&value["owner_id"]).or(self.owner_id);
         self.mfa_level = value["mfa_level"].as_u64().unwrap_or(self.mfa_level);
+        self.default_message_notifications = value["default_message_notifications"]
+            .as_u64()
+            .unwrap_or(self.default_message_notifications);
         self.vanity_url_code = text(&value["vanity_url_code"]);
         if let Some(features) = value["features"].as_array() {
             self.features = features.iter().filter_map(text).collect();
@@ -916,6 +924,9 @@ pub struct PrivateChannel {
     pub kind: u64,
     pub recipients: Vec<Id>,
     pub last_message_id: Id,
+    pub name: Option<String>,
+    pub application_id: Option<Id>,
+    pub message_request: bool,
 }
 
 impl PrivateChannel {
@@ -932,6 +943,10 @@ impl PrivateChannel {
                     .unwrap_or_default(),
             },
             last_message_id: id(&value["last_message_id"]).unwrap_or(0),
+            name: text(&value["name"]),
+            application_id: id(&value["application_id"]),
+            message_request: value["is_message_request"].as_bool().unwrap_or(false)
+                || value["is_spam"].as_bool().unwrap_or(false),
         })
     }
 }
@@ -1456,6 +1471,10 @@ impl Stores {
         patch
     }
 
+    pub fn notification_quiet_mode(&self) -> bool {
+        settings::notification_quiet_mode(&self.settings_raw)
+    }
+
     /// Takes the client preferences out of a settings payload. A full one without a preference clears it (the account
     /// reset it); a partial one carries only what changed.
     fn read_prefs(&mut self, proto: &str, partial: bool) {
@@ -1974,6 +1993,7 @@ mod tests {
             icon: None,
             owner_id: None,
             joined_at: String::new(),
+            default_message_notifications: 0,
             channels: Vec::new(),
             roles: HashMap::new(),
             role_permissions: HashMap::new(),
@@ -2410,6 +2430,24 @@ mod tests {
             &json!({"settings": {"type": 1, "proto": ""}, "partial": false}),
         );
         assert!(!stores.ignore_speedbump_disabled);
+    }
+
+    #[test]
+    fn notification_quiet_mode_follows_whole_message_replacement() {
+        let mut stores = Stores::default();
+        let quiet = settings::encode_varint_at(&[7, 5], 1, 1);
+        stores.dispatch("READY", &json!({"user_settings_proto": quiet}));
+        assert!(stores.notification_quiet_mode());
+        for (proto, expected) in [
+            (settings::encode_varint_at(&[13], 1, 3), true),
+            (settings::encode_varint_at(&[7, 2], 1, 1), false),
+        ] {
+            stores.dispatch(
+                "USER_SETTINGS_PROTO_UPDATE",
+                &json!({"settings": {"type": 1, "proto": proto}, "partial": true}),
+            );
+            assert_eq!(stores.notification_quiet_mode(), expected);
+        }
     }
 
     #[test]

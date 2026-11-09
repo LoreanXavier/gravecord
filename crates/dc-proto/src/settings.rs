@@ -238,6 +238,15 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("time_format_setting", &[13], 9),
 ];
 
+/// `notifications.quiet_mode`, read from the merged account settings rather than a settings-page row.
+pub fn notification_quiet_mode(settings: &[u8]) -> bool {
+    fields(settings)
+        .find(|(number, _)| *number == 7)
+        .and_then(|(_, notifications)| fields(notifications).find(|(number, _)| *number == 5))
+        .and_then(|(_, wrapper)| varint_of(wrapper, 1))
+        .is_some_and(|value| value != 0)
+}
+
 /// The varint at `field` of the message found by following `path` from the top: `None` when a message on the way is
 /// missing (the account never set it), zero when the message is there without the field (proto3 leaves defaults out).
 pub fn varint_at(settings_base64: &str, path: &[u64], field: u64) -> Option<u64> {
