@@ -32,6 +32,7 @@ mod actions;
 mod activity_host;
 mod activity_launch;
 mod activity_shelf;
+mod add_server;
 mod apps;
 mod attachment_modal;
 mod audio_menu;
@@ -254,6 +255,7 @@ pub struct Root {
     skin_menu: bool,
     search: Option<search::Search>,
     search_filters: Option<search_filters::SearchFilters>,
+    add_server: Option<add_server::AddServer>,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
     file_language: HashMap<Id, String>,
@@ -276,6 +278,8 @@ pub struct Root {
     inbox_read: HashSet<Id>,
     inbox_collapsed: HashSet<Id>,
     gifs: Option<gifs::Gifs>,
+    /// The favourite GIFs once this session changed them; until then the settings fetch is read.
+    favorite_gifs: Option<Vec<dc_proto::frecency::FavoriteGif>>,
     shown_blocked: HashSet<Id>,
     shown_blocked_profiles: HashSet<Id>,
     hovered_dm: Option<Id>,
@@ -469,6 +473,7 @@ impl Root {
             skin_menu: false,
             search: None,
             search_filters: None,
+            add_server: None,
             file_menu: None,
             file_wrap: HashSet::new(),
             file_language: HashMap::new(),
@@ -490,6 +495,7 @@ impl Root {
             inbox_read: HashSet::new(),
             inbox_collapsed: HashSet::new(),
             gifs: None,
+            favorite_gifs: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
             hovered_dm: None,
@@ -2130,12 +2136,16 @@ impl Root {
                     .map(|guild| self.rail_item(guild, cx).into_any_element())
                     .collect::<Vec<_>>(),
             )
-            .child(self.with_tip(
-                "add-server",
-                Tip::rail(Body::Heading("Add a Server".into())),
-                tool("add_server", 20.),
-                cx,
-            ))
+            .child(
+                self.with_tip(
+                    "add-server",
+                    Tip::rail(Body::Heading("Add a Server".into())),
+                    tool("add_server", 20.),
+                    cx,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx))),
+            )
             .child(self.with_tip(
                 "discover",
                 Tip::rail(Body::Heading("Discover".into())),
@@ -4944,6 +4954,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.add_server.is_some() {
+                    this.add_server = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && let Some(filters) = this.search_filters.as_mut()
                 {
@@ -5401,6 +5417,7 @@ impl Render for Root {
             .children(self.go_live_layer(cx))
             .children(self.camera_error_modal(cx))
             .children(self.search_filters_modal(cx))
+            .children(self.add_server_modal(cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))

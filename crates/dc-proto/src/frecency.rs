@@ -204,6 +204,123 @@ pub fn id_map(settings_base64: &str, field: u64) -> Vec<(u64, Item)> {
     out
 }
 
+pub const FAVORITE_GIFS: u64 = 2;
+
+/// `FavoriteGIF` (module 803805): `format` 1 (1 image, 2 video), `src` 2, `width` 3, `height` 4, `order` 5, kept
+/// under the GIF's page URL in `FavoriteGIFs.gifs` (field 1, a map), `hide_tooltip` is field 2.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FavoriteGif {
+    pub url: String,
+    pub format: u32,
+    pub src: String,
+    pub width: u32,
+    pub height: u32,
+    pub order: u32,
+}
+
+/// The favourite GIFs of `settings_base64`, oldest favourite first (by `order`).
+pub fn favorite_gifs(settings_base64: &str) -> Vec<FavoriteGif> {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (number, value) in fields(&settings) {
+        let (true, Value::Bytes(message)) = (number == FAVORITE_GIFS, value) else {
+            continue;
+        };
+        for (entry_number, entry) in fields(message) {
+            let (1, Value::Bytes(entry)) = (entry_number, entry) else {
+                continue;
+            };
+            let mut gif = FavoriteGif::default();
+            for (part, payload) in fields(entry) {
+                match (part, payload) {
+                    (1, Value::Bytes(text)) => gif.url = String::from_utf8_lossy(text).into_owned(),
+                    (2, Value::Bytes(message)) => {
+                        for (field, value) in fields(message) {
+                            match (field, value) {
+                                (1, Value::Varint(format)) => gif.format = format as u32,
+                                (2, Value::Bytes(text)) => {
+                                    gif.src = String::from_utf8_lossy(text).into_owned()
+                                }
+                                (3, Value::Varint(width)) => gif.width = width as u32,
+                                (4, Value::Varint(height)) => gif.height = height as u32,
+                                (5, Value::Varint(order)) => gif.order = order as u32,
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !gif.url.is_empty() {
+                out.push(gif);
+            }
+        }
+    }
+    out.sort_by_key(|gif| gif.order);
+    out
+}
+
+fn push_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn push_field(out: &mut Vec<u8>, number: u64, payload: &[u8]) {
+    push_varint(out, number << 3 | 2);
+    push_varint(out, payload.len() as u64);
+    out.extend_from_slice(payload);
+}
+
+fn push_number(out: &mut Vec<u8>, number: u64, value: u32) {
+    if value != 0 {
+        push_varint(out, number << 3);
+        push_varint(out, u64::from(value));
+    }
+}
+
+/// The PATCH body that sets the favourites: the whole `favorite_gifs` message, which the server replaces as one.
+pub fn favorite_gifs_patch(gifs: &[FavoriteGif], hide_tooltip: bool) -> String {
+    let mut message = Vec::new();
+    for gif in gifs {
+        let mut value = Vec::new();
+        push_number(&mut value, 1, gif.format);
+        if !gif.src.is_empty() {
+            push_field(&mut value, 2, gif.src.as_bytes());
+        }
+        push_number(&mut value, 3, gif.width);
+        push_number(&mut value, 4, gif.height);
+        push_number(&mut value, 5, gif.order);
+        let mut entry = Vec::new();
+        push_field(&mut entry, 1, gif.url.as_bytes());
+        push_field(&mut entry, 2, &value);
+        push_field(&mut message, 1, &entry);
+    }
+    if hide_tooltip {
+        push_varint(&mut message, 2 << 3);
+        push_varint(&mut message, 1);
+    }
+    let mut settings = Vec::new();
+    push_field(&mut settings, FAVORITE_GIFS, &message);
+    STANDARD.encode(settings)
+}
+
+/// Favouriting adds the GIF at the end (`order` one past the largest); favouriting it again removes it
+/// (`toggle` in module 497685). The result keeps the list in `order`.
+pub fn toggle_favorite_gif(mut gifs: Vec<FavoriteGif>, gif: FavoriteGif) -> Vec<FavoriteGif> {
+    if let Some(at) = gifs.iter().position(|known| known.url == gif.url) {
+        gifs.remove(at);
+    } else {
+        let order = gifs.iter().map(|known| known.order).max().unwrap_or(0) + 1;
+        gifs.push(FavoriteGif { order, ..gif });
+    }
+    gifs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +387,32 @@ mod tests {
             [1_762_500_000_000, 1_762_600_000_000]
         );
         assert!(emoji_map(&STANDARD.encode(&settings), EMOJI_FRECENCY).is_empty());
+    }
+
+    #[test]
+    fn favorite_gifs_round_trip_and_toggle() {
+        let gif = FavoriteGif {
+            url: "https://klipy.com/gifs/wave".to_owned(),
+            format: 1,
+            src: "https://static.klipy.com/wave.gif".to_owned(),
+            width: 220,
+            height: 124,
+            order: 0,
+        };
+        let one = toggle_favorite_gif(Vec::new(), gif.clone());
+        assert_eq!(one[0].order, 1);
+        let other = FavoriteGif {
+            url: "https://klipy.com/gifs/nod".to_owned(),
+            ..gif.clone()
+        };
+        let two = toggle_favorite_gif(one, other.clone());
+        assert_eq!(two[1].order, 2);
+        let patch = favorite_gifs_patch(&two, true);
+        let read = favorite_gifs(&patch);
+        assert_eq!(read, two);
+        let back = toggle_favorite_gif(read, gif);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].url, other.url);
+        assert!(favorite_gifs(&favorite_gifs_patch(&[], false)).is_empty());
     }
 }

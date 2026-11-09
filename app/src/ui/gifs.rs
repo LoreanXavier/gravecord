@@ -27,6 +27,7 @@ const SEARCH_LIMIT: u32 = 50;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum GifView {
     Categories,
+    Favorites,
     Trending,
     Search(String),
 }
@@ -140,6 +141,58 @@ impl Root {
         }
     }
 
+    /// The favourite GIFs: this session's list once it changed, else the account's settings as fetched.
+    pub(super) fn favorite_gif_list(&self) -> Vec<dc_proto::frecency::FavoriteGif> {
+        if let Some(list) = self.favorite_gifs.as_ref() {
+            return list.clone();
+        }
+        self.fetched
+            .get(super::actions::FRECENCY_KEY)
+            .and_then(|body| body["settings"].as_str())
+            .map(dc_proto::frecency::favorite_gifs)
+            .unwrap_or_default()
+    }
+
+    fn favorites_as_gifs(&self) -> Vec<Gif> {
+        self.favorite_gif_list()
+            .into_iter()
+            .rev()
+            .map(|favorite| Gif {
+                id: favorite.url.clone(),
+                url: favorite.url,
+                picture: favorite.src,
+                width: favorite.width.max(1) as f32,
+                height: favorite.height.max(1) as f32,
+            })
+            .collect()
+    }
+
+    /// `toggle` in module 497685: the GIF joins the favourites or leaves them, and the whole message goes to the
+    /// account's frecency settings (the server replaces `favorite_gifs` as one).
+    fn toggle_favorite_gif(&mut self, gif: &Gif, cx: &mut Context<Self>) {
+        let video = gif.picture.contains(".mp4") || gif.picture.contains(".webm");
+        let favorite = dc_proto::frecency::FavoriteGif {
+            url: gif.url.clone(),
+            format: if video { 2 } else { 1 },
+            src: gif.picture.clone(),
+            width: gif.width.round() as u32,
+            height: gif.height.round() as u32,
+            order: 0,
+        };
+        let list = dc_proto::frecency::toggle_favorite_gif(self.favorite_gif_list(), favorite);
+        if std::env::var_os("GRAVECORD_NO_SETTINGS_WRITE").is_none() {
+            let patch = dc_proto::frecency::favorite_gifs_patch(&list, list.len() > 2);
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route: "/users/@me/settings-proto/2".to_owned(),
+                body: Some(json!({"settings": patch})),
+            });
+        }
+        self.favorite_gifs = Some(list);
+        cx.notify();
+    }
+
     /// Pictures for a GIF answer that just arrived: category tiles and the trending preview, or result tiles.
     pub(super) fn request_gif_images(&mut self, key: &str) {
         let Some(body) = self.fetched.get(key).cloned() else {
@@ -167,6 +220,11 @@ impl Root {
 
     fn show_gif_view(&mut self, view: GifView, cx: &mut Context<Self>) {
         match &view {
+            GifView::Favorites => {
+                for gif in self.favorites_as_gifs() {
+                    self.request_image(format!("gif:{}", gif.id), gif.picture);
+                }
+            }
             GifView::Trending if !self.fetched.contains_key(TRENDING_GIFS_KEY) => {
                 let _ = self.requests.send(Request::Fetch {
                     key: TRENDING_GIFS_KEY.to_owned(),
@@ -198,6 +256,7 @@ impl Root {
 
     fn current_gifs(&self) -> (String, Vec<Gif>) {
         match self.gifs.as_ref().map(|gifs| gifs.view.clone()) {
+            Some(GifView::Favorites) => (String::new(), self.favorites_as_gifs()),
             Some(GifView::Trending) => (
                 String::new(),
                 self.fetched
@@ -321,10 +380,14 @@ impl Root {
             self.gif_tile(
                 "gif-favorites".to_owned(),
                 "Favorites".to_owned(),
-                self.images.get("gif:favorites").cloned(),
+                self.favorite_gif_list()
+                    .last()
+                    .and_then(|favorite| self.images.get(&format!("gif:{}", favorite.url)).cloned())
+                    .or_else(|| self.images.get("gif:favorites").cloned()),
                 true,
                 false,
             )
+            .on_click(cx.listener(|this, _, _, cx| this.show_gif_view(GifView::Favorites, cx)))
             .into_any_element(),
         );
         tiles.push(
@@ -372,22 +435,82 @@ impl Root {
             .into_any_element()
     }
 
+    /// `emptyHints_H8nOze`: three 160.7px cells, each a 148.7 x 160 card with 20px padding and 6px around it.
+    fn favorites_hints() -> AnyElement {
+        let card = |text: &'static str, star: bool| {
+            div().w(px(160.67)).h(px(172.)).p(px(6.)).child(
+                div()
+                    .relative()
+                    .size_full()
+                    .rounded(px(5.))
+                    .bg(gpui::rgba(0x97979f14))
+                    .p(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_center()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(color("--text-default"))
+                    .when(star, |this| {
+                        this.child(div().absolute().top(px(6.)).right(px(6.)).child(icon(
+                            "gif_favorite_filled",
+                            29.,
+                            "--status-warning",
+                        )))
+                    })
+                    .child(div().w_full().child(text)),
+            )
+        };
+        div()
+            .id("gif-favorites-hints")
+            .size_full()
+            .overflow_y_scroll()
+            .p(px(6.))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .child(card(
+                        "Click the star in the corner of a gif to favorite it",
+                        true,
+                    ))
+                    .child(card("Favorites will show up here!", false))
+                    .child(card("So uhh\u{2026} maybe go favorite some GIFs?", false)),
+            )
+            .into_any_element()
+    }
+
     fn gif_results(&self, cx: &mut Context<Self>) -> AnyElement {
         let (query, list) = self.current_gifs();
         let placed = masonry(&list);
+        let favorites = self.favorite_gif_list();
         let height = placed
             .iter()
             .map(|(_, top, height)| top + height)
             .fold(0f32, f32::max);
+        if list.is_empty()
+            && matches!(
+                self.gifs.as_ref().map(|gifs| &gifs.view),
+                Some(GifView::Favorites)
+            )
+        {
+            return Self::favorites_hints();
+        }
         let tiles: Vec<AnyElement> = list
             .iter()
             .zip(placed)
             .map(|(gif, (column, top, height))| {
                 let picture = self.images.get(&format!("gif:{}", gif.id)).cloned();
                 let chosen = gif.clone();
+                let starred = gif.clone();
                 let query = query.clone();
+                let favorite = favorites.iter().any(|known| known.url == gif.url);
+                let group = SharedString::from(format!("gif-group-{}", gif.id));
                 div()
                     .id(SharedString::from(format!("gif-{}", gif.id)))
+                    .group(group.clone())
                     .absolute()
                     .left(px(column as f32 * (TILE_WIDTH + GAP)))
                     .top(px(top))
@@ -400,6 +523,38 @@ impl Root {
                     .children(
                         picture
                             .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    )
+                    .child(
+                        // `favButton_H8nOze`: 32 square, 5 radius, 4 from the top and right, shown on hover.
+                        div()
+                            .id(SharedString::from(format!("gif-favorite-{}", gif.id)))
+                            .absolute()
+                            .top(px(4.))
+                            .right(px(4.))
+                            .size(px(32.))
+                            .rounded(px(5.))
+                            .bg(color("--background-surface-higher"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .when(!favorite, |this| {
+                                this.opacity(0.)
+                                    .group_hover(group, |style| style.opacity(1.))
+                            })
+                            .child(icon(
+                                if favorite {
+                                    "gif_favorite_filled"
+                                } else {
+                                    "gif_favorite"
+                                },
+                                20.,
+                                "--text-strong",
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_favorite_gif(&starred, cx);
+                                cx.stop_propagation();
+                            })),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.send_gif(&chosen, &query, cx)))
                     .into_any_element()
@@ -429,7 +584,7 @@ impl Root {
         let search = gifs.search.clone();
         let header =
             match &view {
-                GifView::Trending => div()
+                GifView::Trending | GifView::Favorites => div()
                     .h(px(41.))
                     .px(px(16.))
                     .pb(px(12.))
@@ -454,7 +609,11 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child("Trending GIFs"),
+                            .child(if view == GifView::Favorites {
+                                "Favorites"
+                            } else {
+                                "Trending GIFs"
+                            }),
                     )
                     .into_any_element(),
                 _ => div()
