@@ -1116,6 +1116,18 @@ impl Stores {
                 if let Some(guild) = id(&data["guild_id"]) {
                     self.member_lists.entry(guild).or_default().apply(data);
                     self.members.apply_list_update(guild, data);
+                    for op in data["ops"].as_array().into_iter().flatten() {
+                        for item in op["items"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .chain(std::iter::once(&op["item"]))
+                        {
+                            if let Some(user) = User::from_value(&item["member"]["user"]) {
+                                self.users.insert(user.id, user);
+                            }
+                        }
+                    }
                 }
             }
             "VOICE_STATE_UPDATE" => {
@@ -1850,6 +1862,22 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lazy_member_users_are_available_to_profiles() {
+        use serde_json::json;
+        let mut stores = super::Stores::default();
+        stores.dispatch("GUILD_MEMBER_LIST_UPDATE", &json!({"guild_id":"100", "ops":[
+            {"op":"SYNC", "range":[0,0], "items":[{"member":{"user":{"id":"200","username":"first"}}}]},
+            {"op":"INSERT", "index":1, "item":{"member":{"user":{"id":"201","username":"second"}}}}
+        ]}));
+        assert_eq!(stores.users[&200].username, "first");
+        assert_eq!(stores.users[&201].username, "second");
+        stores.dispatch("GUILD_MEMBER_LIST_UPDATE", &json!({"guild_id":"100", "ops":[
+            {"op":"UPDATE", "index":0, "item":{"member":{"user":{"id":"200","username":"renamed"}}}}
+        ]}));
+        assert_eq!(stores.users[&200].username, "renamed");
+    }
+
     #[test]
     fn member_color_uses_the_highest_colored_role_and_snowflake_ties() {
         let guild = super::Guild::from_value(&serde_json::json!({
