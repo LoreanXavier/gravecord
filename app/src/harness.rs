@@ -342,6 +342,12 @@ pub async fn run(
                 let line = root.update(cx, |root, _| root.script_pref(rest));
                 let _ = writeln!(output, "pref: {line}");
             }
+            // Capture only: the account's `premium_type` is set locally (none, 1, 2 or 3) to see the subscriber
+            // states of the Nitro screens. Nothing is sent, and a normal build has no such step.
+            ["premium", tier] => {
+                let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
+                root.update(cx, |root, cx| root.script_premium(tier, cx));
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

@@ -13,7 +13,6 @@ use std::path::PathBuf;
 /// `MAX_MESSAGE_LENGTH` and the Nitro one.
 pub(super) const MAX_LENGTH: usize = 2000;
 pub(super) const MAX_LENGTH_PREMIUM: usize = 4000;
-const NITRO_URL: &str = "https://discord.com/nitro";
 
 /// The name a pasted picture gets (`image.png`), and the file a long message becomes.
 const PASTED_IMAGE: &str = "image";
@@ -52,10 +51,7 @@ fn picture_file(format: ImageFormat, bytes: &[u8]) -> Option<(Vec<u8>, &'static 
 impl Root {
     /// The longest message the account may send.
     pub(super) fn max_message_length(&self) -> usize {
-        match self.stores.account.premium_type {
-            Some(1 | 2) => MAX_LENGTH_PREMIUM,
-            _ => MAX_LENGTH,
-        }
+        self.premium().max_message_length()
     }
 
     /// Pastes a clipboard item. Pictures and files become pending uploads and the call returns true; text is left to
@@ -194,7 +190,10 @@ impl Root {
                             .cursor_pointer()
                             .text_color(color("--text-link"))
                             .child("and more with Discord Nitro!")
-                            .on_click(|_, _, cx| cx.open_url(NITRO_URL)),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.too_long = None;
+                                this.open_nitro(cx);
+                            })),
                     ),
             );
         }
@@ -211,7 +210,7 @@ impl Root {
                 Tone::Primary,
                 |this, _, cx| {
                     this.too_long = None;
-                    cx.open_url(NITRO_URL);
+                    this.open_nitro(cx);
                 },
             ));
         }

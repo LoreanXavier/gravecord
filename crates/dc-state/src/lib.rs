@@ -10,6 +10,7 @@ pub mod guild_settings;
 pub mod member_list;
 pub mod members;
 pub mod permissions;
+pub mod premium;
 pub mod read_state;
 
 use chrono::{DateTime, Local, Utc};

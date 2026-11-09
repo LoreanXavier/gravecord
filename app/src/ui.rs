@@ -73,6 +73,8 @@ pub use logout::RootEvent;
 mod menu;
 mod modal;
 mod mosaic;
+mod nitro;
+mod nitro_purchase;
 mod notify;
 mod oauth;
 mod oauth_spec;
@@ -405,6 +407,9 @@ pub struct Root {
     voice: settings::VoiceState,
     /// Bodies of `Request::Fetch`, by key.
     fetched: HashMap<String, serde_json::Value>,
+    /// The Nitro page: its plans and scroll, and whether it is the Home content.
+    nitro: nitro::NitroState,
+    nitro_open: bool,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     pub ready: bool,
 }
@@ -584,6 +589,8 @@ impl Root {
             setting_choices,
             voice,
             fetched: HashMap::new(),
+            nitro: nitro::NitroState::default(),
+            nitro_open: false,
             tip_anchors: Rc::default(),
             ready: false,
         }
@@ -738,6 +745,11 @@ impl Root {
                 if key.starts_with(server_tag::TAG_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.tag_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(nitro::NITRO_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.nitro_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_boost::BOOST_PREFIX) {
@@ -1022,8 +1034,10 @@ impl Root {
             history::Route {
                 guild: Some(guild),
                 channel,
+                nitro: false,
             },
         );
+        self.nitro_open = false;
         self.guild = Some(guild);
         self.channel = channel;
         self.member_view = None;
@@ -1914,6 +1928,7 @@ impl Root {
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
             (Some(guild), _) => guild.name.clone(),
+            (None, None) if self.nitro_open => "Nitro".to_owned(),
             (None, None) => "Friends".to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
             (None, Some(_)) => "Direct Messages".to_owned(),
@@ -1951,6 +1966,8 @@ impl Root {
                             .into_any_element()
                     } else if in_dm {
                         icon("title_direct_messages", 18., "--text-default").into_any_element()
+                    } else if self.nitro_open {
+                        icon("home_nitro", 16., "--text-default").into_any_element()
                     } else {
                         icon("home_friends", 16., "--text-default").into_any_element()
                     })
@@ -5300,6 +5317,7 @@ impl Render for Root {
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
             .children(self.profile_layer(cx))
+            .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))
             .child({
@@ -5309,7 +5327,9 @@ impl Render for Root {
                 } else {
                     self.home_sidebar(cx).into_any_element()
                 };
-                let content = if self.guild.is_none() && self.channel.is_none() {
+                let content = if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
+                    self.nitro_page(window, cx)
+                } else if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(cx).into_any_element()
                 } else if self
                     .member_view

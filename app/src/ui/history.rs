@@ -10,6 +10,8 @@ use gpui::{Context, IntoElement, SharedString, div, prelude::*, px};
 pub(crate) struct Route {
     pub guild: Option<Id>,
     pub channel: Option<Id>,
+    /// The Nitro page on Home (`/store`).
+    pub nitro: bool,
 }
 
 #[derive(Default)]
@@ -44,6 +46,7 @@ impl Root {
         Route {
             guild: self.guild,
             channel: self.channel,
+            nitro: self.nitro_open,
         }
     }
 
@@ -54,7 +57,13 @@ impl Root {
                 self.select(guild, route.channel)
             }
             Some(_) => {}
-            None => self.select_home(route.channel),
+            None => {
+                self.select_home(route.channel);
+                if route.nitro {
+                    self.nitro_open = true;
+                    self.request_nitro();
+                }
+            }
         }
         self.history.replaying = false;
         cx.notify();
@@ -139,6 +148,7 @@ mod tests {
         let b = Route {
             guild: Some(1),
             channel: Some(2),
+            nitro: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());

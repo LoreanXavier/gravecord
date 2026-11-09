@@ -16,8 +16,10 @@ impl Root {
             super::history::Route {
                 guild: None,
                 channel,
+                nitro: false,
             },
         );
+        self.nitro_open = false;
         self.guild = None;
         self.channel = channel;
         self.unread_from = None;
@@ -139,8 +141,12 @@ impl Root {
                     .items_center()
                     .gap(px(12.))
                     .when(selected, |this| {
-                        this.parity("friends-link")
-                            .bg(color("--background-mod-strong"))
+                        this.parity(if id == "nitro" {
+                            "nitro-link"
+                        } else {
+                            "friends-link"
+                        })
+                        .bg(color("--background-mod-strong"))
                     })
                     .when(!selected, |this| {
                         this.hover(|style| style.bg(color("--background-mod-subtle")))
@@ -327,7 +333,8 @@ impl Root {
     }
 
     pub(super) fn home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let friends_selected = self.guild.is_none() && self.channel.is_none();
+        let friends_selected = self.guild.is_none() && self.channel.is_none() && !self.nitro_open;
+        let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         let rows: Vec<AnyElement> = self
             .stores
             .private_channels
@@ -391,7 +398,11 @@ impl Root {
                         cx.notify();
                     })),
             )
-            .child(self.home_link("nitro", "home_nitro", "Nitro", false))
+            .child(
+                self.home_link("nitro", "home_nitro", "Nitro", nitro_selected)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
+            )
             .child(
                 self.home_link("shop", "home_shop", "Shop", false)
                     .relative()

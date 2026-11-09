@@ -997,7 +997,8 @@ impl Root {
                 "appearance_custom_themes_upsell" => self.custom_theme_card(),
                 "appearance_client_themes" => self.color_themes(cx),
                 _ => self
-                    .voice_custom(key, width, window, cx)
+                    .billing_custom(key)
+                    .or_else(|| self.voice_custom(key, width, window, cx))
                     .unwrap_or_else(|| div().h(px(*height)).into_any_element()),
             },
         }

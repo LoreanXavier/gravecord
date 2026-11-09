@@ -3,6 +3,7 @@
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
 mod appearance;
+mod billing;
 mod model;
 mod pages;
 pub(super) mod prefs;
@@ -616,6 +617,7 @@ fn info_notice(parts: Runs) -> impl IntoElement {
 impl Root {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = Some(Open::new(Page::Account));
+        self.request_billing();
         // The custom theme card's banner (`bannerImage_yH_g_W`).
         self.request_image(
             "theme_upsell_banner".to_owned(),

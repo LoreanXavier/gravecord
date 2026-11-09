@@ -861,7 +861,8 @@ impl Root {
                 || permissions::can_in_guild(guild, me, permissions::MANAGE_GUILD_EXPRESSIONS));
         Ctx {
             current: guild.map(|guild| guild.id),
-            everywhere: self.stores.account.premium_type == Some(2),
+            everywhere: dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+                .has(dc_state::premium::Feature::SoundboardEverywhere),
             external,
             can_create,
             slots: guild.map_or(BASE_SLOTS, |guild| slots(&guild.features)),
@@ -1046,7 +1047,8 @@ impl Root {
         if self.soundboard.upsell_dismissed {
             return false;
         }
-        let nitro = self.stores.account.premium_type == Some(2);
+        let nitro = dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+            .has(dc_state::premium::Feature::SoundboardEverywhere);
         let old = self
             .stores
             .current_user

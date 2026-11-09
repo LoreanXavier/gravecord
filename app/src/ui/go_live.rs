@@ -7,6 +7,7 @@
 use super::video_tiles::render_image;
 use super::{Root, color, icon};
 use dc_media::screen::{self, Resolution, Settings, Source, SourceId, StreamQuality};
+use dc_state::premium::{Feature, PremiumType};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, RenderImage, SharedString, deferred, div,
     prelude::*, px, relative, rgba,
@@ -17,7 +18,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const STORE_KEY: &str = "ApplicationStreamingSettingStore";
-const NITRO_URL: &str = "https://discord.com/nitro";
 /// `thumbnailSize` of the picker: 447x251 pixels.
 const THUMB: (u32, u32) = (447, 251);
 /// The source list refreshes every second (every two while games run, which this client does not detect).
@@ -159,10 +159,11 @@ pub(super) fn can_stream(
     if resolution == Resolution::Source && fps == 5 && preset != Preset::Documents {
         return false;
     }
+    let tier = PremiumType::from_wire(premium);
     match need {
         StreamQuality::Standard => true,
-        StreamQuality::Mid => matches!(premium, Some(1 | 2)),
-        StreamQuality::High => premium == Some(2),
+        StreamQuality::Mid => tier.has(Feature::StreamMidQuality),
+        StreamQuality::High => tier.has(Feature::StreamHighQuality),
     }
 }
 
@@ -520,7 +521,7 @@ impl Root {
     pub(super) fn go_live_layer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.go_live.as_ref()?;
         let premium = self.stores.account.premium_type;
-        let nitro = premium == Some(2);
+        let nitro = PremiumType::from_wire(premium).has(Feature::StreamHighQuality);
         let (resolution, fps) = state.prefs.effective(premium);
         let hd = state.prefs.preset == Preset::Custom && resolution.height() >= 1080;
 
@@ -715,7 +716,8 @@ impl Root {
                                 state.prefs.save();
                             }
                         } else {
-                            cx.open_url(NITRO_URL);
+                            this.go_live = None;
+                            this.open_nitro(cx);
                         }
                         cx.notify();
                     })),
@@ -771,7 +773,7 @@ impl Root {
                     )
                     .child(div().flex().gap(px(8.)).child(sd_hd).child(gear)),
             )
-            .when(!nitro, |this| this.child(self.go_live_ribbon()));
+            .when(!nitro, |this| this.child(self.go_live_ribbon(cx)));
 
         let menu = state.options.then(|| self.go_live_options(state, cx));
 
@@ -956,7 +958,7 @@ impl Root {
     }
 
     /// "Stream in HD resolution with Nitro" (`upsellRibbon`): a gradient bar with Get Nitro.
-    fn go_live_ribbon(&self) -> AnyElement {
+    fn go_live_ribbon(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .mx(px(16.))
             .mt(px(16.))
@@ -1014,7 +1016,10 @@ impl Root {
                             .cursor_pointer()
                             .underline()
                             .child("Nitro")
-                            .on_click(|_, _, cx| cx.open_url(NITRO_URL)),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.go_live = None;
+                                this.open_nitro(cx);
+                            })),
                     ),
             )
             .child(
@@ -1047,7 +1052,10 @@ impl Root {
                             .gap(px(4.))
                             .cursor_pointer()
                             .font_weight(FontWeight(600.))
-                            .on_click(|_, _, cx| cx.open_url(NITRO_URL))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.go_live = None;
+                                this.open_nitro(cx);
+                            }))
                             .child(icon("golive_nitro", 16., "--brand-500"))
                             .child("Get Nitro"),
                     ),

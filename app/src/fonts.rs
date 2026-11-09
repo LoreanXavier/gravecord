@@ -6,7 +6,7 @@ use dc_proto::pin;
 use std::path::PathBuf;
 
 /// `design/tokens/font-faces.json`, the faces the M0 screens use.
-const FACES: [&str; 12] = [
+const FACES: [&str; 13] = [
     "66d715454104d24e", // gg sans 400
     "dd24010f3cf7def7", // gg sans 400 italic
     "b272b33815319bae", // gg sans 500
@@ -19,6 +19,7 @@ const FACES: [&str; 12] = [
     "03dcf979852e8b8e", // gg sans 800 italic
     "249d0a057895c668", // gg mono 400
     "45efa6936fdfb918", // gg mono 700
+    "404896f5b47121de", // ABC Ginto Discord Nord 700 italic (the Nitro page headings)
 ];
 
 fn cache_dir() -> Result<PathBuf> {
