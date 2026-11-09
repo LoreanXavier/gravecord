@@ -152,6 +152,24 @@ impl Editor {
         cx.notify();
     }
 
+    /// The caret's byte offset, when nothing is selected (autocomplete reads the word before it).
+    pub fn collapsed_caret(&self) -> Option<usize> {
+        let selection = self.buffer.selection();
+        (selection.is_empty() && self.buffer.marked().is_none()).then_some(selection.start)
+    }
+
+    /// Replaces the bytes `range` by `text` with the caret after it, as accepting a suggestion does.
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.buffer.replace(Some(range), text);
+        cx.emit(EditorEvent::Edited);
+        cx.notify();
+    }
+
     /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.buffer.text().trim().to_owned();

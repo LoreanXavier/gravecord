@@ -231,6 +231,29 @@ pub async fn run(
                     }
                 });
             }
+            // Pastes a picture file as if it were on the clipboard (the system clipboard is never touched).
+            ["paste-image", path] => {
+                let path = std::path::PathBuf::from(*path);
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let format = match path.extension().and_then(|ext| ext.to_str()) {
+                        Some("jpg" | "jpeg") => gpui::ImageFormat::Jpeg,
+                        Some("gif") => gpui::ImageFormat::Gif,
+                        Some("bmp") => gpui::ImageFormat::Bmp,
+                        _ => gpui::ImageFormat::Png,
+                    };
+                    let item =
+                        gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(format, bytes));
+                    root.update(cx, |root, cx| root.paste_clipboard_item(&item, cx));
+                }
+            }
+            // Pastes files, as copying them in the file manager does.
+            ["paste-files", path] => {
+                let paths = gpui::ExternalPaths(vec![PathBuf::from(*path)].into());
+                let item = gpui::ClipboardItem {
+                    entries: vec![gpui::ClipboardEntry::ExternalPaths(paths)],
+                };
+                root.update(cx, |root, cx| root.paste_clipboard_item(&item, cx));
+            }
             ["compose", ..] => {
                 let text = step.trim_start_matches("compose").trim_start();
                 with_composer(cx, window, &root, |composer, window, cx| {

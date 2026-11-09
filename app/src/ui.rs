@@ -36,6 +36,7 @@ mod apps;
 mod attachment_modal;
 mod audio_menu;
 mod audit_spec;
+mod autocomplete;
 mod badge_paths;
 mod blocked;
 mod channel_settings;
@@ -70,6 +71,7 @@ mod mosaic;
 mod notify;
 mod oauth;
 mod oauth_spec;
+mod paste;
 mod permission_spec;
 mod picker;
 mod pins;
@@ -217,6 +219,10 @@ pub struct Root {
     rows: Vec<Row>,
     list: ListState,
     composer: Entity<Editor>,
+    /// The composer's `@`, `#` and `:` suggestions.
+    autocomplete: autocomplete::State,
+    /// A message over the length limit, held while the "too long" dialog asks what to do.
+    too_long: Option<String>,
     focus: FocusHandle,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
@@ -400,6 +406,9 @@ impl Root {
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, composer, event, cx| match event {
             EditorEvent::Submit(content) => {
+                if this.hold_too_long(content, cx) {
+                    return;
+                }
                 this.last_typing_sent = None;
                 this.send(content.clone());
             }
@@ -414,6 +423,11 @@ impl Root {
             EditorEvent::Cancel => {}
         })
         .detach();
+        // The editor notifies on every edit and caret move; the suggestion list follows the word at the caret.
+        cx.observe(&composer, |this, _, cx| {
+            this.refresh_autocomplete(false, cx)
+        })
+        .detach();
         Self {
             stores: Stores::default(),
             requests,
@@ -422,6 +436,8 @@ impl Root {
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             composer,
+            autocomplete: autocomplete::State::default(),
+            too_long: None,
             focus: cx.focus_handle(),
             images: HashMap::new(),
             requested: HashSet::new(),
@@ -554,6 +570,9 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                if name == "GUILD_MEMBERS_CHUNK" {
+                    self.refresh_autocomplete(true, cx);
+                }
                 self.soundboard_dispatch(&name, &data, cx);
                 match name.as_str() {
                     "EMBEDDED_ACTIVITY_UPDATE_V2" => self.activity_instance_update(&data, cx),
@@ -1457,6 +1476,19 @@ impl Root {
             || keys.modifiers.alt
             || keys.modifiers.shift
             || keys.modifiers.platform);
+        if self.autocomplete_key(keys, window, cx) {
+            return true;
+        }
+        // Ctrl+V with a picture or files on the clipboard attaches them; text is the field's own paste.
+        if keys.key == "v"
+            && keys.modifiers.control
+            && !keys.modifiers.alt
+            && !keys.modifiers.shift
+            && let Some(item) = cx.read_from_clipboard()
+            && self.paste_clipboard_item(&item, cx)
+        {
+            return true;
+        }
         if keys.key == "escape" && self.replying.is_some() {
             self.replying = None;
             cx.notify();
@@ -4448,6 +4480,7 @@ impl Root {
                     .parity_with_border("composer", 1.)
                     .relative()
                     .child(self.anchor_probe("composer-box"))
+                    .children(self.autocomplete_popup(cx))
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))
@@ -5063,12 +5096,15 @@ impl Render for Root {
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
                     && (this.confirm_pin.is_some()
+                        || this.too_long.is_some()
                         || this.leaving.is_some()
                         || this.confirm_delete.is_some()
                         || this.menu.is_some())
                 {
                     // The top layer closes first: a modal, then the menu under it.
-                    if this.confirm_pin.is_some() {
+                    if this.too_long.is_some() {
+                        this.too_long = None;
+                    } else if this.confirm_pin.is_some() {
                         this.confirm_pin = None;
                     } else if this.leaving.is_some() {
                         this.leaving = None;
@@ -5287,6 +5323,7 @@ impl Render for Root {
             .children(self.leaving_modal(cx))
             .children(self.voice_dialog_layer(cx))
             .children(self.pin_modal(cx))
+            .children(self.too_long_modal(cx))
             .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))

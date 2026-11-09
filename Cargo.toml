@@ -55,6 +55,7 @@ tract-onnx = "=0.21.4"
 tract-pulse = "=0.21.4"
 realfft = "3"
 url = "2"
+unicode-normalization = "0.1"
 zeroize = "1.8"
 dc-gateway = { path = "crates/dc-gateway" }
 dc-hotkey = { path = "crates/dc-hotkey" }

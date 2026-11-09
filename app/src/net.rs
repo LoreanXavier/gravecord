@@ -164,6 +164,15 @@ pub enum Request {
     SoundboardSounds {
         guilds: Vec<u64>,
     },
+    /// Op 8 `REQUEST_GUILD_MEMBERS`, answered by `GUILD_MEMBERS_CHUNK` dispatches: members whose name starts with
+    /// `query` (at most `limit`), or the members with these ids (`GUILD_MEMBERS_REQUEST` in module 225123 sends ids
+    /// in chunks of 100). Presences are asked for as the client does.
+    GuildMembers {
+        guilds: Vec<u64>,
+        query: String,
+        limit: u64,
+        user_ids: Vec<u64>,
+    },
     /// Saves a file (a CDN URL, no authorization) into the user's Downloads folder under a free name.
     Download {
         url: String,
@@ -868,6 +877,19 @@ pub async fn run(
                     data: json!({"guild_ids": ids}),
                 });
             }
+            Request::GuildMembers {
+                guilds,
+                query,
+                limit,
+                user_ids,
+            } => {
+                for data in guild_member_requests(&guilds, &query, limit, &user_ids) {
+                    let _ = commands.send(Command::Send {
+                        op: Op::RequestGuildMembers,
+                        data,
+                    });
+                }
+            }
             Request::Subscribe { guild, channel } => {
                 let subscription = json!({"typing": true, "activities": true, "threads": true, "channels": {channel.to_string(): [[0, 99]]}});
                 let data = json!({"subscriptions": {guild.to_string(): subscription}});
@@ -990,9 +1012,41 @@ fn free_name(
     target
 }
 
+/// The payloads of op 8 for a query, or for a list of ids (100 per request): `{guild_id, query, limit, user_ids,
+/// presences}` as `requestGuildMembers` in module 868 writes it.
+fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u64]) -> Vec<Value> {
+    let ids: Vec<String> = guilds.iter().map(u64::to_string).collect();
+    if user_ids.is_empty() {
+        return vec![json!({"guild_id": ids, "query": query, "limit": limit, "presences": true})];
+    }
+    user_ids
+        .chunks(100)
+        .map(|chunk| {
+            let users: Vec<String> = chunk.iter().map(u64::to_string).collect();
+            json!({"guild_id": ids, "user_ids": users, "presences": true})
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{percent_encode, send_body};
+    use super::{guild_member_requests, percent_encode, send_body};
+    use serde_json::json;
+
+    #[test]
+    fn member_requests_carry_a_query_or_ids_in_chunks_of_a_hundred() {
+        let query = guild_member_requests(&[9], "lor", 10, &[]);
+        assert_eq!(query.len(), 1);
+        assert_eq!(query[0]["guild_id"], json!(["9"]));
+        assert_eq!(query[0]["query"], "lor");
+        assert_eq!(query[0]["limit"], 10);
+        assert_eq!(query[0]["presences"], true);
+        let ids: Vec<u64> = (1..=250).collect();
+        let requests = guild_member_requests(&[9], "", 0, &ids);
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[2]["user_ids"].as_array().unwrap().len(), 50);
+        assert!(requests[0].get("query").is_none());
+    }
 
     #[test]
     fn emoji_encode_as_in_the_recorded_route() {

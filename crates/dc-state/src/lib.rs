@@ -1,11 +1,14 @@
 //! Flux stores. M0 slice: the parts of UserStore, GuildStore, ChannelStore and MessageStore the first screen reads.
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
+pub mod autocomplete;
+pub mod confusables;
 pub mod experiments;
 pub mod frecency;
 pub mod grouping;
 pub mod guild_settings;
 pub mod member_list;
+pub mod members;
 pub mod permissions;
 pub mod read_state;
 
@@ -161,6 +164,8 @@ pub struct Guild {
     pub roles: HashMap<Id, String>,
     /// Role id to its permission bits (the @everyone role has the guild's id).
     pub role_permissions: HashMap<Id, u64>,
+    /// What a role's mention and list order read: position, colour and whether anyone may mention it.
+    pub role_info: HashMap<Id, RoleInfo>,
     /// The current user's roles here (READY `merged_members`, then GUILD_MEMBER_UPDATE).
     pub my_roles: Vec<Id>,
     /// The current user has not passed the rules screening yet (`pending` on their member).
@@ -248,6 +253,34 @@ impl GuildEmoji {
     }
 }
 
+/// The parts of a role the composer's mention list and the member list read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoleInfo {
+    pub position: i64,
+    /// The role's colour as `0xRRGGBB`; 0 is none.
+    pub color: u32,
+    pub mentionable: bool,
+}
+
+impl RoleInfo {
+    fn from_value(role: &Value) -> Self {
+        Self {
+            position: role["position"].as_i64().unwrap_or(0),
+            color: role["color"].as_u64().unwrap_or(0) as u32,
+            mentionable: role["mentionable"].as_bool().unwrap_or(false),
+        }
+    }
+
+    fn list(roles: &Value) -> HashMap<Id, Self> {
+        roles
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| Some((id(&role["id"])?, Self::from_value(role))))
+            .collect()
+    }
+}
+
 /// `_` in module 426983.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Badge {
@@ -290,6 +323,7 @@ impl Guild {
                     Some((id(&role["id"])?, permissions::bits(&role["permissions"])))
                 })
                 .collect(),
+            role_info: RoleInfo::list(&value["roles"]),
             my_roles: Vec::new(),
             my_pending: false,
             my_timeout_until: None,
@@ -350,6 +384,7 @@ impl Guild {
                     Some((id(&role["id"])?, permissions::bits(&role["permissions"])))
                 })
                 .collect();
+            self.role_info = RoleInfo::list(&value["roles"]);
         }
         if value["emojis"].is_array() {
             self.emojis = GuildEmoji::list(&value["emojis"]);
@@ -931,10 +966,13 @@ pub struct Stores {
     /// plain bookmark.
     pub saved: HashMap<(Id, Id), Option<String>>,
     pub guild_settings: guild_settings::GuildSettingsStore,
+    /// The members seen so far, per guild (`GuildMemberStore`).
+    pub members: members::GuildMembers,
 }
 
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
+        self.members.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
             "READY_SUPPLEMENTAL" => {
@@ -944,9 +982,15 @@ impl Stores {
                 }
             }
             "PRESENCE_UPDATE" => self.set_presence(data),
+            "GUILD_MEMBERS_CHUNK" => {
+                for presence in data["presences"].as_array().into_iter().flatten() {
+                    self.set_presence(presence);
+                }
+            }
             "GUILD_MEMBER_LIST_UPDATE" => {
                 if let Some(guild) = id(&data["guild_id"]) {
                     self.member_lists.entry(guild).or_default().apply(data);
+                    self.members.apply_list_update(guild, data);
                 }
             }
             "VOICE_STATE_UPDATE" => {
@@ -1013,6 +1057,9 @@ impl Stores {
                     guild
                         .role_permissions
                         .insert(role, permissions::bits(&data["role"]["permissions"]));
+                    guild
+                        .role_info
+                        .insert(role, RoleInfo::from_value(&data["role"]));
                 }
             }
             "GUILD_ROLE_DELETE" => {
@@ -1023,6 +1070,7 @@ impl Stores {
                 ) {
                     guild.roles.remove(&role);
                     guild.role_permissions.remove(&role);
+                    guild.role_info.remove(&role);
                     guild.my_roles.retain(|known| *known != role);
                 }
             }
@@ -1129,6 +1177,15 @@ impl Stores {
                     {
                         guild.threads.retain(|known| known.id != thread.id);
                         guild.threads.push(thread);
+                    }
+                    // The account's own thread members come beside the threads, one per joined thread.
+                    for member in data["members"].as_array().into_iter().flatten() {
+                        if let Some(thread) = id(&member["id"])
+                            && let Some(known) =
+                                guild.threads.iter_mut().find(|known| known.id == thread)
+                        {
+                            known.joined = true;
+                        }
                     }
                 }
             }
@@ -1753,6 +1810,7 @@ mod tests {
             channels: Vec::new(),
             roles: HashMap::new(),
             role_permissions: HashMap::new(),
+            role_info: HashMap::new(),
             my_roles: Vec::new(),
             my_pending: false,
             my_timeout_until: None,

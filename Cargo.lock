@@ -1737,6 +1737,7 @@ dependencies = [
  "chrono",
  "dc-proto",
  "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -96,17 +96,15 @@ impl Frecency {
         &self.usage
     }
 
-    /// `compute` + `frequently`: keys by falling frecency, those `usable` rejects left out, at most 42. Ties keep
-    /// insertion order, as lodash's stable `sortBy` does.
-    pub fn frequently(&self, now_ms: u64, usable: impl Fn(&str) -> bool) -> Vec<String> {
+    /// `compute`: every key with its score, in the order the history holds them.
+    fn scored(&self, now_ms: u64) -> Vec<(String, f64)> {
         let max_total = self
             .usage
             .iter()
             .map(|(_, usage)| usage.total_uses)
             .max()
             .unwrap_or(0);
-        let mut scored: Vec<(String, f64)> = self
-            .usage
+        self.usage
             .iter()
             .filter_map(|(key, usage)| {
                 // `computeBonus` is 100 for emoji, so the factor is 1.
@@ -139,6 +137,28 @@ impl Frecency {
                 };
                 Some((key.clone(), frecency))
             })
+            .collect()
+    }
+
+    /// Every used key's frecency now, for ranking many candidates against one history.
+    pub fn scores(&self, now_ms: u64) -> std::collections::HashMap<String, f64> {
+        self.scored(now_ms).into_iter().collect()
+    }
+
+    /// `getScore`: the key's frecency now, if it was ever used.
+    pub fn score(&self, key: &str, now_ms: u64) -> Option<f64> {
+        self.scored(now_ms)
+            .into_iter()
+            .find(|(known, _)| known == key)
+            .map(|(_, score)| score)
+    }
+
+    /// `compute` + `frequently`: keys by falling frecency, those `usable` rejects left out, at most 42. Ties keep
+    /// insertion order, as lodash's stable `sortBy` does.
+    pub fn frequently(&self, now_ms: u64, usable: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut scored: Vec<(String, f64)> = self
+            .scored(now_ms)
+            .into_iter()
             .filter(|(key, _)| usable(key))
             .collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));

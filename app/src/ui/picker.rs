@@ -86,7 +86,7 @@ impl Item {
     }
 
     /// Image key in `Root::images`, in the chosen skin tone (0 none, 1-5 the five tones).
-    fn image_key(&self, tone: u8) -> String {
+    pub(super) fn image_key(&self, tone: u8) -> String {
         match self {
             Item::Unicode(index) => {
                 let base = &EMOJIS[usize::from(*index)];
@@ -211,7 +211,7 @@ fn category_icon(category: &str) -> &'static str {
     }
 }
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
@@ -298,6 +298,16 @@ impl Root {
 
     /// `eA.frequently`: emoji picker uses, with this session's on top.
     fn frequent_emoji(&self) -> Vec<Item> {
+        let frecency = self.emoji_frecency();
+        frecency
+            .frequently(now_ms(), |key| self.emoji_lookup(key).is_some())
+            .iter()
+            .filter_map(|key| self.emoji_lookup(key))
+            .collect()
+    }
+
+    /// The emoji frecency: the account's stored history, or the defaults, with this session's uses on top.
+    pub(super) fn emoji_frecency(&self) -> Frecency {
         let mut frecency = Frecency::new(Kind::Emoji);
         let stored = self
             .fetched
@@ -332,10 +342,6 @@ impl Root {
             frecency.track(name, *at);
         }
         frecency
-            .frequently(now, |key| self.emoji_lookup(key).is_some())
-            .iter()
-            .filter_map(|key| self.emoji_lookup(key))
-            .collect()
     }
 
     fn picker_sections(&self, query: &str) -> Vec<Section> {

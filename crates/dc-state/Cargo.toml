@@ -8,3 +8,4 @@ publish.workspace = true
 chrono.workspace = true
 dc-proto.workspace = true
 serde_json.workspace = true
+unicode-normalization.workspace = true

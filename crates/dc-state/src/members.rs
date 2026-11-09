@@ -1,0 +1,167 @@
+//! `GuildMemberStore`: the members this session has seen, per guild, in the order they arrived. Members come from
+//! `GUILD_MEMBERS_CHUNK` (op 8 answers), `GUILD_CREATE`, the member list, `GUILD_MEMBER_ADD`/`UPDATE`/`REMOVE` and the
+//! `member` of a `MESSAGE_CREATE`.
+
+use crate::{Id, User, id, text};
+use serde_json::Value;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    pub user: User,
+    pub nick: Option<String>,
+    pub roles: Vec<Id>,
+    /// `pending`: still in rules screening, so not mentionable (`isPending`).
+    pub pending: bool,
+}
+
+impl Member {
+    /// A gateway member object (`{user, nick, roles, pending, ...}`); `user` may be given apart, as a message does.
+    pub fn from_value(member: &Value, user: Option<&Value>) -> Option<Self> {
+        let user = User::from_value(user.unwrap_or(&member["user"]))?;
+        Some(Self {
+            user,
+            nick: text(&member["nick"]),
+            roles: member["roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(id)
+                .collect(),
+            pending: member["pending"].as_bool().unwrap_or(false),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuildMembers {
+    guilds: HashMap<Id, Vec<Member>>,
+}
+
+impl GuildMembers {
+    /// The guild's members in arrival order.
+    pub fn of(&self, guild: Id) -> &[Member] {
+        self.guilds.get(&guild).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn get(&self, guild: Id, user: Id) -> Option<&Member> {
+        self.of(guild).iter().find(|member| member.user.id == user)
+    }
+
+    /// Adds the member, or replaces the one already known (keeping its place).
+    pub fn upsert(&mut self, guild: Id, member: Member) {
+        let list = self.guilds.entry(guild).or_default();
+        match list
+            .iter_mut()
+            .find(|known| known.user.id == member.user.id)
+        {
+            Some(known) => *known = member,
+            None => list.push(member),
+        }
+    }
+
+    pub fn remove(&mut self, guild: Id, user: Id) {
+        if let Some(list) = self.guilds.get_mut(&guild) {
+            list.retain(|member| member.user.id != user);
+        }
+    }
+
+    pub fn drop_guild(&mut self, guild: Id) {
+        self.guilds.remove(&guild);
+    }
+
+    /// `GUILD_MEMBERS_CHUNK`, `GUILD_CREATE` and anything else that carries a `members` array for one guild.
+    pub fn apply_list(&mut self, guild: Id, members: &Value) {
+        for member in members.as_array().into_iter().flatten() {
+            if let Some(member) = Member::from_value(member, None) {
+                self.upsert(guild, member);
+            }
+        }
+    }
+
+    /// The members the lazy member list carries (`SYNC` items, `INSERT` and `UPDATE` items).
+    pub fn apply_list_update(&mut self, guild: Id, data: &Value) {
+        for op in data["ops"].as_array().into_iter().flatten() {
+            let items = op["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(std::iter::once(&op["item"]));
+            for item in items {
+                if let Some(member) = item
+                    .get("member")
+                    .and_then(|member| Member::from_value(member, None))
+                {
+                    self.upsert(guild, member);
+                }
+            }
+        }
+    }
+
+    pub fn dispatch(&mut self, name: &str, data: &Value) {
+        let Some(guild) = id(&data["guild_id"]).or_else(|| id(&data["id"])) else {
+            return;
+        };
+        match name {
+            "GUILD_CREATE" => self.apply_list(guild, &data["members"]),
+            "GUILD_MEMBERS_CHUNK" => self.apply_list(guild, &data["members"]),
+            "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" => {
+                if let Some(member) = Member::from_value(data, None) {
+                    self.upsert(guild, member);
+                }
+            }
+            "GUILD_MEMBER_REMOVE" => {
+                if let Some(user) = id(&data["user"]["id"]) {
+                    self.remove(guild, user);
+                }
+            }
+            "GUILD_DELETE" => self.drop_guild(guild),
+            "MESSAGE_CREATE" if data["member"].is_object() => {
+                if let Some(member) = Member::from_value(&data["member"], Some(&data["author"])) {
+                    self.upsert(guild, member);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_chunk_adds_members_in_order_and_an_update_keeps_the_place() {
+        let mut store = GuildMembers::default();
+        store.dispatch(
+            "GUILD_MEMBERS_CHUNK",
+            &json!({"guild_id": "9", "members": [
+                {"user": {"id": "1", "username": "ann"}, "roles": ["5"], "nick": "A"},
+                {"user": {"id": "2", "username": "bob"}, "roles": []},
+            ]}),
+        );
+        assert_eq!(store.of(9).len(), 2);
+        assert_eq!(store.of(9)[0].roles, vec![5]);
+        store.dispatch(
+            "GUILD_MEMBER_UPDATE",
+            &json!({"guild_id": "9", "user": {"id": "1", "username": "ann"}, "nick": "Z", "roles": []}),
+        );
+        assert_eq!(store.of(9)[0].nick.as_deref(), Some("Z"));
+        store.dispatch(
+            "GUILD_MEMBER_REMOVE",
+            &json!({"guild_id": "9", "user": {"id": "1"}}),
+        );
+        assert_eq!(store.of(9).len(), 1);
+    }
+
+    #[test]
+    fn a_message_member_has_the_author_as_its_user() {
+        let mut store = GuildMembers::default();
+        store.dispatch(
+            "MESSAGE_CREATE",
+            &json!({"guild_id": "9", "author": {"id": "3", "username": "cy"}, "member": {"roles": ["7"]}}),
+        );
+        assert_eq!(store.get(9, 3).unwrap().roles, vec![7]);
+    }
+}

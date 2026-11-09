@@ -152,6 +152,43 @@ pub fn channel_permissions(guild: &Guild, channel: &Channel, me: Me) -> u64 {
     compute(guild, &channel.overwrites, me, now_ms())
 }
 
+/// What another member may do in a channel: their roles' permissions with the channel's overwrites (`w` for any
+/// member). Screening, timeouts and 2FA are the server's to apply, so they are left out.
+pub fn member_channel_permissions(guild: &Guild, channel: &Channel, user: Id, roles: &[Id]) -> u64 {
+    if guild.owner_id == Some(user) {
+        return ALL;
+    }
+    let mut total = guild.role_permissions.get(&guild.id).copied().unwrap_or(0);
+    for role in roles {
+        total |= guild.role_permissions.get(role).copied().unwrap_or(0);
+    }
+    if total & ADMINISTRATOR != 0 {
+        return ALL;
+    }
+    let overwrites = &channel.overwrites;
+    if let Some(everyone) = overwrites
+        .iter()
+        .find(|entry| entry.kind == 0 && entry.id == guild.id)
+    {
+        total = (total & !everyone.deny) | everyone.allow;
+    }
+    let (mut allow, mut deny) = (0, 0);
+    for entry in overwrites {
+        if entry.kind == 0 && roles.contains(&entry.id) {
+            allow |= entry.allow;
+            deny |= entry.deny;
+        }
+    }
+    total = (total & !deny) | allow;
+    if let Some(member) = overwrites
+        .iter()
+        .find(|entry| entry.kind == 1 && entry.id == user)
+    {
+        total = (total & !member.deny) | member.allow;
+    }
+    total
+}
+
 /// `can(permission, channel)`.
 pub fn can_in_channel(guild: &Guild, channel: &Channel, me: Me, permission: u64) -> bool {
     channel_permissions(guild, channel, me) & permission == permission

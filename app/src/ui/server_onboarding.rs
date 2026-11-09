@@ -8984,6 +8984,7 @@ mod tests {
             channels,
             roles: HashMap::from([(1, "@everyone".to_owned())]),
             role_permissions: HashMap::from([(1, everyone)]),
+            role_info: HashMap::new(),
             my_roles: Vec::new(),
             my_pending: false,
             my_timeout_until: None,
