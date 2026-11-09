@@ -9,11 +9,18 @@ use std::collections::HashMap;
 /// Discord's snowflake epoch, in Unix milliseconds.
 const EPOCH_MS: u64 = 1_420_070_400_000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Importance {
+    High,
+    Low,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadState {
     /// The last message read; 0 when nothing was.
     pub acked: Id,
     pub mention_count: u64,
+    pub low_importance: bool,
     /// Set by Mark Unread (`manual: true`): this client leaves it unread until told otherwise.
     pub manual: bool,
 }
@@ -57,6 +64,7 @@ impl ReadStates {
                 ReadState {
                     acked: snowflake(&entry["last_message_id"]).unwrap_or(0),
                     mention_count: entry["mention_count"].as_u64().unwrap_or(0),
+                    low_importance: entry["flags"].as_u64().unwrap_or(0) & 4 != 0,
                     manual: false,
                 },
             );
@@ -75,6 +83,7 @@ impl ReadStates {
             ReadState {
                 acked: message,
                 mention_count: data["mention_count"].as_u64().unwrap_or(0),
+                low_importance: data["flags"].as_u64().unwrap_or(0) & 4 != 0,
                 manual: data["manual"].as_bool().unwrap_or(false),
             },
         );
@@ -87,19 +96,30 @@ impl ReadStates {
             ReadState {
                 acked: message,
                 mention_count: 0,
+                low_importance: false,
                 manual,
             },
         );
     }
 
-    pub fn message_created(&mut self, channel: Id, message: Id, mentions_me: bool, mine: bool) {
+    pub fn message_created(
+        &mut self,
+        channel: Id,
+        message: Id,
+        mention: Option<Importance>,
+        mine: bool,
+    ) {
         let latest = self.latest.entry(channel).or_insert(0);
         *latest = (*latest).max(message);
         if mine {
             // The client acks its own messages as it sends them.
             self.ack_local(channel, message, false);
-        } else if mentions_me {
-            self.states.entry(channel).or_default().mention_count += 1;
+        } else if let Some(importance) = mention {
+            let state = self.states.entry(channel).or_default();
+            if importance == Importance::High || state.mention_count == 0 {
+                state.low_importance = importance == Importance::Low;
+            }
+            state.mention_count = state.mention_count.saturating_add(1);
         }
     }
 
@@ -138,13 +158,13 @@ mod tests {
         ]}));
         states.latest.insert(10, 100);
         assert!(!states.is_unread(10, 0));
-        states.message_created(10, 120, true, false);
+        states.message_created(10, 120, Some(Importance::High), false);
         assert!(states.is_unread(10, 0));
         assert_eq!(states.mentions(10), 1);
         states.ack(&json!({"channel_id": "10", "message_id": "120", "manual": false}));
         assert!(!states.is_unread(10, 0));
         assert_eq!(states.mentions(10), 0);
-        states.message_created(10, 130, false, true);
+        states.message_created(10, 130, None, true);
         assert!(!states.is_unread(10, 0));
         assert!(!states.states.contains_key(&1));
     }

@@ -14,6 +14,7 @@ pub mod permissions;
 pub mod premium;
 pub mod read_state;
 pub mod slowmode;
+pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
@@ -136,6 +137,7 @@ pub struct Channel {
     pub rate_limit_per_user: u64,
     /// Channel flags (`IS_SPOILER_CHANNEL` 1 << 21 among them).
     pub flags: u64,
+    pub nsfw: bool,
     /// Minutes a new thread stays listed without activity (`default_auto_archive_duration`).
     pub default_auto_archive_duration: Option<u64>,
     /// Forum and media channels: the tags a post can carry (`available_tags`).
@@ -200,6 +202,7 @@ impl Channel {
             rate_limit_per_user: value["rate_limit_per_user"].as_u64().unwrap_or(0),
             flags: value["flags"].as_u64().unwrap_or(0),
             default_auto_archive_duration: value["default_auto_archive_duration"].as_u64(),
+            nsfw: value["nsfw"].as_bool().unwrap_or(false),
             available_tags: ForumTag::list(&value["available_tags"]),
             default_sort_order: value["default_sort_order"].as_u64(),
             default_forum_layout: value["default_forum_layout"].as_u64().unwrap_or(0),
@@ -215,6 +218,7 @@ pub struct Guild {
     pub owner_id: Option<Id>,
     pub joined_at: String,
     pub default_message_notifications: u64,
+    pub nsfw_level: u64,
     pub channels: Vec<Channel>,
     pub roles: HashMap<Id, String>,
     /// Role id to its permission bits (the @everyone role has the guild's id).
@@ -397,6 +401,7 @@ impl Guild {
             default_message_notifications: properties["default_message_notifications"]
                 .as_u64()
                 .unwrap_or(0),
+            nsfw_level: properties["nsfw_level"].as_u64().unwrap_or(0),
             joined_at: text(&value["joined_at"]).unwrap_or_default(),
             channels: channels.iter().filter_map(Channel::from_value).collect(),
             roles: value["roles"]
@@ -455,6 +460,7 @@ impl Guild {
         self.default_message_notifications = value["default_message_notifications"]
             .as_u64()
             .unwrap_or(self.default_message_notifications);
+        self.nsfw_level = value["nsfw_level"].as_u64().unwrap_or(self.nsfw_level);
         self.vanity_url_code = text(&value["vanity_url_code"]);
         if let Some(features) = value["features"].as_array() {
             self.features = features.iter().filter_map(text).collect();
@@ -957,6 +963,7 @@ pub const TYPING_DURATION: Duration = Duration::from_secs(10);
 /// The private half of the READY user, which only the account settings show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Account {
+    pub nsfw_allowed: bool,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub mfa_enabled: bool,
@@ -968,6 +975,7 @@ pub struct Account {
 impl Account {
     fn from_value(value: &Value) -> Self {
         Self {
+            nsfw_allowed: value["nsfw_allowed"].as_bool().unwrap_or(false),
             email: text(&value["email"]),
             phone: text(&value["phone"]),
             mfa_enabled: value["mfa_enabled"].as_bool().unwrap_or(false),
@@ -1066,6 +1074,7 @@ pub struct Stores {
     /// plain bookmark.
     pub saved: HashMap<(Id, Id), Option<String>>,
     pub guild_settings: guild_settings::GuildSettingsStore,
+    pub notification_flags: u64,
     /// The members seen so far, per guild (`GuildMemberStore`).
     pub members: members::GuildMembers,
 }
@@ -1230,17 +1239,12 @@ impl Stores {
             "MESSAGE_CREATE" => {
                 if let Some(message) = Message::from_value(data) {
                     let me = self.current_user.as_ref().map(|user| user.id);
-                    let mentions_me = data["mention_everyone"].as_bool().unwrap_or(false)
-                        || data["mentions"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .any(|user| id(&user["id"]).is_some_and(|user| Some(user) == me));
+                    let mention = unread::message_mention(self, data, chrono::Utc::now());
                     self.read_states.message_created(
                         message.channel_id,
                         message.id,
-                        mentions_me,
-                        Some(message.author.id) == me,
+                        mention,
+                        Some(message.author.id) == me && message.kind != 46,
                     );
                     // A sent message ends its author's typing notice.
                     if let Some(list) = self.typing.get_mut(&message.channel_id) {
@@ -1603,6 +1607,7 @@ impl Stores {
             .collect();
         self.read_states.load(&data["read_state"]);
         self.guild_settings.load(&data["user_guild_settings"]);
+        self.notification_flags = data["notification_settings"]["flags"].as_u64().unwrap_or(0);
         let latest: Vec<(Id, Id)> = self
             .guilds
             .iter()
@@ -1647,14 +1652,7 @@ impl Stores {
 
     /// A guild is unread when one of its text channels is.
     pub fn guild_unread(&self, guild: &Guild) -> bool {
-        let joined = guild.joined_snowflake();
-        let now = chrono::Utc::now();
-        guild
-            .channels
-            .iter()
-            .filter(|channel| channel.kind == ChannelKind::Text)
-            .filter(|channel| !self.guild_settings.channel_muted(guild.id, channel.id, now))
-            .any(|channel| self.read_states.is_unread(channel.id, joined))
+        unread::guild_counts(self, guild, chrono::Utc::now()).unread
     }
 
     /// The order from the settings proto. Guilds it does not list yet go on top, newest first.
@@ -1994,6 +1992,7 @@ mod tests {
             owner_id: None,
             joined_at: String::new(),
             default_message_notifications: 0,
+            nsfw_level: 0,
             channels: Vec::new(),
             roles: HashMap::new(),
             role_permissions: HashMap::new(),
