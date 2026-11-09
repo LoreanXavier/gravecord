@@ -901,6 +901,9 @@ impl Root {
 
     /// Enter with the command complete (the composer is empty or holds the last option's text).
     pub(super) fn submit_pending(&mut self, cx: &mut Context<Self>) {
+        if self.screening_pending() {
+            return;
+        }
         self.advance_pending(true, cx);
         if self.slash.pending.is_some() {
             self.finish_if_ready(cx);

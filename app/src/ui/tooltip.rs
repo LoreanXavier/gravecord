@@ -353,7 +353,7 @@ fn badge_svg(badge: Badge, premium: bool, side: u32) -> Option<String> {
     ))
 }
 
-fn badge_image(guild: &Guild) -> Option<Arc<Image>> {
+pub(super) fn badge_image(guild: &Guild) -> Option<Arc<Image>> {
     let svg = badge_svg(guild.badge(), guild.premium(), 18)?;
     Some(Arc::new(Image::from_bytes(
         ImageFormat::Svg,

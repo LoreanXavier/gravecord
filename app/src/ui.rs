@@ -93,6 +93,7 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod saved;
+mod screening;
 mod search;
 mod search_filters;
 mod server_access;
@@ -227,6 +228,7 @@ pub struct Root {
     requests: UnboundedSender<Request>,
     guild: Option<Id>,
     channel: Option<Id>,
+    screening: Option<screening::Screening>,
     rows: Vec<Row>,
     list: ListState,
     composer: Entity<Editor>,
@@ -431,6 +433,7 @@ impl Root {
         setting_choices.extend(settings::prefs::restore());
         let composer = cx.new(|cx| Editor::new(editor_style(), cx));
         cx.subscribe(&composer, |this, composer, event, cx| match event {
+            EditorEvent::Submit(_) if this.screening_pending() => {}
             EditorEvent::Submit(_) if this.slash.pending.is_some() => {
                 this.submit_pending(cx);
             }
@@ -462,6 +465,7 @@ impl Root {
             requests,
             guild: None,
             channel: None,
+            screening: None,
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             composer,
@@ -710,6 +714,9 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.screening_fetched(&key, &body, cx) {
+                    return;
+                }
                 if self.forum_fetched(&key, &body, cx) {
                     return;
                 }
@@ -1633,6 +1640,9 @@ impl Root {
 
     /// `TYPING_START_LOCAL`: at most one notice per 80% of the notice's length.
     fn notify_typing(&mut self) {
+        if self.screening_pending() {
+            return;
+        }
         let due = self
             .last_typing_sent
             .is_none_or(|sent| sent.elapsed() >= TYPING_DURATION.mul_f32(0.8));
@@ -1696,6 +1706,9 @@ impl Root {
     }
 
     fn send(&mut self, content: String) {
+        if self.screening_pending() {
+            return;
+        }
         if content.is_empty() && self.pending_files.is_empty() {
             return;
         }
@@ -5092,6 +5105,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.screening.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.add_server.is_some() {
                     this.add_server = None;
                     cx.notify();
@@ -5395,6 +5413,7 @@ impl Render for Root {
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
             .children(self.onboarding_layer(cx))
+            .children(self.screening_layer(window, cx))
             .children(self.automod_picker_layer(cx))
             .children(self.automod_bar_layer(cx))
             .children(self.automod_dialog_modal(cx))
@@ -5514,6 +5533,9 @@ impl Render for Root {
                                                             .pb(px(8.))
                                                             .child(self.blocked_composer(user, cx))
                                                             .into_any_element(),
+                                                        None if self.screening_pending() => {
+                                                            self.screening_composer(cx)
+                                                        }
                                                         None => {
                                                             self.composer_bar(cx).into_any_element()
                                                         }

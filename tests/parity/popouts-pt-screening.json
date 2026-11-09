@@ -1,0 +1,11 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "sidebar": { "class": "sidebarList_pog62O" },
+  "chat-header": { "class": "title_z_gUBg" },
+  "screening-composer": { "class": "wrapper_ST_Y69" },
+  "screening-modal": { "class": "size-xxl_dvN-MP" },
+  "screening-form-scroll": { "class": "modalContent_x3HD6i" },
+  "screening-guild-card": { "class": "container_Xweo-z" },
+  "screening-submit": { "class": "submitButton_x3HD6i" },
+  "screening-close": { "class": "closeButton_x3HD6i" }
+}

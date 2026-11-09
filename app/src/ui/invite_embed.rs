@@ -443,24 +443,36 @@ impl Root {
         let name = name_override.unwrap_or_else(|| known.name.clone());
         let picture = self.images.get(&format!("guild:{guild}")).cloned();
         let acronym = dc_state::Guild::acronym_of(&known.name);
-        let members = self.stores.member_lists.get(&guild).map_or(1, |list| {
-            list.rows
-                .iter()
-                .filter(|row| matches!(row, dc_state::member_list::Row::Member { .. }))
-                .count()
-                .max(1) as u64
-        });
-        let online = self
-            .stores
-            .member_lists
-            .get(&guild)
-            .and_then(|list| {
-                list.groups
-                    .iter()
-                    .find(|(id, _)| id != "offline")
-                    .map(|(_, count)| *count)
-            })
-            .unwrap_or(1);
+        let preview = self
+            .fetched
+            .get(&format!("screening-preview:{guild}"))
+            .filter(|report| report["ok"].as_bool() == Some(true))
+            .map(|report| &report["body"]);
+        let members = preview
+            .and_then(|body| body["approximate_member_count"].as_u64())
+            .unwrap_or_else(|| {
+                self.stores.member_lists.get(&guild).map_or(1, |list| {
+                    list.rows
+                        .iter()
+                        .filter(|row| matches!(row, dc_state::member_list::Row::Member { .. }))
+                        .count()
+                        .max(1) as u64
+                })
+            });
+        let online = preview
+            .and_then(|body| body["approximate_presence_count"].as_u64())
+            .unwrap_or_else(|| {
+                self.stores
+                    .member_lists
+                    .get(&guild)
+                    .and_then(|list| {
+                        list.groups
+                            .iter()
+                            .find(|(id, _)| id != "offline")
+                            .map(|(_, count)| *count)
+                    })
+                    .unwrap_or(1)
+            });
         let founded =
             chrono::DateTime::from_timestamp_millis((guild >> 22) as i64 + 1_420_070_400_000)
                 .map(|time| {
@@ -491,7 +503,7 @@ impl Root {
                 )
         };
         let base = color_override.unwrap_or_else(|| self.guild_banner_base(guild));
-        let banner = self.banner_image(base, 298, 120);
+        let banner = self.banner_image(base, (width - 2.).max(1.) as u32, 120);
         Some(
             div()
                 .w(px(width))
@@ -522,7 +534,14 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(600.))
                                 .text_color(color("--text-strong"))
-                                .child(name),
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(div().min_w(px(0.)).text_ellipsis().child(name))
+                                .children(
+                                    super::tooltip::badge_image(known)
+                                        .map(|image| img(image).size(px(18.)).flex_none()),
+                                ),
                         )
                         .child(
                             div()

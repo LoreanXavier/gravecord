@@ -7,6 +7,50 @@ const RSHIFT: u32 = 8 - SIGBITS;
 const MAX_ITERATIONS: usize = 1000;
 const FRACT_BY_POPULATIONS: f64 = 0.75;
 
+/// Module 998304, `Q7`: three hue rotations after lifting muted saturation and extreme lightness.
+pub fn complementary_colors(rgb: [u8; 3]) -> [[u8; 3]; 3] {
+    let [r, g, b] = rgb.map(|value| f64::from(value) / 255.);
+    let low = r.min(g).min(b);
+    let high = r.max(g).max(b);
+    let delta = high - low;
+    let hue = if delta == 0. {
+        0.
+    } else if high == r {
+        ((g - b) / delta) % 6.
+    } else if high == g {
+        (b - r) / delta + 2.
+    } else {
+        (r - g) / delta + 4.
+    };
+    let mut hue = (hue * 60. + 0.5).floor().rem_euclid(360.);
+    let lightness = (high + low) / 2.;
+    let saturation = if delta == 0. {
+        0.
+    } else {
+        delta / (1. - (2. * lightness - 1.).abs())
+    };
+    let mut saturation = (saturation * 1000.).round() / 10.;
+    let mut lightness = (lightness * 1000.).round() / 10.;
+    if saturation < 30. {
+        saturation += 30.;
+    }
+    if lightness > 80. {
+        lightness -= 40.;
+    }
+    if lightness < 20. {
+        lightness += 15.;
+    }
+    std::array::from_fn(|_| {
+        hue = (hue - 90.).rem_euclid(360.);
+        let light = lightness / 100.;
+        let chroma = saturation * light.min(1. - light) / 100.;
+        [0., 8., 4.].map(|offset| {
+            let at = (offset + hue / 30.) % 12.;
+            (255. * (light - chroma * (at - 3.).min(9. - at).clamp(-1., 1.))).round() as u8
+        })
+    })
+}
+
 fn color_index(red: usize, green: usize, blue: usize) -> usize {
     (red << (2 * SIGBITS)) + (green << SIGBITS) + blue
 }
@@ -308,6 +352,10 @@ pub fn avatar_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn screening_gradient_companion_matches_the_captured_palette() {
+        assert_eq!(super::complementary_colors([65, 58, 46])[0], [82, 29, 75]);
+    }
     use super::{avatar_palette, quantize};
 
     #[test]
