@@ -93,7 +93,7 @@ pub fn run(repo: &Path) -> Result<()> {
         "- Documented gaps in `BLOCKED.md`: {}",
         blocked.matches("\n### ").count()
     );
-    out.push_str("- Parity: no screen is green. `cargo xtask parity` measures a pixel diff only; the layout-tree diff is not built.\n\n");
+    out.push_str("- Parity: no screen is green. Pixel differences and the selected layout probes are measured; matching probes alone do not prove full-screen parity.\n\n");
     out.push_str(&table(&counts));
     out.push('\n');
     out.push_str(&log);
