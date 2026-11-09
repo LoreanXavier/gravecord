@@ -55,10 +55,14 @@ async fn file(client: &dc_http::Client) -> Option<Vec<u8>> {
 /// shows without the mark then, as the official page does while its video loads.
 pub async fn load(client: &dc_http::Client) -> Option<Clip> {
     let bytes = file(client).await?;
-    tokio::task::spawn_blocking(move || decode(&bytes).ok())
-        .await
-        .ok()
-        .flatten()
+    tokio::task::spawn_blocking(move || {
+        decode(&bytes)
+            .map_err(|error| tracing::debug!("loading spinner: {error}"))
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ---- MP4 ----
@@ -282,7 +286,13 @@ pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
             }
         }
         annex_b(data, config.length_size, &mut unit).ok_or("broken sample")?;
-        if let Some(yuv) = decoder.decode(&unit).map_err(|error| error.to_string())? {
+        // This file contains B-frames. Flushing between samples drains pictures that later samples reference.
+        let options = openh264::decoder::DecodeOptions::new()
+            .flush_after_decode(openh264::decoder::Flush::NoFlush);
+        if let Some(yuv) = decoder
+            .decode_with_options(&unit, options)
+            .map_err(|error| format!("sample {index}: {error}"))?
+        {
             keep(&yuv);
         }
     }
@@ -305,6 +315,22 @@ pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the pinned clip path in GRAVECORD_SPINNER_TEST_FILE"]
+    fn pinned_clip_has_visible_frames() {
+        let file = std::env::var("GRAVECORD_SPINNER_TEST_FILE").unwrap();
+        let clip = decode(&std::fs::read(file).unwrap()).unwrap();
+        assert_eq!((clip.width, clip.height), (400, 400));
+        assert_eq!(clip.frames.len(), 64);
+        assert!(
+            clip.frames.iter().all(|frame| frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] > 128))
+        );
+    }
 
     fn make_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();

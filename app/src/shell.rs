@@ -89,7 +89,7 @@ impl Shell {
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub fn ready(&self, cx: &gpui::App) -> bool {
         match &self.screen {
-            Screen::Main(root) => root.read(cx).ready,
+            Screen::Main(root) => root.read(cx).ready_for_capture(),
             Screen::Login(login) => login.read(cx).has_art(),
         }
     }

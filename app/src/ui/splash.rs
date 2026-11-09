@@ -539,9 +539,13 @@ fn problem_link(
 }
 
 impl Root {
+    pub(crate) fn ready_for_capture(&self) -> bool {
+        self.ready && self.splash.done
+    }
+
     /// The spinner's frames came in: gpui images, drawn at 200px.
     pub(super) fn splash_clip(&mut self, clip: &Clip) {
-        if self.splash.done {
+        if self.splash.done && !cfg!(feature = "capture") {
             return;
         }
         self.splash.frames = clip
@@ -599,7 +603,9 @@ impl Root {
         let look = look(elapsed, faded, self.splash.hold);
         if look.gone {
             self.splash.done = true;
-            self.splash.frames = Vec::new();
+            if !cfg!(feature = "capture") {
+                self.splash.frames = Vec::new();
+            }
             return None;
         }
         // The spinner and the slide are animations: ask for the next frame.
@@ -697,9 +703,10 @@ impl Root {
                 .id("loading-screen")
                 .parity("loading-container")
                 .absolute()
-                .top(px(0.))
+                .top(px(-22.))
                 .left(px(0.))
-                .size_full()
+                .w_full()
+                .h(window.viewport_size().height + px(22.))
                 .overflow_hidden()
                 .bg(color("--background-base-lowest"))
                 .opacity(look.container)
