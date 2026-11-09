@@ -180,8 +180,8 @@ fn decoration(enabled: bool, ever_enabled: bool, step: Step) -> Option<String> {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Emoji {
-    id: Option<String>,
-    name: Option<String>,
+    pub(super) id: Option<String>,
+    pub(super) name: Option<String>,
     animated: Option<bool>,
 }
 
@@ -857,42 +857,42 @@ fn resource_channel(guild: &Guild, channel: &Channel) -> bool {
 /// `c` of module 374084.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Task {
-    channel_id: String,
+    pub(super) channel_id: String,
     action_type: u64,
-    title: String,
-    description: String,
-    emoji: Option<Emoji>,
-    icon: Option<String>,
+    pub(super) title: String,
+    pub(super) description: String,
+    pub(super) emoji: Option<Emoji>,
+    pub(super) icon: Option<String>,
 }
 
 /// `u` of module 374084.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Resource {
-    channel_id: String,
-    title: String,
-    description: String,
-    emoji: Option<Emoji>,
-    icon: Option<String>,
+    pub(super) channel_id: String,
+    pub(super) title: String,
+    pub(super) description: String,
+    pub(super) emoji: Option<Emoji>,
+    pub(super) icon: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Welcome {
-    author_ids: Vec<String>,
-    message: String,
+    pub(super) author_ids: Vec<String>,
+    pub(super) message: String,
 }
 
 /// The settings object of module 374084.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Home {
-    welcome: Option<Welcome>,
-    tasks: Option<Vec<Task>>,
-    resources: Option<Vec<Resource>>,
+    pub(super) welcome: Option<Welcome>,
+    pub(super) tasks: Option<Vec<Task>>,
+    pub(super) resources: Option<Vec<Resource>>,
     enabled: bool,
 }
 
 impl Home {
     /// `Xu`: channels this session cannot see are dropped.
-    fn from_wire(value: &Value, channel: &dyn Fn(&str) -> bool) -> Self {
+    pub(super) fn from_wire(value: &Value, channel: &dyn Fn(&str) -> bool) -> Self {
         if value.is_null() {
             return Self::default();
         }
@@ -8980,6 +8980,8 @@ mod tests {
             name: String::new(),
             icon: None,
             owner_id: None,
+            home_header: None,
+            rules_channel_id: None,
             joined_at: String::new(),
             default_message_notifications: 0,
             nsfw_level: 0,
@@ -8989,6 +8991,7 @@ mod tests {
             role_info: HashMap::new(),
             my_roles: Vec::new(),
             my_pending: false,
+            my_flags: 0,
             my_timeout_until: None,
             mfa_level: 0,
             vanity_url_code: None,

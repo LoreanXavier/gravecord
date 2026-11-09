@@ -488,11 +488,13 @@ impl Root {
                 guild: None,
                 channel: None,
                 nitro: true,
+                guild_guide: false,
             },
         );
         self.guild = None;
         self.channel = None;
         self.nitro_open = true;
+        self.guild_guide_open = false;
         self.request_nitro();
         cx.notify();
     }

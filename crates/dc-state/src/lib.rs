@@ -225,6 +225,8 @@ pub struct Guild {
     pub name: String,
     pub icon: Option<String>,
     pub owner_id: Option<Id>,
+    pub home_header: Option<String>,
+    pub rules_channel_id: Option<Id>,
     pub joined_at: String,
     pub default_message_notifications: u64,
     pub nsfw_level: u64,
@@ -238,6 +240,7 @@ pub struct Guild {
     pub my_roles: Vec<Id>,
     /// The current user has not passed the rules screening yet (`pending` on their member).
     pub my_pending: bool,
+    pub my_flags: u64,
     /// Their timeout's end in epoch milliseconds (`communication_disabled_until`).
     pub my_timeout_until: Option<i64>,
     /// 1 when moderation needs 2FA (`mfa_level` ELEVATED).
@@ -409,6 +412,8 @@ impl Guild {
             name: text(&properties["name"])?,
             icon: text(&properties["icon"]),
             owner_id: id(&properties["owner_id"]),
+            home_header: text(&properties["home_header"]),
+            rules_channel_id: id(&properties["rules_channel_id"]),
             default_message_notifications: properties["default_message_notifications"]
                 .as_u64()
                 .unwrap_or(0),
@@ -432,6 +437,7 @@ impl Guild {
             role_info: RoleInfo::list(&value["roles"]),
             my_roles: Vec::new(),
             my_pending: false,
+            my_flags: 0,
             my_timeout_until: None,
             mfa_level: properties["mfa_level"].as_u64().unwrap_or(0),
             vanity_url_code: text(&properties["vanity_url_code"]),
@@ -467,6 +473,12 @@ impl Guild {
         }
         self.icon = text(&value["icon"]);
         self.owner_id = id(&value["owner_id"]).or(self.owner_id);
+        if value.get("home_header").is_some() {
+            self.home_header = text(&value["home_header"]);
+        }
+        if value.get("rules_channel_id").is_some() {
+            self.rules_channel_id = id(&value["rules_channel_id"]);
+        }
         self.mfa_level = value["mfa_level"].as_u64().unwrap_or(self.mfa_level);
         self.default_message_notifications = value["default_message_notifications"]
             .as_u64()
@@ -503,6 +515,12 @@ impl Guild {
 
     /// The current user's member object: roles, screening and timeout.
     pub fn set_my_member(&mut self, member: &Value) {
+        if let Some(flags) = member["flags"].as_u64() {
+            self.my_flags = flags;
+        }
+        if let Some(joined) = member["joined_at"].as_str() {
+            self.joined_at = joined.to_owned();
+        }
         self.my_roles = member["roles"]
             .as_array()
             .into_iter()
@@ -1131,6 +1149,11 @@ impl Stores {
             }
             "PRESENCE_UPDATE" => self.set_presence(data),
             "GUILD_MEMBERS_CHUNK" => {
+                for member in data["members"].as_array().into_iter().flatten() {
+                    if let Some(user) = User::from_value(&member["user"]) {
+                        self.users.insert(user.id, user);
+                    }
+                }
                 for presence in data["presences"].as_array().into_iter().flatten() {
                     self.set_presence(presence);
                 }
@@ -1885,6 +1908,23 @@ impl Stores {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn guide_metadata_and_member_flags_preserve_partial_updates() {
+        let mut guild = super::Guild::from_value(&serde_json::json!({
+            "id":"100", "name":"fixture", "channels":[], "home_header":"banner", "rules_channel_id":"200"
+        })).unwrap();
+        guild.set_my_member(&serde_json::json!({"flags":10,"joined_at":"2026-11-01T00:00:00Z"}));
+        guild.set_my_member(&serde_json::json!({"roles":[]}));
+        assert_eq!(guild.my_flags, 10);
+        assert_eq!(guild.joined_at, "2026-11-01T00:00:00Z");
+        guild.apply_update(&serde_json::json!({"name":"renamed"}));
+        assert_eq!(guild.home_header.as_deref(), Some("banner"));
+        assert_eq!(guild.rules_channel_id, Some(200));
+        guild.apply_update(&serde_json::json!({"home_header":null,"rules_channel_id":null}));
+        assert!(guild.home_header.is_none());
+        assert!(guild.rules_channel_id.is_none());
+    }
+
+    #[test]
     fn attachment_animation_flags_survive_message_parsing() {
         let attachment = super::Attachment::from_value(&serde_json::json!({
             "id":"1", "filename":"motion.webp", "url":"https://example.com/motion.webp",
@@ -1930,6 +1970,13 @@ mod tests {
         ]}));
         assert_eq!(stores.users[&200].username, "first");
         assert_eq!(stores.users[&201].username, "second");
+        stores.dispatch(
+            "GUILD_MEMBERS_CHUNK",
+            &json!({"guild_id":"100", "members":[
+                {"user":{"id":"202","username":"guide-author"}}
+            ]}),
+        );
+        assert_eq!(stores.users[&202].username, "guide-author");
         stores.dispatch("GUILD_MEMBER_LIST_UPDATE", &json!({"guild_id":"100", "ops":[
             {"op":"UPDATE", "index":0, "item":{"member":{"user":{"id":"200","username":"renamed"}}}}
         ]}));
@@ -2083,6 +2130,8 @@ mod tests {
             name: String::new(),
             icon: None,
             owner_id: None,
+            home_header: None,
+            rules_channel_id: None,
             joined_at: String::new(),
             default_message_notifications: 0,
             nsfw_level: 0,
@@ -2092,6 +2141,7 @@ mod tests {
             role_info: HashMap::new(),
             my_roles: Vec::new(),
             my_pending: false,
+            my_flags: 0,
             my_timeout_until: None,
             mfa_level: 0,
             vanity_url_code: None,

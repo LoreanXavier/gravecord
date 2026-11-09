@@ -1,0 +1,10 @@
+{
+  "guide-progress": { "class": "progressBarContainer_5nm40Y" },
+  "guild-guide-link": { "class": "link_TNyK-N", "tag": "DIV" },
+  "guide-header": { "class": "title_MG-lb3" },
+  "guide-banner": { "class": "headerArt_lqGeMc" },
+  "guide-icon": { "class": "headerIcon_lqGeMc" },
+  "guide-name": { "class": "headerName_lqGeMc", "tag": "DIV" },
+  "guide-welcome": { "class": "welcomeMessageContainer_V0jlC3" },
+  "guide-welcome-text": { "class": "body-md/medium_RAOoio", "tag": "DIV", "ancestor": "welcomeMessageContent_V0jlC3" }
+}

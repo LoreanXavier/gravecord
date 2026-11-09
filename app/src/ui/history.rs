@@ -12,6 +12,7 @@ pub(crate) struct Route {
     pub channel: Option<Id>,
     /// The Nitro page on Home (`/store`).
     pub nitro: bool,
+    pub guild_guide: bool,
 }
 
 #[derive(Default)]
@@ -47,6 +48,7 @@ impl Root {
             guild: self.guild,
             channel: self.channel,
             nitro: self.nitro_open,
+            guild_guide: self.guild_guide_open,
         }
     }
 
@@ -54,7 +56,8 @@ impl Root {
         self.history.replaying = true;
         match route.guild {
             Some(guild) if self.stores.guilds.iter().any(|known| known.id == guild) => {
-                self.select(guild, route.channel)
+                self.select(guild, route.channel);
+                self.guild_guide_open = route.guild_guide && self.has_guild_guide();
             }
             Some(_) => {}
             None => {
@@ -149,6 +152,7 @@ mod tests {
             guild: Some(1),
             channel: Some(2),
             nitro: false,
+            guild_guide: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());

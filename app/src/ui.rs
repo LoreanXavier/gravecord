@@ -73,6 +73,8 @@ mod logout;
 mod presence;
 pub use logout::RootEvent;
 mod forums;
+mod guild_guide;
+mod guild_navigation;
 mod inline_video;
 mod media_image;
 mod member_avatars;
@@ -246,6 +248,8 @@ pub struct Root {
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     hovered_media: Option<String>,
+    guild_guide_open: bool,
+    guild_guide_scroll: gpui::ScrollHandle,
     hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
@@ -502,6 +506,8 @@ impl Root {
             member_avatars: Default::default(),
             inline_videos: Default::default(),
             hovered_media: None,
+            guild_guide_open: false,
+            guild_guide_scroll: gpui::ScrollHandle::new(),
             hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
@@ -679,6 +685,7 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                self.sidebar_event_update(&name, &data);
                 if matches!(
                     name.as_str(),
                     "READY"
@@ -1160,9 +1167,11 @@ impl Root {
                 guild: Some(guild),
                 channel,
                 nitro: false,
+                guild_guide: false,
             },
         );
         self.nitro_open = false;
+        self.guild_guide_open = false;
         self.guild = Some(guild);
         self.channel = channel;
         self.member_view = None;
@@ -2925,16 +2934,21 @@ impl Root {
                     ),
             )
             .child(div().flex_none().h(px(12.)))
-            .child(plain_row("events", "Events"))
+            .children(self.guild_guide_rows(cx))
+            .when(self.sidebar_has_events(), |sidebar| {
+                sidebar.child(plain_row("events", "Events"))
+            })
             .children(self.member_safety_row(cx))
-            .child(
-                plain_row("boosts", "Server Boosts")
-                    .id("sidebar-boosts")
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_settings_section("Server Boost", cx);
-                    })),
-            )
+            .when(self.sidebar_has_boosts(), |sidebar| {
+                sidebar.child(
+                    plain_row("boosts", "Server Boosts")
+                        .id("sidebar-boosts")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_settings_section("Server Boost", cx);
+                        })),
+                )
+            })
             .child(
                 div()
                     .flex_none()
@@ -5220,6 +5234,8 @@ impl Render for Root {
         self.prepare_nameplate_animations(window, cx);
         self.prepare_member_avatars(window, cx);
         self.prepare_inline_videos(window, cx);
+        self.prepare_guild_guide();
+        self.prepare_sidebar_events();
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);
@@ -5672,6 +5688,8 @@ impl Render for Root {
                     self.member_safety_view(cx)
                 } else if self.voice_view_open() {
                     self.voice_view(window, cx)
+                } else if self.guild_guide_open && self.guild.is_some() {
+                    self.guild_guide_view(cx)
                 } else if self.current_channel().is_some_and(Channel::is_forum) {
                     self.forum_view(cx)
                 } else {

@@ -17,9 +17,11 @@ impl Root {
                 guild: None,
                 channel,
                 nitro: false,
+                guild_guide: false,
             },
         );
         self.nitro_open = false;
+        self.guild_guide_open = false;
         self.guild = None;
         self.channel = channel;
         self.unread_from = None;
