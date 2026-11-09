@@ -523,7 +523,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, style, laid, placeholder, selection, caret) = {
+        let (focus, style, laid, placeholder, selection, caret, multiline) = {
             let editor = self.editor.read(cx);
             (
                 editor.focus.clone(),
@@ -532,6 +532,7 @@ impl Element for EditorElement {
                 editor.buffer.is_empty().then(|| editor.placeholder.clone()),
                 editor.buffer.selection(),
                 editor.buffer.caret(),
+                editor.enter_inserts_newline,
             )
         };
         window.handle_input(
@@ -573,17 +574,39 @@ impl Element for EditorElement {
                 style.placeholder,
                 false,
             )];
-            let shaped = window
-                .text_system()
-                .shape_line(placeholder, px(style.size), &runs, None);
-            let _ = shaped.paint(
-                bounds.origin,
-                px(style.line_height),
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
+            // A text area's hint wraps inside the box as typed text would; a one-line field's runs on.
+            if multiline {
+                if let Ok(mut lines) = window.text_system().shape_text(
+                    placeholder,
+                    px(style.size),
+                    &runs,
+                    Some(bounds.size.width),
+                    None,
+                ) && let Some(line) = lines.pop()
+                {
+                    let _ = line.paint(
+                        bounds.origin,
+                        px(style.line_height),
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+            } else {
+                let shaped =
+                    window
+                        .text_system()
+                        .shape_line(placeholder, px(style.size), &runs, None);
+                let _ = shaped.paint(
+                    bounds.origin,
+                    px(style.line_height),
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
         }
         let tops = laid.paragraph_tops();
         for (index, (line, _)) in laid.lines.iter().enumerate() {

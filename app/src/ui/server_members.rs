@@ -29,6 +29,11 @@ const SORTS: [(&str, u64); 4] = [
     ("Joined Discord (Oldest first)", 4),
 ];
 
+pub(crate) struct MemberView {
+    pub(super) guild: Id,
+    pub(super) state: MembersState,
+}
+
 pub(crate) struct MembersState {
     pub(super) search: Entity<Editor>,
     /// The body last asked for, so a late retry or reply for an older one is ignored.
@@ -51,7 +56,7 @@ struct Prune {
 }
 
 /// Relative times as the table's cells read: "12 hrs ago", "3 years ago", with moment's rounding thresholds.
-fn from_now(seconds: i64) -> String {
+pub(super) fn from_now(seconds: i64) -> String {
     let seconds = seconds.max(0) as f64;
     let round = |unit: f64| (seconds / unit).round() as i64;
     let (minutes, hours, days) = (round(60.), round(3600.), round(86400.));
@@ -94,39 +99,86 @@ fn search_body(query: &str, sort: u64) -> Value {
 }
 
 impl Root {
-    pub(super) fn request_members_page(&mut self, guild: Id, cx: &mut Context<Self>) {
-        let Some(open) = self.server_settings.as_mut() else {
-            return;
-        };
-        if open.members.is_none() {
-            let search = cx.new(|cx| {
-                let mut editor = Editor::new(super::editor_style(), cx);
-                editor.set_placeholder("Search by username or id".to_owned());
-                editor
-            });
-            let events = cx.subscribe(&search, move |this, editor, event: &EditorEvent, cx| {
-                match event {
-                    EditorEvent::Edited => {
-                        let query = editor.read(cx).text().to_owned();
-                        this.search_members(guild, &query);
-                    }
-                    EditorEvent::Cancel => this.server_settings = None,
-                    EditorEvent::Submit(text) => {
-                        let text = text.clone();
-                        editor.update(cx, |editor, _| editor.set_text(&text));
+    /// The members table's state: the search box and the order, shared by the settings page and the Members view.
+    fn new_members_state(guild: Id, cx: &mut Context<Self>) -> MembersState {
+        let search = cx.new(|cx| {
+            let mut editor = Editor::new(super::editor_style(), cx);
+            editor.set_placeholder("Search by username or id".to_owned());
+            editor
+        });
+        let events = cx.subscribe(&search, move |this, editor, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Edited => {
+                    let query = editor.read(cx).text().to_owned();
+                    this.search_members(guild, &query);
+                }
+                EditorEvent::Cancel => {
+                    if this.server_settings.is_some() {
+                        this.server_settings = None;
                     }
                 }
-                cx.notify();
-            });
-            open.members = Some(MembersState {
-                search,
-                last_body: Value::Null,
-                features: None,
-                sort: 1,
-                sort_open: false,
-                prune: None,
-                _events: events,
-            });
+                EditorEvent::Submit(text) => {
+                    let text = text.clone();
+                    editor.update(cx, |editor, _| editor.set_text(&text));
+                }
+            }
+            cx.notify();
+        });
+        MembersState {
+            search,
+            last_body: Value::Null,
+            features: None,
+            sort: 1,
+            sort_open: false,
+            prune: None,
+            _events: events,
+        }
+    }
+
+    /// The table being driven now: the settings page's while it is open, else the Members view's.
+    pub(super) fn members_state(&self) -> Option<&MembersState> {
+        match self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.members.as_ref())
+        {
+            Some(state) => Some(state),
+            None => self.member_view.as_ref().map(|view| &view.state),
+        }
+    }
+
+    fn members_state_mut(&mut self) -> Option<&mut MembersState> {
+        if self
+            .server_settings
+            .as_ref()
+            .is_some_and(|open| open.members.is_some())
+        {
+            return self
+                .server_settings
+                .as_mut()
+                .and_then(|open| open.members.as_mut());
+        }
+        self.member_view.as_mut().map(|view| &mut view.state)
+    }
+
+    /// The server whose table that is.
+    fn members_guild(&self) -> Option<Id> {
+        match self.server_settings.as_ref() {
+            Some(open) if open.members.is_some() => Some(open.guild),
+            _ => self.member_view.as_ref().map(|view| view.guild),
+        }
+    }
+
+    pub(super) fn request_members_page(&mut self, guild: Id, cx: &mut Context<Self>) {
+        if self
+            .server_settings
+            .as_ref()
+            .is_some_and(|open| open.members.is_none())
+        {
+            let state = Self::new_members_state(guild, cx);
+            if let Some(open) = self.server_settings.as_mut() {
+                open.members = Some(state);
+            }
         }
         self.search_members(guild, "");
         let _ = self.requests.send(Request::Fetch {
@@ -135,18 +187,18 @@ impl Root {
         });
     }
 
+    /// The channel list's Members row: the server's Members view replaces the chat.
+    pub(super) fn open_member_view(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let state = Self::new_members_state(guild, cx);
+        self.member_view = Some(MemberView { guild, state });
+        self.search_members(guild, "");
+        cx.notify();
+    }
+
     fn search_members(&mut self, guild: Id, query: &str) {
-        let sort = self
-            .server_settings
-            .as_ref()
-            .and_then(|open| open.members.as_ref())
-            .map_or(1, |state| state.sort);
+        let sort = self.members_state().map_or(1, |state| state.sort);
         let body = search_body(query, sort);
-        if let Some(state) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.members.as_mut())
-        {
+        if let Some(state) = self.members_state_mut() {
             state.last_body = body.clone();
         }
         let _ = self.requests.send(Request::Rest {
@@ -167,9 +219,7 @@ impl Root {
                 .get(key)
                 .and_then(|body| body["pruned"].as_u64());
             if let Some(prune) = self
-                .server_settings
-                .as_mut()
-                .and_then(|open| open.members.as_mut())
+                .members_state_mut()
                 .and_then(|state| state.prune.as_mut())
             {
                 prune.count = count;
@@ -187,10 +237,7 @@ impl Root {
                 .filter_map(|feature| feature.as_str().map(str::to_owned))
                 .collect();
             if guild.parse::<Id>().is_ok()
-                && let Some(state) = self
-                    .server_settings
-                    .as_mut()
-                    .and_then(|open| open.members.as_mut())
+                && let Some(state) = self.members_state_mut()
             {
                 state.features = Some(features);
             }
@@ -204,11 +251,7 @@ impl Root {
         // Still indexing: ask again after the wait the server names.
         if report["status"] == 202 {
             let wait = report["body"]["retry_after"].as_f64().unwrap_or(5.);
-            let body = self
-                .server_settings
-                .as_ref()
-                .and_then(|open| open.members.as_ref())
-                .map(|state| state.last_body.clone());
+            let body = self.members_state().map(|state| state.last_body.clone());
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs_f64(wait))
@@ -243,11 +286,7 @@ impl Root {
 
     /// `tx`: the feature is added or dropped and saved straight away.
     fn toggle_moderation_list(&mut self, guild: Id, cx: &mut Context<Self>) {
-        let Some(state) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.members.as_mut())
-        else {
+        let Some(state) = self.members_state_mut() else {
             return;
         };
         let Some(features) = state.features.as_mut() else {
@@ -273,11 +312,7 @@ impl Root {
 
     /// The page, 1000 wide inside its horizontal scroller (`settingsHorizontalScroll`).
     pub(super) fn server_members_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
-        let Some(state) = self
-            .server_settings
-            .as_ref()
-            .and_then(|open| open.members.as_ref())
-        else {
+        let Some(state) = self.members_state() else {
             return div().into_any_element();
         };
         let report = self.fetched.get(&format!("{MEMBERS_PREFIX}{guild}"));
@@ -503,53 +538,8 @@ impl Root {
                                             .child(icon("picker_search", 14., "--input-text-default"))
                                             .child(div().flex_1().min_w(px(0.)).child(state.search.clone())),
                                     )
-                                    .child(
-                                        div()
-                                            .id("server-members-sort")
-                                            .relative()
-                                            .child(self.anchor_probe("server-members-sort"))
-                                            .h(px(32.))
-                                            .px(px(11.))
-                                            .rounded(px(8.))
-                                            .border_1()
-                                            .border_color(color("--control-secondary-border-default"))
-                                            .bg(color("--control-secondary-background-default"))
-                                            .cursor_pointer()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--control-secondary-text-default"))
-                                            .child(icon("members_sort", 16., "--control-secondary-text-default"))
-                                            .child("Sort")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                if let Some(state) = this.server_settings.as_mut().and_then(|open| open.members.as_mut()) {
-                                                    state.sort_open = !state.sort_open;
-                                                }
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("server-members-prune")
-                                            .h(px(32.))
-                                            .px(px(11.))
-                                            .rounded(px(8.))
-                                            .border_1()
-                                            .border_color(color("--control-critical-secondary-border-default"))
-                                            .bg(color("--control-critical-secondary-background-default"))
-                                            .cursor_pointer()
-                                            .flex()
-                                            .items_center()
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--control-critical-secondary-text-default"))
-                                            .child("Prune")
-                                            .on_click(cx.listener(move |this, _, _, cx| this.open_prune(guild, cx))),
-                                    ),
+                                    .child(self.members_sort_button(cx))
+                                    .child(self.members_prune_button(guild, cx)),
                             )
                             .child(
                                 div()
@@ -609,13 +599,65 @@ impl Root {
 }
 
 impl Root {
+    /// The Sort button: it opens the menu of `members_sort_layer` under it.
+    pub(super) fn members_sort_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("server-members-sort")
+            .relative()
+            .child(self.anchor_probe("server-members-sort"))
+            .h(px(32.))
+            .px(px(11.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--control-secondary-border-default"))
+            .bg(color("--control-secondary-background-default"))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--control-secondary-text-default"))
+            .child(icon(
+                "members_sort",
+                16.,
+                "--control-secondary-text-default",
+            ))
+            .child("Sort")
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(state) = this.members_state_mut() {
+                    state.sort_open = !state.sort_open;
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The Prune button.
+    pub(super) fn members_prune_button(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("server-members-prune")
+            .h(px(32.))
+            .px(px(11.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--control-critical-secondary-border-default"))
+            .bg(color("--control-critical-secondary-background-default"))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--control-critical-secondary-text-default"))
+            .child("Prune")
+            .on_click(cx.listener(move |this, _, _, cx| this.open_prune(guild, cx)))
+            .into_any_element()
+    }
+
     fn request_prune_count(&mut self, guild: Id) {
-        let Some(prune) = self
-            .server_settings
-            .as_ref()
-            .and_then(|open| open.members.as_ref())
-            .and_then(|state| state.prune.as_ref())
-        else {
+        let Some(prune) = self.members_state().and_then(|state| state.prune.as_ref()) else {
             return;
         };
         let mut route = format!("/guilds/{guild}/prune?days={}", prune.days);
@@ -629,11 +671,7 @@ impl Root {
     }
 
     fn open_prune(&mut self, guild: Id, cx: &mut Context<Self>) {
-        if let Some(state) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.members.as_mut())
-        {
+        if let Some(state) = self.members_state_mut() {
             state.prune = Some(Prune {
                 days: 7,
                 roles: Vec::new(),
@@ -647,12 +685,11 @@ impl Root {
 
     /// The Sort menu under its button.
     pub(super) fn members_sort_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let open = self.server_settings.as_ref()?;
-        let state = open.members.as_ref()?;
+        let state = self.members_state()?;
         if !state.sort_open {
             return None;
         }
-        let guild = open.guild;
+        let guild = self.members_guild()?;
         let anchor = self
             .tip_anchors
             .borrow()
@@ -680,11 +717,7 @@ impl Root {
                 .child(super::create_channel::radio(current == value).size(px(16.)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let mut query = String::new();
-                    if let Some(state) = this
-                        .server_settings
-                        .as_mut()
-                        .and_then(|open| open.members.as_mut())
-                    {
+                    if let Some(state) = this.members_state_mut() {
                         state.sort = value;
                         state.sort_open = false;
                         query = state.search.read(cx).text().to_owned();
@@ -708,11 +741,7 @@ impl Root {
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-high"))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(state) = this
-                            .server_settings
-                            .as_mut()
-                            .and_then(|open| open.members.as_mut())
-                        {
+                        if let Some(state) = this.members_state_mut() {
                             state.sort_open = false;
                         }
                         cx.notify();
@@ -726,9 +755,8 @@ impl Root {
 
     /// "Prune Members\u{2014}{server}" (module 749872): Last Seen, roles to include, the count, Cancel and Prune.
     pub(super) fn members_prune_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let open = self.server_settings.as_ref()?;
-        let prune = open.members.as_ref()?.prune.as_ref()?;
-        let guild = open.guild;
+        let prune = self.members_state()?.prune.as_ref()?;
+        let guild = self.members_guild()?;
         let known = self.stores.guilds.iter().find(|known| known.id == guild)?;
         let days = prune.days;
         let radio_row =
@@ -750,9 +778,7 @@ impl Root {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(prune) = this
-                            .server_settings
-                            .as_mut()
-                            .and_then(|open| open.members.as_mut())
+                            .members_state_mut()
                             .and_then(|state| state.prune.as_mut())
                         {
                             prune.days = value;
@@ -834,9 +860,7 @@ impl Root {
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(prune) = this
-                                .server_settings
-                                .as_mut()
-                                .and_then(|open| open.members.as_mut())
+                                .members_state_mut()
                                 .and_then(|state| state.prune.as_mut())
                             {
                                 if let Some(at) = prune.roles.iter().position(|known| *known == id)
@@ -903,9 +927,7 @@ impl Root {
                     )))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(prune) = this
-                            .server_settings
-                            .as_mut()
-                            .and_then(|open| open.members.as_mut())
+                            .members_state_mut()
                             .and_then(|state| state.prune.as_mut())
                         {
                             prune.roles_open = !prune.roles_open;
@@ -944,11 +966,7 @@ impl Root {
             )
             .into_any_element();
         let close = |this: &mut Root| {
-            if let Some(state) = this
-                .server_settings
-                .as_mut()
-                .and_then(|open| open.members.as_mut())
-            {
+            if let Some(state) = this.members_state_mut() {
                 state.prune = None;
             }
         };
@@ -971,11 +989,8 @@ impl Root {
                         "Prune",
                         super::modal::Tone::Primary,
                         move |this, _, _| {
-                            let Some(prune) = this
-                                .server_settings
-                                .as_ref()
-                                .and_then(|open| open.members.as_ref())
-                                .and_then(|state| state.prune.as_ref())
+                            let Some(prune) =
+                                this.members_state().and_then(|state| state.prune.as_ref())
                             else {
                                 return;
                             };

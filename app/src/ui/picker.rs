@@ -60,6 +60,8 @@ pub(crate) enum Target {
     StickerEmoji,
     /// Onboarding's answer or task dialog.
     OnboardingEmoji,
+    /// Server Web Page's reason to join, by position.
+    ReasonEmoji(u8),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -422,7 +424,8 @@ impl Root {
                     | Target::Trait(_)
                     | Target::SoundEmoji
                     | Target::StickerEmoji
-                    | Target::OnboardingEmoji => "Find the perfect emoji",
+                    | Target::OnboardingEmoji
+                    | Target::ReasonEmoji(_) => "Find the perfect emoji",
                     Target::Reaction { .. } => "Find the perfect reaction",
                 }
                 .to_owned(),
@@ -667,6 +670,13 @@ impl Root {
                         *animated,
                         cx,
                     ),
+                }
+            }
+            Target::ReasonEmoji(index) => {
+                self.emoji_used.push((usage_key, now_ms()));
+                // The listing keeps a reason's emoji by its characters; a custom emoji cannot be one.
+                if let Item::Unicode(_) = &item {
+                    self.landing_set_reason_emoji(usize::from(index), Some(reaction.clone()), cx);
                 }
             }
             Target::StickerEmoji => {
@@ -983,7 +993,11 @@ impl Root {
         let reaction = matches!(picker.target, Target::Reaction { .. });
         let trait_target = matches!(
             picker.target,
-            Target::Trait(_) | Target::SoundEmoji | Target::StickerEmoji | Target::OnboardingEmoji
+            Target::Trait(_)
+                | Target::SoundEmoji
+                | Target::StickerEmoji
+                | Target::OnboardingEmoji
+                | Target::ReasonEmoji(_)
         );
         // Neither the reaction picker nor a trait's has the tab bar (`design/dom/popouts/trait-emoji-darker-cozy.json`).
         let tabless = reaction || trait_target;

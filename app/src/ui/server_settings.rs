@@ -71,6 +71,8 @@ pub(super) enum Page {
     Community,
     Onboarding,
     Insights,
+    Welcome,
+    Landing,
     Template,
 }
 
@@ -135,6 +137,8 @@ const COMMUNITY_ITEMS: &[(Page, &str)] = &[
     (Page::Community, "Community Overview"),
     (Page::Onboarding, "Onboarding"),
     (Page::Insights, "Server Insights"),
+    (Page::Welcome, "Welcome Screen"),
+    (Page::Landing, "Server Web Page"),
 ];
 
 /// A trait's emoji as the API stores it (`emoji_id`, `emoji_name`, `emoji_animated`); a unicode emoji goes by its
@@ -278,11 +282,15 @@ pub(crate) struct ServerSettings {
     pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
+    pub(super) discovery: super::server_discovery::Discovery,
     pub(super) automod: Option<super::server_automod::AutoModState>,
     pub(super) onboarding: Option<super::server_onboarding::OnboardingState>,
     pub(super) audit: super::server_audit::AuditState,
     pub(super) safety: super::server_safety::SafetyState,
     pub(super) insights: super::server_insights::InsightsState,
+    pub(super) welcome: super::server_welcome::WelcomeState,
+    pub(super) landing: super::server_landing::LandingState,
+    pub(super) scroll: gpui::ScrollHandle,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -437,11 +445,15 @@ impl Root {
             sound_dialog: None,
             sticker_dialog: None,
             access: None,
+            discovery: Default::default(),
             automod: None,
             onboarding: None,
             audit: Default::default(),
             safety: Default::default(),
             insights: Default::default(),
+            welcome: Default::default(),
+            landing: Default::default(),
+            scroll: Default::default(),
             community: None,
             overview: None,
             boost: Default::default(),
@@ -457,6 +469,14 @@ impl Root {
             route: format!("/guilds/{guild}/profile"),
         });
         self.request_profile_games(guild);
+        if self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"))
+        {
+            self.request_welcome(guild);
+            self.request_discovery(guild);
+        }
         cx.notify();
     }
 
@@ -1018,6 +1038,8 @@ impl Root {
             Page::BoostPerks => self.boost_dirty(),
             Page::Tag => self.tag_dirty(),
             Page::Onboarding => self.onboarding_dirty(),
+            Page::Welcome => self.welcome_dirty(),
+            Page::Landing => self.landing_dirty(),
             _ => false,
         };
         let mut nav = div()
@@ -1081,6 +1103,12 @@ impl Root {
                         if target == Page::Onboarding && !self.onboarding_allowed(open.guild) {
                             continue;
                         }
+                        if target == Page::Welcome && !self.welcome_listed(open.guild) {
+                            continue;
+                        }
+                        if target == Page::Landing && !self.landing_listed(open.guild) {
+                            continue;
+                        }
                         // `decoration`.
                         let decoration = if target == Page::Onboarding {
                             self.onboarding_decoration(open.guild)
@@ -1090,6 +1118,7 @@ impl Root {
                         // `po`: Members leaves settings on a Community server, for a page not built yet.
                         let external = target == Page::AppDirectory;
                         let launch = external || (community && target == Page::Members);
+                        let to_view = community && target == Page::Members;
                         nav = nav.child(
                             div()
                                 .id(SharedString::from(format!("server-settings-{label}")))
@@ -1119,6 +1148,10 @@ impl Root {
                                 .when(launch, |this| {
                                     this.child(icon("open_external", 16., "--icon-subtle"))
                                 })
+                                .children(
+                                    (target == Page::Landing)
+                                        .then(super::server_landing::beta_badge),
+                                )
                                 .children(decoration.map(|decoration| {
                                     div()
                                         .font_weight(FontWeight(400.))
@@ -1134,6 +1167,17 @@ impl Root {
                                                 .as_ref()
                                                 .map_or(0, |open| open.guild)
                                         ));
+                                        return;
+                                    }
+                                    // `po`: Members leaves settings for the server's own Members view.
+                                    if to_view {
+                                        if let Some(guild) =
+                                            this.server_settings.as_ref().map(|open| open.guild)
+                                        {
+                                            this.server_settings = None;
+                                            this.guild = Some(guild);
+                                            this.open_member_view(guild, cx);
+                                        }
                                         return;
                                     }
                                     if this
@@ -1222,16 +1266,21 @@ impl Root {
             }
             Page::Onboarding => self.server_onboarding_page(open.guild, cx),
             Page::Insights => self.server_insights_page(open.guild, cx),
+            Page::Welcome => self.server_welcome_page(open.guild, cx),
+            Page::Landing => self.server_landing_page(open.guild, cx),
             Page::Template => self.server_template_page(open.guild, cx),
         };
         // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
         let close_left = match page {
             Page::Profile => 835.,
-            Page::Members => 837.,
+            Page::Members | Page::Landing => 837.,
             _ => 740.,
         };
         // Custom pages (Invites) put ESC 32px higher: their scroller starts at the window's top.
-        let close_top = if matches!(page, Page::Invites | Page::Members | Page::AuditLog) {
+        let close_top = if matches!(
+            page,
+            Page::Invites | Page::Members | Page::AuditLog | Page::Landing
+        ) {
             0.
         } else {
             32.
@@ -1286,6 +1335,25 @@ impl Root {
                     .text_color(color("--icon-subtle"))
                     .child("ESC"),
             );
+        let access_bar = match page {
+            Page::Access => self.access_bar(open.guild, cx),
+            Page::Welcome => Some(super::server_access::AccessBar {
+                message: self.welcome_bar_message().to_owned(),
+                save: Some(("Try Again", false)),
+            }),
+            Page::Landing => {
+                self.landing_bar_message()
+                    .map(|message| super::server_access::AccessBar {
+                        message,
+                        save: Some(("Save Changes", false)),
+                    })
+            }
+            _ => None,
+        };
+        let save_disabled = access_bar
+            .as_ref()
+            .and_then(|bar| bar.save)
+            .is_some_and(|(_, disabled)| disabled);
         let notice = dirty.then(|| {
             div()
                 .absolute()
@@ -1313,7 +1381,10 @@ impl Root {
                                 .font_weight(FontWeight(500.))
                                 .text_color(gpui::white())
                                 .child(self.access_error_text().unwrap_or_else(|| {
-                                    "Careful \u{2014} you have unsaved changes!".to_owned()
+                                    access_bar.as_ref().map_or_else(
+                                        || "Careful \u{2014} you have unsaved changes!".to_owned(),
+                                        |bar| bar.message.clone(),
+                                    )
                                 })),
                         )
                         .child(
@@ -1348,6 +1419,10 @@ impl Root {
                                         Some((Page::BoostPerks, _)) => this.reset_boost(cx),
                                         Some((Page::Tag, _)) => this.reset_tag(cx),
                                         Some((Page::Onboarding, _)) => this.reset_onboarding(cx),
+                                        Some((Page::Welcome, guild)) => {
+                                            this.reset_welcome(guild, cx)
+                                        }
+                                        Some((Page::Landing, guild)) => this.reset_landing(guild),
                                         _ => this.reset_server_settings(cx),
                                     }
                                 })),
@@ -1368,12 +1443,29 @@ impl Root {
                                 .text_size(px(14.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(gpui::white())
-                                .child(if page == Page::Onboarding {
-                                    "Save"
-                                } else {
-                                    "Save Changes"
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .when(
+                                    access_bar.as_ref().is_some_and(|bar| bar.save.is_none()),
+                                    |this| this.hidden(),
+                                )
+                                .when(
+                                    access_bar
+                                        .as_ref()
+                                        .and_then(|bar| bar.save)
+                                        .is_some_and(|(_, disabled)| disabled),
+                                    |this| this.opacity(0.5),
+                                )
+                                .child(access_bar.as_ref().and_then(|bar| bar.save).map_or(
+                                    if page == Page::Onboarding {
+                                        "Save"
+                                    } else {
+                                        "Save Changes"
+                                    },
+                                    |(label, _)| label,
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if save_disabled {
+                                        return;
+                                    }
                                     match this
                                         .server_settings
                                         .as_ref()
@@ -1398,6 +1490,10 @@ impl Root {
                                         }
                                         Some((Page::Tag, guild)) => this.save_tag(guild, cx),
                                         Some((Page::Onboarding, _)) => this.save_onboarding(cx),
+                                        Some((Page::Welcome, guild)) => {
+                                            this.retry_welcome(guild, cx)
+                                        }
+                                        Some((Page::Landing, guild)) => this.save_landing(guild),
                                         _ => this.save_server_settings(cx),
                                     }
                                 })),
@@ -1431,6 +1527,7 @@ impl Root {
                 .mt(px(32.))
                 .h_full()
                 .overflow_y_scroll()
+                .track_scroll(&open.scroll)
                 .flex()
                 // Stretched, the page would be exactly as tall as the scroller and never scroll.
                 .items_start()
@@ -1438,11 +1535,11 @@ impl Root {
                     div()
                         .pt(px(60.))
                         .px(px(40.))
-                        .pb(px(100.))
+                        .pb(px(if page == Page::Landing { 128. } else { 100. }))
                         .flex()
                         .gap(px(40.))
                         // `contentColumn_jnk11m`: 660 inside its padding, except beside the card.
-                        .child(if page == Page::Profile {
+                        .child(if matches!(page, Page::Profile | Page::Landing) {
                             content
                         } else {
                             div()
@@ -1457,6 +1554,16 @@ impl Root {
                         }),
                 )
                 .into_any_element()
+        };
+        let body = if page == Page::Landing {
+            div()
+                .relative()
+                .h_full()
+                .child(body)
+                .children(self.landing_checklist(open.guild, cx))
+                .into_any_element()
+        } else {
+            body
         };
         Some(
             deferred(

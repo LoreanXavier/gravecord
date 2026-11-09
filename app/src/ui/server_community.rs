@@ -1492,7 +1492,7 @@ fn overview_body(saved: &OverviewValues, now: &OverviewValues, features: &[Strin
 }
 
 /// `c5`: the language's own name, and plain English for `en-US`.
-fn locale_name(value: &str) -> String {
+pub(super) fn locale_name(value: &str) -> String {
     if value == "en-US" {
         return "English".to_owned();
     }

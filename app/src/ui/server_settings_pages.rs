@@ -194,6 +194,8 @@ impl Root {
                 }
             }
             Page::Insights => self.request_insights(guild),
+            Page::Welcome => self.request_welcome(guild),
+            Page::Landing => self.request_landing(guild),
             Page::BoostPerks => self.request_boost(guild),
             Page::Tag => self.request_tag(guild),
             Page::Community => self.request_community(guild),

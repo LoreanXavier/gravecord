@@ -297,6 +297,17 @@ pub async fn run(
                 let outcome = root.update(cx, |root, cx| root.activity_launch_named(&name, cx));
                 let _ = writeln!(output, "activity launch: {outcome}");
             }
+            // The fixture server cannot pass Discovery's requirements: this shows the listing form as if it did.
+            ["discovery", "eligible"] => {
+                crate::ui::FORCE_ELIGIBLE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            // The fixture is neither discoverable nor published: this shows the Server Web Page in either state.
+            ["landing", state] => {
+                crate::ui::FORCE_LANDING.store(
+                    if *state == "published" { 2 } else { 1 },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

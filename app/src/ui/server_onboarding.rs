@@ -588,7 +588,7 @@ fn is_chattable(guild: &Guild, channel: &Channel) -> bool {
 }
 
 /// Module 148719.
-fn is_private(guild: &Guild, channel: &Channel) -> bool {
+pub(super) fn is_private(guild: &Guild, channel: &Channel) -> bool {
     if is_vocal(channel) && !everyone_can(guild, channel, CONNECT) {
         return true;
     }
@@ -3198,7 +3198,7 @@ impl Root {
     }
 
     /// A picked file is shown before it is sent, so its bytes join the image store under the data URI.
-    fn onboarding_keep_picture(&mut self, uri: &str) {
+    pub(super) fn onboarding_keep_picture(&mut self, uri: &str) {
         use base64::Engine;
         let Some((head, data)) = uri.split_once(";base64,") else {
             return;
@@ -3418,7 +3418,7 @@ fn checkbox(checked: bool, disabled: bool) -> gpui::Div {
 }
 
 /// `mh.gm`.
-fn channel_glyph(guild: &Guild, channel: &Channel, rules: Option<Id>) -> &'static str {
+pub(super) fn channel_glyph(guild: &Guild, channel: &Channel, rules: Option<Id>) -> &'static str {
     if Some(channel.id) == rules {
         return "ob_rules";
     }

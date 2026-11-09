@@ -84,10 +84,19 @@ mod server_audit;
 mod server_automod;
 mod server_boost;
 mod server_community;
+mod server_discovery;
+#[cfg(feature = "capture")]
+pub(crate) use server_discovery::FORCE_ELIGIBLE;
+mod server_discovery_form;
 mod server_emoji;
 mod server_engagement;
 mod server_games;
 mod server_insights;
+mod server_landing;
+mod server_welcome;
+#[cfg(feature = "capture")]
+pub(crate) use server_landing::FORCE_LANDING;
+mod member_safety;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -216,6 +225,8 @@ pub struct Root {
     last_menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
     show_members: bool,
+    /// The server's Members view (`/member-safety`) in place of the chat.
+    member_view: Option<server_members::MemberView>,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
     friends_tab: friends::FriendsTab,
@@ -390,6 +401,7 @@ impl Root {
             last_menu: None,
             confirm_delete: None,
             show_members: false,
+            member_view: None,
             show_dm_profile: true,
             friends_tab: friends::FriendsTab::default(),
             skin_tone: picker::stored_tone(),
@@ -654,6 +666,16 @@ impl Root {
                     self.safety_fetched(&key, cx);
                     return;
                 }
+                if key.starts_with(server_discovery::DISCOVERY_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.discovery_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_welcome::WELCOME_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.welcome_fetched(&key, cx);
+                    return;
+                }
                 if key.starts_with(server_insights::INSIGHTS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.insights_fetched(&key, cx);
@@ -910,6 +932,7 @@ impl Root {
         );
         self.guild = Some(guild);
         self.channel = channel;
+        self.member_view = None;
         self.unread_from = None;
         if let Some(channel) = channel {
             self.remember_channel(channel);
@@ -1577,6 +1600,11 @@ impl Root {
                 .map(|switcher| switcher.search.clone()),
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
+        list.extend(
+            self.member_view
+                .as_ref()
+                .map(|view| view.state.search.clone()),
+        );
         if let Some(settings) = self.server_settings.as_ref() {
             list.push(settings.name.clone());
             list.push(settings.description.clone());
@@ -1601,6 +1629,9 @@ impl Root {
             if let Some(access) = settings.access.as_ref() {
                 list.extend(access.editors());
             }
+            list.extend(settings.discovery.description.clone());
+            list.extend(settings.discovery.tag_input.clone());
+            list.extend(settings.landing.editors());
             if let Some(automod) = settings.automod.as_ref() {
                 list.extend(automod.editors());
             }
@@ -2001,7 +2032,7 @@ impl Root {
                 )
                 .into_any_element();
         }
-        let selected = self.channel == Some(channel.id);
+        let selected = self.channel == Some(channel.id) && self.member_view.is_none();
         // The voice channel this client is in reads like a selected one, with a green speaker and a status line.
         let in_call = channel.kind == ChannelKind::Voice
             && self
@@ -2332,6 +2363,37 @@ impl Root {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_guild_menu(cx)),
                                     )
+                                    // A Community server's name follows its badge (`flowerStar` with the house in it).
+                                    .when(
+                                        guild.is_some_and(|guild| {
+                                            guild
+                                                .features
+                                                .iter()
+                                                .any(|feature| feature == "COMMUNITY")
+                                        }),
+                                        |this| {
+                                            this.child(
+                                                div()
+                                                    .relative()
+                                                    .ml(px(1.))
+                                                    .mr(px(9.))
+                                                    .size(px(18.))
+                                                    .flex_none()
+                                                    .child(icon("community_star", 18., "--white"))
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .top(px(3.5))
+                                                            .left(px(3.5))
+                                                            .child(icon(
+                                                                "community_house",
+                                                                11.,
+                                                                "--primary-500",
+                                                            )),
+                                                    ),
+                                            )
+                                        },
+                                    )
                                     .child(
                                         div()
                                             .text_size(px(16.))
@@ -2373,6 +2435,7 @@ impl Root {
             )
             .child(div().flex_none().h(px(12.)))
             .child(plain_row("events", "Events"))
+            .children(self.member_safety_row(cx))
             .child(plain_row("boosts", "Server Boosts"))
             .child(
                 div()
@@ -4639,6 +4702,10 @@ impl Render for Root {
             .children(self.boost_perks_modal(cx))
             .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
+            .children(self.discovery_select_layer(cx))
+            .children(self.discovery_agreement_modal(cx))
+            .children(self.welcome_layers(cx))
+            .children(self.landing_platform_layer(cx))
             .children(
                 self.server_settings
                     .as_ref()
@@ -4665,6 +4732,12 @@ impl Render for Root {
                 };
                 let content = if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(cx).into_any_element()
+                } else if self
+                    .member_view
+                    .as_ref()
+                    .is_some_and(|view| Some(view.guild) == self.guild)
+                {
+                    self.member_safety_view(cx)
                 } else if self.voice_view_open() {
                     self.voice_view(window, cx)
                 } else {

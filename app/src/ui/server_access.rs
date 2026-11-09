@@ -231,15 +231,43 @@ impl AccessState {
     }
 }
 
+/// What the unsaved-changes bar says on the Access page, and what its save button reads (`tv.A`'s props in `Is`/`Il`).
+pub(super) struct AccessBar {
+    pub message: String,
+    /// The save button's label and whether it is disabled; none when the bar can only be reset.
+    pub save: Option<(&'static str, bool)>,
+}
+
 impl Root {
+    /// The bar's words for Discoverable, which differ from the default ones.
+    pub(super) fn access_bar(&self, guild: Id, cx: &Context<Self>) -> Option<AccessBar> {
+        let state = self.server_settings.as_ref()?.access.as_ref()?;
+        if state.join != JoinType::Discoverable {
+            return None;
+        }
+        match self.discovery_view(guild)? {
+            super::server_discovery::View::Ineligible => Some(AccessBar {
+                message: "You cannot set your server to Discoverable because it does not meet requirements."
+                    .to_owned(),
+                save: None,
+            }),
+            super::server_discovery::View::EligibleDisabled => Some(AccessBar {
+                message: "Fill in the required information to list on Discovery.".to_owned(),
+                save: Some(("List on Discovery", !self.discovery_listable(cx))),
+            }),
+            _ => None,
+        }
+    }
+
     /// What keeps Save Changes from going through, in the bar's words.
     pub(super) fn access_error_text(&self) -> Option<String> {
-        self.server_settings
-            .as_ref()?
-            .access
-            .as_ref()?
-            .error
-            .clone()
+        let open = self.server_settings.as_ref()?;
+        let state = open.access.as_ref()?;
+        state.error.clone().or_else(|| {
+            (state.join == JoinType::Discoverable)
+                .then(|| open.discovery.error.clone())
+                .flatten()
+        })
     }
 
     fn access_mut(&mut self) -> Option<&mut AccessState> {
@@ -305,10 +333,14 @@ impl Root {
             });
         }
         self.request_access_form(guild);
+        self.request_discovery_art();
+        if current_join(&features) == JoinType::Discoverable {
+            self.request_discovery(guild);
+        }
         cx.notify();
     }
 
-    fn request_access_form(&mut self, guild: Id) {
+    pub(super) fn request_access_form(&mut self, guild: Id) {
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{ACCESS_PREFIX}{guild}")),
             method: reqwest::Method::GET,
@@ -390,12 +422,20 @@ impl Root {
         let joined_differently = current_join(&features) != state.join;
         joined_differently
             || match state.join {
-                JoinType::Invite | JoinType::Discoverable => invite_form_dirty(
+                JoinType::Invite => invite_form_dirty(
                     &features,
                     form,
                     state.require_terms,
                     &self.access_rule_texts(cx),
                 ),
+                JoinType::Discoverable => {
+                    invite_form_dirty(
+                        &features,
+                        form,
+                        state.require_terms,
+                        &self.access_rule_texts(cx),
+                    ) || self.discovery_dirty()
+                }
                 JoinType::Apply => {
                     apply_form_dirty(&features, form, &state.questions)
                         || state
@@ -451,6 +491,15 @@ impl Root {
         if let Some(state) = self.access_mut() {
             state.error = None;
         }
+        // `Il`: listing a server first asks for the three promises (module 883494).
+        if join == JoinType::Discoverable
+            && self.discovery_view(guild) == Some(super::server_discovery::View::EligibleDisabled)
+            && !self.discovery_agreed(guild)
+        {
+            self.discovery_ask_agreement();
+            cx.notify();
+            return;
+        }
         if features.iter().any(|feature| feature == "DISCOVERABLE")
             && join != JoinType::Discoverable
         {
@@ -481,6 +530,9 @@ impl Root {
                 body: Some(body),
             });
         }
+        if join == JoinType::Discoverable {
+            self.save_discovery(guild);
+        }
         if join == JoinType::Apply
             && let Some((saved, chosen)) = visibility
             && saved != chosen
@@ -505,6 +557,11 @@ impl Root {
         if let Some(state) = self.access_mut() {
             state.join = join;
             state.error = None;
+        }
+        if join == JoinType::Discoverable
+            && let Some(guild) = self.server_settings.as_ref().map(|open| open.guild)
+        {
+            self.request_discovery(guild);
         }
         cx.notify();
     }
@@ -926,7 +983,7 @@ impl Root {
     }
 
     /// `AY`: Invite Only's section.
-    fn access_invite_section(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn access_invite_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self
             .server_settings
             .as_ref()
@@ -1391,7 +1448,8 @@ impl Root {
             |_, cx| cx.open_url(LEARN_MORE),
         );
         let section: Option<AnyElement> = loaded.then(|| match join {
-            JoinType::Invite | JoinType::Discoverable => self.access_invite_section(cx),
+            JoinType::Invite => self.access_invite_section(cx),
+            JoinType::Discoverable => self.access_discovery_section(guild, cx),
             JoinType::Apply => self.access_apply_section(guild, cx),
         });
         div()
