@@ -292,7 +292,7 @@ impl Root {
     }
 
     /// `chipletContainerInner_k8jyN7`: the server tag after a name, 4px on, a 14px badge and 12/16 semibold text.
-    pub(super) fn server_tag_chip(&self, tag: &dc_state::ServerTag) -> AnyElement {
+    pub(super) fn server_tag_chip(&self, tag: &dc_state::ServerTag) -> gpui::Div {
         let badge = tag
             .badge_url()
             .and_then(|url| self.images.get(&url).cloned());
@@ -313,7 +313,6 @@ impl Root {
                     .text_color(color("--text-default"))
                     .child(tag.tag.clone()),
             )
-            .into_any_element()
     }
 
     pub(super) fn close_dm(&mut self, channel: Id, cx: &mut Context<Self>) {

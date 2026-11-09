@@ -1205,6 +1205,9 @@ impl Root {
         for user in users {
             let (key, url) = avatar_source(&user);
             self.request_image(key, url);
+            if let Some(url) = user.tag.as_ref().and_then(dc_state::ServerTag::badge_url) {
+                self.request_image(url.clone(), url);
+            }
         }
     }
 
@@ -1268,6 +1271,7 @@ impl Root {
                             div()
                                 .relative()
                                 .size(px(32.))
+                                .flex_none()
                                 .children(
                                     avatar.map(|image| img(image).size(px(32.)).rounded_full()),
                                 )
@@ -1276,10 +1280,17 @@ impl Root {
                         .child(
                             div()
                                 .ml(px(12.))
+                                .min_w(px(0.))
+                                .text_ellipsis()
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(self.guild_author_color(user.id, "--channels-default"))
                                 .child(name),
+                        )
+                        .children(
+                            user.tag
+                                .as_ref()
+                                .map(|tag| self.server_tag_chip(tag).ml(px(4.)).flex_none()),
                         )
                         .when(owner == Some(user.id), |this| {
                             this.child(div().ml(px(4.)).child(icon(
@@ -2671,37 +2682,9 @@ impl Root {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_guild_menu(cx)),
                                     )
-                                    // A Community server's name follows its badge (`flowerStar` with the house in it).
-                                    .when(
-                                        guild.is_some_and(|guild| {
-                                            guild
-                                                .features
-                                                .iter()
-                                                .any(|feature| feature == "COMMUNITY")
-                                        }),
-                                        |this| {
-                                            this.child(
-                                                div()
-                                                    .relative()
-                                                    .ml(px(1.))
-                                                    .mr(px(9.))
-                                                    .size(px(18.))
-                                                    .flex_none()
-                                                    .child(icon("community_star", 18., "--white"))
-                                                    .child(
-                                                        div()
-                                                            .absolute()
-                                                            .top(px(3.5))
-                                                            .left(px(3.5))
-                                                            .child(icon(
-                                                                "community_house",
-                                                                11.,
-                                                                "--primary-500",
-                                                            )),
-                                                    ),
-                                            )
-                                        },
-                                    )
+                                    .children(guild.and_then(tooltip::badge_image).map(|badge| {
+                                        img(badge).ml(px(1.)).mr(px(9.)).size(px(18.)).flex_none()
+                                    }))
                                     .child(
                                         div()
                                             .text_size(px(16.))

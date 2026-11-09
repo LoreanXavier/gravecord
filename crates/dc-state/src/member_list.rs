@@ -48,8 +48,8 @@ impl Row {
                 global_name: user["global_name"].as_str().map(str::to_owned),
                 avatar: user["avatar"].as_str().map(str::to_owned),
                 discriminator: user["discriminator"].as_str().unwrap_or("0").to_owned(),
-                tag: None,
-                bot: false,
+                tag: crate::ServerTag::from_value(&user["primary_guild"]),
+                bot: user["bot"].as_bool().unwrap_or(false),
             },
             nick: member["nick"].as_str().map(str::to_owned),
             roles: member["roles"]
@@ -166,6 +166,33 @@ mod tests {
 
     fn member(id: &str, status: &str) -> Value {
         json!({"member": {"nick": null, "user": {"id": id, "username": format!("user{id}"), "discriminator": "0"}, "presence": {"status": status}}})
+    }
+
+    #[test]
+    fn member_updates_retain_visible_tags_and_bot_identity() {
+        let mut item = member("1", "online");
+        item["member"]["user"]["bot"] = json!(true);
+        item["member"]["user"]["primary_guild"] = json!({
+            "identity_enabled": true, "identity_guild_id": "42", "tag": "TEST", "badge": "badge-hash"
+        });
+        let mut list = MemberList::default();
+        list.apply(&json!({"ops":[{"op":"SYNC", "range":[0,0], "items":[item.clone()]}]}));
+        let Row::Member { user, .. } = &list.rows[0] else {
+            panic!("member expected")
+        };
+        assert!(user.bot);
+        assert_eq!(
+            user.tag
+                .as_ref()
+                .map(|tag| (tag.guild_id, tag.tag.as_str())),
+            Some((42, "TEST"))
+        );
+        item["member"]["user"]["primary_guild"]["identity_enabled"] = json!(false);
+        list.apply(&json!({"ops":[{"op":"UPDATE", "index":0, "item":item}]}));
+        let Row::Member { user, .. } = &list.rows[0] else {
+            panic!("member expected")
+        };
+        assert!(user.tag.is_none());
     }
 
     fn names(list: &MemberList) -> Vec<String> {
