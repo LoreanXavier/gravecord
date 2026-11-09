@@ -1955,7 +1955,22 @@ impl Root {
             (None, Some(_)) => "Direct Messages".to_owned(),
         };
         let in_dm = self.guild.is_none() && self.channel.is_some();
-        let acronym = self.current_guild().map(Guild::acronym).unwrap_or_default();
+        let guild_icon = self.current_guild().map(|guild| {
+            match self.images.get(&format!("guild:{}", guild.id)).cloned() {
+                Some(image) => img(image).size(px(16.)).rounded(px(4.)).into_any_element(),
+                None => div()
+                    .size(px(16.))
+                    .rounded(px(4.))
+                    .bg(color("--background-base-lower"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(8.))
+                    .text_color(color("--text-default"))
+                    .child(guild.acronym())
+                    .into_any_element(),
+            }
+        });
         div()
             .parity("titlebar")
             .relative()
@@ -1973,18 +1988,8 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .gap(px(8.))
-                    .child(if self.guild.is_some() {
-                        div()
-                            .size(px(16.))
-                            .rounded(px(4.))
-                            .bg(color("--background-base-lower"))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(8.))
-                            .text_color(color("--text-default"))
-                            .child(acronym)
-                            .into_any_element()
+                    .child(if let Some(guild_icon) = guild_icon {
+                        guild_icon
                     } else if in_dm {
                         icon("title_direct_messages", 18., "--text-default").into_any_element()
                     } else if self.nitro_open {
@@ -4903,17 +4908,46 @@ fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
 /// Minimize, maximize and close. They sit in the official `systemBar`, above every layer and its scrim.
 fn window_controls() -> impl IntoElement {
     let control = |id: &'static str, name: &str, area: WindowControlArea| {
+        let close = id == "close";
+        let hover_background = if close {
+            "--control-critical-primary-background-default"
+        } else {
+            "--interactive-background-hover"
+        };
+        let hover_icon = if close {
+            "--control-critical-primary-icon-default"
+        } else {
+            "--interactive-text-hover"
+        };
         div()
             .id(id)
+            .group(id)
             .w(px(32.))
             .h(px(32.))
+            .cursor_pointer()
             .flex()
             .items_center()
             .justify_center()
             // gpui answers with the first control area under the pointer: the drag area behind must not count.
             .occlude()
             .window_control_area(area)
-            .child(icon(name, 12., "--interactive-text-default"))
+            .hover(|style| style.bg(color(hover_background)))
+            .when(!close, |button| {
+                button.active(|style| style.bg(color("--interactive-background-active")))
+            })
+            .child(
+                svg()
+                    .path(format!("icons/{name}.svg"))
+                    .id(SharedString::from(format!("{id}-icon")))
+                    .size(px(12.))
+                    .text_color(color("--interactive-text-default"))
+                    .group_hover(id, |style| style.text_color(color(hover_icon)))
+                    .when(!close, |image| {
+                        image.group_active(id, |style| {
+                            style.text_color(color("--interactive-text-active"))
+                        })
+                    }),
+            )
     };
     div()
         .flex()
