@@ -12,7 +12,7 @@
 
 <img src="docs/media/hero.webp" width="860" alt="gravecord moving from the login screen through chat, a voice call, a stream, the soundboard and settings">
 
-**[Why](#why) · [What works](#what-works) · [Screens](#screens) · [Voice and video](#voice-and-video) · [What is missing](#what-is-missing) · [Building](#building) · [Support](#support)**
+**[Why](#why) · [What works](#what-works) · [Screens](#screens) · [Voice and video](#voice-and-video) · [What is missing](#what-is-missing) · [Building](#building) · [AI Disclosure](#ai-disclosure) · [Support](#support)**
 
 </div>
 
@@ -126,6 +126,14 @@ cargo build --release -p gravecord
 Then run `target\release\gravecord.exe` from the repository, so that it finds `app\assets`.
 
 A few things come from the network when it runs, not from this repository: fonts and some artwork load from Discord's own servers, as they do in the official client. Nothing of Discord's is stored here.
+
+## AI Disclosure
+
+AI coding tools were used in developing and debugging this client. My focus has been on matching the official client:
+comparing builds with captures of it, identifying discrepancies, testing real calls and prioritizing fixes.
+
+Fonts and some artwork load at run time from Discord's own servers. Noise suppression uses the DeepFilterNet
+machine-learning model when enabled.
 
 ## Support
 
