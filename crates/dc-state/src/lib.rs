@@ -1510,6 +1510,16 @@ impl Stores {
         patch
     }
 
+    pub fn content_dismissed(&self, content: u16) -> bool {
+        settings::content_dismissed(&self.settings_raw, content)
+    }
+
+    pub fn dismiss_content(&mut self, content: u16) -> String {
+        let (patch, updated) = settings::dismiss_content(&self.settings_raw, content);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// The status the account's proto settings hold: the chosen one, when it lapses, and the custom status.
     pub fn status_state(&self) -> Option<settings::StatusState> {
         settings::read_status(&self.settings_raw)

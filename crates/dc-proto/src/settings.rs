@@ -336,12 +336,51 @@ pub fn decode(settings_base64: &str) -> Vec<u8> {
 pub fn set_pref(current: &[u8], pref: &ProtoPref, value: u64) -> (String, Vec<u8>) {
     let updated = with_varint(current, pref.path, pref.field, value);
     let top = pref.path.first().copied().unwrap_or(0);
+    whole_message_patch(updated, top)
+}
+
+fn whole_message_patch(updated: Vec<u8>, top: u64) -> (String, Vec<u8>) {
     let part: Vec<u8> = raw_fields(&updated)
         .into_iter()
         .filter(|(number, _)| *number == top)
         .flat_map(|(_, raw)| raw.iter().copied())
         .collect();
     (STANDARD.encode(part), updated)
+}
+
+/// UserContentSettings.dismissed_contents: byte bitset, indexed as module 460288.
+pub fn content_dismissed(current: &[u8], content: u16) -> bool {
+    fields(current)
+        .find(|(number, _)| *number == 4)
+        .and_then(|(_, message)| fields(message).find(|(number, _)| *number == 1))
+        .and_then(|(_, bits)| bits.get(usize::from(content / 8)))
+        .is_some_and(|byte| byte & (1 << (content % 8)) != 0)
+}
+
+/// Carries the entire user_content message, sharing set_pref's whole-message patch construction.
+pub fn dismiss_content(current: &[u8], content: u16) -> (String, Vec<u8>) {
+    let message = fields(current)
+        .find(|(number, _)| *number == 4)
+        .map_or(&[][..], |(_, payload)| payload);
+    let mut bits = fields(message)
+        .find(|(number, _)| *number == 1)
+        .map_or_else(Vec::new, |(_, payload)| payload.to_vec());
+    let index = usize::from(content / 8);
+    bits.resize(bits.len().max(index + 1), 0);
+    bits[index] |= 1 << (content % 8);
+    let mut updated_message: Vec<u8> = raw_fields(message)
+        .into_iter()
+        .filter(|(number, _)| *number != 1)
+        .flat_map(|(_, bytes)| bytes.iter().copied())
+        .collect();
+    push_bytes_field(&mut updated_message, 1, &bits);
+    let mut updated: Vec<u8> = raw_fields(current)
+        .into_iter()
+        .filter(|(number, _)| *number != 4)
+        .flat_map(|(_, bytes)| bytes.iter().copied())
+        .collect();
+    push_bytes_field(&mut updated, 4, &updated_message);
+    whole_message_patch(updated, 4)
 }
 
 /// An update from the gateway folded into `current`: a full one replaces everything, a partial one only the top-level
@@ -545,6 +584,29 @@ pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dismissing_content_preserves_other_bits_and_whole_messages() {
+        let mut content = Vec::new();
+        super::push_bytes_field(&mut content, 1, &[1]);
+        super::push_bytes_field(&mut content, 42, b"preserve nested field");
+        let mut current = Vec::new();
+        super::push_bytes_field(&mut current, 4, &content);
+        super::push_bytes_field(&mut current, 77, b"preserve top field");
+        let (_, current) = super::dismiss_content(&current, 98);
+        let (patch, current) = super::dismiss_content(&current, 133);
+        for id in [0, 98, 133] {
+            assert!(super::content_dismissed(&current, id));
+        }
+        assert!(!super::content_dismissed(&current, 132));
+        assert!(!super::content_dismissed(&[], 133));
+        assert!(super::fields(&current).any(|(n, p)| n == 77 && p == b"preserve top field"));
+        let patch = super::decode(&patch);
+        let top: Vec<_> = super::fields(&patch).collect();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0, 4);
+        assert!(super::fields(top[0].1).any(|(n, p)| n == 42 && p == b"preserve nested field"));
+        assert_eq!(super::dismiss_content(&current, 133).1, current);
+    }
     use super::*;
 
     #[test]
