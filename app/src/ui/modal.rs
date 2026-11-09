@@ -93,6 +93,10 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .when(disabled, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(15.)))
+        // A secondary button beside an action bar input is 100 wide (Cancel in Filters).
+        .when(!fill && spec.tone == Tone::Secondary, |this| {
+            this.min_w(px(100.))
+        })
         .h(px(40.))
         .rounded(px(8.))
         .border_1()

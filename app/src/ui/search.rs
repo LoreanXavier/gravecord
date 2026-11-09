@@ -50,6 +50,14 @@ pub(crate) fn operators(query: &str) -> (Vec<(&'static str, String)>, String) {
                 found.push(("in", value.trim_start_matches('#').to_owned()))
             }
             Some(("has", value)) if !value.is_empty() => found.push(("has", value.to_owned())),
+            Some((key, value)) if !value.is_empty() => match key.to_lowercase().as_str() {
+                "authortype" => found.push(("author_type", value.to_lowercase())),
+                "pinned" => found.push(("pinned", value.to_lowercase())),
+                "before" => found.push(("before", value.to_owned())),
+                "after" => found.push(("after", value.to_owned())),
+                "during" => found.push(("during", value.to_owned())),
+                _ => content.push(word),
+            },
             _ => content.push(word),
         }
     }
@@ -127,7 +135,7 @@ impl Root {
         cx.notify();
     }
 
-    fn run_search(&mut self, query: String, cx: &mut Context<Self>) {
+    pub(super) fn run_search(&mut self, query: String, cx: &mut Context<Self>) {
         if query.trim().is_empty() {
             return;
         }
@@ -162,6 +170,26 @@ impl Root {
                         params.push(format!("channel_id={}", channel.id));
                     }
                 }
+                "author_type" => params.push(format!("author_type={}", encode(&lower))),
+                "pinned" => params.push(format!("pinned={}", encode(&lower))),
+                "before" | "after" | "during" => {
+                    let kind = match name {
+                        "before" => super::search_filters::DateKind::Before,
+                        "after" => super::search_filters::DateKind::After,
+                        _ => super::search_filters::DateKind::During,
+                    };
+                    if let Some(date) = super::search_filters::parse_date(&value) {
+                        let (min, max) =
+                            super::search_filters::date_bounds(&chrono::Local, kind, date);
+                        if let Some(min) = min {
+                            params.push(format!("min_id={min}"));
+                        }
+                        if let Some(max) = max {
+                            params.push(format!("max_id={max}"));
+                        }
+                    }
+                }
+                "has" if lower == "forward" => params.push("has=snapshot".to_owned()),
                 _ => params.push(format!("has={}", encode(&lower))),
             }
         }
@@ -221,9 +249,11 @@ impl Root {
                 .items_center()
                 .hover(|style| style.bg(color("--interactive-background-hover")))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if let Some(search) = this.search.as_ref()
-                        && !operator.is_empty()
-                    {
+                    if operator.is_empty() {
+                        this.open_search_filters(window, cx);
+                        return;
+                    }
+                    if let Some(search) = this.search.as_ref() {
                         search
                             .field
                             .update(cx, |editor, cx| editor.insert(&format!("{operator} "), cx));

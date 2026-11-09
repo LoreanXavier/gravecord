@@ -4,7 +4,7 @@
 #![allow(unsafe_code)]
 #![allow(non_snake_case)] // Custom COM interfaces preserve the Qedit.h method names.
 
-use super::{FRAME_INTERVAL, HEIGHT, INVALID, TIMEOUT, UNAVAILABLE, WIDTH, format};
+use super::{FRAME_INTERVAL, HEIGHT, TIMEOUT, UNAVAILABLE, WIDTH, format};
 use crate::camera::{CameraDevice, DeviceRef};
 use crate::{Error, Result};
 use std::{
@@ -28,6 +28,8 @@ type R<T> = std::result::Result<T, &'static str>;
 
 const SAMPLE_GRABBER: GUID = GUID::from_u128(0xc1f400a0_3f08_11d3_9f0b_006008039e37);
 const NULL_RENDERER: GUID = GUID::from_u128(0xc1f400a4_3f08_11d3_9f0b_006008039e37);
+const NV12: GUID = GUID::from_u128(0x3231564e_0000_0010_8000_00aa00389b71);
+const YUY2: GUID = GUID::from_u128(0x32595559_0000_0010_8000_00aa00389b71);
 const MAX_WIDTH: usize = 1920;
 const MAX_HEIGHT: usize = 1080;
 const MAX_BYTES: usize = MAX_WIDTH * MAX_HEIGHT * 4;
@@ -55,7 +57,7 @@ struct Callback {
     send: mpsc::SyncSender<R<Vec<u8>>>,
     last: Mutex<(Instant, bool)>,
     bytes: usize,
-    dimensions: (usize, usize, bool),
+    format: Format,
 }
 impl ISampleGrabberCB_Impl for Callback_Impl {
     unsafe fn SampleCB(&self, _: f64, sample: *mut c_void) -> HRESULT {
@@ -67,9 +69,10 @@ impl ISampleGrabberCB_Impl for Callback_Impl {
         let result = unsafe {
             (|| {
                 if last.1 {
-                    return Err(INVALID);
+                    return Err("Camera graph already reported an error");
                 }
-                let sample = IMediaSample::from_raw_borrowed(&sample).ok_or(INVALID)?;
+                let sample = IMediaSample::from_raw_borrowed(&sample)
+                    .ok_or("Camera delivered a sample the graph could not read")?;
                 let length = sample.GetActualDataLength();
                 let capacity = sample.GetSize();
                 if length < 0
@@ -77,12 +80,14 @@ impl ISampleGrabberCB_Impl for Callback_Impl {
                     || capacity as usize > MAX_BYTES
                     || length as usize != self.bytes
                 {
-                    return Err(INVALID);
+                    return Err("Camera sample size does not match the negotiated RGB24 frame");
                 }
-                let changed = sample.GetMediaType().map_err(|_| INVALID)?;
+                let changed = sample
+                    .GetMediaType()
+                    .map_err(|_| "Camera sample media type could not be read")?;
                 if !changed.is_null() {
                     let media = Media::take(changed);
-                    if rgb_dimensions(&media.0)? != self.dimensions {
+                    if frame_format(&media.0)? != self.format {
                         return Err("Camera changed its video format; restart the camera");
                     }
                 }
@@ -90,9 +95,11 @@ impl ISampleGrabberCB_Impl for Callback_Impl {
                     return Ok(None);
                 }
                 last.0 = Instant::now();
-                let pointer = sample.GetPointer().map_err(|_| INVALID)?;
+                let pointer = sample
+                    .GetPointer()
+                    .map_err(|_| "Camera sample data could not be mapped")?;
                 if pointer.is_null() {
-                    return Err(INVALID);
+                    return Err("Camera sample has no data pointer");
                 }
                 Ok(Some(
                     std::slice::from_raw_parts(pointer, length as usize).to_vec(),
@@ -134,6 +141,37 @@ impl Drop for Media {
         unsafe {
             CoTaskMemFree(Some(self.0.pbFormat.cast()));
             ManuallyDrop::drop(&mut self.0.pUnk);
+        }
+    }
+}
+
+/// How the sample grabber hands us a frame. OBS's virtual camera offers only 1920x1080 NV12, YUY2 and I420: asking the
+/// grabber for those directly avoids the Smart Tee and AVI Decompressor which `RenderStream` puts in front of it, and
+/// through which no frame of that camera ever arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// 24-bit BGR, rows padded to four bytes.
+    Rgb24,
+    /// Planar luma, then interleaved U and V at half resolution.
+    Nv12,
+    /// Packed Y0 U Y1 V.
+    Yuy2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Format {
+    layout: Layout,
+    width: usize,
+    height: usize,
+    /// Rows run from the bottom of the picture up (RGB only; YUV frames are always top-down).
+    bottom_up: bool,
+}
+impl Format {
+    fn bytes(&self) -> usize {
+        match self.layout {
+            Layout::Rgb24 => (self.width * 3).next_multiple_of(4) * self.height,
+            Layout::Nv12 => self.width * self.height * 3 / 2,
+            Layout::Yuy2 => self.width * self.height * 2,
         }
     }
 }
@@ -212,7 +250,7 @@ fn dimensions(media: &AM_MEDIA_TYPE) -> R<(usize, usize, bool)> {
         || media.pbFormat.is_null()
         || media.cbFormat as usize > 65536
     {
-        return Err(INVALID);
+        return Err("Camera media type is not video or has no format block");
     }
     // SAFETY: validate the advertised format block size before reading its header; read_unaligned also handles filters
     // which do not align their format blocks.
@@ -234,14 +272,14 @@ fn dimensions(media: &AM_MEDIA_TYPE) -> R<(usize, usize, bool)> {
                 .read_unaligned()
                 .bmiHeader
         } else {
-            return Err(INVALID);
+            return Err("Camera video format header is neither VideoInfo nor VideoInfo2");
         }
     };
     if !(1..=MAX_WIDTH as i32).contains(&bitmap.biWidth)
         || !(1..=MAX_HEIGHT as u32).contains(&bitmap.biHeight.unsigned_abs())
         || bitmap.biSizeImage as usize > MAX_BYTES
     {
-        return Err(INVALID);
+        return Err("Camera frame size is outside 1x1 to 1920x1080");
     }
     Ok((
         bitmap.biWidth as usize,
@@ -253,7 +291,7 @@ fn dimensions(media: &AM_MEDIA_TYPE) -> R<(usize, usize, bool)> {
 fn rgb_dimensions(media: &AM_MEDIA_TYPE) -> R<(usize, usize, bool)> {
     let dimensions = dimensions(media)?;
     if media.subtype != MEDIASUBTYPE_RGB24 || media.formattype != FORMAT_VideoInfo {
-        return Err(INVALID);
+        return Err("Camera output is not RGB24 VideoInfo");
     }
     // SAFETY: `dimensions` validated the complete VIDEOINFOHEADER allocation.
     let bitmap = unsafe {
@@ -263,10 +301,41 @@ fn rgb_dimensions(media: &AM_MEDIA_TYPE) -> R<(usize, usize, bool)> {
             .read_unaligned()
             .bmiHeader
     };
-    if bitmap.biBitCount != 24 || bitmap.biPlanes != 1 || bitmap.biCompression != 0 {
-        return Err(INVALID);
+    // biPlanes is not checked: the colour converter OBS's NV12 goes through reports 3 for its RGB24 output.
+    if bitmap.biBitCount != 24 || bitmap.biCompression != 0 {
+        return Err("Camera RGB frame is not 24-bit uncompressed");
     }
     Ok(dimensions)
+}
+
+/// The layout and size of a connected media type, whichever of the supported subtypes it is.
+fn frame_format(media: &AM_MEDIA_TYPE) -> R<Format> {
+    if media.subtype == MEDIASUBTYPE_RGB24 {
+        let (width, height, bottom_up) = rgb_dimensions(media)?;
+        return Ok(Format {
+            layout: Layout::Rgb24,
+            width,
+            height,
+            bottom_up,
+        });
+    }
+    let (width, height, _) = dimensions(media)?;
+    let layout = if media.subtype == NV12 {
+        Layout::Nv12
+    } else if media.subtype == YUY2 {
+        Layout::Yuy2
+    } else {
+        return Err("Camera output is neither RGB24, NV12 nor YUY2");
+    };
+    if width % 2 != 0 || height % 2 != 0 {
+        return Err("Camera YUV frame has an odd width or height");
+    }
+    Ok(Format {
+        layout,
+        width,
+        height,
+        bottom_up: false,
+    })
 }
 
 /// Whether the source's first output pin lists at least one media type.
@@ -453,10 +522,10 @@ fn run_graph(
     let (_, _, moniker) = monikers()?
         .into_iter()
         .find(|(id, _, _)| wanted.as_deref().is_none_or(|selected| selected == id))
-        .ok_or("Selected Windows camera is no longer available")?;
+        .ok_or(crate::camera::NOT_FOUND)?;
     // SAFETY: the only activation path, called after an explicit camera-on gesture. Graph, format negotiation and
     // teardown all remain on this thread.
-    let (capture, receive, width, height, bottom_up) = unsafe {
+    let (capture, receive, format) = unsafe {
         let source: IBaseFilter = moniker.BindToObject(None, None).map_err(|_| UNAVAILABLE)?;
         let graph: IGraphBuilder = CoCreateInstance(&CLSID_FilterGraph, None, CLSCTX_INPROC_SERVER)
             .map_err(|_| UNAVAILABLE)?;
@@ -484,22 +553,11 @@ fn run_graph(
             grabber,
             callback: None,
         };
-        let requested = AM_MEDIA_TYPE {
-            majortype: MEDIATYPE_Video,
-            subtype: MEDIASUBTYPE_RGB24,
-            formattype: FORMAT_VideoInfo,
-            ..Default::default()
-        };
-        capture
-            .grabber
-            .SetMediaType(&requested)
-            .ok()
-            .map_err(|_| INVALID)?;
         capture
             .grabber
             .SetBufferSamples(BOOL(0))
             .ok()
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Sample grabber refused to disable buffering")?;
         graph
             .AddFilter(&filter, w!("Camera frames"))
             .map_err(|_| UNAVAILABLE)?;
@@ -508,38 +566,68 @@ fn run_graph(
         graph
             .AddFilter(&sink, w!("Camera sink"))
             .map_err(|_| UNAVAILABLE)?;
-        // Virtual cameras often do not tag their pin with the capture category, which RenderStream requires; wire
-        // the graph pin by pin then (the graph's intelligent connect still inserts any colour converter).
-        if builder
-            .RenderStream(
-                Some(&PIN_CATEGORY_CAPTURE),
-                &MEDIATYPE_Video,
-                &source,
-                &filter,
-                &sink,
-            )
-            .is_err()
-        {
-            let wire = |from: &IBaseFilter, to: &IBaseFilter| -> R<()> {
-                let output = pin(from, PINDIR_OUTPUT).ok_or(UNAVAILABLE)?;
-                let input = pin(to, PINDIR_INPUT).ok_or(UNAVAILABLE)?;
-                graph
-                    .Connect(&output, &input)
-                    .map_err(|_| "Windows could not convert this camera to RGB video")
+        let ask = |subtype: GUID, formattype: GUID| -> R<()> {
+            let requested = AM_MEDIA_TYPE {
+                majortype: MEDIATYPE_Video,
+                subtype,
+                formattype,
+                ..Default::default()
             };
-            wire(&source, &filter)?;
+            capture
+                .grabber
+                .SetMediaType(&requested)
+                .ok()
+                .map_err(|_| "Sample grabber refused the requested media type")
+        };
+        let wire = |from: &IBaseFilter, to: &IBaseFilter| -> R<()> {
+            let output = pin(from, PINDIR_OUTPUT).ok_or("Camera filter has no output pin")?;
+            let input = pin(to, PINDIR_INPUT).ok_or("Graph filter has no input pin")?;
+            graph
+                .Connect(&output, &input)
+                .map_err(|_| "Windows could not connect this camera to the frame grabber")
+        };
+        // Pin by pin first, taking the camera's own YUV or RGB format: no converter is involved and a virtual camera
+        // which only lists YUV connects. A format the camera does not list fails the connection without side effects.
+        let mut direct = false;
+        for (subtype, formattype) in [
+            (NV12, GUID::zeroed()),
+            (YUY2, GUID::zeroed()),
+            (MEDIASUBTYPE_RGB24, FORMAT_VideoInfo),
+        ] {
+            ask(subtype, formattype)?;
+            if wire(&source, &filter).is_ok() {
+                direct = true;
+                break;
+            }
+        }
+        if direct {
             wire(&filter, &sink)?;
+        } else {
+            // The capture-category route lets the graph insert a colour converter to RGB24 (a Smart Tee and an AVI
+            // Decompressor in practice), for cameras which connect no other way.
+            ask(MEDIASUBTYPE_RGB24, FORMAT_VideoInfo)?;
+            builder
+                .RenderStream(
+                    Some(&PIN_CATEGORY_CAPTURE),
+                    &MEDIATYPE_Video,
+                    &source,
+                    &filter,
+                    &sink,
+                )
+                .map_err(|_| "Windows could not convert this camera to RGB video")?;
         }
         let mut media = Media(AM_MEDIA_TYPE::default());
         capture
             .grabber
             .GetConnectedMediaType(&mut media.0)
             .ok()
-            .map_err(|_| INVALID)?;
-        let (width, height, bottom_up) = rgb_dimensions(&media.0)?;
-        let bytes = (width * 3).next_multiple_of(4) * height;
+            .map_err(|_| "Sample grabber has no connected media type after the graph was wired")?;
+        let format = frame_format(&media.0)?;
+        let bytes = format.bytes();
         // Check the actual negotiated allocator before any filter starts delivering.
-        let pins = filter.EnumPins().map_err(|_| INVALID)?;
+        let pins = filter
+            .EnumPins()
+            .map_err(|_| "Sample grabber pins could not be listed")?;
         let mut bounded_allocator = false;
         for _ in 0..16 {
             let mut pin = [None];
@@ -551,45 +639,52 @@ fn run_graph(
                 let properties = input
                     .GetAllocator()
                     .and_then(|allocator| allocator.GetProperties())
-                    .map_err(|_| INVALID)?;
+                    .map_err(|_| "Sample grabber input has no readable allocator")?;
                 if !(1..=8).contains(&properties.cBuffers)
                     || properties.cbBuffer < bytes as i32
                     || properties.cbBuffer as usize > MAX_BYTES
                     || !(0..=4096).contains(&properties.cbPrefix)
                 {
-                    return Err(INVALID.into());
+                    return Err(
+                        "Sample grabber allocator is outside the bounded buffer size".into(),
+                    );
                 }
                 bounded_allocator = true;
             }
         }
         if !bounded_allocator {
-            return Err(INVALID.into());
+            return Err("Sample grabber has no memory input pin".into());
         }
         let (send, receive) = mpsc::sync_channel(1);
         let callback: ISampleGrabberCB = Callback {
             send,
             last: Mutex::new((Instant::now() - FRAME_INTERVAL, false)),
             bytes,
-            dimensions: (width, height, bottom_up),
+            format,
         }
         .into();
         capture
             .grabber
             .SetCallback(callback.as_raw(), 0)
             .ok()
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Sample grabber refused the frame callback")?;
         capture.callback = Some(callback);
         if !stop.load(Ordering::Acquire) {
+            // A live source stamps samples on its own clock. With a graph clock the null renderer holds each sample
+            // until its stamp comes round, which stalls the source after the first frame.
+            if let Ok(media_filter) = graph.cast::<IMediaFilter>() {
+                let _ = media_filter.SetSyncSource(None);
+            }
             capture.control.Run().map_err(|_| UNAVAILABLE)?;
         }
-        (capture, receive, width, height, bottom_up)
+        (capture, receive, format)
     };
     opened();
     let mut last = Instant::now();
     while !stop.load(Ordering::Acquire) {
         match receive.recv_timeout(Duration::from_millis(50)) {
             Ok(bytes) => {
-                let rgba = rgba_frame(&bytes?, width, height, bottom_up)?;
+                let rgba = convert_frame(&bytes?, &format)?;
                 last = Instant::now();
                 if !stop.load(Ordering::Acquire) {
                     emit(rgba)?;
@@ -603,17 +698,17 @@ fn run_graph(
     Ok(())
 }
 
-/// A 24-bit BGR frame with rows padded to four bytes, as 640x480 RGBA: the aspect ratio is kept, the rest is black, and
-/// a bottom-up frame is turned over. Nearest-neighbour; replace it with filtered scaling if virtual-camera quality
-/// measurements ask for it.
-fn rgba_frame(bytes: &[u8], width: usize, height: usize, bottom_up: bool) -> R<Vec<u8>> {
-    if !(1..=MAX_WIDTH).contains(&width) || !(1..=MAX_HEIGHT).contains(&height) {
-        return Err(INVALID);
+fn convert_frame(bytes: &[u8], format: &Format) -> R<Vec<u8>> {
+    match format.layout {
+        Layout::Rgb24 => rgba_frame(bytes, format.width, format.height, format.bottom_up),
+        Layout::Nv12 | Layout::Yuy2 => rgba_yuv(bytes, format),
     }
-    let pitch = (width * 3).next_multiple_of(4);
-    if bytes.len() != pitch * height || bytes.len() > MAX_BYTES {
-        return Err(INVALID);
-    }
+}
+
+/// `width` x `height` scaled to fit 640x480 RGBA: the aspect ratio is kept, the rest is opaque black. `pixel` gives the
+/// RGB of the source pixel at (x, y), top row first. Nearest-neighbour; replace it with filtered scaling if
+/// virtual-camera quality measurements ask for it.
+fn letterbox(width: usize, height: usize, pixel: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
     let mut rgba = vec![0; WIDTH * HEIGHT * 4];
     for pixel in rgba.chunks_exact_mut(4) {
         pixel[3] = 255;
@@ -627,22 +722,71 @@ fn rgba_frame(bytes: &[u8], width: usize, height: usize, bottom_up: bool) -> R<V
     let top = (HEIGHT - draw_height) / 2;
     for y in 0..draw_height {
         let source_y = y * height / draw_height;
-        let source_y = if bottom_up {
-            height - 1 - source_y
-        } else {
-            source_y
-        };
         for x in 0..draw_width {
-            let source = source_y * pitch + (x * width / draw_width) * 3;
             let dest = ((top + y) * WIDTH + left + x) * 4;
-            rgba[dest..dest + 3].copy_from_slice(&[
-                bytes[source + 2],
-                bytes[source + 1],
-                bytes[source],
-            ]);
+            rgba[dest..dest + 3].copy_from_slice(&pixel(x * width / draw_width, source_y));
         }
     }
-    Ok(rgba)
+    rgba
+}
+
+/// A 24-bit BGR frame with rows padded to four bytes, as 640x480 RGBA; a bottom-up frame is turned over.
+fn rgba_frame(bytes: &[u8], width: usize, height: usize, bottom_up: bool) -> R<Vec<u8>> {
+    if !(1..=MAX_WIDTH).contains(&width) || !(1..=MAX_HEIGHT).contains(&height) {
+        return Err("Camera frame size is outside 1x1 to 1920x1080 before conversion");
+    }
+    let pitch = (width * 3).next_multiple_of(4);
+    if bytes.len() != pitch * height || bytes.len() > MAX_BYTES {
+        return Err("Camera frame length does not match its width, height and row padding");
+    }
+    Ok(letterbox(width, height, |x, y| {
+        let y = if bottom_up { height - 1 - y } else { y };
+        let source = y * pitch + x * 3;
+        [bytes[source + 2], bytes[source + 1], bytes[source]]
+    }))
+}
+
+/// Limited-range YCbCr to RGB: BT.709 for HD frames, BT.601 below.
+fn yuv_rgb(y: u8, u: u8, v: u8, hd: bool) -> [u8; 3] {
+    let c = 1.164 * (f32::from(y) - 16.0);
+    let (d, e) = (f32::from(u) - 128.0, f32::from(v) - 128.0);
+    let (r, g, b) = if hd {
+        (c + 1.793 * e, c - 0.213 * d - 0.533 * e, c + 2.112 * d)
+    } else {
+        (c + 1.596 * e, c - 0.392 * d - 0.813 * e, c + 2.017 * d)
+    };
+    [r, g, b].map(|channel| channel.round().clamp(0.0, 255.0) as u8)
+}
+
+/// An NV12 or YUY2 frame as 640x480 RGBA.
+fn rgba_yuv(bytes: &[u8], format: &Format) -> R<Vec<u8>> {
+    let (width, height) = (format.width, format.height);
+    if !(2..=MAX_WIDTH).contains(&width)
+        || !(2..=MAX_HEIGHT).contains(&height)
+        || width % 2 != 0
+        || height % 2 != 0
+    {
+        return Err("Camera YUV frame size is outside 2x2 to 1920x1080 or odd");
+    }
+    if bytes.len() != format.bytes() {
+        return Err("Camera YUV frame length does not match its width and height");
+    }
+    let hd = height >= 720;
+    Ok(match format.layout {
+        Layout::Nv12 => letterbox(width, height, |x, y| {
+            let chroma = width * height + (y / 2) * width + (x & !1);
+            yuv_rgb(bytes[y * width + x], bytes[chroma], bytes[chroma + 1], hd)
+        }),
+        _ => letterbox(width, height, |x, y| {
+            let pair = (y * width + (x & !1)) * 2;
+            yuv_rgb(
+                bytes[(y * width + x) * 2],
+                bytes[pair + 1],
+                bytes[pair + 3],
+                hd,
+            )
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -691,5 +835,54 @@ mod tests {
         }
         assert!(rgba_frame(&bytes[..7], 1, 2, false).is_err());
         assert!(rgba_frame(&bytes, 1, 1, false).is_err());
+    }
+
+    #[test]
+    fn yuv_frames_of_a_1080p_virtual_camera_scale_to_640x480() {
+        // Limited-range black, white and a saturated red in BT.709.
+        assert_eq!(yuv_rgb(16, 128, 128, true), [0, 0, 0]);
+        assert_eq!(yuv_rgb(235, 128, 128, true), [255, 255, 255]);
+        let red = yuv_rgb(63, 102, 240, true);
+        assert!(red[0] > 240 && red[1] < 16 && red[2] < 16, "{red:?}");
+        // 1920x1080 NV12: top half white, bottom half black.
+        let nv12 = Format {
+            layout: Layout::Nv12,
+            width: 1920,
+            height: 1080,
+            bottom_up: false,
+        };
+        let mut frame = vec![16u8; nv12.bytes()];
+        frame[..1920 * 540].fill(235);
+        frame[1920 * 1080..].fill(128);
+        assert_eq!(frame.len(), 1920 * 1080 * 3 / 2);
+        let rgba = convert_frame(&frame, &nv12).unwrap();
+        assert_eq!(rgba.len(), WIDTH * HEIGHT * 4);
+        // 16:9 into 4:3 leaves 60 black rows above and below (480 - 360) / 2.
+        assert_eq!(&rgba[..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[WIDTH * 60 * 4..][..4], &[255, 255, 255, 255]);
+        assert_eq!(&rgba[WIDTH * 239 * 4..][..4], &[255, 255, 255, 255]);
+        assert_eq!(&rgba[WIDTH * 240 * 4..][..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[WIDTH * 419 * 4..][..4], &[0, 0, 0, 255]);
+        // YUY2 holds the same picture: Y0 U Y1 V.
+        let yuy2 = Format {
+            layout: Layout::Yuy2,
+            ..nv12
+        };
+        let mut packed = vec![0u8; yuy2.bytes()];
+        for (row, line) in packed.chunks_exact_mut(1920 * 2).enumerate() {
+            let luma = if row < 540 { 235 } else { 16 };
+            for quad in line.chunks_exact_mut(4) {
+                quad.copy_from_slice(&[luma, 128, luma, 128]);
+            }
+        }
+        assert_eq!(convert_frame(&packed, &yuy2).unwrap(), rgba);
+        // Wrong lengths and odd sizes are refused.
+        assert!(convert_frame(&frame[1..], &nv12).is_err());
+        assert!(convert_frame(&packed[..packed.len() - 2], &yuy2).is_err());
+        let odd = Format {
+            width: 1919,
+            ..nv12
+        };
+        assert!(rgba_yuv(&frame, &odd).is_err());
     }
 }

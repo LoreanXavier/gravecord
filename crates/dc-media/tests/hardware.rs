@@ -36,8 +36,14 @@ fn obs_virtual_camera_delivers_640x480_frames() {
     println!("using {obs:?}");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
+    let lit = Arc::new(Mutex::new(0usize));
+    let lit_sink = lit.clone();
     let started = Instant::now();
     let started_camera = Camera::start(Some(&obs.id), move |frame| {
+        // Only a count is kept: the picture may show the owner's scene.
+        let count = non_black(&frame.preview.data);
+        let mut best = lit_sink.lock().unwrap();
+        *best = (*best).max(count);
         let encoded = frame
             .encoded
             .as_ref()
@@ -72,6 +78,10 @@ fn obs_virtual_camera_delivers_640x480_frames() {
         seen.len(),
         encoded.len(),
         encoded.iter().filter(|e| e.1).count()
+    );
+    println!(
+        "most non-black pixels in one frame: {}",
+        lit.lock().unwrap()
     );
     assert!(!seen.is_empty(), "no frames arrived");
     assert!(

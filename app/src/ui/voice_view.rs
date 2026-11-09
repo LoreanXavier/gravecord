@@ -230,6 +230,12 @@ fn lower_bound(lo: f32, hi: f32, pred: impl Fn(f32) -> bool) -> f32 {
     lo
 }
 
+/// Where a row of `row_width` starts in the grid of a view `width` wide: centred in the space between the 8px paddings,
+/// a half pixel rounded up as Chromium paints it.
+fn row_indent(width: f32, row_width: f32) -> f32 {
+    ((width - 16. - row_width) / 2.).ceil().max(0.)
+}
+
 /// The official grid for `count` tiles in a view `width` by `height` (module 511205 with 526369's 64px paddings).
 pub(super) fn grid_layout(count: usize, width: f32, height: f32) -> GridLayout {
     let available_w = width - 16.;
@@ -743,12 +749,15 @@ impl Root {
         while !tiles.is_empty() {
             let take = layout.columns.min(tiles.len());
             let row: Vec<AnyElement> = tiles.drain(..take).collect();
+            // Chromium paints a row centred on a half pixel (582.5 for one 490px tile in 889) at the next whole one.
+            let row_width = take as f32 * layout.tile_width + (take as f32 - 1.) * TILE_GAP;
+            let indent = row_indent(width, row_width);
             rows.push(
                 div()
                     .flex()
                     .flex_none()
                     .w_full()
-                    .justify_center()
+                    .pl(px(indent))
                     .gap(px(TILE_GAP))
                     .children(row)
                     .into_any_element(),
@@ -2659,6 +2668,16 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_centred_on_a_half_pixel_starts_on_the_next_whole_one() {
+        // The golden has the 490px tile at x 582.5 of the 905px view at 375: 207.5 in, painted at 583.
+        assert_eq!(row_indent(905., 490.), 200.);
+        assert_eq!(375. + 8. + row_indent(905., 490.), 583.);
+        // A whole-pixel centre stays, and a row wider than the view starts at the padding.
+        assert_eq!(row_indent(906., 490.), 200.);
+        assert_eq!(row_indent(300., 490.), 0.);
+    }
 
     #[test]
     fn two_tiles_in_the_captured_view_are_490_wide() {

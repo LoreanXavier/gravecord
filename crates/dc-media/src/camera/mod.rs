@@ -29,6 +29,10 @@ pub const BITRATE: u32 = 600_000;
 /// The largest access unit the sender accepts: about a hundred RTP packets.
 pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
 
+/// The error of a start when there is no camera to open (none listed, or the chosen one is gone). The app shows the
+/// official "we can't detect any camera" text for it and the error's own words for every other failure.
+pub const NOT_FOUND: &str = "No camera was detected";
+
 /// How long [`Camera::start`] waits for the device to open before giving up.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 

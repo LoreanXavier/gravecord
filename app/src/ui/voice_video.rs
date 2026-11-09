@@ -25,6 +25,16 @@ use std::{
 use tokio::time::Instant;
 use tracing::{info, warn};
 
+/// The body of the Camera Unavailable alert: the official text when no camera was found (`bhqSWl`), otherwise what
+/// went wrong, so a camera which is listed but would not open is not reported as missing.
+fn camera_failure_text(reason: &str) -> String {
+    if reason == dc_media::camera::NOT_FOUND {
+        "Uh oh, we can't detect any camera.".to_owned()
+    } else {
+        reason.to_owned()
+    }
+}
+
 /// The most repaints per second the pictures cause.
 const REPAINTS_PER_SECOND: u64 = 30;
 /// A capture-only stream (the harness's `stream start`) ends by itself after this long.
@@ -343,11 +353,7 @@ impl Root {
             }
             dc_voice::Event::CameraFailed { reason } => {
                 warn!("camera failed: {reason}");
-                self.camera_error = Some(if dc_voice::camera_devices().is_empty() {
-                    "Uh oh, we can't detect any camera.".to_owned()
-                } else {
-                    format!("Error: {reason}")
-                });
+                self.camera_error = Some(camera_failure_text(reason));
                 true
             }
             _ => false,
@@ -809,5 +815,24 @@ mod tests {
         assert_eq!(frames.seen.load(Ordering::Relaxed), 3);
         frames.clear();
         assert!(frames.latest(1, VideoSource::Stream(1)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod camera_text_tests {
+    use super::camera_failure_text;
+
+    #[test]
+    fn only_a_missing_camera_reads_as_undetected() {
+        assert_eq!(
+            camera_failure_text(dc_media::camera::NOT_FOUND),
+            "Uh oh, we can't detect any camera."
+        );
+        let busy = "Camera is busy or unavailable.";
+        assert_eq!(camera_failure_text(busy), busy);
+        assert_eq!(
+            camera_failure_text("Camera RGB frame is not 24-bit uncompressed"),
+            "Camera RGB frame is not 24-bit uncompressed"
+        );
     }
 }

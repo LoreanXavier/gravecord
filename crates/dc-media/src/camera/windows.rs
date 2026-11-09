@@ -24,7 +24,6 @@ use windows::{
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 const MAX_FRAME_BYTES: usize = (WIDTH * 4 + 4096) * HEIGHT;
-const INVALID: &str = "Camera did not provide a bounded 640x480 RGB frame";
 const UNAVAILABLE: &str = "Camera is busy or unavailable. Check Windows Settings > Privacy & security > Camera and allow desktop apps to access your camera.";
 const TIMEOUT: &str = "Camera stopped delivering frames; check the device and try again";
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
@@ -215,16 +214,17 @@ pub(super) fn run(
             }
         }
         choices.sort_by_key(|(rank, _)| *rank);
-        let output = MFCreateMediaType().map_err(|_| INVALID)?;
+        let output = MFCreateMediaType()
+            .map_err(|_| "Media Foundation could not create the RGB output type")?;
         output
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Media Foundation refused the video major type on the RGB output")?;
         output
             .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Media Foundation refused RGB32 as the output subtype")?;
         output
             .SetUINT64(&MF_MT_FRAME_SIZE, frame_size())
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Media Foundation refused 640x480 as the output size")?;
         // Output negotiation may otherwise select a different capture mode. Pin each bounded native mode on the source
         // before adding RGB conversion.
         let native_reader = reader
@@ -391,9 +391,7 @@ fn selected_camera(cameras: Vec<IMFActivate>, selected: Option<DeviceRef<'_>>) -
     let selected = cameras
         .iter()
         .find(|camera| wanted.is_none_or(|link| device_link(camera).as_deref() == Some(link)))
-        .ok_or(
-            "Selected camera is disconnected or unavailable. Refresh cameras and choose another device.",
-        )?;
+        .ok_or(crate::camera::NOT_FOUND)?;
     // SAFETY: activation happens only on an explicit camera-on action; Source shuts down on drop.
     unsafe {
         selected
@@ -409,19 +407,27 @@ fn selected_camera(cameras: Vec<IMFActivate>, selected: Option<DeviceRef<'_>>) -
 fn output_stride(reader: &IMFSourceReader) -> R<i32> {
     // SAFETY: thread-owned reader. Check type and dimensions before using its stride.
     unsafe {
-        let media = reader.GetCurrentMediaType(VIDEO).map_err(|_| INVALID)?;
-        if media.GetUINT64(&MF_MT_FRAME_SIZE).map_err(|_| INVALID)? != frame_size()
-            || media.GetGUID(&MF_MT_SUBTYPE).map_err(|_| INVALID)? != MFVideoFormat_RGB32
+        let media = reader
+            .GetCurrentMediaType(VIDEO)
+            .map_err(|_| "Media Foundation has no current media type for the camera")?;
+        if media
+            .GetUINT64(&MF_MT_FRAME_SIZE)
+            .map_err(|_| "The current camera media type has no frame size")?
+            != frame_size()
+            || media
+                .GetGUID(&MF_MT_SUBTYPE)
+                .map_err(|_| "The current camera media type has no subtype")?
+                != MFVideoFormat_RGB32
         {
-            return Err(INVALID);
+            return Err("Media Foundation did not convert the camera to 640x480 RGB32");
         }
         let stride = media
             .GetUINT32(&MF_MT_DEFAULT_STRIDE)
             .map(|stride| stride as i32)
             .or_else(|_| MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.data1, WIDTH as u32))
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "The converted camera type has no usable stride")?;
         if !(WIDTH * 4..=WIDTH * 4 + 4096).contains(&(stride.unsigned_abs() as usize)) {
-            return Err(INVALID);
+            return Err("The converted camera stride is outside the bounded row size");
         }
         Ok(stride)
     }
@@ -431,14 +437,26 @@ fn copy_sample(sample: &IMFSample, stride: i32) -> R<Vec<u8>> {
     // SAFETY: the sample is borrowed only during its callback. Validate native byte budgets before mapping and copying;
     // every successful lock is unlocked on all paths.
     unsafe {
-        if sample.GetBufferCount().map_err(|_| INVALID)? != 1
-            || sample.GetTotalLength().map_err(|_| INVALID)? as usize > MAX_FRAME_BYTES
+        if sample
+            .GetBufferCount()
+            .map_err(|_| "Camera sample buffer count could not be read")?
+            != 1
+            || sample
+                .GetTotalLength()
+                .map_err(|_| "Camera sample length could not be read")? as usize
+                > MAX_FRAME_BYTES
         {
-            return Err(INVALID);
+            return Err("Camera sample is not one buffer within the 640x480 byte budget");
         }
-        let buffer = sample.GetBufferByIndex(0).map_err(|_| INVALID)?;
-        if buffer.GetMaxLength().map_err(|_| INVALID)? as usize > MAX_FRAME_BYTES {
-            return Err(INVALID);
+        let buffer = sample
+            .GetBufferByIndex(0)
+            .map_err(|_| "Camera sample buffer could not be read")?;
+        if buffer
+            .GetMaxLength()
+            .map_err(|_| "Camera sample buffer capacity could not be read")? as usize
+            > MAX_FRAME_BYTES
+        {
+            return Err("Camera sample buffer is larger than the 640x480 byte budget");
         }
         if let Ok(buffer2d) = buffer.cast::<IMF2DBuffer2>() {
             let (mut top, mut base, mut pitch, mut length) =
@@ -451,9 +469,9 @@ fn copy_sample(sample: &IMFSample, stride: i32) -> R<Vec<u8>> {
                     &mut base,
                     &mut length,
                 )
-                .map_err(|_| INVALID)?;
+                .map_err(|_| "Camera 2D sample buffer could not be locked")?;
             let result = if base.is_null() || top.is_null() || length as usize > MAX_FRAME_BYTES {
-                Err(INVALID)
+                Err("Camera 2D sample buffer has no data or exceeds the byte budget")
             } else if let Some(first) = (top as usize).checked_sub(base as usize) {
                 rgba_rows(
                     std::slice::from_raw_parts(base, length as usize),
@@ -461,17 +479,19 @@ fn copy_sample(sample: &IMFSample, stride: i32) -> R<Vec<u8>> {
                     pitch,
                 )
             } else {
-                Err(INVALID)
+                Err("Camera 2D sample buffer layout is inconsistent")
             };
-            buffer2d.Unlock2D().map_err(|_| INVALID)?;
+            buffer2d
+                .Unlock2D()
+                .map_err(|_| "Camera 2D sample buffer could not be unlocked")?;
             return result;
         }
         let (mut base, mut capacity, mut length) = (std::ptr::null_mut(), 0, 0);
         buffer
             .Lock(&mut base, Some(&mut capacity), Some(&mut length))
-            .map_err(|_| INVALID)?;
+            .map_err(|_| "Camera sample buffer could not be locked")?;
         let result = if base.is_null() || length > capacity || capacity as usize > MAX_FRAME_BYTES {
-            Err(INVALID)
+            Err("Camera sample buffer is empty or exceeds the byte budget")
         } else {
             let first = if stride < 0 {
                 stride.unsigned_abs() as usize * (HEIGHT - 1)
@@ -484,7 +504,9 @@ fn copy_sample(sample: &IMFSample, stride: i32) -> R<Vec<u8>> {
                 stride,
             )
         };
-        buffer.Unlock().map_err(|_| INVALID)?;
+        buffer
+            .Unlock()
+            .map_err(|_| "Camera sample buffer could not be unlocked")?;
         result
     }
 }
@@ -493,23 +515,23 @@ fn copy_sample(sample: &IMFSample, stride: i32) -> R<Vec<u8>> {
 fn rgba_rows(bytes: &[u8], first: usize, stride: i32) -> R<Vec<u8>> {
     let pitch = stride.unsigned_abs() as usize;
     if !(WIDTH * 4..=WIDTH * 4 + 4096).contains(&pitch) || bytes.len() > MAX_FRAME_BYTES {
-        return Err(INVALID);
+        return Err("Camera row pitch is outside the bounded 640x480 size");
     }
     let last = first
         .checked_add_signed(stride as isize * (HEIGHT - 1) as isize)
-        .ok_or(INVALID)?;
+        .ok_or("Camera row offset overflows")?;
     if first
         .max(last)
         .checked_add(WIDTH * 4)
         .is_none_or(|end| end > bytes.len())
     {
-        return Err(INVALID);
+        return Err("Camera frame does not fit its sample buffer");
     }
     let mut rgba = vec![0; WIDTH * HEIGHT * 4];
     for (y, dest) in rgba.chunks_exact_mut(WIDTH * 4).enumerate() {
         let start = first
             .checked_add_signed(stride as isize * y as isize)
-            .ok_or(INVALID)?;
+            .ok_or("Camera row offset overflows while converting")?;
         for (pixel, dest) in bytes[start..start + WIDTH * 4]
             .chunks_exact(4)
             .zip(dest.chunks_exact_mut(4))

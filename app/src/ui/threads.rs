@@ -75,7 +75,7 @@ impl Root {
         list
     }
 
-    /// `container_reDhww`: a joined, active thread under its channel: the 10x19 spine 24px in, the name 36px in.
+    /// `container_reDhww`: a joined, active thread under its channel: the 10x19 spine 24px in, the link 36px in, the row the sidebar's full 294px.
     pub(super) fn thread_rows(&self, parent: Id, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let threads: Vec<Thread> = self
             .guild_threads(Some(parent))
@@ -104,22 +104,19 @@ impl Root {
                         }),
                     )
                     .relative()
-                    .ml(px(8.))
-                    .w(px(286.))
+                    .w(px(294.))
                     .h(px(34.))
-                    // Between rows the spine runs on: a 2px rule from the top.
-                    .when(index > 0, |this| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .left(px(24.))
-                                .top(px(0.))
-                                .w(px(2.))
-                                .h(px(10.))
-                                .rounded(px(2.))
-                                .bg(color("--background-mod-strong")),
-                        )
-                    })
+                    // `spineBorder_reDhww`: one 2px rule down the whole list, ending 24px above the last row's bottom.
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(24.))
+                            .top(px(0.))
+                            .w(px(2.))
+                            .h(px(if index + 1 < count { 34. } else { 10. }))
+                            .rounded(px(2.))
+                            .bg(color("--background-mod-strong")),
+                    )
                     .child(
                         div().absolute().left(px(24.)).top(px(0.)).child(
                             gpui::svg()
@@ -129,7 +126,6 @@ impl Root {
                                 .text_color(color("--background-mod-strong")),
                         ),
                     )
-                    .when(index + 1 < count, |this| this)
                     .child(
                         div().ml(px(36.)).py(px(1.)).child(
                             div()

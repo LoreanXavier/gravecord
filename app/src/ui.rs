@@ -87,6 +87,7 @@ mod reminder_modal;
 mod report;
 mod saved;
 mod search;
+mod search_filters;
 mod server_access;
 mod server_audit;
 mod server_automod;
@@ -252,6 +253,7 @@ pub struct Root {
     skin_tone: u8,
     skin_menu: bool,
     search: Option<search::Search>,
+    search_filters: Option<search_filters::SearchFilters>,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
     file_language: HashMap<Id, String>,
@@ -466,6 +468,7 @@ impl Root {
             skin_tone: picker::stored_tone(),
             skin_menu: false,
             search: None,
+            search_filters: None,
             file_menu: None,
             file_wrap: HashSet::new(),
             file_language: HashMap::new(),
@@ -4941,6 +4944,16 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape"
+                    && let Some(filters) = this.search_filters.as_mut()
+                {
+                    if filters.open.take().is_none() {
+                        this.search_filters = None;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.modify_attachment.is_some() {
                     this.modify_attachment = None;
                     cx.notify();
@@ -5387,6 +5400,7 @@ impl Render for Root {
             .children(self.voice_panel_layer(window, cx))
             .children(self.go_live_layer(cx))
             .children(self.camera_error_modal(cx))
+            .children(self.search_filters_modal(cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
