@@ -118,7 +118,17 @@ fn passing_tests(repo: &Path) -> Result<BTreeSet<String>> {
         .current_dir(repo)
         .output()
         .context("running cargo test")?;
-    Ok(parse_passing(&String::from_utf8_lossy(&output.stdout)))
+    verified_passing(
+        output.status.success(),
+        &String::from_utf8_lossy(&output.stdout),
+    )
+}
+
+fn verified_passing(success: bool, report: &str) -> Result<BTreeSet<String>> {
+    if !success {
+        bail!("workspace tests failed; run cargo test --workspace to inspect the failure");
+    }
+    Ok(parse_passing(report))
 }
 
 fn parse_passing(report: &str) -> BTreeSet<String> {
@@ -268,6 +278,17 @@ pub fn run(repo: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_test_run_cannot_certify_other_passing_tests() {
+        let report = "test already_done ... ok\ntest regression ... FAILED\n";
+        assert!(verified_passing(false, report).is_err());
+        assert!(
+            verified_passing(true, "test already_done ... ok\n")
+                .unwrap()
+                .contains("already_done")
+        );
+    }
 
     const GOOD: &str =
         "| F-0001 | a | b | X:1 | todo | | |\n| F-0002 | a | c | X:2 | wip | | note |\n";
