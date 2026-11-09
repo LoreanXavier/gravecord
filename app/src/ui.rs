@@ -2902,6 +2902,8 @@ impl Root {
         div()
             .parity_with_border("user-panel", 1.)
             .absolute()
+            // The channel list runs behind this box: presses here must not reach its rows.
+            .occlude()
             .left(px(8.))
             .bottom(px(8.))
             .w(px(359.))

@@ -26,6 +26,9 @@ pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
 pub const USE_EXTERNAL_SOUNDS: u64 = 1 << 45;
 
 /// Every bit: what the owner and administrators hold (`R`).
+/// `xBc.CONNECT`, `xBc.MOVE_MEMBERS` (module 375389).
+pub const CONNECT: u64 = 1 << 20;
+pub const MOVE_MEMBERS: u64 = 1 << 24;
 pub const ALL: u64 = u64::MAX;
 /// `y`: what a lurker or a pending member keeps.
 const LURKER: u64 = VIEW_CHANNEL | READ_MESSAGE_HISTORY;

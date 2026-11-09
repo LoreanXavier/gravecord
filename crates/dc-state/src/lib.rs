@@ -127,6 +127,8 @@ pub struct Channel {
     pub last_message_id: Option<Id>,
     /// `permission_overwrites`.
     pub overwrites: Vec<permissions::Overwrite>,
+    /// `user_limit`: 0 is no limit.
+    pub user_limit: u64,
     pub topic: Option<String>,
     /// Slowmode in seconds (`rate_limit_per_user`).
     pub rate_limit_per_user: u64,
@@ -146,6 +148,7 @@ impl Channel {
             parent_id: id(&value["parent_id"]),
             last_message_id: id(&value["last_message_id"]),
             overwrites: permissions::Overwrite::list(&value["permission_overwrites"]),
+            user_limit: value["user_limit"].as_u64().unwrap_or(0),
             topic: text(&value["topic"]),
             rate_limit_per_user: value["rate_limit_per_user"].as_u64().unwrap_or(0),
             flags: value["flags"].as_u64().unwrap_or(0),

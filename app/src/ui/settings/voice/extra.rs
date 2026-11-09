@@ -23,6 +23,12 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Why a voice channel cannot be entered.
+enum VoiceBlock {
+    Locked,
+    Full,
+}
+
 pub(in crate::ui) const SILENCE: &str = "voice_silence_warning_setting";
 pub(in crate::ui) const SWITCH_ALERT: &str = "voice_switch_channel_alert_setting";
 pub(in crate::ui) const SUGGESTIONS: &str = "voice_audio_device_suggestions_setting";
@@ -651,6 +657,18 @@ impl Root {
         channel: Id,
         cx: &mut Context<Self>,
     ) {
+        match self.voice_join_block(guild, channel) {
+            // `locked`: the gateway drops a join without Connect, so the call would wait forever.
+            Some(VoiceBlock::Locked) => {
+                tracing::info!("voice join refused: no Connect permission");
+                return;
+            }
+            Some(VoiceBlock::Full) => {
+                self.put_app_toast("This channel is full.".to_owned(), false, cx);
+                return;
+            }
+            None => {}
+        }
         if self.switch_channel_asks(guild, channel) {
             let name = self
                 .stores
@@ -672,6 +690,26 @@ impl Root {
             }
         }
         self.join_voice(guild, channel, cx);
+    }
+
+    /// Whether this account can enter the channel: Connect, and room under `user_limit` unless it may move members
+    /// (`Pd` in module 147036). The call already in this channel is never blocked.
+    fn voice_join_block(&self, guild: Id, channel: Id) -> Option<VoiceBlock> {
+        if self.call.as_ref().is_some_and(|call| call.channel == channel) {
+            return None;
+        }
+        let me = self.stores.me()?;
+        let guild_data = self.stores.guild(guild)?;
+        let target = guild_data.channels.iter().find(|known| known.id == channel)?;
+        let can = |bit| dc_state::permissions::can_in_channel(guild_data, target, me, bit);
+        if !can(dc_state::permissions::CONNECT) {
+            return Some(VoiceBlock::Locked);
+        }
+        let present = self.stores.voice_members(guild, channel).len() as u64;
+        (target.user_limit > 0
+            && present >= target.user_limit
+            && !can(dc_state::permissions::MOVE_MEMBERS))
+        .then_some(VoiceBlock::Full)
     }
 
     fn switch_channel_asks(&self, guild: Id, channel: Id) -> bool {
