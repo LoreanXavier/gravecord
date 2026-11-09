@@ -76,6 +76,7 @@ mod forums;
 mod menu;
 mod modal;
 mod mosaic;
+mod nameplate_animation;
 mod nameplates;
 mod nitro;
 mod nitro_purchase;
@@ -238,6 +239,7 @@ pub struct Root {
     slowmode_ticking: bool,
     presence_ticking: bool,
     nameplates: Rc<RefCell<nameplates::Cache>>,
+    hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
@@ -441,6 +443,8 @@ impl Root {
         updates: UnboundedSender<Update>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|this, cx| this.release_nameplates(cx))
+            .detach();
         audio_menu::restore_audio_prefs();
         let voice = settings::VoiceState::restore();
         let mut setting_choices = voice.choices();
@@ -484,6 +488,7 @@ impl Root {
             slowmode_ticking: false,
             presence_ticking: false,
             nameplates: Default::default(),
+            hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
@@ -1062,6 +1067,9 @@ impl Root {
                 }
                 cx.notify();
             }
+            Update::Image { key, bytes } if key.starts_with(nameplates::ANIMATION_PREFIX) => {
+                self.nameplate_animation_fetched(&key, bytes, cx);
+            }
             Update::Image { key, bytes } if key.starts_with("text:") => {
                 self.texts
                     .insert(key, String::from_utf8_lossy(&bytes).into_owned());
@@ -1365,7 +1373,12 @@ impl Root {
                     let measured_width = text_width.clone();
                     let nameplate =
                         self.member_nameplate(user, text_width, first_nameplate == Some(user.id));
+                    let member_user = user.id;
                     let item = div()
+                        .id(SharedString::from(format!("member-item-{member_user}")))
+                        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                            this.nameplate_hover(member_user, *inside, cx)
+                        }))
                         .relative()
                         .h(px(height))
                         .w(px(248.))
@@ -1668,8 +1681,9 @@ impl Root {
             .as_ref()
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         let notification_events = crate::notifications::events();
+        let nameplates = self.nameplate_status();
         format!(
-            "notifications={notification_events:?} status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "notifications={notification_events:?} nameplates=[{nameplates}] status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
             self.stores.status,
             self.stores
                 .status_state()
@@ -5155,6 +5169,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_nameplate_animations(window, cx);
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);
