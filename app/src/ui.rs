@@ -3225,7 +3225,7 @@ impl Root {
                     .border_color(color("--background-mod-subtle"))
                     .flex()
                     .items_center()
-                    .pl(px(8.))
+                    .overflow_hidden()
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
@@ -3235,11 +3235,15 @@ impl Root {
                     .id("header-search-box")
                     .cursor_text()
                     .on_click(cx.listener(|this, _, window, cx| this.focus_search(window, cx)))
-                    .children(
-                        self.search
-                            .as_ref()
-                            .map(|search| div().flex_1().min_w(px(0.)).child(search.field.clone())),
-                    )
+                    .children(self.search.as_ref().map(|search| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .pl(px(8.))
+                            .pr(px(6.))
+                            .overflow_hidden()
+                            .child(search.field.clone())
+                    }))
                     .when(self.search.is_none(), |this| {
                         this.child(search).child(div().flex_1())
                     })
@@ -3250,7 +3254,12 @@ impl Root {
                         });
                         div()
                             .id("header-search-icon")
-                            .mr(px(5.))
+                            .w(px(24.))
+                            .h(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .when(typed, |this| {
                                 this.cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {

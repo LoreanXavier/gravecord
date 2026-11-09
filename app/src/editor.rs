@@ -119,6 +119,7 @@ pub struct Editor {
     focus: FocusHandle,
     buffer: TextBuffer,
     placeholder: SharedString,
+    ellipsis_placeholder: bool,
     style: Rc<EditorStyle>,
     laid: Rc<RefCell<Laid>>,
     dragging: bool,
@@ -146,6 +147,7 @@ impl Editor {
             focus: cx.focus_handle(),
             buffer: TextBuffer::default(),
             placeholder: SharedString::default(),
+            ellipsis_placeholder: false,
             style: Rc::new(style),
             laid: Rc::default(),
             dragging: false,
@@ -182,6 +184,10 @@ impl Editor {
 
     pub fn set_placeholder(&mut self, placeholder: String) {
         self.placeholder = placeholder.into();
+    }
+
+    pub fn set_ellipsis_placeholder(&mut self, on: bool) {
+        self.ellipsis_placeholder = on;
     }
 
     pub fn text(&self) -> &str {
@@ -599,7 +605,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, style, laid, placeholder, selection, caret, multiline, masked) = {
+        let (focus, style, laid, placeholder, selection, caret, multiline, masked, ellipsis) = {
             let editor = self.editor.read(cx);
             (
                 editor.focus.clone(),
@@ -610,6 +616,7 @@ impl Element for EditorElement {
                 editor.buffer.caret(),
                 editor.enter_inserts_newline,
                 editor.masked,
+                editor.ellipsis_placeholder,
             )
         };
         window.handle_input(
@@ -652,7 +659,7 @@ impl Element for EditorElement {
                 style.placeholder,
                 false,
             )];
-            // A text area's hint wraps inside the box as typed text would; a one-line field's runs on.
+            // A text area's hint wraps; fields such as header search truncate only their hint.
             if multiline {
                 if let Ok(mut lines) = window.text_system().shape_text(
                     placeholder,
@@ -672,10 +679,27 @@ impl Element for EditorElement {
                     );
                 }
             } else {
-                let shaped =
-                    window
+                let mut shaped = window.text_system().shape_line(
+                    placeholder.clone(),
+                    px(style.size),
+                    &runs,
+                    None,
+                );
+                if ellipsis && shaped.width > bounds.size.width {
+                    let (text, runs) = window
                         .text_system()
-                        .shape_line(placeholder, px(style.size), &runs, None);
+                        .line_wrapper(placeholder_font, px(style.size))
+                        .truncate_line(
+                            placeholder,
+                            bounds.size.width,
+                            "…",
+                            &runs,
+                            gpui::TruncateFrom::End,
+                        );
+                    shaped = window
+                        .text_system()
+                        .shape_line(text, px(style.size), &runs, None);
+                }
                 let _ = shaped.paint(
                     bounds.origin,
                     px(style.line_height),

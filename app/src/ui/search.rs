@@ -84,7 +84,11 @@ impl Root {
             let mut style = editor_style();
             style.size = 14.;
             style.line_height = 22.;
-            Editor::new(style, cx)
+            style.font.weight = FontWeight(500.);
+            style.placeholder = color("--input-placeholder-text-default").into();
+            let mut field = Editor::new(style, cx);
+            field.set_ellipsis_placeholder(true);
+            field
         });
         let events = cx.subscribe(&field, |this, editor, event: &EditorEvent, cx| {
             match event {
