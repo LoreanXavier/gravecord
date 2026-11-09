@@ -356,6 +356,9 @@ pub async fn run(
             ["slowmode", "reject"] => {
                 root.update(cx, |root, cx| root.script_slowmode_rejection(cx));
             }
+            ["notification", action] => {
+                root.update(cx, |root, cx| root.script_notification(action, cx));
+            }
             ["slowmode", millis] => {
                 if let Ok(millis) = millis.parse::<u64>() {
                     root.update(cx, |root, cx| root.script_slowmode(millis, cx));

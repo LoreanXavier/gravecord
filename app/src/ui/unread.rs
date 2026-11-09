@@ -20,9 +20,13 @@ impl Root {
     /// Acks the newest message of the open channel, unless Mark Unread holds it, and keeps where the unread
     /// messages started so the NEW divider stays while the channel is open.
     pub(super) fn read_current_channel(&mut self) {
+        if !self.notification_focused {
+            return;
+        }
         let Some(channel) = self.channel else {
             return;
         };
+        self.notification_runtime.clear(channel);
         if !self.stores.is_unread(channel) {
             return;
         }

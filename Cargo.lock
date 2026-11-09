@@ -3340,6 +3340,7 @@ dependencies = [
  "tracing-subscriber",
  "tts",
  "uuid",
+ "windows 0.62.2",
  "wuff",
  "zeroize",
 ]

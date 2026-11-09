@@ -913,6 +913,13 @@ impl Root {
         if crate::sounds::set_switch(key, on) {
             return;
         }
+        if crate::notifications::set_switch(
+            key,
+            on,
+            self.stores.current_user.as_ref().map(|user| user.id),
+        ) {
+            return;
+        }
         if key == "streaming_show_stream_previews" {
             // Read by the engine: the stream we send uploads previews only while it is on.
             crate::storage::set("audio.stream_previews", json!(on));

@@ -76,6 +76,7 @@ mod modal;
 mod mosaic;
 mod nitro;
 mod nitro_purchase;
+mod notifications;
 mod notify;
 mod oauth;
 mod oauth_spec;
@@ -234,6 +235,9 @@ pub struct Root {
     slowmode_ticking: bool,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
+    notification_runtime: crate::notifications::Runtime,
+    notification_focused: bool,
+    notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
     list: ListState,
     composer: Entity<Editor>,
@@ -475,6 +479,9 @@ impl Root {
             slowmode_ticking: false,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
+            notification_runtime: crate::notifications::Runtime::new(updates.clone()),
+            notification_focused: false,
+            notification_sounds: Default::default(),
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             composer,
@@ -623,6 +630,7 @@ impl Root {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
+            Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Slowmode {
                 channel,
                 kind,
@@ -645,6 +653,9 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                if name == "MESSAGE_CREATE" {
+                    self.notify_message(&data, cx);
+                }
                 if name == "CHANNEL_UPDATE"
                     && let Some(channel) = data["id"].as_str().and_then(|id| id.parse().ok())
                     && let Some((rate, bypass)) = self.slowmode_channel(channel)
@@ -695,6 +706,7 @@ impl Root {
                     self.after_ready();
                 }
                 if name == "MESSAGE_CREATE"
+                    && self.notification_focused
                     && data["channel_id"].as_str()
                         == self.channel.map(|id| id.to_string()).as_deref()
                 {
@@ -1548,8 +1560,9 @@ impl Root {
             .add_friend
             .as_ref()
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
+        let notification_events = crate::notifications::events();
         format!(
-            "status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "notifications={notification_events:?} status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
             self.stores.status,
             self.stores
                 .status_state()
@@ -5655,8 +5668,10 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
     let handle = root.read(cx).composer.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
     // Without the system-wide hook, push to talk is only seen while the window is active.
-    root.update(cx, |_, cx| {
-        cx.observe_window_activation(window, |this, window, _| {
+    root.update(cx, |this, cx| {
+        this.notification_focused = window.is_window_active();
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.notification_focus_changed(window.is_window_active(), cx);
             if !window.is_window_active() {
                 this.release_push_to_talk_on_blur();
             }

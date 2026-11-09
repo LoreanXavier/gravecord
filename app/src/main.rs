@@ -8,6 +8,7 @@ mod inline;
 mod logging;
 mod login_art;
 mod net;
+mod notifications;
 mod palette;
 mod parity;
 mod shell;

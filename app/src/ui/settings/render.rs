@@ -663,8 +663,14 @@ impl Root {
                 on,
             } => {
                 // The sound rows show the notification store (`NotificationSettingsStore`), not a local copy.
-                let on =
-                    crate::sounds::switch_value(key).unwrap_or_else(|| self.choice_on(key, *on));
+                let on = crate::sounds::switch_value(key)
+                    .or_else(|| {
+                        crate::notifications::switch_value(
+                            key,
+                            self.stores.current_user.as_ref().map(|user| user.id),
+                        )
+                    })
+                    .unwrap_or_else(|| self.choice_on(key, *on));
                 let disabled = self.voice_disabled(key)
                     || (*key == crate::sounds::SELECTED_CHANNEL
                         && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));

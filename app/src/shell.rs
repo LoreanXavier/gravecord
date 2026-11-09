@@ -103,6 +103,9 @@ impl Shell {
                 self.end_session(false, window, cx);
             }
             (update, Screen::Main(root)) => {
+                if matches!(&update, Update::NotificationClicked(_)) {
+                    window.activate_window();
+                }
                 root.update(cx, |root, cx| root.update(update, cx));
             }
             _ => {}
