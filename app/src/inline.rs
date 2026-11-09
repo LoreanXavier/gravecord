@@ -183,10 +183,17 @@ fn place(
     fragment: (ShapedLine, usize, usize),
     padding: Pixels,
     icon: Pixels,
+    hang_spaces: bool,
 ) {
     let (shaped, piece, start) = fragment;
     let width = shaped.width + padding * 2. + icon;
-    let overflow = max_width.is_some_and(|limit| *x + width > limit);
+    // Collapsible spaces hang outside the line box; non-breaking spaces and inline boxes do not.
+    let visible_width = if hang_spaces {
+        shaped.x_for_index(shaped.text.trim_end_matches([' ', '\t']).len())
+    } else {
+        width
+    };
+    let overflow = max_width.is_some_and(|limit| *x + visible_width > limit);
     if overflow && *x > px(0.) {
         laid.lines += 1;
         *x = px(0.);
@@ -200,8 +207,8 @@ fn place(
         piece,
         start,
     });
+    laid.width = laid.width.max(*x + visible_width);
     *x += width;
-    laid.width = laid.width.max(*x);
 }
 
 fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: &Window) -> Laid {
@@ -221,6 +228,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                 (empty, index, offset),
                 px(0.),
                 *size,
+                false,
             );
             offset += piece.text.len();
             continue;
@@ -244,6 +252,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                 (shortened, index, offset),
                 padding,
                 icon,
+                false,
             );
             break;
         }
@@ -255,6 +264,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                 (whole, index, offset),
                 padding,
                 icon,
+                piece.boxed.is_none(),
             );
         } else {
             for (at, word) in words(&piece.text) {
@@ -266,6 +276,7 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
                     (shaped, index, offset + at),
                     padding,
                     icon,
+                    true,
                 );
             }
         }
@@ -679,6 +690,72 @@ impl Laid {
 mod tests {
     use super::{Position, Selection, spread_ligatures, words};
     use gpui::px;
+
+    #[test]
+    fn line_end_spaces_hang_but_nonbreaking_spaces_and_boxes_do_not() {
+        use super::{Laid, place};
+        use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedLine, ShapedRun, point};
+        use std::sync::Arc;
+        let shaped = |text: &str| {
+            let mut line = ShapedLine::default();
+            line.text = text.to_owned().into();
+            *line = Arc::new(LineLayout {
+                width: px(10.),
+                len: text.len(),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: text
+                        .char_indices()
+                        .enumerate()
+                        .map(|(i, (index, _))| ShapedGlyph {
+                            id: GlyphId(0),
+                            position: point(px(i as f32 * 3.), px(0.)),
+                            index,
+                            is_emoji: false,
+                        })
+                        .collect(),
+                }],
+                ..Default::default()
+            });
+            line
+        };
+        for (text, hang_spaces, expected_line) in [
+            ("abc ", true, 0),
+            ("abc\u{a0}", true, 1),
+            ("abc ", false, 1),
+        ] {
+            let mut laid = Laid {
+                lines: 1,
+                ..Default::default()
+            };
+            let mut x = px(1.);
+            place(
+                &mut laid,
+                &mut x,
+                Some(px(10.)),
+                (shaped(text), 0, 0),
+                px(0.),
+                px(0.),
+                hang_spaces,
+            );
+            assert_eq!(laid.fragments[0].line, expected_line);
+            if hang_spaces && text.ends_with(' ') {
+                assert_eq!(laid.width, px(10.));
+                assert_eq!(x, px(11.));
+                place(
+                    &mut laid,
+                    &mut x,
+                    Some(px(10.)),
+                    (shaped("next"), 0, 4),
+                    px(0.),
+                    px(0.),
+                    true,
+                );
+                assert_eq!(laid.fragments[1].line, 1);
+                assert_eq!(laid.fragments[1].start, 4);
+            }
+        }
+    }
 
     #[test]
     fn a_ligature_is_divided_evenly() {
