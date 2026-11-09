@@ -55,7 +55,7 @@ impl Dom<'_> {
     }
 
     /// The first laid out element whose class list starts a class with `prefix`.
-    fn find(&self, prefix: &str, tag: Option<&str>) -> Option<[f64; 4]> {
+    fn find(&self, prefix: &str, tag: Option<&str>, ancestor: Option<&str>) -> Option<[f64; 4]> {
         let nodes = self.document["layout"]["nodeIndex"].as_array()?;
         let bounds = self.document["layout"]["bounds"].as_array()?;
         for (row, node) in nodes.iter().enumerate() {
@@ -64,7 +64,10 @@ impl Dom<'_> {
                 .class_of(node)
                 .split(' ')
                 .any(|class| class.starts_with(prefix));
-            if class_matches && tag.is_none_or(|tag| self.tag_of(node) == tag) {
+            if class_matches
+                && tag.is_none_or(|tag| self.tag_of(node) == tag)
+                && ancestor.is_none_or(|prefix| self.has_ancestor(node, prefix))
+            {
                 let values: Vec<f64> = bounds[row]
                     .as_array()?
                     .iter()
@@ -74,6 +77,30 @@ impl Dom<'_> {
             }
         }
         None
+    }
+
+    fn has_ancestor(&self, mut node: usize, prefix: &str) -> bool {
+        let Some(parents) = self.document["nodes"]["parentIndex"].as_array() else {
+            return false;
+        };
+        for _ in 0..parents.len() {
+            let Some(parent) = parents
+                .get(node)
+                .and_then(Value::as_i64)
+                .and_then(|index| usize::try_from(index).ok())
+            else {
+                return false;
+            };
+            node = parent;
+            if self
+                .class_of(node)
+                .split(' ')
+                .any(|class| class.starts_with(prefix))
+            {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -116,6 +143,7 @@ pub fn compare(
         let official = dom.find(
             target["class"].as_str().unwrap_or_default(),
             target["tag"].as_str(),
+            target["ancestor"].as_str(),
         );
         if official.is_none_or(|official| differs(&mine, &official)) {
             mismatches.push(Mismatch {
@@ -138,7 +166,7 @@ mod tests {
             "snapshot": {
                 "strings": ["class", "foo_abc other", "DIV", "A", "bar_1"],
                 "documents": [{
-                    "nodes": { "attributes": [[0, 1], [0, 4], [0, 4]], "nodeName": [2, 2, 3] },
+                    "nodes": { "attributes": [[0, 1], [0, 4], [0, 4]], "nodeName": [2, 2, 3], "parentIndex": [-1, -1, 0] },
                     "layout": { "nodeIndex": [0, 1, 2], "bounds": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 9, 9]] },
                 }],
             },
@@ -157,21 +185,33 @@ mod tests {
     #[test]
     fn finds_by_class_prefix() {
         assert_eq!(
-            with_dom(|dom| dom.find("foo_", None)),
+            with_dom(|dom| dom.find("foo_", None, None)),
             Some([1., 2., 3., 4.])
         );
         assert_eq!(
-            with_dom(|dom| dom.find("other", None)),
+            with_dom(|dom| dom.find("other", None, None)),
             Some([1., 2., 3., 4.])
         );
-        assert_eq!(with_dom(|dom| dom.find("nope", None)), None);
+        assert_eq!(with_dom(|dom| dom.find("nope", None, None)), None);
     }
 
     #[test]
     fn tag_narrows_the_match() {
         assert_eq!(
-            with_dom(|dom| dom.find("bar_", Some("A"))),
+            with_dom(|dom| dom.find("bar_", Some("A"), None)),
             Some([9., 9., 9., 9.])
+        );
+    }
+
+    #[test]
+    fn ancestor_disambiguates_reused_text_classes() {
+        assert_eq!(
+            with_dom(|dom| dom.find("bar_", None, Some("foo_"))),
+            Some([9., 9., 9., 9.])
+        );
+        assert_eq!(
+            with_dom(|dom| dom.find("bar_", None, Some("missing"))),
+            None
         );
     }
 
