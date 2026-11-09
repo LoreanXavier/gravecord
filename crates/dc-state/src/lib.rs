@@ -368,6 +368,16 @@ pub enum Badge {
 }
 
 impl Guild {
+    /// GuildMemberStore's color role (696451, `Y`), ranked by 7864's role comparator.
+    pub fn role_color(&self, roles: &[Id]) -> Option<u32> {
+        roles
+            .iter()
+            .filter_map(|id| self.role_info.get(id).map(|role| (*id, role)))
+            .filter(|(_, role)| role.color != 0)
+            .min_by_key(|(id, role)| (*id == self.id, std::cmp::Reverse(role.position), *id))
+            .map(|(_, role)| role.color)
+    }
+
     /// READY nests name and icon under `properties`; GUILD_CREATE may not.
     fn from_value(value: &Value) -> Option<Self> {
         let properties = if value["properties"].is_object() {
@@ -1784,13 +1794,25 @@ impl Stores {
 
     /// `GET /channels/:id/messages` returns newest first.
     pub fn load_messages(&mut self, channel: Id, page: &Value) {
-        for message in page
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Message::from_value)
-        {
-            let mut message = message;
+        let guild = self
+            .guilds
+            .iter()
+            .find(|guild| {
+                guild.channels.iter().any(|known| known.id == channel)
+                    || guild.threads.iter().any(|known| known.id == channel)
+            })
+            .map(|guild| guild.id);
+        for value in page.as_array().into_iter().flatten() {
+            let Some(mut message) = Message::from_value(value) else {
+                continue;
+            };
+            if let Some(guild) = guild
+                && value["member"].is_object()
+                && let Some(member) =
+                    members::Member::from_value(&value["member"], Some(&value["author"]))
+            {
+                self.members.upsert(guild, member);
+            }
             message.channel_id = channel;
             self.insert_message(message);
         }
@@ -1803,6 +1825,48 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn member_color_uses_the_highest_colored_role_and_snowflake_ties() {
+        let guild = super::Guild::from_value(&serde_json::json!({
+            "id":"100", "name":"fixture", "channels":[], "roles":[
+                {"id":"100", "name":"everyone", "position":999, "color":1},
+                {"id":"101", "name":"lower", "position":1, "color":2},
+                {"id":"102", "name":"colorless", "position":10, "color":0},
+                {"id":"103", "name":"older", "position":5, "color":3},
+                {"id":"104", "name":"newer", "position":5, "color":4}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(guild.role_color(&[101, 102, 104, 103]), Some(3));
+        assert_eq!(guild.role_color(&[100, 101]), Some(2));
+        assert_eq!(guild.role_color(&[104, 101]), Some(4));
+        assert_eq!(guild.role_color(&[102, 999]), None);
+        assert_eq!(guild.role_color(&[]), None);
+    }
+
+    #[test]
+    fn history_retains_member_roles_for_author_colors() {
+        let mut stores = super::Stores::default();
+        stores.dispatch(
+            "GUILD_CREATE",
+            &serde_json::json!({
+                "id":"100", "name":"fixture", "channels":[{"id":"200", "name":"chat", "type":0}]
+            }),
+        );
+        stores.load_messages(
+            200,
+            &serde_json::json!([{
+            "id":"300", "channel_id":"200", "content":"history", "timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"400", "username":"member"},
+                "member":{"nick":"nickname", "roles":["500"]}
+            }]),
+        );
+        let member = stores.members.get(100, 400).unwrap();
+        assert_eq!(member.roles, [500]);
+        assert_eq!(member.nick.as_deref(), Some("nickname"));
+        assert_eq!(stores.messages[&200][0].channel_id, 200);
+    }
+
     #[test]
     fn guild_update_changes_the_guilds_own_properties_only() {
         let mut stores = super::Stores::default();

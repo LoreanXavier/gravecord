@@ -591,6 +591,12 @@ impl Root {
         }
         let body = &report["body"];
         let mut messages = Vec::new();
+        let guild_id = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+            .map(|guild| guild.id);
         if kind == "forum-preview" {
             for entry in body["threads"]
                 .as_object()
@@ -598,9 +604,24 @@ impl Root {
                 .flat_map(|v| v.values())
             {
                 messages.extend(Message::from_value(&entry["first_message"]));
+                if let Some(guild) = guild_id
+                    && let Some(member) =
+                        dc_state::members::Member::from_value(&entry["owner"], None)
+                {
+                    self.stores.members.upsert(guild, member);
+                }
             }
         } else {
             let threads = page_threads(body, channel);
+            if let Some(guild) = guild_id {
+                for thread in body["threads"].as_array().into_iter().flatten() {
+                    if let Some(member) =
+                        dc_state::members::Member::from_value(&thread["owner"], None)
+                    {
+                        self.stores.members.upsert(guild, member);
+                    }
+                }
+            }
             let ids: Vec<_> = threads.iter().map(|t| t.id).collect();
             if view.query.is_empty() {
                 for id in ids {
@@ -773,17 +794,21 @@ impl Root {
                             } else {
                                 "--text-muted"
                             }))
-                            .child(
-                                message
-                                    .map(|m| {
-                                        format!(
-                                            "{}: {}",
-                                            m.author.display_name(),
-                                            m.content.replace('\n', " ")
-                                        )
-                                    })
-                                    .unwrap_or_default(),
-                            ),
+                            .children(message.map(|m| {
+                                let name = self.guild_display_name(&m.author);
+                                let text = format!("{name}: {}", m.content.replace('\n', " "));
+                                gpui::StyledText::new(text).with_highlights([(
+                                    0..name.len(),
+                                    gpui::HighlightStyle {
+                                        color: Some(
+                                            self.guild_author_color(m.author.id, "--text-muted")
+                                                .into(),
+                                        ),
+                                        font_weight: Some(FontWeight(500.)),
+                                        ..Default::default()
+                                    },
+                                )])
+                            })),
                     )
                     .child(
                         div()
@@ -873,11 +898,13 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-default"))
-                            .child(
-                                message
-                                    .map(|m| m.author.display_name().to_owned())
-                                    .unwrap_or_default(),
-                            )
+                            .children(message.map(|m| {
+                                div()
+                                    .text_color(
+                                        self.guild_author_color(m.author.id, "--text-default"),
+                                    )
+                                    .child(self.guild_display_name(&m.author))
+                            }))
                             .child(div().text_size(px(12.)).child(ago)),
                     )
                     .child(

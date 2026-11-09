@@ -1201,6 +1201,25 @@ impl Root {
         }
     }
 
+    fn guild_author_color(&self, user: Id, fallback: &str) -> Rgba {
+        if self.pref_index("role_style", 0) != 0 {
+            return color(fallback);
+        }
+        self.current_guild()
+            .and_then(|guild| {
+                let member = self.stores.members.get(guild.id, user)?;
+                guild.role_color(&member.roles)
+            })
+            .map_or_else(|| color(fallback), gpui::rgb)
+    }
+
+    fn guild_display_name(&self, user: &User) -> String {
+        self.current_guild()
+            .and_then(|guild| self.stores.members.get(guild.id, user.id))
+            .and_then(|member| member.nick.clone())
+            .unwrap_or_else(|| user.display_name().to_owned())
+    }
+
     /// The official panel: 264px wide, 42px rows, section headers with their counts.
     fn member_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let list = self
@@ -1252,7 +1271,7 @@ impl Root {
                                 .ml(px(12.))
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(color("--channels-default"))
+                                .text_color(self.guild_author_color(user.id, "--channels-default"))
                                 .child(name),
                         )
                         .when(owner == Some(user.id), |this| {
@@ -1750,8 +1769,8 @@ impl Root {
                     .flex_none()
                     .opacity(0.64)
                     .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child(referenced.author.display_name().to_owned()),
+                    .text_color(self.guild_author_color(referenced.author.id, "--text-strong"))
+                    .child(self.guild_display_name(&referenced.author)),
             )
             .child(
                 div()
@@ -4199,9 +4218,12 @@ impl Root {
                                             message.author.id,
                                             div()
                                                 .font_weight(FontWeight(500.))
-                                                .text_color(color("--text-strong"))
+                                                .text_color(self.guild_author_color(
+                                                    message.author.id,
+                                                    "--text-strong",
+                                                ))
                                                 .line_height(px(22.))
-                                                .child(message.author.display_name().to_owned()),
+                                                .child(self.guild_display_name(&message.author)),
                                             cx,
                                         ),
                                     )
