@@ -27,8 +27,9 @@ pub struct ArtBytes {
 }
 
 fn cache_dir() -> Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    let dir = PathBuf::from(base).join("gravecord").join("login-art");
+    let dir = crate::storage::data_dir()
+        .context("LOCALAPPDATA is not set")?
+        .join("login-art");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
