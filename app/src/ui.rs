@@ -29,6 +29,9 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod actions;
+mod activity_host;
+mod activity_launch;
+mod activity_shelf;
 mod apps;
 mod audio_menu;
 mod audit_spec;
@@ -99,6 +102,7 @@ mod server_webhooks;
 mod settings;
 mod soundboard;
 mod stream_menus;
+mod stream_volume;
 mod tag_badges;
 mod threads;
 mod tooltip;
@@ -247,6 +251,8 @@ pub struct Root {
     friend_menu: Option<friends::FriendMenu>,
     confirm_remove_friend: Option<Id>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
+    activity_shelf: Option<activity_shelf::ActivityShelf>,
+    activities: activity_launch::Activities,
     notify_open: bool,
     /// The Mute Channel row while its durations show.
     notify_submenu: Option<Bounds<Pixels>>,
@@ -417,6 +423,8 @@ impl Root {
             friend_menu: None,
             confirm_remove_friend: None,
             quick_switcher: None,
+            activity_shelf: None,
+            activities: Default::default(),
             notify_open: false,
             notify_submenu: None,
             pins_open: None,
@@ -485,12 +493,29 @@ impl Root {
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::Dispatch { name, data } => {
-                let voice_before = (name == "VOICE_STATE_UPDATE").then(|| self.others_in_call());
+                let voice_before = (name == "VOICE_STATE_UPDATE")
+                    .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
                 self.soundboard_dispatch(&name, &data, cx);
+                match name.as_str() {
+                    "EMBEDDED_ACTIVITY_UPDATE_V2" => self.activity_instance_update(&data, cx),
+                    "READY_SUPPLEMENTAL" => {
+                        for guild in data["guilds"].as_array().into_iter().flatten() {
+                            for instance in
+                                guild["activity_instances"].as_array().into_iter().flatten()
+                            {
+                                let mut instance = instance.clone();
+                                instance["guild_id"] = guild["id"].clone();
+                                self.activity_instance_update(&instance, cx);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 self.stream_dispatch(&name, &data, cx);
                 if name == "VOICE_STATE_UPDATE" {
-                    self.after_voice_state(voice_before.flatten(), &data);
+                    let (others, streamers) = voice_before.unwrap_or_default();
+                    self.after_voice_state(others, streamers, &data);
                 }
                 if name.starts_with("RELATIONSHIP_") {
                     self.rebuild_rows();
@@ -562,6 +587,15 @@ impl Root {
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::Fetched { key, body } => {
+                if key.starts_with(activity_launch::ACTIVITY_PREFIX) {
+                    self.activity_fetched(&key, &body, cx);
+                    return;
+                }
+                if key.starts_with(activity_shelf::SHELF_PREFIX) {
+                    self.fetched.insert(key.clone(), body);
+                    self.activity_shelf_fetched(&key, cx);
+                    return;
+                }
                 if key.starts_with("soundboard:") {
                     self.soundboard_fetched(&key, &body, cx);
                     return;
@@ -2246,6 +2280,7 @@ impl Root {
                         }
                         if row.kind == ChannelKind::Voice {
                             rows.extend(self.voice_members(guild.id, row.id));
+                            rows.extend(self.voice_activity_rows(row.id, cx));
                             rows.extend(self.voice_invite_row(guild.id, row.id, cx));
                         }
                         rows
@@ -4297,6 +4332,7 @@ fn avatar_source(user: &User) -> (String, String) {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.onboarding_note_focus(window, cx);
+        self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
@@ -4422,6 +4458,12 @@ impl Render for Root {
                         this.channel_settings = None;
                     }
                     cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && (this.activity_dialog_escape(cx) || this.activity_shelf_escape(cx))
+                {
                     cx.stop_propagation();
                     return;
                 }
@@ -4740,6 +4782,8 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
+            .children(self.activity_shelf_layer(window, cx))
+            .children(self.activity_dialog_layer(cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))

@@ -348,6 +348,8 @@ pub struct StreamUpdate {
     pub role: Role,
     pub status: StreamStatus,
     pub viewers: usize,
+    /// Who watches (`viewer_ids` of the stream's dispatches), for the viewer pile and its list.
+    pub viewer_ids: Vec<u64>,
 }
 
 /// What a dispatch led to.
@@ -366,6 +368,7 @@ pub struct Tracker {
     rendezvous: Option<Rendezvous>,
     status: StreamStatus,
     viewers: usize,
+    viewer_ids: Vec<u64>,
     paused: bool,
 }
 
@@ -377,6 +380,7 @@ impl Tracker {
             rendezvous: Some(Rendezvous::new(key, role, user_id, session_id, now)),
             status: StreamStatus::Starting,
             viewers: 0,
+            viewer_ids: Vec::new(),
             paused: false,
         }
     }
@@ -395,6 +399,7 @@ impl Tracker {
             role: self.role,
             status: self.status,
             viewers: self.viewers,
+            viewer_ids: self.viewer_ids.clone(),
         }
     }
 
@@ -421,15 +426,17 @@ impl Tracker {
                 viewers, paused, ..
             } => {
                 self.viewers = viewers.len();
+                self.viewer_ids = viewers.clone();
                 self.paused = *paused;
                 step.update = self.set(StreamStatus::Connecting);
             }
             Dispatch::Update {
                 viewers, paused, ..
             } => {
-                let before = (self.viewers, self.paused);
+                let before = (self.viewer_ids.clone(), self.paused);
                 if let Some(viewers) = viewers {
                     self.viewers = viewers.len();
+                    self.viewer_ids = viewers.clone();
                 }
                 self.paused = *paused;
                 if self.paused != before.1 {
@@ -442,7 +449,7 @@ impl Tracker {
                         step.update = self.set(status);
                     }
                 }
-                if step.update.is_none() && self.viewers != before.0 {
+                if step.update.is_none() && self.viewer_ids != before.0 {
                     step.update = Some(self.current());
                 }
             }
@@ -675,6 +682,11 @@ mod tests {
             .update
             .unwrap();
         assert_eq!(viewers.viewers, 2);
+        assert_eq!(
+            viewers.viewer_ids,
+            vec![7, 8],
+            "the pile needs who watches, not how many"
+        );
         let paused = tracker.dispatch(&update(None, true), now).update.unwrap();
         assert_eq!(paused.status, StreamStatus::Paused);
         let delete = Dispatch::Delete {

@@ -57,6 +57,24 @@ pub(super) fn status_line() -> AnyElement {
         .into_any_element()
 }
 
+/// The colour of a stream source without an icon (module 118277): one of six, chosen by the name's hash.
+fn source_color(name: &str) -> u32 {
+    const COLORS: [u32; 6] = [1752220, 3066993, 3447003, 0x9b59b6, 0xe91e63, 0xf1c40f];
+    let mut hash: i32 = 5381;
+    for unit in name.encode_utf16() {
+        hash = hash.wrapping_mul(33) ^ i32::from(unit);
+    }
+    COLORS[(hash as u32 % 6) as usize]
+}
+
+/// The first character of the source's name in capitals (`text-transform: uppercase`), or a question mark.
+fn source_letter(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_owned())
+}
+
 impl Root {
     fn voice_flags(&self) -> u64 {
         let allowed = match self
@@ -125,6 +143,7 @@ impl Root {
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
         self.soundboard_stop();
         self.stream_stop(cx);
+        self.leave_activity_on_call_end(cx);
         if let Some(call) = self.call.take() {
             if call.connected
                 && let Some(sound) =
@@ -348,9 +367,27 @@ impl Root {
         )
     }
 
+    /// Who in the channel of the call goes live (`self_stream`), us included; none outside a call.
+    pub(super) fn streamers_in_call(&self) -> Option<Vec<Id>> {
+        let call = self.call.as_ref()?;
+        Some(
+            self.stores
+                .voice_members(call.guild, call.channel)
+                .into_iter()
+                .filter(|state| state.self_stream)
+                .map(|state| state.user_id)
+                .collect(),
+        )
+    }
+
     /// After a `VOICE_STATE_UPDATE` reached the stores: the server moved us (`Su`), or someone joined or left the
     /// channel (`SE` without the rtc experiment). `before` is who was in the channel before the update.
-    pub(super) fn after_voice_state(&mut self, before: Option<Vec<Id>>, data: &serde_json::Value) {
+    pub(super) fn after_voice_state(
+        &mut self,
+        before: Option<Vec<Id>>,
+        streams_before: Option<Vec<Id>>,
+        data: &serde_json::Value,
+    ) {
         let parse =
             |value: &serde_json::Value| value.as_str().and_then(|text| text.parse::<Id>().ok());
         let (Some(me), Some(call)) = (
@@ -372,6 +409,20 @@ impl Root {
                 crate::sounds::play_event("user_moved");
             }
             return;
+        }
+        // `stream_started` and `stream_ended` come first in `SE`, before the join and leave sounds.
+        if let (Some(before), Some(after)) = (streams_before, self.streamers_in_call()) {
+            let held: Vec<Id> = self.video.owners();
+            if let Some(sound) = super::voice_sounds::stream_sound(
+                self.room(guild, channel),
+                me,
+                &before,
+                &after,
+                &held,
+            ) {
+                crate::sounds::play_event(sound);
+                return;
+            }
         }
         if self.rtc_join_sounds() {
             return;
@@ -562,7 +613,9 @@ impl Root {
             Tip::text("Start An Activity", Side::Top),
             wide("voice-activity", "voice_activity")
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.voice_activity_clicked(cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx)),
+                ),
             cx,
         );
         // `greyButtonActive` while the picker is open, `disabled` (opacity .3) under a server mute, suppression or deafening.
@@ -628,17 +681,42 @@ impl Root {
                         .relative()
                         .size(px(32.))
                         .flex_none()
-                        .children(
-                            info.icon
-                                .clone()
-                                .map(|image| img(image).size(px(32.)).rounded(px(4.))),
+                        // `icon_Yjv1d0`: the source's icon, or its first letter on a colour taken from the name.
+                        .child(match info.icon.clone() {
+                            Some(image) => {
+                                img(image).size(px(32.)).rounded(px(4.)).into_any_element()
+                            }
+                            None => div()
+                                .size(px(32.))
+                                .rounded(px(4.))
+                                .flex()
+                                .items_start()
+                                .justify_center()
+                                .bg(gpui::rgb(source_color(&name)))
+                                .text_size(px(16.))
+                                .line_height(px(34.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(color("--white"))
+                                .child(source_letter(&name))
+                                .into_any_element(),
+                        })
+                        // `svg-mask-status-screenshare`: the badge's corner is cut out of the icon.
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(16.))
+                                .top(px(19.))
+                                .w(px(16.))
+                                .h(px(13.))
+                                .rounded_tl(px(4.))
+                                .bg(color("--background-surface-high")),
                         )
                         .child(
                             div()
                                 .absolute()
                                 .left(px(19.))
                                 .top(px(20.))
-                                .child(super::icon("voice_view_stream", 14., "--text-strong")),
+                                .child(super::icon("voice_member_camera", 14., "--text-strong")),
                         ),
                 )
                 .child(
@@ -646,7 +724,7 @@ impl Root {
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(px(14.))
+                        .text_size(px(16.))
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
@@ -761,6 +839,99 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Under a voice channel's members, the activities running in it (`EMBEDDED_ACTIVITY_UPDATE_V2`): the app's icon
+    /// and name, and Join, or Leave when this session is in it. The official row has no capture, so this one keeps to
+    /// the member rows' 32px and type (DOM.md has none for activities).
+    pub(super) fn voice_activity_rows(
+        &self,
+        channel: Id,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let in_call = self
+            .call
+            .as_ref()
+            .is_some_and(|call| call.channel == channel);
+        self.activities
+            .in_channel(channel)
+            .into_iter()
+            .enumerate()
+            .map(|(index, instance)| {
+                let app = instance.application_id.clone();
+                let mine = self
+                    .activities
+                    .running
+                    .as_ref()
+                    .is_some_and(|running| running.launch_id == instance.launch_id);
+                let name = self
+                    .activities
+                    .names
+                    .get(&app)
+                    .cloned()
+                    .unwrap_or_else(|| "Activity".to_owned());
+                let picture = self.images.get(&format!("shelf-icon:{app}")).cloned();
+                let people = instance.participants.len();
+                let label = if mine { "Leave" } else { "Join" };
+                let tone = if mine {
+                    "--control-critical-primary-background-default"
+                } else {
+                    "--control-primary-background-default"
+                };
+                div()
+                    .flex_none()
+                    .h(px(32.))
+                    .pl(px(44.))
+                    .pr(px(17.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .children(picture.map(|picture| img(picture).size(px(24.)))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--channels-default"))
+                            .child(format!("{name} ({people})")),
+                    )
+                    .when(mine || in_call, |this| {
+                        this.child(
+                            div()
+                                .id(gpui::SharedString::from(format!("activity-row-{index}")))
+                                .h(px(20.))
+                                .px(px(8.))
+                                .rounded(px(4.))
+                                .bg(color(tone))
+                                .flex()
+                                .items_center()
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(gpui::rgba(0xffffffff))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if mine {
+                                        this.leave_activity(cx);
+                                    } else {
+                                        this.launch_activity(&app, cx);
+                                    }
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect()
     }
 
     /// Members in a voice channel, under its row: 24px avatar and name. A green ring marks who speaks.

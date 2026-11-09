@@ -576,7 +576,7 @@ pub(crate) async fn run(
                     }
                     let mut frame = mixer.pop();
                     // Watched stream audio joins the mix at its own level.
-                    if let Some(extra) = hub.pop_stream_audio() {
+                    if let Some(extra) = hub.pop_stream_audio(frame.as_ref()) {
                         match frame.as_mut() {
                             Some(frame) => {
                                 for (sample, extra) in frame.iter_mut().zip(extra) {

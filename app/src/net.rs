@@ -168,6 +168,13 @@ pub enum Request {
         url: String,
         filename: String,
     },
+    /// `GET` with an application's own access token as the bearer (never the account token). The outcome comes
+    /// back as `Update::Fetched { key, body }` shaped like `Request::Rest`'s.
+    BearerGet {
+        key: String,
+        route: String,
+        bearer: String,
+    },
     /// `POST /interactions`: an application command run by hand.
     Interaction {
         body: Value,
@@ -656,6 +663,23 @@ pub async fn run(
                     }
                 });
             }
+            Request::BearerGet { key, route, bearer } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let report = match client.get_as_bearer(&route, &bearer).await {
+                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Err(dc_http::Error::Status { status, body, .. }) => {
+                            warn!("{route} failed: {status}");
+                            json!({"ok": false, "status": status.as_u16(), "body": body})
+                        }
+                        Err(error) => {
+                            warn!("{route} failed: {error}");
+                            json!({"ok": false, "status": 0, "body": null})
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body: report });
+                });
+            }
             Request::Interaction { body } => {
                 tokio::spawn(async move {
                     if let Err(error) = client
@@ -722,7 +746,16 @@ pub async fn run(
                         Ok(body) => {
                             let _ = updates.send(Update::Fetched { key, body });
                         }
-                        Err(error) => warn!("fetch failed: {error}"),
+                        Err(error) => {
+                            warn!("fetch failed: {error}");
+                            // The shelf shows "Failed to fetch activities" instead of waiting.
+                            if key.starts_with("activity-shelf:") {
+                                let _ = updates.send(Update::Fetched {
+                                    key,
+                                    body: json!({"error": true}),
+                                });
+                            }
+                        }
                     }
                 });
             }

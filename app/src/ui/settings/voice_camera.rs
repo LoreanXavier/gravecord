@@ -58,7 +58,7 @@ impl Root {
         cx.notify();
     }
 
-    fn camera_test_start(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn camera_test_start(&mut self, cx: &mut Context<Self>) {
         self.camera_test_stop(cx);
         // The call's camera owns the device while it is on.
         if self.call.as_ref().is_some_and(|call| call.camera) {
@@ -230,7 +230,11 @@ impl Root {
     }
 
     /// `camera_selection_setting`: the label, the select and the help line.
-    pub(super) fn camera_select_row(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui) fn camera_select_row(
+        &self,
+        bare: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let devices = if self.voice.camera.devices.is_empty() {
             dc_voice::camera_devices()
         } else {
@@ -338,15 +342,17 @@ impl Root {
             .py(px(8.))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .mb(px(8.))
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child("Camera"),
-            )
+            .when(!bare, |this| {
+                this.child(
+                    div()
+                        .mb(px(8.))
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child("Camera"),
+                )
+            })
             .child(div().relative().child(field).when(open, |this| {
                 this.child(
                     deferred(
@@ -371,24 +377,59 @@ impl Root {
                     .with_priority(2),
                 )
             }))
-            .child(
+            .when(!bare, |this| {
+                this.child(
+                    div()
+                        .mt(px(8.))
+                        .flex()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-subtle"))
+                        .child("Looking for more camera options? ")
+                        .child(
+                            div()
+                                .id("camera-system-settings")
+                                .cursor_pointer()
+                                .text_color(color("--text-link"))
+                                .hover(|style| style.underline())
+                                .on_click(|_, _, cx| cx.open_url("ms-settings:camera"))
+                                .child("Check out your system camera settings."),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The live picture of the preview modal: 430x242 (module 308229), fed by the same worker as Test Video.
+    pub(in crate::ui) fn camera_preview_box(&self) -> AnyElement {
+        let test = self.voice.camera.test.as_ref();
+        let image = test.and_then(|test| test.image.clone());
+        let message = test.and_then(|test| test.error.clone());
+        div()
+            .relative()
+            .w(px(430.))
+            .h(px(242.))
+            .rounded(px(4.))
+            .overflow_hidden()
+            .bg(color("--background-base-low"))
+            .children(image.map(|image| {
+                gpui::img(image)
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Contain)
+            }))
+            .children(message.map(|message| {
                 div()
-                    .mt(px(8.))
+                    .absolute()
+                    .inset_0()
                     .flex()
-                    .text_size(px(12.))
-                    .line_height(px(16.))
-                    .text_color(color("--text-subtle"))
-                    .child("Looking for more camera options? ")
-                    .child(
-                        div()
-                            .id("camera-system-settings")
-                            .cursor_pointer()
-                            .text_color(color("--text-link"))
-                            .hover(|style| style.underline())
-                            .on_click(|_, _, cx| cx.open_url("ms-settings:camera"))
-                            .child("Check out your system camera settings."),
-                    ),
-            )
+                    .items_center()
+                    .justify_center()
+                    .px(px(16.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-muted"))
+                    .child(message)
+            }))
             .into_any_element()
     }
 }

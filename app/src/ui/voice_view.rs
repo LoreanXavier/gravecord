@@ -152,6 +152,57 @@ struct FocusCrumb {
     title: String,
     avatar: Option<std::sync::Arc<gpui::Image>>,
     quality: Option<String>,
+    /// The viewers of a focused stream, for the pile of the header (`546871`): their avatars, in order.
+    viewers: Vec<Option<std::sync::Arc<gpui::Image>>>,
+}
+
+/// `maxVisibleUsers` of the header's viewer pile.
+const PILE_MAX: usize = 5;
+
+/// `Ay` of module 525788: up to `PILE_MAX` 24px avatars a couple of pixels over one another; past that the last place
+/// reads "+N" in a 25px chip (`overflow_Xa_Vtp`). Nothing shows without viewers. The bite the official cuts out of
+/// each avatar for the next is not drawn.
+fn viewer_pile(viewers: &[Option<std::sync::Arc<gpui::Image>>]) -> AnyElement {
+    let shown = viewers.len().min(PILE_MAX);
+    let overflow = viewers.len() > PILE_MAX;
+    div()
+        .mr(px(16.))
+        .flex()
+        .items_center()
+        .children(
+            viewers
+                .iter()
+                .take(shown)
+                .enumerate()
+                .map(|(index, avatar)| {
+                    if overflow && index + 1 == shown {
+                        div()
+                            .ml(px(-4.))
+                            .size(px(25.))
+                            .rounded(px(15.))
+                            .bg(mid("--primary-600"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(mid("--primary-300"))
+                            .child(format!("+{}", viewers.len() - PILE_MAX + 1))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .when(index > 0, |this| this.ml(px(-2.)))
+                            .size(px(24.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(mid("--background-mod-strong"))
+                            .children(avatar.clone().map(|picture| img(picture).size(px(24.))))
+                            .into_any_element()
+                    }
+                }),
+        )
+        .into_any_element()
 }
 
 const ASPECT: f32 = 16. / 9.;
@@ -503,6 +554,20 @@ impl Root {
                 .flatten()
                 .and_then(|info| info.quality)
                 .map(|(resolution, fps)| super::go_live::quality_badge(resolution, fps)),
+            viewers: stream
+                .then(|| self.video_stream_of(person.user.id))
+                .flatten()
+                .map(|info| {
+                    info.viewer_ids
+                        .into_iter()
+                        .map(|id| {
+                            self.images
+                                .get(&super::avatar_source(&self.user_of(id)).0)
+                                .cloned()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -690,7 +755,27 @@ impl Root {
             );
         }
         let focus_head = focused.map(|index| self.focus_crumb(&people[index]));
-        let grid = if let Some(index) = focused {
+        let activity_stage = self
+            .activities
+            .running
+            .as_ref()
+            .is_some_and(|running| running.channel == channel && running.url.is_some());
+        if activity_stage {
+            self.activities.stage_seen = true;
+        }
+        let grid = if activity_stage {
+            // The running activity's page is a native surface laid over this box (`dc-webhost`).
+            div()
+                .absolute()
+                .left(px(8.))
+                .right(px(8.))
+                .top(px(56.))
+                .bottom(px(96.))
+                .rounded(px(8.))
+                .bg(mid("--background-base-lowest"))
+                .child(self.anchor_probe("activity-stage"))
+                .into_any_element()
+        } else if let Some(index) = focused {
             self.focus_body(&people, index, width, height, cx)
         } else if people.is_empty() {
             self.no_video_view(width, height, cx)
@@ -721,9 +806,33 @@ impl Root {
                     .child(fade(false)),
             )
             .child(self.call_header(channel, shown, focus_head, cx))
+            .children(activity_stage.then(|| self.activity_leave_button(cx)))
             .child(self.call_bar(guild, channel, shown, cx))
             .children(self.voice_menus(channel, width, height, cx))
             .children(self.soundboard_suggest(cx))
+            .into_any_element()
+    }
+
+    /// Leave, over the stage's top right while an activity runs (`Hi1/aQ`; the official panel has no capture here).
+    fn activity_leave_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("activity-leave")
+            .absolute()
+            .top(px(12.))
+            .right(px(72.))
+            .h(px(32.))
+            .px(px(12.))
+            .rounded(px(8.))
+            .bg(mid("--control-critical-primary-background-default"))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(mid("--white"))
+            .on_click(cx.listener(|this, _, _, cx| this.leave_activity(cx)))
+            .child("Leave")
             .into_any_element()
     }
 
@@ -1111,8 +1220,8 @@ impl Root {
                             )
                             .child(
                                 button("vcard-activity", "voice_view_activity", "Choose Activity")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.voice_activity_clicked(cx);
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.voice_activity_clicked(window, cx);
                                     })),
                             ),
                     ),
@@ -1242,6 +1351,12 @@ impl Root {
                     })),
             )
             .child(div().flex_1())
+            .children(
+                focus
+                    .as_ref()
+                    .filter(|crumb| !crumb.viewers.is_empty())
+                    .map(|crumb| viewer_pile(&crumb.viewers)),
+            )
             .children(focus.and_then(|crumb| crumb.quality).map(|text| {
                 let pill = |text: String, fill: &'static str| {
                     div()
@@ -1287,7 +1402,7 @@ impl Root {
                 "--interactive-icon-default",
             ))
         };
-        let primary = |id: &'static str, glyph: &'static str| {
+        let primary_tinted = |id: &'static str, glyph: &'static str, tint: &'static str| {
             div()
                 .id(id)
                 .size(px(40.))
@@ -1297,8 +1412,9 @@ impl Root {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(gpui::hsla(0., 0., 1., 0.1)))
-                .child(icon(glyph, 20., "--white"))
+                .child(icon(glyph, 20., tint))
         };
+        let primary = |id: &'static str, glyph: &'static str| primary_tinted(id, glyph, "--white");
         // The microphone and camera buttons each carry a 20px chevron nub after a pixel of gap.
         let nub = |id: &'static str, tint: &'static str| {
             div()
@@ -1484,12 +1600,16 @@ impl Root {
                             self.with_tip(
                                 "call-screen-tip",
                                 Tip::text("Stop Streaming", Side::Top),
-                                primary("call-screen", "voice_bar_screen_active")
-                                    .rounded_l(px(8.))
-                                    .bg(active_fill)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx)),
-                                    ),
+                                primary_tinted(
+                                    "call-screen",
+                                    "voice_bar_screen_active",
+                                    "--icon-voice-connected",
+                                )
+                                .rounded_l(px(8.))
+                                .bg(active_fill)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx)),
+                                ),
                                 cx,
                             ),
                         )
@@ -1497,7 +1617,7 @@ impl Root {
                             self.with_tip(
                                 "call-screen-chevron-tip",
                                 Tip::text("More Stream Options", Side::Top),
-                                nub("call-screen-chevron", active_text)
+                                nub("call-screen-chevron", "--icon-voice-connected")
                                     .bg(active_fill)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.vv.quality_open = false;
@@ -1525,8 +1645,9 @@ impl Root {
                 self.with_tip(
                     "call-activity-tip",
                     Tip::text("Start An Activity", Side::Top),
-                    primary("call-activity", "voice_activity")
-                        .on_click(cx.listener(|this, _, _, cx| this.voice_activity_clicked(cx))),
+                    primary("call-activity", "voice_activity").on_click(
+                        cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx)),
+                    ),
                     cx,
                 )
                 .into_any_element(),
@@ -1921,6 +2042,23 @@ impl Root {
                         cx,
                         |_, _, _| toggle_call_setting(SHOW_OWN_CAMERA),
                     ));
+                    // `Preview Camera` (module 855187): with a camera to preview and video off.
+                    if !self.call.as_ref().is_some_and(|call| call.camera)
+                        && !dc_voice::camera_devices().is_empty()
+                    {
+                        rows.push(self.vmenu_row(
+                            "vmenu-preview-camera",
+                            Some("voice_view_preview"),
+                            "Preview Camera",
+                            None,
+                            false,
+                            cx,
+                            |this, _, cx| {
+                                this.vv.menu = None;
+                                this.open_camera_preview(cx);
+                            },
+                        ));
+                    }
                 }
                 rows.push(self.vmenu_row(
                     "vmenu-settings",
@@ -2008,6 +2146,34 @@ impl Root {
                         },
                     ));
                 }
+                let mut rows_height = 36. * rows.len() as f32 + 16.;
+                if watching && Some(owner) != me {
+                    // `stream-context`: Mute, then Stream Volume, then Stream Attenuation with its strength.
+                    rows.push(self.vmenu_row(
+                        "vmenu-stream-mute",
+                        None,
+                        "Mute",
+                        Some(super::stream_volume::muted(owner)),
+                        false,
+                        cx,
+                        move |this, _, _| {
+                            super::stream_volume::set_muted(
+                                owner,
+                                !super::stream_volume::muted(owner),
+                            );
+                            this.apply_stream_volume(owner);
+                        },
+                    ));
+                    rows.push(Self::menu_separator(false));
+                    rows.push(self.stream_volume_row(owner, cx));
+                    rows.push(Self::menu_separator(false));
+                    rows.push(self.stream_attenuation_rows(cx));
+                    rows.push(Self::menu_separator(false));
+                    let attenuation = self.stream_attenuation_on();
+                    // The mute row and a separator, the volume row, a separator, and the attenuation rows.
+                    rows_height +=
+                        36. + 18. + 58. + 18. + 36. + if attenuation { 58. } else { 0. } + 18.;
+                }
                 rows.push(self.vmenu_row(
                     "vmenu-stream-settings",
                     Some("voice_view_gear"),
@@ -2020,7 +2186,6 @@ impl Root {
                         this.open_settings_section("Voice & Video", cx);
                     },
                 ));
-                let rows_height = 36. * rows.len() as f32 + 16.;
                 let window_w = width + 375.;
                 let window_h = height + 32.;
                 let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);

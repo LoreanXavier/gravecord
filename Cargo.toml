@@ -65,6 +65,7 @@ dc-http = { path = "crates/dc-http" }
 dc-media = { path = "crates/dc-media" }
 dc-proto = { path = "crates/dc-proto" }
 dc-voice = { path = "crates/dc-voice" }
+dc-webhost = { path = "crates/dc-webhost" }
 dc-winaudio = { path = "crates/dc-winaudio" }
 
 [profile.dev]

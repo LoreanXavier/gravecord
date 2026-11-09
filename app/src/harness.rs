@@ -288,6 +288,15 @@ pub async fn run(
             ["stream", "stop"] => {
                 root.update(cx, |root, cx| root.stream_stop(cx));
             }
+            ["activity", "state"] => {
+                let state = root.read_with(cx, |root, _| root.activity_state_line());
+                let _ = writeln!(output, "activity: {state}");
+            }
+            ["activity", "launch", name @ ..] => {
+                let name = name.join(" ");
+                let outcome = root.update(cx, |root, cx| root.activity_launch_named(&name, cx));
+                let _ = writeln!(output, "activity launch: {outcome}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));
@@ -296,6 +305,7 @@ pub async fn run(
                 let _ = writeln!(output, "unknown step: {other:?}");
             }
         }
+        let _ = std::fs::write(&log, &output);
         cx.background_executor().timer(STEP_GAP).await;
     }
     let _ = std::fs::write(log, output);

@@ -125,6 +125,8 @@ pub(super) struct StreamInfo {
     pub quality: Option<(dc_media::screen::Resolution, u32)>,
     pub name: Option<String>,
     pub icon: Option<Arc<RenderImage>>,
+    /// Who watches the stream (`getViewerIds`).
+    pub viewer_ids: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -137,6 +139,11 @@ pub(super) struct Video {
 }
 
 impl Video {
+    /// The owners of the streams this client sends or watches.
+    pub(super) fn owners(&self) -> Vec<u64> {
+        self.streams.keys().map(|key| key.owner()).collect()
+    }
+
     /// `describe` for capture logs: pictures received so far and the streams with their status.
     #[cfg(feature = "capture")]
     pub(super) fn describe(&self) -> String {
@@ -173,6 +180,7 @@ impl Root {
         };
         call.controls
             .set_video_sink(Some(Arc::new(move |frame| frames.store(frame))));
+        self.apply_stream_attenuation();
         if self.video.pumping {
             return;
         }
@@ -278,6 +286,30 @@ impl Root {
     /// The camera button of the panel and the bar: turns our camera on with the chosen device (`audio.video_device`,
     /// else the first one; an empty id lets the call pick the default), or off.
     pub(super) fn voice_camera_clicked(&mut self, cx: &mut Context<Self>) {
+        let turning_on = self
+            .call
+            .as_ref()
+            .is_some_and(|call| !call.controls.camera_wanted());
+        if turning_on && self.always_preview_video() {
+            // "Always preview video": the modal opens first; its Turn On Camera calls `voice_camera_start`.
+            self.open_camera_preview(cx);
+            return;
+        }
+        self.voice_camera_toggle(cx);
+    }
+
+    /// Turns our camera on (the preview modal's Turn On Camera).
+    pub(in crate::ui) fn voice_camera_start(&mut self, cx: &mut Context<Self>) {
+        if self
+            .call
+            .as_ref()
+            .is_some_and(|call| !call.controls.camera_wanted())
+        {
+            self.voice_camera_toggle(cx);
+        }
+    }
+
+    fn voice_camera_toggle(&mut self, cx: &mut Context<Self>) {
         // The Test Video camera and the call's camera never share the device.
         self.camera_test_stop(cx);
         let Some(call) = &self.call else {
@@ -512,6 +544,8 @@ impl Root {
                 started: None,
             },
         );
+        // The Stream Volume and Mute of this owner, as last chosen.
+        self.apply_stream_volume(key.owner());
         let _ = self.requests.send(Request::StreamOp {
             op: Op::StreamWatch,
             data: streams::watch(&key),
@@ -579,6 +613,7 @@ impl Root {
                 .started
                 .as_ref()
                 .and_then(|started| started.icon.clone()),
+            viewer_ids: live.last.viewer_ids.clone(),
         })
     }
 
@@ -605,6 +640,15 @@ impl Root {
             StreamKey::Call { channel, owner }
         };
         self.stream_watch(key, cx);
+    }
+
+    /// Gives the call's stream audio mix the level stored for `owner`'s stream.
+    pub(super) fn apply_stream_volume(&self, owner: u64) {
+        if let Some(call) = &self.call {
+            call.controls
+                .hub()
+                .set_stream_volume(super::stream_volume::gain(owner));
+        }
     }
 
     /// Stops watching `owner`'s stream (the tile menu).
@@ -705,6 +749,20 @@ impl Root {
                 }
             }
         } else if let Some(live) = self.video.streams.get_mut(&key) {
+            // `SE`: a viewer came or went while the stream stayed live; we are not counted among a stream's viewers.
+            let was = live.last.clone();
+            if was.status == StreamStatus::Live && update.status == StreamStatus::Live {
+                let own = |role: Role, viewers: usize| match role {
+                    Role::Watch => viewers.saturating_sub(1),
+                    Role::Send => viewers,
+                };
+                if let Some(sound) = super::voice_sounds::viewer_sound(
+                    own(was.role, was.viewers),
+                    own(update.role, update.viewers),
+                ) {
+                    crate::sounds::play_event(sound);
+                }
+            }
             live.last = update;
         }
         cx.notify();

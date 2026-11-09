@@ -139,6 +139,35 @@ impl Client {
         })
     }
 
+    /// `GET` with an application's own OAuth2 access token as the bearer, for the Embedded App SDK's `AUTHENTICATE`
+    /// (`GET /oauth2/@me`). The account's token is never sent: this is the activity's token, which the page handed over.
+    pub async fn get_as_bearer(&self, route: &str, bearer: &str) -> Result<Value, Error> {
+        let url = format!("{}{route}", pin::API_BASE);
+        let response = self
+            .http
+            .get(url)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header(
+                "x-super-properties",
+                self.identity.super_properties_header(true),
+            )
+            .send()
+            .await?;
+        let status = response.status();
+        debug!("GET {route} as bearer: {status}");
+        let text = response.text().await?;
+        let value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if status.is_success() {
+            Ok(value)
+        } else {
+            Err(Error::Status {
+                route: route.to_owned(),
+                status,
+                body: value,
+            })
+        }
+    }
+
     /// `POST` with a form: its text fields, then one file. A rate limited attempt is sent again, so the form is rebuilt
     /// each time.
     pub async fn post_form(&self, route: &str, form: &Form) -> Result<Value, Error> {

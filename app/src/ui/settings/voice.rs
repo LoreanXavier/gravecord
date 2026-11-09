@@ -864,6 +864,8 @@ impl Root {
             PUSH_TO_TALK => self.voice.stored.profile != Profile::Studio,
             KEYBIND | RELEASE_DELAY => self.voice.stored.effective().push_to_talk,
             extra::ATTENUATION_SET => extra::attenuation_shown(),
+            // `usePredicate`: the strength only while Stream Attenuation is on.
+            extra::STREAM_ATTEN_STRENGTH => self.voice.extra.stream_attenuation,
             _ => true,
         }
     }
@@ -918,6 +920,7 @@ impl Root {
             return;
         }
         if self.extra_setting_changed(key, on) {
+            self.apply_stream_attenuation();
             return;
         }
         let effective_mode = self.voice.stored.effective().push_to_talk;
@@ -1381,7 +1384,7 @@ impl Root {
             MIC_TEST => self.mic_test_row(width, window, cx),
             KEYBIND => self.keybind_row(width, cx),
             "camera_video_preview" => self.camera_preview_row(cx),
-            "camera_selection_setting" => self.camera_select_row(cx),
+            "camera_selection_setting" => self.camera_select_row(false, cx),
             RELEASE_DELAY => {
                 self.slider_row(RELEASE_DELAY, "Push to Talk Release Delay", &[], width, cx)
             }
@@ -1459,6 +1462,7 @@ impl Root {
             SOUNDBOARD_VOLUME => volume_to_slider(soundboard_volume()) / 100.,
             SENSITIVITY => (self.voice.stored.threshold + 100.) / 100.,
             extra::ATTENUATION => self.attenuation_fraction(),
+            extra::STREAM_ATTEN_STRENGTH => self.stream_attenuation_fraction(),
             _ => 0.,
         }
         .clamp(0., 1.)
@@ -1474,6 +1478,7 @@ impl Root {
             SENSITIVITY => sensitivity_bubble(fraction * 100.),
             // The default `formatValue`: the position as a percentage.
             extra::ATTENUATION => format!("{}%", to_fixed(fraction * 100., 0)),
+            extra::STREAM_ATTEN_STRENGTH => format!("{}%", to_fixed(fraction * 99. + 1., 0)),
             _ => String::new(),
         }
     }
@@ -1736,6 +1741,10 @@ impl Root {
                 self.voice_commit();
             }
             extra::ATTENUATION => self.commit_attenuation(fraction),
+            extra::STREAM_ATTEN_STRENGTH => {
+                self.commit_stream_attenuation(fraction);
+                self.apply_stream_attenuation();
+            }
             _ => {}
         }
     }

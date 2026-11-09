@@ -115,6 +115,39 @@ impl RtcTracker {
     }
 }
 
+/// `SE`, the stream half: someone in the channel began going live (`stream_started`, ours included), or a stream we send or
+/// watch, or ours, ended (`stream_ended`). `held` are the owners of the streams this client has open.
+pub(super) fn stream_sound(
+    room: Room,
+    me: u64,
+    before: &[u64],
+    after: &[u64],
+    held: &[u64],
+) -> Option<&'static str> {
+    if room.is_silent() {
+        return None;
+    }
+    if !difference(after, before).is_empty() {
+        return Some("stream_started");
+    }
+    difference(before, after)
+        .iter()
+        .any(|owner| *owner == me || held.contains(owner))
+        .then_some("stream_ended")
+}
+
+/// `SE`, the viewer half: the single stream's viewers (not counting us) went up or down while at most 25 watched.
+pub(super) fn viewer_sound(before: usize, after: usize) -> Option<&'static str> {
+    if before > 25 {
+        return None;
+    }
+    match after.cmp(&before) {
+        std::cmp::Ordering::Greater => Some("stream_user_joined"),
+        std::cmp::Ordering::Less => Some("stream_user_left"),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
 /// `Su`: the server moved this session to another channel. A change this client made itself has already been applied
 /// to the local state when the server answers, so only a different channel counts.
 pub(super) fn was_moved(known_channel: u64, update_channel: Option<u64>) -> bool {
@@ -182,6 +215,35 @@ mod tests {
         let stage = Room { kind: 13, ..ROOM };
         assert_eq!(count_sound(afk, 1, 2), None);
         assert_eq!(count_sound(stage, 1, 2), None);
+    }
+
+    #[test]
+    fn stream_sounds_follow_who_goes_live_and_who_watches() {
+        assert_eq!(
+            stream_sound(ROOM, 1, &[], &[2], &[]),
+            Some("stream_started")
+        );
+        assert_eq!(
+            stream_sound(ROOM, 1, &[2], &[], &[]),
+            None,
+            "a stream we hold nothing of"
+        );
+        assert_eq!(stream_sound(ROOM, 1, &[2], &[], &[2]), Some("stream_ended"));
+        assert_eq!(
+            stream_sound(ROOM, 1, &[1], &[], &[]),
+            Some("stream_ended"),
+            "ours"
+        );
+        assert_eq!(stream_sound(ROOM, 1, &[2], &[2], &[2]), None);
+        let afk = Room {
+            is_afk: true,
+            ..ROOM
+        };
+        assert_eq!(stream_sound(afk, 1, &[], &[2], &[]), None);
+        assert_eq!(viewer_sound(0, 1), Some("stream_user_joined"));
+        assert_eq!(viewer_sound(2, 1), Some("stream_user_left"));
+        assert_eq!(viewer_sound(1, 1), None);
+        assert_eq!(viewer_sound(26, 27), None, "a crowd is silent");
     }
 
     #[test]

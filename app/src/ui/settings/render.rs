@@ -710,7 +710,8 @@ impl Root {
             } if *key == voice::INPUT_VOLUME
                 || *key == voice::OUTPUT_VOLUME
                 || *key == voice::SOUNDBOARD_VOLUME
-                || *key == voice::extra::ATTENUATION =>
+                || *key == voice::extra::ATTENUATION
+                || *key == voice::extra::STREAM_ATTEN_STRENGTH =>
             {
                 self.slider_row(key, label, description, width, cx)
             }

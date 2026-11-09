@@ -34,6 +34,13 @@ pub(in crate::ui) const QOS: &str = "voice_quality_of_service_setting";
 pub(in crate::ui) const RECORDING: &str = "voice_and_video_audio_recording";
 pub(in crate::ui) const DEBUG_LOGGING: &str = "voice_and_video_debug_logging";
 pub(in crate::ui) const RESET: &str = "voice_and_video_reset_all_settings";
+/// Stream attenuation (`setSidechainCompression`, strength 1 to 100) and the other Advanced Stream Settings.
+pub(in crate::ui) const STREAM_ATTEN: &str = "streaming_stream_attenuation";
+pub(in crate::ui) const STREAM_ATTEN_STRENGTH: &str = "streaming_stream_attenuation_strength";
+pub(in crate::ui) const VIDEO_HOOK: &str = "streaming_advanced_screenshare";
+/// "Always preview video": the camera button opens the preview modal first.
+pub(in crate::ui) const PREVIEW_PREFERENCE: &str = "camera_preview_preference";
+const ALWAYS_PREVIEW: &str = "audio.always_preview_video";
 
 /// `MediaEngineStore`'s part of these settings, in storage.json next to the other `audio.*` keys.
 const SILENCE_STORED: &str = "audio.silence_warning";
@@ -41,6 +48,10 @@ const ATTENUATION_STORED: &str = "audio.attenuation";
 const ATTEN_SELF_STORED: &str = "audio.attenuation_self";
 const ATTEN_OTHERS_STORED: &str = "audio.attenuation_others";
 const QOS_STORED: &str = "audio.qos";
+const STREAM_ATTEN_STORED: &str = "audio.stream_attenuation";
+const STREAM_ATTEN_STRENGTH_STORED: &str = "audio.stream_attenuation_strength";
+/// `getVideoHook`: kept, but this client captures with the system API and has no hook to turn on (BLOCKED.md).
+const VIDEO_HOOK_STORED: &str = "audio.video_hook";
 const RECORDING_STORED: &str = "audio.recording";
 /// Native in the official client, so no store resets it; kept in storage.json here.
 const DEBUG_STORED: &str = "audio.debug_logging";
@@ -67,6 +78,10 @@ const RESET_KEYS: &[&str] = &[
     ATTEN_OTHERS_STORED,
     QOS_STORED,
     RECORDING_STORED,
+    STREAM_ATTEN_STORED,
+    STREAM_ATTEN_STRENGTH_STORED,
+    VIDEO_HOOK_STORED,
+    ALWAYS_PREVIEW,
 ];
 const UNSYNCED_STORE: &str = "UnsyncedUserSettingsStore";
 const DEVICE_STORE: &str = "ConnectedDeviceStore";
@@ -107,6 +122,8 @@ pub(super) enum Dialog {
         enabled: bool,
     },
     UploadDone,
+    /// 308229: the camera preview before turning video on.
+    PreviewCamera,
     UploadFailed {
         message: String,
         code: u32,
@@ -123,6 +140,11 @@ pub(super) struct Extra {
     pub attenuate_self: bool,
     pub attenuate_others: bool,
     pub qos: bool,
+    /// `getSidechainCompression` and `getSidechainCompressionStrength`; the captured account has it on at 50.
+    pub stream_attenuation: bool,
+    pub stream_attenuation_strength: u8,
+    pub video_hook: bool,
+    pub always_preview: bool,
     /// `aecDumpEnabled`.
     pub recording: bool,
     pub debug_logging: bool,
@@ -180,6 +202,12 @@ impl Extra {
             attenuate_self: flag(ATTEN_SELF_STORED, false),
             attenuate_others: flag(ATTEN_OTHERS_STORED, true),
             qos: flag(QOS_STORED, false),
+            stream_attenuation: flag(STREAM_ATTEN_STORED, true),
+            stream_attenuation_strength: storage::get(STREAM_ATTEN_STRENGTH_STORED)
+                .and_then(|value| value.as_u64())
+                .map_or(50, |strength| strength.clamp(1, 100) as u8),
+            video_hook: flag(VIDEO_HOOK_STORED, true),
+            always_preview: flag(ALWAYS_PREVIEW, false),
             recording: flag(RECORDING_STORED, false),
             // The captured account has it on: the official client logs by default.
             debug_logging: flag(DEBUG_STORED, true),
@@ -216,6 +244,15 @@ impl Extra {
         self.apply_debug_logging();
     }
 
+    /// What the stream audio mix is told: 0 while Stream Attenuation is off.
+    pub fn stream_sidechain(&self) -> u8 {
+        if self.stream_attenuation {
+            self.stream_attenuation_strength
+        } else {
+            0
+        }
+    }
+
     fn apply_debug_logging(&self) {
         match (self.debug_logging, voice_folder()) {
             (true, Some(folder)) => {
@@ -236,6 +273,9 @@ impl Extra {
             (ATTEN_SELF, Choice::On(self.attenuate_self)),
             (ATTEN_OTHERS, Choice::On(self.attenuate_others)),
             (QOS, Choice::On(self.qos)),
+            (STREAM_ATTEN, Choice::On(self.stream_attenuation)),
+            (VIDEO_HOOK, Choice::On(self.video_hook)),
+            (PREVIEW_PREFERENCE, Choice::On(self.always_preview)),
             (RECORDING, Choice::On(self.recording)),
             (DEBUG_LOGGING, Choice::On(self.debug_logging)),
         ]
@@ -278,6 +318,9 @@ pub(super) fn owns(key: &str) -> bool {
             | ATTEN_SELF
             | ATTEN_OTHERS
             | QOS
+            | STREAM_ATTEN
+            | VIDEO_HOOK
+            | PREVIEW_PREFERENCE
             | RECORDING
             | DEBUG_LOGGING
     )
@@ -351,6 +394,18 @@ impl Root {
                     extra.attenuate_others,
                 );
             }
+            STREAM_ATTEN => {
+                extra.stream_attenuation = on;
+                storage::set(STREAM_ATTEN_STORED, json!(on));
+            }
+            PREVIEW_PREFERENCE => {
+                extra.always_preview = on;
+                storage::set(ALWAYS_PREVIEW, json!(on));
+            }
+            VIDEO_HOOK => {
+                extra.video_hook = on;
+                storage::set(VIDEO_HOOK_STORED, json!(on));
+            }
             QOS => {
                 extra.qos = on;
                 storage::set(QOS_STORED, json!(on));
@@ -381,6 +436,41 @@ impl Root {
         dc_voice::prefs().set_attenuation(percent, extra.attenuate_self, extra.attenuate_others);
     }
 
+    /// Stream Attenuation as the page shows it: the switch's choice, else what was stored, else on.
+    pub(in crate::ui) fn stream_attenuation_on(&self) -> bool {
+        match self.setting_choices.get(STREAM_ATTEN) {
+            Some(Choice::On(on)) => *on,
+            _ => self.voice.extra.stream_attenuation,
+        }
+    }
+
+    /// The Stream Attenuation row of a stream's menu: the same switch as the page's.
+    pub(in crate::ui) fn toggle_stream_attenuation(&mut self) {
+        let on = !self.stream_attenuation_on();
+        self.setting_choices.insert(STREAM_ATTEN, Choice::On(on));
+        self.voice_setting_changed(STREAM_ATTEN);
+    }
+
+    /// Gives the call's stream audio mix the Stream Attenuation setting (at a call's start and on every change).
+    pub(in crate::ui) fn apply_stream_attenuation(&self) {
+        if let Some(call) = &self.call {
+            call.controls
+                .hub()
+                .set_sidechain_strength(self.voice.extra.stream_sidechain());
+        }
+    }
+
+    /// The Stream Attenuation Strength slider runs 1 to 100: `(strength - 1) / 99`.
+    pub(in crate::ui) fn stream_attenuation_fraction(&self) -> f32 {
+        f32::from(self.voice.extra.stream_attenuation_strength - 1) / 99.
+    }
+
+    pub(in crate::ui) fn commit_stream_attenuation(&mut self, fraction: f32) {
+        let strength = (fraction * 99.).round().clamp(0., 99.) as u8 + 1;
+        self.voice.extra.stream_attenuation_strength = strength;
+        storage::set(STREAM_ATTEN_STRENGTH_STORED, json!(strength));
+    }
+
     pub(super) fn attenuation_fraction(&self) -> f32 {
         f32::from(self.voice.extra.attenuation) / 100.
     }
@@ -402,6 +492,10 @@ impl Root {
         extra.attenuate_self = false;
         extra.attenuate_others = true;
         extra.qos = false;
+        extra.stream_attenuation = true;
+        extra.stream_attenuation_strength = 50;
+        extra.video_hook = true;
+        extra.always_preview = false;
         extra.recording = false;
         extra.dismissed = None;
         extra.dialog = None;
@@ -724,22 +818,96 @@ impl Root {
         cx.reveal_path(&folder);
     }
 
+    /// Whether a dialog of this module is up.
+    pub(in crate::ui) fn voice_dialog_open(&self) -> bool {
+        self.voice.extra.dialog.is_some()
+    }
+
     /// Escape closes a dialog of this module. True when there was one.
     pub(in crate::ui) fn voice_dialog_close(&mut self, cx: &mut Context<Self>) -> bool {
         if self.voice.extra.dialog.is_none() {
             return false;
         }
-        self.close_voice_dialog();
+        self.close_voice_dialog(cx);
         cx.notify();
         true
     }
 
     /// Closing without an answer: a device suggestion counts as "Don't Switch" (`_.mk()`).
-    fn close_voice_dialog(&mut self) {
+    fn close_voice_dialog(&mut self, cx: &mut Context<Self>) {
         if matches!(self.voice.extra.dialog, Some(Dialog::Device { .. })) {
             self.voice.extra.devices.dont_switch();
         }
+        if matches!(self.voice.extra.dialog, Some(Dialog::PreviewCamera)) {
+            self.camera_test_stop(cx);
+            self.voice.camera.open = false;
+        }
         self.voice.extra.dialog = None;
+    }
+
+    /// Opens the preview modal and its live camera ("Preview Camera", or "Always preview video" on turning video on).
+    pub(in crate::ui) fn open_camera_preview(&mut self, cx: &mut Context<Self>) {
+        self.voice.extra.dialog = Some(Dialog::PreviewCamera);
+        self.camera_test_start(cx);
+        cx.notify();
+    }
+
+    /// Whether the camera button opens the preview first (`audio.always_preview_video`).
+    pub(in crate::ui) fn always_preview_video(&self) -> bool {
+        self.voice.extra.always_preview
+    }
+
+    /// The preview modal: title, picture and select in the body, "Turn On Camera" (or "Change Background" while the
+    /// camera is on) and the "Always preview video" checkbox in the action bar.
+    fn camera_preview_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.call.as_ref().is_some_and(|call| call.camera);
+        let checked = self.always_preview_video();
+        let input = self.dialog_checkbox(
+            "voice-always-preview",
+            "Always preview video",
+            checked,
+            cx,
+            |this| {
+                let now = !this.voice.extra.always_preview;
+                this.voice.extra.always_preview = now;
+                storage::set(ALWAYS_PREVIEW, json!(now));
+                this.setting_choices
+                    .insert(PREVIEW_PREFERENCE, Choice::On(now));
+            },
+        );
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(self.camera_preview_box())
+            .child(self.camera_select_row(true, cx))
+            .into_any_element();
+        modal::render_with_input(
+            modal::Spec {
+                id: "voice-camera-preview",
+                title: "Ready to video chat?".into(),
+                subtitle: None,
+                body: Some(body),
+                buttons: vec![modal::button(
+                    "voice-preview-turn-on",
+                    if on {
+                        "Change Background"
+                    } else {
+                        "Turn On Camera"
+                    },
+                    Tone::Primary,
+                    move |this, _, cx| {
+                        this.close_voice_dialog(cx);
+                        if !on {
+                            this.voice_camera_start(cx);
+                        }
+                    },
+                )],
+                close: handler(|this, _, cx| this.close_voice_dialog(cx)),
+            },
+            input,
+            cx,
+        )
     }
 
     /// Whether Upload Logs and Show Folder are in use: (uploading, spent).
@@ -754,13 +922,13 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let dialog = self.voice.extra.dialog.clone()?;
-        let close = || -> modal::Handler { handler(|this, _, _| this.close_voice_dialog()) };
+        let close = || -> modal::Handler { handler(|this, _, cx| this.close_voice_dialog(cx)) };
         let cancel = || {
             modal::button(
                 "voice-dialog-cancel",
                 "Cancel",
                 Tone::Secondary,
-                |this, _, _| this.close_voice_dialog(),
+                |this, _, cx| this.close_voice_dialog(cx),
             )
         };
         let okay = |id: &'static str, tone: Tone, run: modal::Handler| modal::Button {
@@ -770,6 +938,7 @@ impl Root {
             run,
         };
         Some(match dialog {
+            Dialog::PreviewCamera => self.camera_preview_dialog(cx),
             Dialog::SwitchChannel {
                 guild,
                 channel,
@@ -807,7 +976,7 @@ impl Root {
                                 "Confirm",
                                 Tone::Primary,
                                 move |this, _, cx| {
-                                    this.close_voice_dialog();
+                                    this.close_voice_dialog(cx);
                                     this.join_voice(guild, channel, cx);
                                 },
                             ),
@@ -1061,7 +1230,7 @@ impl Root {
                         "voice-dialog-dont-switch",
                         "Don't Switch",
                         Tone::Secondary,
-                        |this, _, _| this.close_voice_dialog(),
+                        |this, _, cx| this.close_voice_dialog(cx),
                     ),
                     modal::button(
                         "voice-dialog-switch",
@@ -1085,7 +1254,7 @@ impl Root {
                         },
                     ),
                 ],
-                close: handler(|this, _, _| this.close_voice_dialog()),
+                close: handler(|this, _, cx| this.close_voice_dialog(cx)),
             },
             input,
             cx,

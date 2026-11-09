@@ -768,8 +768,14 @@ impl Root {
         }
     }
 
-    /// Start An Activity, panel and bar. Activities are not built yet: this does nothing visible.
-    pub(super) fn voice_activity_clicked(&mut self, _cx: &mut Context<Self>) {}
+    /// Start An Activity, panel and bar: the shelf.
+    pub(super) fn voice_activity_clicked(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_activity_shelf(window, cx);
+    }
 }
 
 #[cfg(test)]

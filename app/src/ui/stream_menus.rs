@@ -321,6 +321,21 @@ impl Root {
                     .into_any_element(),
             );
         }
+        if !devices.is_empty() && !self.call.as_ref().is_some_and(|call| call.camera) {
+            rows.push(Self::menu_separator(true));
+            rows.push(self.vmenu_row(
+                "vmenu-preview-camera",
+                Some("voice_view_preview"),
+                "Preview Camera",
+                None,
+                true,
+                cx,
+                |this, _, cx| {
+                    this.vv.menu = None;
+                    this.open_camera_preview(cx);
+                },
+            ));
+        }
         rows.push(Self::menu_separator(true));
         rows.push(self.vmenu_row(
             "vmenu-video-settings",
@@ -353,5 +368,152 @@ impl Root {
             .with_priority(2)
             .into_any_element(),
         ]
+    }
+
+    /// A slider row of a tile menu: the bounds of the track are read back from `tip_anchors` under `id`, so a press or
+    /// a drag anywhere on it gives the position as a fraction of the track.
+    fn menu_slider(
+        &self,
+        id: &'static str,
+        fraction: f32,
+        cx: &mut Context<Self>,
+        apply: impl Fn(&mut Root, f32, &mut Context<Root>) + Clone + 'static,
+    ) -> AnyElement {
+        use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent, relative};
+        let at = move |this: &Root, x: gpui::Pixels| -> Option<f32> {
+            let bounds = this.tip_anchors.borrow().get(id).copied()?;
+            let width = f32::from(bounds.size.width);
+            (width > 0.).then(|| ((f32::from(x) - f32::from(bounds.left())) / width).clamp(0., 1.))
+        };
+        let (down, drag) = (apply.clone(), apply);
+        div()
+            .id(id)
+            .relative()
+            .mx(px(8.))
+            .h(px(24.))
+            .cursor_pointer()
+            .child(self.anchor_probe(id))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    if let Some(fraction) = at(this, event.position.x) {
+                        down(this, fraction, cx);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging()
+                    && let Some(fraction) = at(this, event.position.x)
+                {
+                    drag(this, fraction, cx);
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(10.))
+                    .w_full()
+                    .h(px(4.))
+                    .rounded(px(4.))
+                    .bg(color("--background-mod-strong"))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(fraction))
+                            .rounded(px(4.))
+                            .bg(color("--background-brand")),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(relative(fraction))
+                    .ml(px(-8.))
+                    .top(px(4.))
+                    .size(px(16.))
+                    .rounded_full()
+                    .bg(gpui::rgb(0xffffff)),
+            )
+            .into_any_element()
+    }
+
+    /// `user-volume` in the stream context (module 972432): "Stream Volume" over a slider that runs to 200 percent.
+    pub(super) fn stream_volume_row(&self, owner: u64, cx: &mut Context<Self>) -> AnyElement {
+        use super::audio_menu::{slider_to_volume, volume_to_slider};
+        use super::stream_volume as volume;
+        let fraction =
+            (volume_to_slider(volume::percent(owner)) / volume::MAX_PERCENT).clamp(0., 1.);
+        div()
+            .h(px(58.))
+            .child(
+                div()
+                    .p(px(8.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child("Stream Volume"),
+            )
+            .child(self.menu_slider(
+                "vmenu-stream-volume",
+                fraction,
+                cx,
+                move |this, fraction, _| {
+                    volume::set_percent(
+                        owner,
+                        slider_to_volume((fraction * volume::MAX_PERCENT).round()),
+                    );
+                    this.apply_stream_volume(owner);
+                },
+            ))
+            .into_any_element()
+    }
+
+    /// `sidechain-compression` and, while it is on, `sidechain-parameters` (module 16001): Stream Attenuation, and its
+    /// strength slider. The same values as the Voice & Video page's.
+    pub(super) fn stream_attenuation_rows(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.stream_attenuation_on();
+        let fraction = self.stream_attenuation_fraction();
+        let row = self.vmenu_row(
+            "vmenu-stream-attenuation",
+            None,
+            "Stream Attenuation",
+            Some(on),
+            false,
+            cx,
+            |this, _, _| this.toggle_stream_attenuation(),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .child(row)
+            .when(on, |this| {
+                this.child(
+                    div()
+                        .h(px(58.))
+                        .child(
+                            div()
+                                .p(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child("Stream Attenuation Strength"),
+                        )
+                        .child(self.menu_slider(
+                            "vmenu-stream-attenuation-strength",
+                            fraction,
+                            cx,
+                            |this, fraction, _| {
+                                this.commit_stream_attenuation(fraction);
+                                this.apply_stream_attenuation();
+                            },
+                        )),
+                )
+            })
+            .into_any_element()
     }
 }
