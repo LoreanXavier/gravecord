@@ -889,6 +889,131 @@ impl Root {
         cx.notify();
     }
 
+    /// The pointer entered or left the bar's soundboard button or its popup: the defaults load on the first entry.
+    pub(super) fn soundboard_hover(&mut self, inside: bool, cx: &mut Context<Self>) {
+        if inside && !self.vv.suggest {
+            self.soundboard_request();
+            let known: Vec<Sound> = self.soundboard.defaults.clone();
+            self.request_sound_images(&known);
+        }
+        self.vv.suggest = inside;
+        cx.notify();
+    }
+
+    /// Suggested Sounds (the hover popup over the bar's soundboard button): the first six default sounds in a 3x2
+    /// grid with See All. Measured in `design/dom/popouts/stream-stopped-darker-cozy.json`: 494x152, centred over the
+    /// button, padding 16, tiles 148x40 with an 8px gap.
+    pub(super) fn soundboard_suggest(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        const WIDTH: f32 = 494.;
+        const HEIGHT: f32 = 152.;
+        if !self.vv.suggest
+            || self.panel.popout == Some(Popout::Soundboard)
+            || self.soundboard_disabled().is_some()
+        {
+            return Vec::new();
+        }
+        let Some(anchor) = self
+            .tip_anchors
+            .borrow()
+            .get("call-soundboard-tip")
+            .copied()
+        else {
+            return Vec::new();
+        };
+        let sounds: Vec<&Sound> = self
+            .soundboard
+            .defaults
+            .iter()
+            .filter(|sound| sound.available)
+            .take(6)
+            .collect();
+        if sounds.is_empty() {
+            return Vec::new();
+        }
+        let ctx = self.soundboard_ctx();
+        let left = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2. - WIDTH / 2. - 375.;
+        let top = f32::from(anchor.top()) - 17. - HEIGHT - 32.;
+        let rows: Vec<AnyElement> = sounds
+            .chunks(3)
+            .enumerate()
+            .map(|(row, chunk)| {
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .children(chunk.iter().map(|sound| {
+                        self.soundboard_button(&format!("suggest{row}"), sound, &ctx, Side::Top, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        vec![
+            deferred(
+                // The padding below bridges the gap to the button so the pointer can cross it.
+                div()
+                    .id("soundboard-suggest")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .pb(px(8.))
+                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                        this.soundboard_hover(*inside, cx);
+                    }))
+                    .child(
+                        div()
+                            .w(px(WIDTH))
+                            .h(px(HEIGHT))
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .occlude()
+                            .child(
+                                div()
+                                    .h(px(24.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(icon("voice_soundboard", 16., "--text-default"))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(18.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-default"))
+                                                    .child("Suggested Sounds"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("soundboard-see-all")
+                                            .cursor_pointer()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-link"))
+                                            .hover(|style| style.underline())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.vv.suggest = false;
+                                                this.toggle_soundboard(window, cx);
+                                            }))
+                                            .child("See All"),
+                                    ),
+                            )
+                            .children(rows),
+                    ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        ]
+    }
+
     /// The speaker on a hovered sound: heard here only, nothing is sent.
     fn soundboard_preview(&mut self, sound: &Sound) {
         let me = self.stores.current_user.as_ref().map(|user| user.id);

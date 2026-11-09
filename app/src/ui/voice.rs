@@ -416,8 +416,17 @@ impl Root {
             .find(|channel| channel.id == call.channel)
             .map(|channel| channel.name.clone())
             .unwrap_or_default();
+        let camera_on = call.camera;
+        let own_stream = self.own_stream();
         let (status, status_color) = if call.connected {
-            ("Voice Connected", "--text-feedback-positive")
+            (
+                if camera_on {
+                    "Video Connected"
+                } else {
+                    "Voice Connected"
+                },
+                "--text-feedback-positive",
+            )
         } else {
             ("Connecting", "--text-feedback-warning")
         };
@@ -451,6 +460,20 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .child(super::icon(name, 20., "--control-secondary-text-default"))
+        };
+        let wide_active = |id: &'static str, name: &'static str| {
+            div()
+                .id(id)
+                .w_full()
+                .h(px(32.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(gpui::rgba(0x00854520))
+                .bg(gpui::rgba(0x00854520))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::icon(name, 20., "--text-feedback-positive"))
         };
         let ping = div()
             .id("voice-ping")
@@ -505,18 +528,33 @@ impl Root {
         );
         let camera = self.with_tip(
             "voice-camera-tip",
-            Tip::text("Turn On Camera", Side::Top),
-            wide("voice-camera", "voice_camera")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
+            Tip::text(
+                if camera_on {
+                    "Turn Off Camera"
+                } else {
+                    "Turn On Camera"
+                },
+                Side::Top,
+            ),
+            if camera_on {
+                wide_active("voice-camera", "voice_camera_on")
+            } else {
+                wide("voice-camera", "voice_camera")
+            }
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
             cx,
         );
         let screen = self.with_tip(
             "voice-screen-tip",
             Tip::text("Share Your Screen", Side::Top),
-            wide("voice-screen", "voice_screen")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
+            if own_stream.is_some() {
+                wide_active("voice-screen", "voice_screen_active")
+            } else {
+                wide("voice-screen", "voice_screen")
+            }
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
             cx,
         );
         let activity = self.with_tip(
@@ -552,98 +590,174 @@ impl Root {
             )
             .into_any_element()
         };
-        Some(
+        let stream_row = own_stream.as_ref().map(|info| {
+            let name = info.name.clone().unwrap_or_default();
+            let stop = self.with_tip(
+                "voice-stream-stop-tip",
+                Tip::text("Stop Streaming", Side::Top),
+                div()
+                    .id("voice-stream-stop")
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .on_click(cx.listener(|this, _, _, cx| this.stream_stop(cx)))
+                    .child(super::icon(
+                        "voice_stream_stop",
+                        20.,
+                        "--interactive-text-default",
+                    )),
+                cx,
+            );
             div()
-                // `wrapper_9U6LUN`: a pixel into the panel's border on the left.
                 .ml(px(-1.))
-                .p(px(12.))
+                .h(px(57.))
+                .px(px(12.))
+                .py(px(12.))
                 .flex()
-                .flex_col()
-                .gap(px(12.))
+                .items_center()
+                .gap(px(8.))
+                .bg(color("--background-surface-high"))
                 .border_b_1()
                 .border_color(color("--background-mod-subtle"))
                 .child(
                     div()
-                        .h(px(32.))
-                        .flex()
-                        .items_center()
-                        .child(ping)
-                        .child(
-                            div()
-                                .ml(px(8.))
-                                .flex_1()
-                                .min_w(px(0.))
-                                .flex()
-                                .flex_col()
-                                // `hoverRoll_Dq3ch1`: over the words, the state gives way to Voice Details.
-                                .child(
-                                    div()
-                                        .id("voice-status")
-                                        .group("voice-status")
-                                        .relative()
-                                        .h(px(20.))
-                                        .cursor_pointer()
-                                        .text_size(px(16.))
-                                        .line_height(px(20.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color(status_color))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_panel_popout(
-                                                Popout::Connection(Tab::Connection),
-                                                cx,
-                                            );
-                                        }))
-                                        .child(
-                                            div()
-                                                .group_hover("voice-status", |style| {
-                                                    style.opacity(0.)
-                                                })
-                                                .child(status),
-                                        )
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .left_0()
-                                                .opacity(0.)
-                                                .group_hover("voice-status", |style| {
-                                                    style.opacity(1.)
-                                                })
-                                                .underline()
-                                                .child("Voice Details"),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .id("voice-panel-channel")
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(color("--text-subtle"))
-                                        .hover(|style| style.underline())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.panel_channel_clicked(guild_id, channel_id, cx);
-                                        }))
-                                        .child(format!("{channel} / {}", guild.name)),
-                                ),
+                        .relative()
+                        .size(px(32.))
+                        .flex_none()
+                        .children(
+                            info.icon
+                                .clone()
+                                .map(|image| img(image).size(px(32.)).rounded(px(4.))),
                         )
                         .child(
                             div()
-                                .ml(px(10.))
-                                .flex()
-                                .gap(px(4.))
-                                .child(noise)
-                                .child(disconnect),
+                                .absolute()
+                                .left(px(19.))
+                                .top(px(20.))
+                                .child(super::icon("voice_view_stream", 14., "--text-strong")),
                         ),
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(name),
+                )
+                .child(stop)
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .children(stream_row)
+                .child(
+                    div()
+                        // `wrapper_9U6LUN`: a pixel into the panel's border on the left.
+                        .ml(px(-1.))
+                        .p(px(12.))
                         .flex()
-                        .gap(px(8.))
-                        .child(div().flex_1().child(camera))
-                        .child(div().flex_1().child(screen))
-                        .child(div().flex_1().child(activity))
-                        .child(div().flex_1().child(soundboard)),
+                        .flex_col()
+                        .gap(px(12.))
+                        .border_b_1()
+                        .border_color(color("--background-mod-subtle"))
+                        .child(
+                            div()
+                                .h(px(32.))
+                                .flex()
+                                .items_center()
+                                .child(ping)
+                                .child(
+                                    div()
+                                        .ml(px(8.))
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        // `hoverRoll_Dq3ch1`: over the words, the state gives way to Voice Details.
+                                        .child(
+                                            div()
+                                                .id("voice-status")
+                                                .group("voice-status")
+                                                .relative()
+                                                .h(px(20.))
+                                                .cursor_pointer()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color(status_color))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle_panel_popout(
+                                                        Popout::Connection(Tab::Connection),
+                                                        cx,
+                                                    );
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .group_hover("voice-status", |style| {
+                                                            style.opacity(0.)
+                                                        })
+                                                        .child(status),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .opacity(0.)
+                                                        .group_hover("voice-status", |style| {
+                                                            style.opacity(1.)
+                                                        })
+                                                        .underline()
+                                                        .child(if camera_on {
+                                                            "Video Details"
+                                                        } else {
+                                                            "Voice Details"
+                                                        }),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("voice-panel-channel")
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .text_color(color("--text-subtle"))
+                                                .hover(|style| style.underline())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.panel_channel_clicked(
+                                                        guild_id, channel_id, cx,
+                                                    );
+                                                }))
+                                                .child(format!("{channel} / {}", guild.name)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .ml(px(10.))
+                                        .flex()
+                                        .gap(px(4.))
+                                        .child(noise)
+                                        .child(disconnect),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(div().flex_1().child(camera))
+                                .child(div().flex_1().child(screen))
+                                .child(div().flex_1().child(activity))
+                                .child(div().flex_1().child(soundboard)),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -713,6 +827,30 @@ impl Root {
                     })
                     .when(muted && !deaf, |this| {
                         this.child(super::icon("voice_member_muted", 16., "--channels-default"))
+                    })
+                    // `icons_YUoOxm`: the camera, then the red LIVE badge of someone who goes live.
+                    .when(state.self_video, |this| {
+                        this.child(super::icon(
+                            "voice_member_camera",
+                            16.,
+                            "--channels-default",
+                        ))
+                    })
+                    .when(state.self_stream, |this| {
+                        this.child(
+                            div()
+                                .h(px(16.))
+                                .px(px(8.))
+                                .rounded_full()
+                                .bg(color("--badge-critical-background"))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(gpui::rgba(0xffffffff))
+                                .child("LIVE"),
+                        )
                     })
                     .into_any_element()
             })

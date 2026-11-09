@@ -758,8 +758,15 @@ impl Root {
         self.open_voice_view(guild, channel, cx);
     }
 
-    /// Share Your Screen, panel and bar. Screen sharing is not built yet: this does nothing visible.
-    pub(super) fn voice_screen_clicked(&mut self, _cx: &mut Context<Self>) {}
+    /// Share Your Screen, panel and bar: the Go Live picker; while our stream runs the click stops it (`Tv` of module
+    /// 596339).
+    pub(super) fn voice_screen_clicked(&mut self, cx: &mut Context<Self>) {
+        if self.own_stream().is_some() {
+            self.stream_stop(cx);
+        } else {
+            self.open_go_live(cx);
+        }
+    }
 
     /// Start An Activity, panel and bar. Activities are not built yet: this does nothing visible.
     pub(super) fn voice_activity_clicked(&mut self, _cx: &mut Context<Self>) {}

@@ -10,6 +10,7 @@ mod soundboard;
 pub(crate) use render::radio_dot;
 mod swatches;
 mod voice;
+mod voice_camera;
 pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};

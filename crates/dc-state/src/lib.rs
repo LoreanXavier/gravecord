@@ -854,6 +854,10 @@ pub struct VoiceState {
     pub deaf: bool,
     /// Held back from speaking in a stage.
     pub suppress: bool,
+    /// The camera is on (`self_video`).
+    pub self_video: bool,
+    /// Going live (`self_stream`).
+    pub self_stream: bool,
 }
 
 impl VoiceState {
@@ -867,6 +871,8 @@ impl VoiceState {
             mute: value["mute"].as_bool().unwrap_or(false),
             deaf: value["deaf"].as_bool().unwrap_or(false),
             suppress: value["suppress"].as_bool().unwrap_or(false),
+            self_video: value["self_video"].as_bool().unwrap_or(false),
+            self_stream: value["self_stream"].as_bool().unwrap_or(false),
         })
     }
 }

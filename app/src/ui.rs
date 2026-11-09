@@ -47,6 +47,7 @@ mod friends;
 mod full_profile;
 mod games_spec;
 mod gifs;
+mod go_live;
 mod group_dm;
 mod guild_menu;
 mod guild_notifications;
@@ -97,11 +98,13 @@ mod server_template;
 mod server_webhooks;
 mod settings;
 mod soundboard;
+mod stream_menus;
 mod tag_badges;
 mod threads;
 mod tooltip;
 mod unread;
 mod uploads;
+mod video_tiles;
 mod voice;
 mod voice_panel;
 mod voice_sounds;
@@ -305,6 +308,11 @@ pub struct Root {
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
     video: voice_video::Video,
+    /// The Go Live picker, while open.
+    go_live: Option<go_live::State>,
+    go_live_generation: u64,
+    /// Why our camera did not start (`handleCameraUnavailable`), while its dialog is open.
+    camera_error: Option<String>,
     panel: voice_panel::PanelState,
     soundboard: soundboard::Board,
     self_mute: bool,
@@ -450,6 +458,9 @@ impl Root {
             profile: None,
             call: None,
             video: Default::default(),
+            go_live: None,
+            go_live_generation: 0,
+            camera_error: None,
             panel: voice_panel::PanelState::default(),
             soundboard: soundboard::Board::new(),
             updates,
@@ -1834,7 +1845,13 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon("voice_channel", 10., "--white")),
+                            .child(if self.own_stream().is_some() {
+                                icon("rail_stream_badge", 10., "--white").into_any_element()
+                            } else if self.call.as_ref().is_some_and(|call| call.camera) {
+                                icon("rail_camera_badge", 10., "--white").into_any_element()
+                            } else {
+                                icon("voice_channel", 10., "--white").into_any_element()
+                            }),
                     )
                 },
             )
@@ -2426,15 +2443,24 @@ impl Root {
                                 this.child(status_label(&self.stores.status))
                             })
                             .when(in_voice, |this| {
+                                let sharing = self.own_stream().is_some();
                                 this.flex()
                                     .items_center()
                                     .gap(px(4.))
                                     .child(icon(
-                                        "voice_status_in_voice",
+                                        if sharing {
+                                            "voice_status_sharing"
+                                        } else {
+                                            "voice_status_in_voice"
+                                        },
                                         12.,
                                         "--text-feedback-positive",
                                     ))
-                                    .child("In voice")
+                                    .child(if sharing {
+                                        "Sharing their screen"
+                                    } else {
+                                        "In voice"
+                                    })
                             }),
                     ),
             )
@@ -4701,6 +4727,8 @@ impl Render for Root {
             .children(self.view_reactions_modal(cx))
             .children(self.audio_menu_layer(cx))
             .children(self.voice_panel_layer(window, cx))
+            .children(self.go_live_layer(cx))
+            .children(self.camera_error_modal(cx))
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))

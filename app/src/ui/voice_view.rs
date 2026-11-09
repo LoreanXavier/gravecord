@@ -4,6 +4,7 @@
 //! Geometry is measured in `design/dom/channel/voice-view-*-darker-cozy.json`; the grid sizing is module 511205.
 
 use super::tooltip::{Side, Tip};
+use super::video_tiles::{self, Candidate, TileKind};
 use super::{Root, color, icon};
 use crate::parity::Parity;
 use crate::storage;
@@ -42,6 +43,10 @@ pub(super) fn call_setting(key: &str) -> bool {
         .unwrap_or(true)
 }
 
+pub(super) fn set_call_setting(key: &str, on: bool) {
+    storage::set(key, serde_json::json!(on));
+}
+
 fn toggle_call_setting(key: &str) {
     storage::set(key, serde_json::json!(!call_setting(key)));
 }
@@ -51,11 +56,43 @@ fn mid(name: &str) -> Rgba {
     rgba(Theme::Midnight.color(name))
 }
 
+/// The wandering-cubes spinner of a tile that waits for its picture (module 259264): two diamonds in a 32px box.
+fn spinner() -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .relative()
+                .size(px(32.))
+                .child(div().absolute().left(px(23.42)).top(px(5.07)).child(icon(
+                    "spinner_cube",
+                    7.16,
+                    "--brand-400",
+                )))
+                .child(div().absolute().left(px(1.42)).top(px(19.78)).child(icon(
+                    "spinner_cube",
+                    7.16,
+                    "--brand-400",
+                ))),
+        )
+        .into_any_element()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Menu {
     More,
     /// A tile's Options: whose, and where the pointer was (the menu's top-left corner).
     Tile(Id, Point<Pixels>),
+    /// A stream tile's Options, by its owner.
+    Stream(Id, Point<Pixels>),
+    /// The chevron of the camera button: devices and Video Settings.
+    Camera,
+    /// The chevron of the Share button while we stream.
+    Share,
 }
 
 pub(super) struct State {
@@ -71,6 +108,12 @@ pub(super) struct State {
     pub invite_dismissed: bool,
     /// The channel row was the last thing pressed: it keeps its action icons instead of the timer.
     pub row_focus: bool,
+    /// The Stream Quality submenu of the Share menu is open.
+    pub quality_open: bool,
+    /// The pointer is on the soundboard button or its Suggested Sounds popup.
+    pub suggest: bool,
+    /// The focused tile, if any (`selectedParticipant`).
+    pub focus: video_tiles::Focus,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
 }
@@ -85,6 +128,9 @@ impl Default for State {
             menu: None,
             invite_dismissed: false,
             row_focus: false,
+            quality_open: false,
+            suggest: false,
+            focus: Default::default(),
             colors: RefCell::new(HashMap::new()),
         }
     }
@@ -99,6 +145,13 @@ pub(super) struct GridLayout {
     pub tile_height: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
+}
+
+/// What the header shows beside the channel name while a tile is focused.
+struct FocusCrumb {
+    title: String,
+    avatar: Option<std::sync::Arc<gpui::Image>>,
+    quality: Option<String>,
 }
 
 const ASPECT: f32 = 16. / 9.;
@@ -157,10 +210,15 @@ pub(super) fn grid_layout(count: usize, width: f32, height: f32) -> GridLayout {
     }
 }
 
-/// What a tile shows behind its name. Only the avatar is drawn: video needs the media pipeline.
+/// What a tile shows behind its name.
 #[derive(Clone, Copy)]
 pub(super) enum TileMedia {
+    /// The 80px avatar centred in the tile.
     Avatar,
+    /// Nothing yet: the spinner or the Watch Stream button is drawn over the tile.
+    None,
+    /// The latest picture of a camera or stream, kept whole inside the tile (`fit: contain`).
+    Video(super::video_tiles::Key),
 }
 
 struct Participant {
@@ -168,6 +226,7 @@ struct Participant {
     mute: bool,
     deaf: bool,
     speaking: bool,
+    tile: Candidate,
 }
 
 /// The fade of `gradientTop_rTsZa_` / `gradientBottom_rTsZa_`: black down to nothing over 160px.
@@ -375,18 +434,150 @@ impl Root {
         }
     }
 
+    /// The candidates of the grid before the filter: a user tile for everyone in the channel, and a stream tile for
+    /// everyone going live (`self_stream`) or whose stream this client sends or watches.
     fn participants(&self, guild: Id, channel: Id) -> Vec<Participant> {
-        self.stores
-            .voice_members(guild, channel)
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let own_camera = self.call.as_ref().is_some_and(|call| call.camera);
+        let hide_own = !call_setting(SHOW_OWN_CAMERA);
+        let mut out = Vec::new();
+        for state in self.stores.voice_members(guild, channel) {
+            let user = self.user_of(state.user_id);
+            let is_me = Some(state.user_id) == me;
+            let video = state.self_video || (is_me && own_camera);
+            let stream = self.video_stream_of(state.user_id);
+            let going_live = state.self_stream || stream.is_some();
+            let mute = state.self_mute || state.mute;
+            let deaf = state.self_deaf || state.deaf;
+            let speaking = self.speaking.contains(&state.user_id)
+                || self.soundboard.user_playing(state.user_id);
+            let tile = Candidate {
+                user: state.user_id,
+                kind: TileKind::User,
+                name: user.display_name().to_owned(),
+                video,
+                going_live,
+                local_video_disabled: is_me && hide_own,
+                connected: false,
+            };
+            if going_live {
+                out.push(Participant {
+                    user: user.clone(),
+                    mute,
+                    deaf,
+                    speaking: false,
+                    tile: Candidate {
+                        kind: TileKind::Stream,
+                        connected: stream.is_some(),
+                        ..tile.clone()
+                    },
+                });
+            }
+            out.push(Participant {
+                user,
+                mute,
+                deaf,
+                speaking,
+                tile,
+            });
+        }
+        out
+    }
+
+    /// The header crumb of a focused tile: the name with Screen for a stream, the name for a camera.
+    fn focus_crumb(&self, person: &Participant) -> FocusCrumb {
+        let name = person.user.display_name().to_owned();
+        let stream = person.tile.kind == TileKind::Stream;
+        FocusCrumb {
+            title: if stream {
+                format!("{name}\u{2019}s Screen")
+            } else {
+                name
+            },
+            avatar: self
+                .images
+                .get(&super::avatar_source(&person.user).0)
+                .cloned(),
+            quality: stream
+                .then(|| self.video_stream_of(person.user.id))
+                .flatten()
+                .and_then(|info| info.quality)
+                .map(|(resolution, fps)| super::go_live::quality_badge(resolution, fps)),
+        }
+    }
+
+    /// Focus mode (module 699707): the tile large in the middle, the others in a strip of 195x112 tiles above the
+    /// bar. A click on the large tile, or Grid View, goes back to the grid.
+    fn focus_body(
+        &self,
+        people: &[Participant],
+        index: usize,
+        width: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let others: Vec<&Participant> = people
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != index)
+            .map(|(_, person)| person)
+            .collect();
+        let strip_top = height - 192.;
+        let main_bottom = if others.is_empty() {
+            height - 80.
+        } else {
+            strip_top - 8.
+        };
+        let main_height = (main_bottom - 80.).max(120.);
+        let main_width = (main_height * ASPECT).min(width - 16.);
+        let main_height = main_width / ASPECT;
+        let big = GridLayout {
+            columns: 1,
+            rows: 1,
+            tile_width: main_width,
+            tile_height: main_height,
+            pad_top: 0.,
+            pad_bottom: 0.,
+        };
+        let small = GridLayout {
+            tile_width: 195.,
+            tile_height: 112.,
+            ..big
+        };
+        let strip: Vec<AnyElement> = others
             .into_iter()
-            .map(|state| Participant {
-                user: self.user_of(state.user_id),
-                mute: state.self_mute || state.mute,
-                deaf: state.self_deaf || state.deaf,
-                speaking: self.speaking.contains(&state.user_id)
-                    || self.soundboard.user_playing(state.user_id),
+            .map(|person| self.tile(person, small, cx))
+            .collect();
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(80.))
+                    .h(px(main_bottom - 80.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(self.tile(&people[index], big, cx)),
+            )
+            .when(!strip.is_empty(), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .right(px(8.))
+                        .top(px(strip_top))
+                        .h(px(112.))
+                        .flex()
+                        .justify_center()
+                        .gap(px(TILE_GAP))
+                        .children(strip),
+                )
             })
-            .collect()
+            .into_any_element()
     }
 
     /// The main area for a voice channel: the call while in it, else the disconnected state.
@@ -435,17 +626,43 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let shown = self.controls_shown();
-        let mut people = self.participants(guild, channel);
-        if !call_setting(SHOW_NON_VIDEO) {
-            // Nobody has video yet, so every tile is a non-video one.
-            people.clear();
-        }
+        let everyone = self.participants(guild, channel);
+        // `getUserParticipantCount`: users, not streams, whatever the filter hides.
+        let user_count = everyone
+            .iter()
+            .filter(|person| person.tile.kind == TileKind::User)
+            .count();
+        let by_key: HashMap<(u64, TileKind), Participant> = everyone
+            .into_iter()
+            .map(|person| ((person.tile.user, person.tile.kind), person))
+            .collect();
+        let order = video_tiles::select(
+            by_key.values().map(|person| person.tile.clone()).collect(),
+            call_setting(SHOW_NON_VIDEO),
+        );
+        let mut by_key = by_key;
+        let people: Vec<Participant> = order
+            .iter()
+            .filter_map(|tile| by_key.remove(&(tile.user, tile.kind)))
+            .collect();
+        // The focused tile left the call: back to the grid.
+        self.vv.focus.keep_if(|user, kind| {
+            people
+                .iter()
+                .any(|person| person.tile.user == user && person.tile.kind == kind)
+        });
+        let focused = self.vv.focus.tile.and_then(|(user, kind)| {
+            people
+                .iter()
+                .position(|person| person.tile.user == user && person.tile.kind == kind)
+        });
         let can_invite = self.current_channel().is_some_and(|channel| {
             self.can_in_channel(channel, dc_state::permissions::CREATE_INSTANT_INVITE)
         });
-        // Alone in the call with the right to invite: the invite card keeps the user's tile company (686502 `D`).
-        let card = people.len() == 1 && can_invite;
-        let count = people.len() + usize::from(card);
+        // Alone in the call with the right to invite: the invite card keeps the user's tile company (526369:
+        // `userLimit <= 0 || > 1`, one user, `canInvite`). A person's stream does not count as a user.
+        let card = user_count == 1 && can_invite;
+        let count = (people.len() + usize::from(card)).max(1);
         let layout = grid_layout(count, width, height);
         if card {
             self.request_image(ART_URL.to_owned(), ART_URL.to_owned());
@@ -472,17 +689,25 @@ impl Root {
                     .into_any_element(),
             );
         }
-        let grid = div()
-            .absolute()
-            .inset_0()
-            .px(px(8.))
-            .pt(px(layout.pad_top))
-            .pb(px(layout.pad_bottom.max(0.)))
-            .flex()
-            .flex_col()
-            .gap(px(TILE_GAP))
-            .overflow_hidden()
-            .children(rows);
+        let focus_head = focused.map(|index| self.focus_crumb(&people[index]));
+        let grid = if let Some(index) = focused {
+            self.focus_body(&people, index, width, height, cx)
+        } else if people.is_empty() {
+            self.no_video_view(width, height, cx)
+        } else {
+            div()
+                .absolute()
+                .inset_0()
+                .px(px(8.))
+                .pt(px(layout.pad_top))
+                .pb(px(layout.pad_bottom.max(0.)))
+                .flex()
+                .flex_col()
+                .gap(px(TILE_GAP))
+                .overflow_hidden()
+                .children(rows)
+                .into_any_element()
+        };
         div()
             .absolute()
             .inset_0()
@@ -495,16 +720,85 @@ impl Root {
                     .child(fade(true))
                     .child(fade(false)),
             )
-            .child(self.call_header(channel, shown, cx))
+            .child(self.call_header(channel, shown, focus_head, cx))
             .child(self.call_bar(guild, channel, shown, cx))
             .children(self.voice_menus(channel, width, height, cx))
+            .children(self.soundboard_suggest(cx))
+            .into_any_element()
+    }
+
+    /// `713397.js`: nobody has video and the others are hidden. The call container's glow with the heading and
+    /// the button that turns "Show Non-Video Participants" back on.
+    fn no_video_view(&self, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                img(self.disconnected_background(width, height))
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(mid("--text-strong"))
+                            .child("Participants without video are currently hidden"),
+                    )
+                    .child(
+                        div()
+                            .id("voice-show-all")
+                            .h(px(40.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(mid("--control-secondary-border-default"))
+                            .bg(mid("--control-secondary-background-default"))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(mid("--control-secondary-background-hover")))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(mid("--control-secondary-text-default"))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                super::voice_view::set_call_setting(SHOW_NON_VIDEO, true);
+                                cx.notify();
+                            }))
+                            .child("Show All Participants"),
+                    ),
+            )
             .into_any_element()
     }
 
     fn tile(&self, person: &Participant, layout: GridLayout, cx: &mut Context<Self>) -> AnyElement {
-        let group = SharedString::from(format!("vtile-{}", person.user.id));
+        let kind = person.tile.kind;
         let user_id = person.user.id;
-        let menu_open = matches!(self.vv.menu, Some(Menu::Tile(id, _)) if id == user_id);
+        let stream_tile = kind == TileKind::Stream;
+        let tag = if stream_tile { "vstream" } else { "vtile" };
+        let group = SharedString::from(format!("{tag}-{user_id}"));
+        let menu_open = match self.vv.menu {
+            Some(Menu::Tile(id, _)) => id == user_id && !stream_tile,
+            Some(Menu::Stream(id, _)) => id == user_id && stream_tile,
+            _ => false,
+        };
+        let stream = if stream_tile {
+            self.video_stream_of(user_id)
+        } else {
+            None
+        };
         let pill = div().h(px(32.)).flex().items_center().child(
             div()
                 .h(px(32.))
@@ -518,16 +812,19 @@ impl Root {
                 .text_size(px(16.))
                 .line_height(px(20.))
                 .text_color(rgba(0xffffffff))
-                .when(person.mute, |this| {
+                .when(stream_tile, |this| {
+                    this.child(icon("voice_view_stream", 16., "--white"))
+                })
+                .when(!stream_tile && person.mute, |this| {
                     this.child(icon("voice_view_mic_slash", 16., "--white"))
                 })
-                .when(person.deaf && !person.mute, |this| {
+                .when(!stream_tile && person.deaf && !person.mute, |this| {
                     this.child(icon("headphones_deafened", 16., "--white"))
                 })
                 .child(person.user.display_name().to_owned()),
         );
         let options = div()
-            .id(SharedString::from(format!("vtile-options-{user_id}")))
+            .id(SharedString::from(format!("{tag}-options-{user_id}")))
             .size(px(32.))
             .rounded(px(8.))
             .bg(mid("--control-overlay-secondary-background-default"))
@@ -541,12 +838,64 @@ impl Root {
             })
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 cx.stop_propagation();
-                this.vv.menu = Some(Menu::Tile(user_id, event.position()));
+                this.vv.menu = Some(if stream_tile {
+                    Menu::Stream(user_id, event.position())
+                } else {
+                    Menu::Tile(user_id, event.position())
+                });
                 cx.notify();
             }))
             .child(icon("voice_view_more", 16., "--white"));
+        let media = self.tile_media_for(person);
+        let video = matches!(media, TileMedia::Video(_));
+        let waiting = stream_tile && stream.is_none();
+        let loading = if stream_tile {
+            stream.is_some() && !video
+        } else {
+            video_tiles::shows_video(&person.tile) && !video
+        };
+        let background = if stream_tile || video_tiles::shows_video(&person.tile) {
+            mid("--primary-700")
+        } else {
+            self.tile_color(&person.user)
+        };
+        // The focused stream's quality and LIVE sit in the header instead.
+        let is_focus = self.vv.focus.tile == Some((user_id, kind));
+        let indicators = stream.as_ref().filter(|_| !is_focus).map(|stream| {
+            let pill = |text: String, fill: &'static str| {
+                div()
+                    .h(px(16.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .bg(mid(fill))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(rgba(0xffffffff))
+                    .child(text)
+            };
+            let quality = stream
+                .quality
+                .map(|(resolution, fps)| super::go_live::quality_badge(resolution, fps));
+            let live = pill("LIVE".to_owned(), "--badge-critical-background").rounded_r(px(16.));
+            div()
+                .absolute()
+                .top(px(8.))
+                .right(px(8.))
+                .flex()
+                .when_some(quality, |this, text| {
+                    this.child(pill(text, "--interactive-muted").rounded_l(px(16.)))
+                })
+                .child(if stream.quality.is_none() {
+                    live.rounded_l(px(16.))
+                } else {
+                    live
+                })
+        });
         div()
-            .id(SharedString::from(format!("vtile-{user_id}")))
+            .id(SharedString::from(format!("{tag}-{user_id}")))
             .group(group)
             .relative()
             .flex_none()
@@ -554,8 +903,20 @@ impl Root {
             .h(px(layout.tile_height))
             .rounded(px(8.))
             .overflow_hidden()
-            .bg(self.tile_color(&person.user))
-            .child(self.tile_media(TileMedia::Avatar, person))
+            .bg(background)
+            .when(!waiting, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.vv.focus.click(user_id, kind);
+                        cx.notify();
+                    }))
+            })
+            .child(self.tile_media(media, person))
+            .when(loading, |this| this.child(spinner()))
+            .when(waiting, |this| {
+                this.child(self.watch_overlay(user_id, layout.tile_width, cx))
+            })
+            .children(indicators)
             .child(
                 div()
                     .absolute()
@@ -566,7 +927,7 @@ impl Root {
                     .child(pill)
                     .child(options),
             )
-            .when(person.speaking, |this| {
+            .when(person.speaking && !stream_tile, |this| {
                 this.child(
                     div()
                         .absolute()
@@ -579,9 +940,38 @@ impl Root {
             .into_any_element()
     }
 
-    /// The one place a tile's picture is drawn: today the 80px avatar centred in it.
+    /// What the tile draws behind its name (module 83982 and 555148): a camera or stream picture when there is one,
+    /// else the avatar.
+    fn tile_media_for(&self, person: &Participant) -> TileMedia {
+        let user = person.user.id;
+        match person.tile.kind {
+            TileKind::Stream => {
+                let key = (user, dc_voice::VideoSource::Stream(user));
+                if self.video.images.image(&key).is_some() && self.video_stream_of(user).is_some() {
+                    TileMedia::Video(key)
+                } else {
+                    TileMedia::None
+                }
+            }
+            TileKind::User => {
+                let key = (user, dc_voice::VideoSource::Camera);
+                if video_tiles::shows_video(&person.tile) {
+                    if self.video.images.image(&key).is_some() {
+                        TileMedia::Video(key)
+                    } else {
+                        TileMedia::None
+                    }
+                } else {
+                    TileMedia::Avatar
+                }
+            }
+        }
+    }
+
+    /// The tile's picture.
     fn tile_media(&self, media: TileMedia, person: &Participant) -> AnyElement {
         match media {
+            TileMedia::None => div().into_any_element(),
             TileMedia::Avatar => {
                 let picture = self
                     .images
@@ -596,7 +986,58 @@ impl Root {
                     .children(picture.map(|picture| img(picture).size(px(80.)).rounded_full()))
                     .into_any_element()
             }
+            TileMedia::Video(key) => match self.video.images.image(&key) {
+                Some(image) => div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000ff))
+                    .child(
+                        img(image.clone())
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .into_any_element(),
+                None => div().into_any_element(),
+            },
         }
+    }
+
+    /// `Watch Stream` over a stream nobody here watches yet (module 555148: a secondary button; `Watch` under 175px).
+    fn watch_overlay(&self, owner: u64, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id(SharedString::from(format!("vstream-watch-{owner}")))
+                    .h(px(40.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(mid("--control-secondary-border-default"))
+                    .bg(mid("--control-secondary-background-default"))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(mid("--control-secondary-background-hover")))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(mid("--control-secondary-text-default"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.watch_stream_of(owner, cx);
+                    }))
+                    .child(if width < 175. {
+                        "Watch"
+                    } else {
+                        "Watch Stream"
+                    }),
+            )
+            .into_any_element()
     }
 
     /// `686502.js` `D`: the card beside a lone user, with the Turbine art, Invite to Voice and Choose Activity.
@@ -737,7 +1178,13 @@ impl Root {
     }
 
     /// `topControls_rTsZa_`: the channel's speaker and name, Show Chat at the right.
-    fn call_header(&self, channel: Id, shown: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn call_header(
+        &self,
+        channel: Id,
+        shown: bool,
+        focus: Option<FocusCrumb>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let name = self
             .current_channel()
             .map(|channel| channel.name.clone())
@@ -773,9 +1220,50 @@ impl Root {
                     .font_weight(FontWeight(500.))
                     .text_color(mid("--text-strong"))
                     .child(icon("voice_view_channel", 20., "--channels-default"))
-                    .child(name),
+                    .child(name)
+                    .children(focus.as_ref().map(|crumb| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .child(
+                                div()
+                                    .size(px(4.))
+                                    .rounded_full()
+                                    .bg(mid("--interactive-icon-default")),
+                            )
+                            .children(
+                                crumb
+                                    .avatar
+                                    .clone()
+                                    .map(|picture| img(picture).size(px(24.)).rounded_full()),
+                            )
+                            .child(crumb.title.clone())
+                    })),
             )
             .child(div().flex_1())
+            .children(focus.and_then(|crumb| crumb.quality).map(|text| {
+                let pill = |text: String, fill: &'static str| {
+                    div()
+                        .h(px(16.))
+                        .px(px(6.))
+                        .flex()
+                        .items_center()
+                        .bg(mid(fill))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(rgba(0xffffffff))
+                        .child(text)
+                };
+                div()
+                    .mr(px(16.))
+                    .flex()
+                    .child(pill(text, "--interactive-muted").rounded_l(px(16.)))
+                    .child(
+                        pill("LIVE".to_owned(), "--badge-critical-background").rounded_r(px(16.)),
+                    )
+            }))
             .when(!chat_open, |this| {
                 this.child(self.with_tip(
                     "voice-show-chat-tip",
@@ -895,27 +1383,55 @@ impl Root {
                 mic_nub,
                 cx,
             ));
+        let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
+        let active_fill = gpui::rgba(0x00854520);
+        let active_text = "--text-feedback-positive";
+        let camera_button = if camera_on {
+            primary("call-camera", "voice_camera_on")
+                .rounded_l(px(8.))
+                .bg(active_fill)
+        } else {
+            primary("call-camera", "voice_camera")
+        };
         let camera = div()
+            .relative()
             .flex()
             .gap(px(1.))
-            .child(
-                self.with_tip(
-                    "call-camera-tip",
-                    Tip::text("Turn On Camera", Side::Top),
-                    primary("call-camera", "voice_camera")
-                        .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
-                    cx,
+            .child(self.anchor_probe("call-camera-group"))
+            .child(self.with_tip(
+                "call-camera-tip",
+                Tip::text(
+                    if camera_on {
+                        "Turn Off Camera"
+                    } else {
+                        "Turn On Camera"
+                    },
+                    Side::Top,
                 ),
-            )
+                camera_button.on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
+                cx,
+            ))
             .child(
                 self.with_tip(
                     "call-camera-chevron-tip",
                     Tip::text("More Camera Options", Side::Top),
-                    nub("call-camera-chevron", "--white")
-                        .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
+                    nub(
+                        "call-camera-chevron",
+                        if camera_on { active_text } else { "--white" },
+                    )
+                    .when(camera_on, |this| this.bg(active_fill))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.menu = if this.vv.menu == Some(Menu::Camera) {
+                            None
+                        } else {
+                            Some(Menu::Camera)
+                        };
+                        cx.notify();
+                    })),
                     cx,
                 ),
             );
+        let streaming = self.own_stream().is_some();
         let section = |children: Vec<AnyElement>| {
             div()
                 .flex()
@@ -958,14 +1474,54 @@ impl Root {
                 camera.into_any_element(),
             ]))
             .child(section(vec![
-                self.with_tip(
-                    "call-screen-tip",
-                    Tip::text("Share Your Screen", Side::Top),
-                    primary("call-screen", "voice_screen")
-                        .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
-                    cx,
-                )
-                .into_any_element(),
+                if streaming {
+                    div()
+                        .relative()
+                        .flex()
+                        .gap(px(1.))
+                        .child(self.anchor_probe("call-screen-group"))
+                        .child(
+                            self.with_tip(
+                                "call-screen-tip",
+                                Tip::text("Stop Streaming", Side::Top),
+                                primary("call-screen", "voice_bar_screen_active")
+                                    .rounded_l(px(8.))
+                                    .bg(active_fill)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx)),
+                                    ),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.with_tip(
+                                "call-screen-chevron-tip",
+                                Tip::text("More Stream Options", Side::Top),
+                                nub("call-screen-chevron", active_text)
+                                    .bg(active_fill)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.vv.quality_open = false;
+                                        this.vv.menu = if this.vv.menu == Some(Menu::Share) {
+                                            None
+                                        } else {
+                                            Some(Menu::Share)
+                                        };
+                                        cx.notify();
+                                    })),
+                                cx,
+                            ),
+                        )
+                        .into_any_element()
+                } else {
+                    self.with_tip(
+                        "call-screen-tip",
+                        Tip::text("Share Your Screen", Side::Top),
+                        primary("call-screen", "voice_screen")
+                            .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
+                        cx,
+                    )
+                    .into_any_element()
+                },
                 self.with_tip(
                     "call-activity-tip",
                     Tip::text("Start An Activity", Side::Top),
@@ -974,13 +1530,18 @@ impl Root {
                     cx,
                 )
                 .into_any_element(),
-                self.with_tip(
-                    "call-soundboard-tip",
-                    Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
-                    soundboard,
-                    cx,
-                )
-                .into_any_element(),
+                div()
+                    .id("call-soundboard-hover")
+                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                        this.soundboard_hover(*inside, cx);
+                    }))
+                    .child(self.with_tip(
+                        "call-soundboard-tip",
+                        Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
+                        soundboard,
+                        cx,
+                    ))
+                    .into_any_element(),
                 self.with_tip(
                     "call-more-tip",
                     Tip::text("More Options", Side::Top),
@@ -1062,7 +1623,7 @@ impl Root {
 
     // ---- menus ----
 
-    fn menu_panel(&self, width: f32, theme_mid: bool) -> gpui::Div {
+    pub(super) fn menu_panel(&self, width: f32, theme_mid: bool) -> gpui::Div {
         let panel = div()
             .occlude()
             .w(px(width))
@@ -1087,7 +1648,7 @@ impl Root {
         }
     }
 
-    fn menu_separator(theme_mid: bool) -> AnyElement {
+    pub(super) fn menu_separator(theme_mid: bool) -> AnyElement {
         div()
             .my(px(8.))
             .h(px(1.))
@@ -1100,13 +1661,29 @@ impl Root {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn vmenu_row(
+    pub(super) fn vmenu_row(
         &self,
         id: &'static str,
         glyph: Option<&'static str>,
         label: &'static str,
         checked: Option<bool>,
         theme_mid: bool,
+        cx: &mut Context<Self>,
+        run: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+    ) -> AnyElement {
+        self.vmenu_row_ex(id, glyph, label, checked, theme_mid, false, false, cx, run)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn vmenu_row_ex(
+        &self,
+        id: &'static str,
+        glyph: Option<&'static str>,
+        label: &'static str,
+        checked: Option<bool>,
+        theme_mid: bool,
+        danger: bool,
+        caret: bool,
         cx: &mut Context<Self>,
         run: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
     ) -> AnyElement {
@@ -1122,6 +1699,16 @@ impl Root {
                 "--interactive-text-default",
                 color("--interactive-background-hover"),
             )
+        };
+        let strong = if danger {
+            color("--text-feedback-critical")
+        } else {
+            strong
+        };
+        let subtle = if danger {
+            "--text-feedback-critical"
+        } else {
+            subtle
         };
         div()
             .id(id)
@@ -1146,6 +1733,9 @@ impl Root {
                     .text_color(strong)
                     .child(label),
             )
+            .when(caret, |this| {
+                this.child(icon("menu_caret_right", 20., "--interactive-icon-default"))
+            })
             .children(checked.map(|on| {
                 div()
                     .size(px(20.))
@@ -1210,10 +1800,21 @@ impl Root {
                         "vmenu-grid",
                         None,
                         "Grid View",
-                        Some(call_setting(GRID_VIEW)),
+                        Some(self.vv.focus.tile.is_none()),
                         true,
                         cx,
-                        |_, _, _| toggle_call_setting(GRID_VIEW),
+                        |this, _, _| {
+                            // Checked: the grid shows. Unchecking it focuses the first tile (a stream sorts first).
+                            if this.vv.focus.tile.is_some() {
+                                this.vv.focus.grid();
+                            } else if let (Some(guild), Some(channel)) = (this.guild, this.channel)
+                                && let Some(first) =
+                                    this.participants(guild, channel).into_iter().next()
+                            {
+                                this.vv.focus.click(first.tile.user, first.tile.kind);
+                            }
+                            set_call_setting(GRID_VIEW, this.vv.focus.tile.is_none());
+                        },
                     ),
                     self.vmenu_row(
                         "vmenu-own-camera",
@@ -1348,6 +1949,91 @@ impl Root {
                             .child(
                                 self.menu_panel(TILE_MENU_WIDTH, false)
                                     .id("voice-tile-menu")
+                                    .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                                        close(this, cx);
+                                    }))
+                                    .children(rows),
+                            ),
+                    )
+                    .with_priority(2)
+                    .into_any_element(),
+                ]
+            }
+            Menu::Camera => self.camera_menu(cx),
+            Menu::Share => self.share_menu(cx),
+            Menu::Stream(owner, at) => {
+                let me = self.stores.current_user.as_ref().map(|user| user.id);
+                let info = self.video_stream_of(owner);
+                let watching = info
+                    .as_ref()
+                    .is_some_and(|info| info.role == dc_voice::streams::Role::Watch);
+                let mut rows = Vec::new();
+                if Some(owner) == me {
+                    rows.push(self.vmenu_row(
+                        "vmenu-stop-stream",
+                        None,
+                        "Stop Streaming",
+                        None,
+                        false,
+                        cx,
+                        |this, _, cx| {
+                            this.vv.menu = None;
+                            this.stream_stop(cx);
+                        },
+                    ));
+                } else if watching {
+                    rows.push(self.vmenu_row(
+                        "vmenu-stop-watching",
+                        None,
+                        "Stop Watching",
+                        None,
+                        false,
+                        cx,
+                        move |this, _, cx| {
+                            this.vv.menu = None;
+                            this.unwatch_stream_of(owner, cx);
+                        },
+                    ));
+                } else {
+                    rows.push(self.vmenu_row(
+                        "vmenu-watch-stream",
+                        None,
+                        "Watch Stream",
+                        None,
+                        false,
+                        cx,
+                        move |this, _, cx| {
+                            this.vv.menu = None;
+                            this.watch_stream_of(owner, cx);
+                        },
+                    ));
+                }
+                rows.push(self.vmenu_row(
+                    "vmenu-stream-settings",
+                    Some("voice_view_gear"),
+                    "Voice & Video Settings",
+                    None,
+                    false,
+                    cx,
+                    |this, _, cx| {
+                        this.vv.menu = None;
+                        this.open_settings_section("Voice & Video", cx);
+                    },
+                ));
+                let rows_height = 36. * rows.len() as f32 + 16.;
+                let window_w = width + 375.;
+                let window_h = height + 32.;
+                let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);
+                let top = f32::from(at.y).min(window_h - 16. - rows_height);
+                vec![
+                    deferred(
+                        div()
+                            .absolute()
+                            .left(px(left - 375.))
+                            .top(px(top - 32.))
+                            .child(
+                                self.menu_panel(TILE_MENU_WIDTH, false)
+                                    .id("voice-stream-menu")
                                     .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
                                         close(this, cx);
                                     }))
@@ -1542,7 +2228,7 @@ impl Root {
                     .inset_0()
                     .size_full(),
             )
-            .child(self.call_header(channel, shown, cx))
+            .child(self.call_header(channel, shown, None, cx))
             .child(
                 div()
                     .absolute()

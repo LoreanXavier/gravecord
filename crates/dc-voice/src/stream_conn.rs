@@ -17,7 +17,7 @@ use crate::{
     signal::{self, CLOSE_DISCONNECTED, Context, Limits},
     streams::{Role, StreamJoin},
     video::{
-        VideoHub, VideoSource,
+        RemoteFrame, VideoHub, VideoSource,
         receive::{Decoders, Offer, Receivers},
         sender::VideoSender,
     },
@@ -204,6 +204,8 @@ pub(crate) fn jpeg_thumbnail(picture: &dc_media::Picture) -> Option<Vec<u8>> {
 const PREVIEW_FIRST: Duration = Duration::from_millis(500);
 const PREVIEW_INTERVAL: Duration = Duration::from_secs(300);
 const PREVIEW_PAUSED_INTERVAL: Duration = Duration::from_secs(60);
+/// How often the sender's own tile gets a new picture.
+const LOCAL_PREVIEW_INTERVAL: Duration = Duration::from_millis(200);
 /// A watcher refreshes its sink wants while video stalls or before the server forgets them (Serein: five seconds).
 const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
 /// Longest stream audio backlog before the oldest frame goes.
@@ -298,6 +300,10 @@ pub(crate) async fn run(
     let mut encoded = [0u8; 1275];
     let mut preview_at = Instant::now() + PREVIEW_FIRST;
     let mut previewed = false;
+    // The sender's own tile: the capture's newest picture, handed to the sink a few times a second. The preview upload
+    // reads the same picture, because taking a preview from the capture consumes it.
+    let mut local_preview_at = Instant::now();
+    let mut last_preview: Option<dc_media::Picture> = None;
 
     // Watcher state.
     let mut receivers = Receivers::default();
@@ -511,10 +517,23 @@ pub(crate) async fn run(
                     } else if !secure {
                         pending_audio.clear();
                     }
+                    if now >= local_preview_at && let Some(capture) = &capture {
+                        local_preview_at = now + LOCAL_PREVIEW_INTERVAL;
+                        if let Some(picture) = capture.preview() {
+                            if hub.has_sink() {
+                                hub.deliver(RemoteFrame {
+                                    user: owner,
+                                    source: VideoSource::Stream(owner),
+                                    picture: picture.clone(),
+                                });
+                            }
+                            last_preview = Some(picture);
+                        }
+                    }
                     // Preview: the official client waits for a real picture, then uploads every five minutes.
-                    if secure && sent_keyframe && controls.borrow().previews && now >= preview_at && let Some(capture) = &capture {
-                        if let Some(picture) = capture.preview()
-                            && let Some(jpeg) = jpeg_thumbnail(&picture)
+                    if secure && sent_keyframe && controls.borrow().previews && now >= preview_at && capture.is_some() {
+                        if let Some(picture) = last_preview.as_ref()
+                            && let Some(jpeg) = jpeg_thumbnail(picture)
                         {
                             let _ = events.send(StreamEvent::Preview { jpeg });
                             previewed = true;

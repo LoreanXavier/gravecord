@@ -5,13 +5,14 @@
 //! on the UI side repaints at most thirty times a second when something new arrived.
 
 use super::Root;
+use super::video_tiles::{Key, Slots, render_image};
 use crate::net::Request;
 use dc_proto::op::Op;
 use dc_voice::{
     RemoteFrame, StreamControls, StreamEvent, StreamSource, VideoSource,
     streams::{self, Dispatch, EndReason, Role, StreamKey, StreamStatus, StreamUpdate, Tracker},
 };
-use gpui::Context;
+use gpui::{Context, RenderImage};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -33,21 +34,21 @@ const HARNESS_STREAM_LIMIT: Duration = Duration::from_secs(10);
 #[cfg(feature = "capture")]
 const HARNESS_SOURCE: (u32, u32, u32, u32) = (320, 180, 5, 150_000);
 
-/// The latest picture of every source, written by decoder threads.
+/// The latest picture of every source, written by decoder threads, with a sequence number per picture.
 #[derive(Default)]
 pub(super) struct Frames {
-    latest: Mutex<HashMap<(u64, VideoSource), dc_media::Picture>>,
+    latest: Mutex<HashMap<Key, (u64, Arc<dc_media::Picture>)>>,
     dirty: AtomicBool,
     seen: AtomicU64,
 }
 
 impl Frames {
     fn store(&self, frame: RemoteFrame) {
+        let seq = self.seen.fetch_add(1, Ordering::Relaxed) + 1;
         self.latest
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((frame.user, frame.source), frame.picture);
-        self.seen.fetch_add(1, Ordering::Relaxed);
+            .insert((frame.user, frame.source), (seq, Arc::new(frame.picture)));
         self.dirty.store(true, Ordering::Release);
     }
 
@@ -64,14 +65,36 @@ impl Frames {
         self.dirty.store(true, Ordering::Release);
     }
 
+    /// The pictures `slots` has no image of yet, newest only; each is marked as converting.
+    fn pending(
+        &self,
+        slots: &mut Slots<Arc<RenderImage>>,
+    ) -> Vec<(Key, u64, Arc<dc_media::Picture>)> {
+        self.latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(key, (seq, _))| slots.wanted(**key, *seq))
+            .map(|(key, (seq, picture))| (*key, *seq, picture.clone()))
+            .collect()
+    }
+
+    /// Forgets the pictures of sources `keep` rejects (a camera that went off must not flash its last picture).
+    fn retain(&self, keep: impl Fn(&Key) -> bool) {
+        self.latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|key, _| keep(key));
+    }
+
     /// The picture a tile paints.
     #[cfg(test)]
-    fn latest(&self, user: u64, source: VideoSource) -> Option<dc_media::Picture> {
+    fn latest(&self, user: u64, source: VideoSource) -> Option<Arc<dc_media::Picture>> {
         self.latest
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(user, source))
-            .cloned()
+            .map(|(_, picture)| picture.clone())
     }
 }
 
@@ -82,11 +105,33 @@ struct Live {
     /// What a sender captures; taken when the connection starts.
     source: Option<StreamSource>,
     last: StreamUpdate,
+    /// What the picker chose, for the panel row and the tile's badge.
+    started: Option<Started>,
+}
+
+/// What a stream we send was started with.
+#[derive(Clone, Debug)]
+pub(super) struct Started {
+    pub name: String,
+    pub info: dc_media::screen::Source,
+    pub quality: (dc_media::screen::Resolution, u32),
+    pub icon: Option<Arc<RenderImage>>,
+}
+
+/// What the call view needs of a stream: its state and, for ours, what it was started with.
+#[derive(Clone, Debug)]
+pub(super) struct StreamInfo {
+    pub role: Role,
+    pub quality: Option<(dc_media::screen::Resolution, u32)>,
+    pub name: Option<String>,
+    pub icon: Option<Arc<RenderImage>>,
 }
 
 #[derive(Default)]
 pub(super) struct Video {
     frames: Arc<Frames>,
+    /// The gpui image of every source's latest picture.
+    pub(super) images: Slots<Arc<RenderImage>>,
     pumping: bool,
     streams: HashMap<StreamKey, Live>,
 }
@@ -117,11 +162,15 @@ impl Video {
 impl Root {
     /// A call was created: pictures of it go to the store, and the repaint task runs while the call lasts.
     pub(super) fn video_call_started(&mut self, cx: &mut Context<Self>) {
+        if self.call.is_none() {
+            return;
+        }
+        let frames = self.video.frames.clone();
+        frames.clear();
+        self.video_release(cx);
         let Some(call) = &self.call else {
             return;
         };
-        let frames = self.video.frames.clone();
-        frames.clear();
         call.controls
             .set_video_sink(Some(Arc::new(move |frame| frames.store(frame))));
         if self.video.pumping {
@@ -135,9 +184,12 @@ impl Root {
                 let alive = this.update(cx, |root, cx| {
                     if root.call.is_none() {
                         root.video.pumping = false;
+                        root.video.frames.clear();
+                        root.video_release(cx);
                         return false;
                     }
                     if root.video.frames.take_dirty() {
+                        root.video_convert(cx);
                         cx.notify();
                     }
                     true
@@ -150,9 +202,84 @@ impl Root {
         .detach();
     }
 
+    /// Whether the picture of a source can still be on a tile: a camera is on in the call's voice states (ours by
+    /// `Event::VideoState`), a stream is one we send or watch.
+    fn video_source_live(&self, key: &Key) -> bool {
+        let Some(call) = &self.call else {
+            return false;
+        };
+        let (user, source) = *key;
+        match source {
+            VideoSource::Camera => {
+                if self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user)
+                {
+                    call.camera
+                } else {
+                    self.stores
+                        .voice_members(call.guild, call.channel)
+                        .iter()
+                        .any(|state| state.user_id == user && state.self_video)
+                }
+            }
+            VideoSource::Stream(owner) => self.video.streams.keys().any(|key| key.owner() == owner),
+        }
+    }
+
+    /// Starts the conversion of every picture that has no image yet, each on a worker, and releases the images of
+    /// sources that are gone.
+    fn video_convert(&mut self, cx: &mut Context<Self>) {
+        let keep: Vec<Key> = self
+            .video
+            .frames
+            .latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect();
+        let gone: Vec<Key> = keep
+            .into_iter()
+            .filter(|key| !self.video_source_live(key))
+            .collect();
+        if !gone.is_empty() {
+            self.video.frames.retain(|key| !gone.contains(key));
+            for image in self.video.images.retain(|key| !gone.contains(key)) {
+                cx.drop_image(image, None);
+            }
+        }
+        for (key, seq, picture) in self.video.frames.pending(&mut self.video.images) {
+            cx.spawn(async move |this, cx| {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move { render_image(&picture) })
+                    .await;
+                let _ = this.update(cx, |root, cx| {
+                    if let Some(old) = root.video.images.finish(key, seq, image) {
+                        cx.drop_image(old, None);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Every image goes back to gpui (the call ended).
+    pub(super) fn video_release(&mut self, cx: &mut Context<Self>) {
+        for image in self.video.images.clear() {
+            cx.drop_image(image, None);
+        }
+    }
+
     /// The camera button of the panel and the bar: turns our camera on with the chosen device (`audio.video_device`,
     /// else the first one; an empty id lets the call pick the default), or off.
     pub(super) fn voice_camera_clicked(&mut self, cx: &mut Context<Self>) {
+        // The Test Video camera and the call's camera never share the device.
+        self.camera_test_stop(cx);
         let Some(call) = &self.call else {
             return;
         };
@@ -184,6 +311,11 @@ impl Root {
             }
             dc_voice::Event::CameraFailed { reason } => {
                 warn!("camera failed: {reason}");
+                self.camera_error = Some(if dc_voice::camera_devices().is_empty() {
+                    "Uh oh, we can't detect any camera.".to_owned()
+                } else {
+                    format!("Error: {reason}")
+                });
                 true
             }
             _ => false,
@@ -191,10 +323,21 @@ impl Root {
     }
 
     fn stream_previews_on(&self) -> bool {
-        !matches!(
-            self.setting_choices.get("streaming_show_stream_previews"),
-            Some(super::settings::Choice::On(false))
-        )
+        match self.setting_choices.get("streaming_show_stream_previews") {
+            Some(super::settings::Choice::On(on)) => *on,
+            _ => crate::storage::get("audio.stream_previews")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
+        }
+    }
+
+    /// Show Stream Previews changed: the stream we send follows at once.
+    pub(super) fn stream_apply_previews(&self, on: bool) {
+        for live in self.video.streams.values() {
+            if live.last.role == Role::Send {
+                live.controls.set_previews(on);
+            }
+        }
     }
 
     /// Our user id and the voice session id of the call, which a stream connection reuses.
@@ -224,8 +367,12 @@ impl Root {
     }
 
     /// Go Live from `source`: op 18, then the dispatches lead to the stream connection.
-    #[cfg_attr(not(feature = "capture"), allow(dead_code))] // The Share Your Screen button (not built yet) calls this.
-    pub(super) fn stream_start(&mut self, source: StreamSource, cx: &mut Context<Self>) {
+    pub(super) fn stream_start(
+        &mut self,
+        source: StreamSource,
+        started: Started,
+        cx: &mut Context<Self>,
+    ) {
         let Some((me, session)) = self.stream_identity() else {
             return;
         };
@@ -256,6 +403,7 @@ impl Root {
                 controls,
                 source: Some(source),
                 last,
+                started: Some(started),
             },
         );
         info!("stream: create");
@@ -284,6 +432,19 @@ impl Root {
                 height,
                 fps,
                 bitrate,
+            },
+            Started {
+                name: "Synthetic".to_owned(),
+                info: dc_media::screen::Source {
+                    id: dc_media::screen::SourceId::Display(1),
+                    name: "Synthetic".to_owned(),
+                    width: 320,
+                    height: 180,
+                    refresh_hz: 5,
+                    icon: None,
+                },
+                quality: (dc_media::screen::Resolution::P480, 5),
+                icon: None,
             },
             cx,
         );
@@ -332,7 +493,6 @@ impl Root {
     }
 
     /// Watching a stream: op 20; the connection starts when both dispatches arrive.
-    #[allow(dead_code)] // The stream tile of the call view (not built yet) calls this.
     pub(super) fn stream_watch(&mut self, key: StreamKey, cx: &mut Context<Self>) {
         let Some((me, session)) = self.stream_identity() else {
             return;
@@ -349,6 +509,7 @@ impl Root {
                 controls: StreamControls::new(),
                 source: None,
                 last,
+                started: None,
             },
         );
         let _ = self.requests.send(Request::StreamOp {
@@ -357,6 +518,106 @@ impl Root {
         });
         self.stream_watchdog(key, cx);
         cx.notify();
+    }
+
+    /// The alert of `handleCameraUnavailable`: Camera Unavailable, the reason, Okay.
+    pub(super) fn camera_error_modal(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement, div, prelude::*};
+        let reason = self.camera_error.clone()?;
+        Some(super::modal::render_small(
+            super::modal::Spec {
+                id: "camera-error-modal",
+                title: "Camera Unavailable".into(),
+                subtitle: Some(div().child(reason).into_any_element()),
+                body: None,
+                buttons: vec![super::modal::button(
+                    "camera-error-okay",
+                    "Okay",
+                    super::modal::Tone::Primary,
+                    |this, _, _| this.camera_error = None,
+                )],
+                close: Box::new(|this, _, _| this.camera_error = None),
+            },
+            cx,
+        ))
+    }
+
+    /// What our own stream was started with.
+    pub(super) fn own_started(&self) -> Option<Started> {
+        let me = self.stores.current_user.as_ref()?.id;
+        self.video
+            .streams
+            .iter()
+            .find(|(key, live)| key.owner() == me && live.last.role == Role::Send)
+            .and_then(|(_, live)| live.started.clone())
+    }
+
+    /// Picks the camera in Voice & Video or the camera menu: stored in `audio.video_device`, and switched to at once
+    /// when our camera is on.
+    pub(super) fn choose_camera(&mut self, id: String, cx: &mut Context<Self>) {
+        crate::storage::set("audio.video_device", Value::String(id.clone()));
+        if let Some(call) = &self.call
+            && call.controls.camera_wanted()
+        {
+            call.controls.set_camera(Some(id));
+        }
+        cx.notify();
+    }
+
+    /// The stream of `owner` in our call, if we send it, watch it, or the voice state says they go live.
+    pub(super) fn video_stream_of(&self, owner: u64) -> Option<StreamInfo> {
+        let (_, live) = self
+            .video
+            .streams
+            .iter()
+            .find(|(key, _)| key.owner() == owner)?;
+        Some(StreamInfo {
+            role: live.last.role,
+            quality: live.started.as_ref().map(|started| started.quality),
+            name: live.started.as_ref().map(|started| started.name.clone()),
+            icon: live
+                .started
+                .as_ref()
+                .and_then(|started| started.icon.clone()),
+        })
+    }
+
+    /// The stream we send, if any.
+    pub(super) fn own_stream(&self) -> Option<StreamInfo> {
+        let me = self.stores.current_user.as_ref()?.id;
+        self.video_stream_of(me)
+            .filter(|info| info.role == Role::Send)
+    }
+
+    /// Watch Stream on a tile of `owner`'s stream in our call.
+    pub(super) fn watch_stream_of(&mut self, owner: u64, cx: &mut Context<Self>) {
+        let Some(call) = &self.call else {
+            return;
+        };
+        let (guild, channel) = (call.guild, call.channel);
+        let key = if guild != 0 {
+            StreamKey::Guild {
+                guild,
+                channel,
+                owner,
+            }
+        } else {
+            StreamKey::Call { channel, owner }
+        };
+        self.stream_watch(key, cx);
+    }
+
+    /// Stops watching `owner`'s stream (the tile menu).
+    pub(super) fn unwatch_stream_of(&mut self, owner: u64, cx: &mut Context<Self>) {
+        let key = self
+            .video
+            .streams
+            .iter()
+            .find(|(key, live)| key.owner() == owner && live.last.role == Role::Watch)
+            .map(|(key, _)| *key);
+        if let Some(key) = key {
+            self.stream_stop_key(key, cx);
+        }
     }
 
     /// The 30 second rendezvous bound: fails the stream when the gateway never names its server.

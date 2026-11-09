@@ -687,6 +687,8 @@ pub(in crate::ui) struct VoiceState {
     hovered_slider: Option<&'static str>,
     device_open: Option<Side>,
     devices: Devices,
+    /// The Camera section: its select and Test Video.
+    pub(super) camera: super::voice_camera::CameraPage,
     page_shown: bool,
     /// The switches, slider and buttons that act on a call or the machine (`extra.rs`).
     extra: extra::Extra,
@@ -712,6 +714,7 @@ impl VoiceState {
             hovered_slider: None,
             device_open: None,
             devices: Devices::default(),
+            camera: Default::default(),
             page_shown: false,
             extra: extra::Extra::restore(),
         }
@@ -908,6 +911,12 @@ impl Root {
         if crate::sounds::set_switch(key, on) {
             return;
         }
+        if key == "streaming_show_stream_previews" {
+            // Read by the engine: the stream we send uploads previews only while it is on.
+            crate::storage::set("audio.stream_previews", json!(on));
+            self.stream_apply_previews(on);
+            return;
+        }
         if self.extra_setting_changed(key, on) {
             return;
         }
@@ -1028,6 +1037,10 @@ impl Root {
             }
             self.voice.recording = false;
             self.voice.device_open = None;
+            self.voice.camera.open = false;
+            if self.voice.camera.test.is_some() {
+                self.camera_test_stop(cx);
+            }
             self.voice.drag = None;
         }
         let wanted = visible && (self.call.is_none() || self.voice.mic_test.is_some());
@@ -1367,6 +1380,8 @@ impl Root {
             OUTPUT_SELECT => self.device_select(Side::Output, width, cx),
             MIC_TEST => self.mic_test_row(width, window, cx),
             KEYBIND => self.keybind_row(width, cx),
+            "camera_video_preview" => self.camera_preview_row(cx),
+            "camera_selection_setting" => self.camera_select_row(cx),
             RELEASE_DELAY => {
                 self.slider_row(RELEASE_DELAY, "Push to Talk Release Delay", &[], width, cx)
             }
