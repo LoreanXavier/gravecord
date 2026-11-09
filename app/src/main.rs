@@ -135,13 +135,11 @@ fn record_log() {
 }
 
 /// A panic on the UI thread aborts the process with nothing on screen, so it is written down first:
-/// `%LOCALAPPDATA%\gravecord\panic.log`, newest last. The message never holds tokens or message content.
+/// The active profile's `panic.log`, newest last. Capture failures stay outside the owner's profile.
 fn record_panics() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(dir) =
-            std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("gravecord"))
-        {
+        if let Some(dir) = storage::data_dir() {
             let _ = std::fs::create_dir_all(&dir);
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
