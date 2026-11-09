@@ -695,12 +695,19 @@ impl Root {
     /// Whether this account can enter the channel: Connect, and room under `user_limit` unless it may move members
     /// (`Pd` in module 147036). The call already in this channel is never blocked.
     fn voice_join_block(&self, guild: Id, channel: Id) -> Option<VoiceBlock> {
-        if self.call.as_ref().is_some_and(|call| call.channel == channel) {
+        if self
+            .call
+            .as_ref()
+            .is_some_and(|call| call.channel == channel)
+        {
             return None;
         }
         let me = self.stores.me()?;
         let guild_data = self.stores.guild(guild)?;
-        let target = guild_data.channels.iter().find(|known| known.id == channel)?;
+        let target = guild_data
+            .channels
+            .iter()
+            .find(|known| known.id == channel)?;
         let can = |bit| dc_state::permissions::can_in_channel(guild_data, target, me, bit);
         if !can(dc_state::permissions::CONNECT) {
             return Some(VoiceBlock::Locked);

@@ -113,6 +113,14 @@ impl Shell {
         let (update_tx, mut update_rx) = mpsc::unbounded_channel();
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let hook_tx = update_tx.clone();
+        if let Ok(client) = dc_http::Client::new(Token::new(""), Identity::new()) {
+            let spinner_tx = update_tx.clone();
+            self.handle.spawn(async move {
+                if let Some(clip) = crate::spinner::load(&client).await {
+                    let _ = spinner_tx.send(net::Update::Spinner(std::sync::Arc::new(clip)));
+                }
+            });
+        }
         self.session = Some(
             self.handle
                 .spawn(net::run(token.clone(), update_tx, request_rx)),

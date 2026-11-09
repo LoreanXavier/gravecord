@@ -136,9 +136,54 @@ pub struct Channel {
     pub flags: u64,
     /// Minutes a new thread stays listed without activity (`default_auto_archive_duration`).
     pub default_auto_archive_duration: Option<u64>,
+    /// Forum and media channels: the tags a post can carry (`available_tags`).
+    pub available_tags: Vec<ForumTag>,
+    /// `default_sort_order`: 0 latest activity, 1 creation date.
+    pub default_sort_order: Option<u64>,
+    /// `default_forum_layout`: 0 not set, 1 list, 2 gallery.
+    pub default_forum_layout: u64,
+}
+
+/// One entry of a forum's `available_tags`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForumTag {
+    pub id: Id,
+    pub name: String,
+    pub moderated: bool,
+    /// A unicode emoji, or the custom emoji's id.
+    pub emoji_name: Option<String>,
+    pub emoji_id: Option<Id>,
+}
+
+impl ForumTag {
+    pub fn list(value: &Value) -> Vec<Self> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tag| {
+                Some(Self {
+                    id: id(&tag["id"])?,
+                    name: text(&tag["name"]).unwrap_or_default(),
+                    moderated: tag["moderated"].as_bool().unwrap_or(false),
+                    emoji_name: text(&tag["emoji_name"]),
+                    emoji_id: id(&tag["emoji_id"]),
+                })
+            })
+            .collect()
+    }
 }
 
 impl Channel {
+    /// GUILD_FORUM (15) or GUILD_MEDIA (16).
+    pub fn is_forum(&self) -> bool {
+        matches!(self.kind, ChannelKind::Other(15 | 16))
+    }
+
+    pub fn is_media(&self) -> bool {
+        self.kind == ChannelKind::Other(16)
+    }
+
     fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             id: id(&value["id"])?,
@@ -153,6 +198,9 @@ impl Channel {
             rate_limit_per_user: value["rate_limit_per_user"].as_u64().unwrap_or(0),
             flags: value["flags"].as_u64().unwrap_or(0),
             default_auto_archive_duration: value["default_auto_archive_duration"].as_u64(),
+            available_tags: ForumTag::list(&value["available_tags"]),
+            default_sort_order: value["default_sort_order"].as_u64(),
+            default_forum_layout: value["default_forum_layout"].as_u64().unwrap_or(0),
         })
     }
 }
@@ -204,9 +252,20 @@ pub struct Thread {
     pub archived: bool,
     /// The current user is a member (`member` on READY threads, or THREAD_MEMBER_UPDATE).
     pub joined: bool,
+    /// Forum posts: the tags the post carries (`applied_tags`), its flags (PINNED is 1 << 1) and the messages ever
+    /// sent (`total_message_sent`).
+    pub applied_tags: Vec<Id>,
+    pub flags: u64,
+    pub total_message_sent: u64,
+    pub locked: bool,
 }
 
 impl Thread {
+    /// A pinned forum post (`ChannelFlags.PINNED`).
+    pub fn pinned(&self) -> bool {
+        self.flags & 2 != 0
+    }
+
     pub fn from_value(value: &Value) -> Option<Self> {
         let kind = value["type"].as_u64()?;
         if !matches!(kind, 10..=12) {
@@ -225,6 +284,17 @@ impl Thread {
                 .unwrap_or(false),
             joined: value["member"].is_object()
                 || value["newly_created"].as_bool().unwrap_or(false),
+            applied_tags: value["applied_tags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(id)
+                .collect(),
+            flags: value["flags"].as_u64().unwrap_or(0),
+            total_message_sent: value["total_message_sent"].as_u64().unwrap_or(0),
+            locked: value["thread_metadata"]["locked"]
+                .as_bool()
+                .unwrap_or(false),
         })
     }
 }

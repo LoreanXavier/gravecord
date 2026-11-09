@@ -1757,6 +1757,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-setup"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "dc-tokens",
+ "embed-resource",
+ "windows 0.62.2",
+ "zstd 0.13.4",
+]
+
+[[package]]
 name = "dc-state"
 version = "0.0.0"
 dependencies = [
@@ -3316,10 +3327,12 @@ dependencies = [
  "dc-tokens",
  "dc-voice",
  "dc-webhost",
+ "embed-resource",
  "gpui",
  "gpui_platform",
  "image",
  "md-5",
+ "openh264",
  "reqwest",
  "serde_json",
  "tokio",
@@ -10521,6 +10534,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "dc-setup",
  "image",
  "serde_json",
  "sha2",

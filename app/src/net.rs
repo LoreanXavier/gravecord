@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
+    /// The connecting screen's spinner, fetched and decoded.
+    Spinner(Arc<crate::spinner::Clip>),
     Dispatch {
         name: String,
         data: Value,

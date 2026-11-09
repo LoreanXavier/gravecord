@@ -120,6 +120,10 @@ pub async fn run(
                     .timer(Duration::from_millis(ms))
                     .await;
             }
+            ["splash", rest @ ..] => {
+                let note = cx.update(|cx| root.update(cx, |root, _| root.script_splash(rest)));
+                let _ = writeln!(output, "{note}");
+            }
             ["move", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));

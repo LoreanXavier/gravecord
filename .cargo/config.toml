@@ -1,2 +1,5 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Release builds for distribution (`cargo xtask package`) are made with `-C target-feature=+crt-static`, set by
+# xtask for that one build into target/dist, so debug builds and the normal release cache keep their flags.

@@ -9014,6 +9014,9 @@ mod tests {
             rate_limit_per_user: 0,
             flags: 0,
             default_auto_archive_duration: None,
+            available_tags: Vec::new(),
+            default_sort_order: None,
+            default_forum_layout: 0,
         }
     }
 

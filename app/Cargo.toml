@@ -29,6 +29,7 @@ gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features 
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 md-5 = "0.10"
+openh264.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -36,3 +37,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tts = "0.26"
 wuff = "0.2"
+
+[build-dependencies]
+embed-resource = "3"

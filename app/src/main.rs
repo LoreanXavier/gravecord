@@ -13,6 +13,7 @@ mod parity;
 mod shell;
 mod sounds;
 mod speech;
+mod spinner;
 mod storage;
 mod text_buffer;
 mod ui;

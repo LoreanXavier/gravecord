@@ -101,6 +101,7 @@ mod server_boost;
 mod server_community;
 mod server_discovery;
 mod slash;
+mod splash;
 mod status_menu;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
@@ -412,6 +413,8 @@ pub struct Root {
     nitro_open: bool,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     pub ready: bool,
+    /// The connecting screen, up until the first content is in.
+    splash: splash::Splash,
 }
 
 impl Root {
@@ -593,10 +596,16 @@ impl Root {
             nitro_open: false,
             tip_anchors: Rc::default(),
             ready: false,
+            splash: splash::Splash::new(),
         }
     }
 
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
+        self.apply_update(update, cx);
+        self.splash_check();
+    }
+
+    fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::Dispatch { name, data } => {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
@@ -989,6 +998,7 @@ impl Root {
                 self.images
                     .insert(key, Arc::new(Image::from_bytes(format, bytes)));
             }
+            Update::Spinner(clip) => self.splash_clip(&clip),
             Update::Images(images) => {
                 for (key, bytes) in images {
                     self.images
@@ -5494,6 +5504,7 @@ impl Render for Root {
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
+            .children(self.splash_layer(window))
     }
 }
 

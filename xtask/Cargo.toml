@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1"
+dc-setup = { path = "../crates/dc-setup" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = "1"
 sha2 = "0.10"
