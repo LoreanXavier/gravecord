@@ -62,6 +62,16 @@ fn find_upwards(name: &str) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+/// The icons: next to an installed executable, or up from a build folder or the working directory.
+fn find_assets() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    exe.iter()
+        .flat_map(|exe| exe.ancestors())
+        .map(|dir| dir.join("app/assets"))
+        .find(|path| path.exists())
+        .or_else(|| find_upwards("app/assets"))
+}
+
 struct Capture {
     path: PathBuf,
     settle_ms: u64,
@@ -201,7 +211,7 @@ fn main() -> Result<()> {
     }
     record_panics();
     record_log();
-    let assets_root = find_upwards("app/assets").context("app/assets not found")?;
+    let assets_root = find_assets().context("app/assets not found")?;
     let capture = capture_args();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
