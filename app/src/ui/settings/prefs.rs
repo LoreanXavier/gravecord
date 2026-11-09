@@ -146,12 +146,24 @@ impl Root {
     }
 
     /// The harness's `pref get <key>` and `pref set <key> on|off|<index>`: what the account holds for a proto
-    /// preference, and the same path a click on its row takes. Returns the line for the log.
+    /// preference, and the same path a click on its row takes. `local` only overrides this capture.
     #[cfg(feature = "capture")]
     pub(crate) fn script_pref(&mut self, words: &[&str]) -> String {
         let [verb, key, rest @ ..] = words else {
             return "usage: pref get <key> | pref set <key> on|off|<index>".to_owned();
         };
+        if *verb == "local" {
+            let Some(pref) = proto_spec(key) else {
+                return format!("{key} is not a proto preference");
+            };
+            let on = match rest.first().copied() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return "usage: pref local <key> on|off".to_owned(),
+            };
+            self.setting_choices.insert(pref.key, Choice::On(on));
+            return format!("{key} local = {on}");
+        }
         if *key == "theme" {
             if let ("set", Some(Ok(value))) = (*verb, rest.first().map(|text| text.parse::<u64>()))
             {

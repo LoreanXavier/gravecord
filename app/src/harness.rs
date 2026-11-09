@@ -343,7 +343,11 @@ pub async fn run(
             }
             // A preference of the proto settings, read as the account holds it, or changed as its row would.
             ["pref", rest @ ..] => {
-                let line = root.update(cx, |root, _| root.script_pref(rest));
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_pref(rest);
+                    cx.notify();
+                    line
+                });
                 let _ = writeln!(output, "pref: {line}");
             }
             // Capture only: the account's `premium_type` is set locally (none, 1, 2 or 3) to see the subscriber

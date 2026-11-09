@@ -145,6 +145,7 @@ impl Root {
                 .child(
                     div()
                         .id(SharedString::from(key.clone()))
+                        .relative()
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_lightbox(&clicked, &key, cx);
@@ -156,7 +157,8 @@ impl Root {
                         .bg(color("--background-base-low"))
                         .children(
                             picture.map(|picture| img(picture).w(size.0).h(size.1).rounded(px(4.))),
-                        ),
+                        )
+                        .children(self.inline_video(message.id, index, embed, cx)),
                 )
                 .into_any_element(),
         )

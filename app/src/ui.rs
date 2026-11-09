@@ -73,6 +73,7 @@ mod logout;
 mod presence;
 pub use logout::RootEvent;
 mod forums;
+mod inline_video;
 mod member_avatars;
 mod menu;
 mod modal;
@@ -242,6 +243,7 @@ pub struct Root {
     presence_ticking: bool,
     nameplates: Rc<RefCell<nameplates::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
+    inline_videos: Rc<RefCell<inline_video::Cache>>,
     hovered_nameplate: Option<Id>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
@@ -449,6 +451,7 @@ impl Root {
         cx.on_release(|this, cx| {
             this.release_nameplates(cx);
             this.release_member_avatars(cx);
+            this.release_inline_videos(cx);
         })
         .detach();
         audio_menu::restore_audio_prefs();
@@ -495,6 +498,7 @@ impl Root {
             presence_ticking: false,
             nameplates: Default::default(),
             member_avatars: Default::default(),
+            inline_videos: Default::default(),
             hovered_nameplate: None,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
@@ -1079,6 +1083,9 @@ impl Root {
             }
             Update::Image { key, bytes } if key.starts_with(nameplates::ANIMATION_PREFIX) => {
                 self.nameplate_animation_fetched(&key, bytes, cx);
+            }
+            Update::Image { key, bytes } if key.starts_with(inline_video::PREFIX) => {
+                self.inline_video_fetched(&key, bytes);
             }
             Update::Image { key, bytes } if key.starts_with("text:") => {
                 self.texts
@@ -1699,6 +1706,7 @@ impl Root {
             .map(|form| (form.name.read(cx).text().to_owned(), form.result.clone()));
         let notification_events = crate::notifications::events();
         let nameplates = self.nameplate_status();
+        let gifv = self.inline_video_status();
         let profile = self.profile.as_ref().map(|profile| {
             let body = self.fetched.get(&format!("profile:{}", profile.user));
             (
@@ -1707,7 +1715,7 @@ impl Root {
             )
         });
         format!(
-            "notifications={notification_events:?} nameplates=[{nameplates}] profile_loaded_private={profile:?} status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
+            "notifications={notification_events:?} nameplates=[{nameplates}] gifv=[{gifv}] profile_loaded_private={profile:?} status={} expires={} custom_status={:?} profile_menu={:?} add_friend={add_friend:?} friends_tab={:?} guild={} channel={} composer={composer:?} rows={} selected={:?} hovered={:?} editing={} embeds={} theme={} voice={}",
             self.stores.status,
             self.stores
                 .status_state()
@@ -5198,6 +5206,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prepare_nameplate_animations(window, cx);
         self.prepare_member_avatars(window, cx);
+        self.prepare_inline_videos(window, cx);
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
         self.restore_slowmode_draft(cx);

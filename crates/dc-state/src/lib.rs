@@ -713,6 +713,7 @@ pub struct Embed {
     pub footer_icon: Option<String>,
     pub image: Option<EmbedMedia>,
     pub thumbnail: Option<EmbedMedia>,
+    pub video: Option<EmbedMedia>,
     pub fields: Vec<EmbedField>,
 }
 
@@ -732,9 +733,10 @@ impl Embed {
             footer: text(&value["footer"]["text"]),
             footer_icon: text(&value["footer"]["proxy_icon_url"])
                 .or_else(|| text(&value["footer"]["icon_url"])),
+            video: EmbedMedia::from_value(&value["video"]),
             ..Self::default()
         };
-        // Articles, images and GIFs (`gifv`, drawn from the thumbnail's still frame) show it as the large image.
+        // GIFV keeps its thumbnail as the poster while its separate video is loading.
         if let Some(thumbnail) = EmbedMedia::from_value(&value["thumbnail"]) {
             match kind.as_str() {
                 "article" | "image" | "gifv" => embed.image = Some(thumbnail),
@@ -1871,6 +1873,30 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gifv_keeps_video_and_proxy_separate_from_its_poster() {
+        let embed = super::Embed::from_value(&serde_json::json!({
+            "type": "gifv",
+            "thumbnail": {"url":"https://example.com/poster.png", "width":498, "height":498},
+            "video": {"url":"https://example.com/clip.mp4", "proxy_url":"https://example.com/proxy.mp4", "width":498, "height":498}
+        }));
+        assert!(embed.is_inline_media());
+        assert_eq!(embed.image.unwrap().url, "https://example.com/poster.png");
+        let video = embed.video.unwrap();
+        assert_eq!(video.url, "https://example.com/clip.mp4");
+        assert_eq!(
+            video.proxy_url.as_deref(),
+            Some("https://example.com/proxy.mp4")
+        );
+        assert!(
+            super::Embed::from_value(
+                &serde_json::json!({"type":"gifv", "video":{"url":"invalid"}})
+            )
+            .video
+            .is_none()
+        );
+    }
+
     #[test]
     fn lazy_member_users_are_available_to_profiles() {
         use serde_json::json;

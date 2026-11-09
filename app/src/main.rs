@@ -19,6 +19,7 @@ mod spinner;
 mod storage;
 mod text_buffer;
 mod ui;
+mod video_clip;
 
 use anyhow::{Context as _, Result};
 use dc_proto::identity::Identity;

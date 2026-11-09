@@ -154,10 +154,13 @@ fn avcc(payload: &[u8]) -> Option<Avc> {
 }
 
 /// Where each sample of a track lies in the file: `(offset, size)` in decoding order.
-fn samples(stbl: &[u8]) -> Option<Vec<(usize, usize)>> {
+fn samples(stbl: &[u8], file_len: usize) -> Option<Vec<(usize, usize)>> {
     let stsz = child(stbl, b"stsz")?;
     let fixed = be32(stsz.get(4..)?)? as usize;
     let count = be32(stsz.get(8..)?)? as usize;
+    if count > file_len || count > 100_000 {
+        return None;
+    }
     let sizes: Vec<usize> = (0..count)
         .map(|index| {
             if fixed != 0 {
@@ -202,7 +205,7 @@ fn samples(stbl: &[u8]) -> Option<Vec<(usize, usize)>> {
                 return Some(out);
             };
             out.push((at, *size));
-            at += size;
+            at = at.checked_add(*size)?;
             sample += 1;
         }
     }
@@ -223,6 +226,148 @@ fn annex_b(sample: &[u8], length_size: usize, out: &mut Vec<u8>) -> Option<()> {
         at += len;
     }
     Some(())
+}
+
+/// The existing MP4 reader, shared by the spinner and silent inline H.264 clips.
+pub(crate) struct H264Track<'a> {
+    file: &'a [u8],
+    mdhd: &'a [u8],
+    stbl: &'a [u8],
+    config: Avc,
+    located: Vec<(usize, usize)>,
+}
+
+impl<'a> H264Track<'a> {
+    pub fn read(file: &'a [u8]) -> Result<Self, String> {
+        let moov = child(file, b"moov").ok_or("no moov box")?;
+        let (mdhd, stbl, config) = boxes(moov)
+            .into_iter()
+            .filter(|entry| &entry.kind == b"trak")
+            .find_map(|trak| {
+                let mdia = child(trak.payload, b"mdia")?;
+                let mdhd = child(mdia, b"mdhd")?;
+                let stbl = path(mdia, &[b"minf", b"stbl"])?;
+                let stsd = child(stbl, b"stsd")?;
+                let entry = boxes(stsd.get(8..)?)
+                    .into_iter()
+                    .find(|entry| &entry.kind == b"avc1" || &entry.kind == b"avc3")?;
+                let config = avcc(child(entry.payload.get(78..)?, b"avcC")?)?;
+                Some((mdhd, stbl, config))
+            })
+            .ok_or("no H.264 track")?;
+        let located = samples(stbl, file.len()).ok_or("unreadable sample table")?;
+        Ok(Self {
+            file,
+            mdhd,
+            stbl,
+            config,
+            located,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.located.len()
+    }
+
+    pub fn sample(&self, index: usize) -> Result<Vec<u8>, String> {
+        let (offset, length) = self.located.get(index).ok_or("sample not found")?;
+        let end = offset.checked_add(*length).ok_or("sample overflow")?;
+        let data = self.file.get(*offset..end).ok_or("sample outside file")?;
+        let mut unit = Vec::new();
+        if index == 0 {
+            for set in self.config.sps.iter().chain(&self.config.pps) {
+                unit.extend_from_slice(&[0, 0, 0, 1]);
+                unit.extend_from_slice(set);
+            }
+        }
+        annex_b(data, self.config.length_size, &mut unit).ok_or("broken sample")?;
+        Ok(unit)
+    }
+
+    /// Durations in presentation order, including composition offsets for reordered H.264 pictures.
+    pub fn durations(&self) -> Option<Vec<std::time::Duration>> {
+        let offset = match self.mdhd.first()? {
+            0 => 12,
+            1 => 20,
+            _ => return None,
+        };
+        let scale = be32(self.mdhd.get(offset..)?)?;
+        timing(
+            child(self.stbl, b"stts")?,
+            child(self.stbl, b"ctts"),
+            scale,
+            self.len(),
+        )
+    }
+}
+
+fn timing(
+    stts: &[u8],
+    ctts: Option<&[u8]>,
+    scale: u32,
+    count: usize,
+) -> Option<Vec<std::time::Duration>> {
+    if scale == 0 || count == 0 {
+        return None;
+    }
+    let mut points = Vec::with_capacity(count);
+    let mut timestamp = 0i64;
+    for index in 0..be32(stts.get(4..)?)? as usize {
+        let row = stts.get(8 + index * 8..)?;
+        let samples = be32(row)? as usize;
+        let delta = be32(row.get(4..)?)?;
+        if delta == 0 || samples > count - points.len() {
+            return None;
+        }
+        for _ in 0..samples {
+            points.push((timestamp, delta));
+            timestamp = timestamp.checked_add(i64::from(delta))?;
+        }
+    }
+    if points.len() != count {
+        return None;
+    }
+    if let Some(ctts) = ctts {
+        let version = *ctts.first()?;
+        if version > 1 {
+            return None;
+        }
+        let mut at = 0usize;
+        for index in 0..be32(ctts.get(4..)?)? as usize {
+            let row = ctts.get(8 + index * 8..)?;
+            let samples = be32(row)? as usize;
+            let value = be32(row.get(4..)?)?;
+            let offset = if version == 1 {
+                i64::from(value as i32)
+            } else {
+                i64::from(value)
+            };
+            let end = at.checked_add(samples)?;
+            for point in points.get_mut(at..end)? {
+                point.0 = point.0.checked_add(offset)?;
+            }
+            at = end;
+        }
+        if at != count {
+            return None;
+        }
+    }
+    points.sort_by_key(|(timestamp, _)| *timestamp);
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (timestamp, tail))| {
+            let delta = points
+                .get(index + 1)
+                .map_or(i64::from(*tail), |next| next.0 - timestamp);
+            if delta <= 0 {
+                return None;
+            }
+            Some(std::time::Duration::from_secs_f64(
+                delta as f64 / f64::from(scale),
+            ))
+        })
+        .collect()
 }
 
 /// A pixel's alpha from its luma and the matte's.
@@ -251,21 +396,7 @@ fn frame(plane: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8> {
 
 /// The loop of an H.264 MP4 with one video track, as frames of a white mark.
 pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
-    let moov = child(mp4, b"moov").ok_or("no moov box")?;
-    let (stbl, config) = boxes(moov)
-        .into_iter()
-        .filter(|entry| &entry.kind == b"trak")
-        .find_map(|trak| {
-            let stbl = path(trak.payload, &[b"mdia", b"minf", b"stbl"])?;
-            let stsd = child(stbl, b"stsd")?;
-            let entry = boxes(stsd.get(8..)?)
-                .into_iter()
-                .find(|entry| &entry.kind == b"avc1" || &entry.kind == b"avc3")?;
-            let config = avcc(child(entry.payload.get(78..)?, b"avcC")?)?;
-            Some((stbl, config))
-        })
-        .ok_or("no H.264 track")?;
-    let located = samples(stbl).ok_or("unreadable sample table")?;
+    let track = H264Track::read(mp4)?;
     let mut decoder = openh264::decoder::Decoder::new().map_err(|error| error.to_string())?;
     let mut frames = Vec::new();
     let mut size = (0, 0);
@@ -274,18 +405,8 @@ pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
         size = (width as u32, height as u32);
         frames.push(frame(yuv.y(), yuv.strides().0, width, height));
     };
-    for (index, (offset, len)) in located.iter().enumerate() {
-        let data = mp4
-            .get(*offset..*offset + *len)
-            .ok_or("sample outside file")?;
-        let mut unit = Vec::new();
-        if index == 0 {
-            for set in config.sps.iter().chain(&config.pps) {
-                unit.extend_from_slice(&[0, 0, 0, 1]);
-                unit.extend_from_slice(set);
-            }
-        }
-        annex_b(data, config.length_size, &mut unit).ok_or("broken sample")?;
+    for index in 0..track.len() {
+        let unit = track.sample(index)?;
         // This file contains B-frames. Flushing between samples drains pictures that later samples reference.
         let options = openh264::decoder::DecodeOptions::new()
             .flush_after_decode(openh264::decoder::Flush::NoFlush);
@@ -315,6 +436,28 @@ pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_timing_follows_presentation_order_and_rejects_incomplete_tables() {
+        let table = |version: u8, rows: &[(u32, u32)]| {
+            let mut out = vec![version, 0, 0, 0];
+            out.extend_from_slice(&(rows.len() as u32).to_be_bytes());
+            for (count, value) in rows {
+                out.extend_from_slice(&count.to_be_bytes());
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+            out
+        };
+        let stts = table(0, &[(3, 10)]);
+        let ctts = table(1, &[(1, 0), (1, 10), (1, (-10i32) as u32)]);
+        assert_eq!(
+            timing(&stts, Some(&ctts), 100, 3).unwrap(),
+            vec![std::time::Duration::from_millis(100); 3]
+        );
+        assert!(timing(&stts, None, 0, 3).is_none());
+        assert!(timing(&stts, None, 100, 4).is_none());
+        assert!(timing(&stts, Some(&table(0, &[(2, 0)])), 100, 3).is_none());
+    }
 
     #[test]
     #[ignore = "requires the pinned clip path in GRAVECORD_SPINNER_TEST_FILE"]
@@ -403,7 +546,10 @@ mod tests {
         let mut stbl = make_box(b"stsz", &stsz);
         stbl.extend(make_box(b"stco", &stco));
         stbl.extend(make_box(b"stsc", &stsc));
-        assert_eq!(samples(&stbl), Some(vec![(100, 4), (104, 5), (200, 6)]));
+        assert_eq!(
+            samples(&stbl, 206),
+            Some(vec![(100, 4), (104, 5), (200, 6)])
+        );
     }
 
     #[test]

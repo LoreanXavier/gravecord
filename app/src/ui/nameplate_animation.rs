@@ -9,6 +9,24 @@ pub(super) struct Clip {
 }
 
 impl Clip {
+    pub fn from_frames(
+        frames: impl IntoIterator<Item = (Duration, RgbaImage)>,
+    ) -> Option<Arc<Self>> {
+        let mut clip = Self {
+            frames: Vec::new(),
+            ends: Vec::new(),
+            duration: Duration::ZERO,
+        };
+        for (delay, frame) in frames {
+            if delay.is_zero() {
+                return None;
+            }
+            clip.duration = clip.duration.checked_add(delay)?;
+            clip.ends.push(clip.duration);
+            clip.frames.push(Arc::new(frame));
+        }
+        (!clip.frames.is_empty()).then(|| Arc::new(clip))
+    }
     pub fn frame_at(&self, elapsed: Duration) -> usize {
         self.ends
             .partition_point(|end| *end <= elapsed)
