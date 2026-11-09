@@ -70,6 +70,7 @@ mod links;
 pub mod login;
 mod logout;
 pub use logout::RootEvent;
+mod forums;
 mod menu;
 mod modal;
 mod mosaic;
@@ -415,6 +416,7 @@ pub struct Root {
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
+    forums: HashMap<Id, forums::Forum>,
 }
 
 impl Root {
@@ -597,6 +599,7 @@ impl Root {
             tip_anchors: Rc::default(),
             ready: false,
             splash: splash::Splash::new(),
+            forums: HashMap::new(),
         }
     }
 
@@ -707,6 +710,9 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.forum_fetched(&key, &body, cx) {
+                    return;
+                }
                 if key.starts_with(activity_launch::ACTIVITY_PREFIX) {
                     self.activity_fetched(&key, &body, cx);
                     return;
@@ -1057,7 +1063,11 @@ impl Root {
         }
         if let Some(channel) = channel {
             let _ = self.requests.send(Request::Subscribe { guild, channel });
-            let _ = self.requests.send(Request::LoadMessages { channel });
+            if self.current_channel().is_some_and(Channel::is_forum) {
+                self.ready = true;
+            } else {
+                let _ = self.requests.send(Request::LoadMessages { channel });
+            }
         }
         self.rebuild_rows();
     }
@@ -1790,6 +1800,7 @@ impl Root {
     #[cfg(feature = "capture")]
     pub fn open_editors(&self) -> Vec<Entity<Editor>> {
         let mut list: Vec<Entity<Editor>> = Vec::new();
+        list.extend(self.forum_editors());
         list.extend(self.group_dm.as_ref().map(|picker| picker.search.clone()));
         list.extend(
             self.quick_switcher
@@ -2301,6 +2312,8 @@ impl Root {
         };
         let name = if channel.kind == ChannelKind::Voice {
             "voice_channel"
+        } else if channel.is_forum() {
+            "forum_channel"
         } else {
             "text_channel"
         };
@@ -2566,7 +2579,7 @@ impl Root {
                     })
                     .flat_map(|row| {
                         let mut rows = vec![self.channel_row(row, cx)];
-                        if row.kind == ChannelKind::Text {
+                        if row.kind == ChannelKind::Text || row.is_forum() {
                             rows.extend(self.thread_rows(row.id, cx));
                         }
                         if row.kind == ChannelKind::Voice {
@@ -2989,7 +3002,15 @@ impl Root {
             .items_center()
             .bg(color("--background-base-lower"))
             .when(self.guild.is_some(), |this| {
-                this.child(icon("header_hash", 20., "--channels-default"))
+                this.child(icon(
+                    if self.current_channel().is_some_and(Channel::is_forum) {
+                        "forum_header_icon"
+                    } else {
+                        "header_hash"
+                    },
+                    20.,
+                    "--channels-default",
+                ))
             })
             .when_some(dm_user.clone(), |this, user| {
                 // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
@@ -3115,6 +3136,10 @@ impl Root {
                                     .child(self.anchor_probe("header-threads")),
                                 cx,
                             )
+                            .when(
+                                self.current_channel().is_some_and(Channel::is_forum),
+                                |this| this.hidden(),
+                            )
                             .cursor_pointer()
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
@@ -3144,6 +3169,10 @@ impl Root {
                                 Tip::text("Pinned Messages", Side::Bottom),
                                 tool("pin"),
                                 cx,
+                            )
+                            .when(
+                                self.current_channel().is_some_and(Channel::is_forum),
+                                |this| this.hidden(),
                             )
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -4993,6 +5022,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.close_forum_menu() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.add_server.is_some() {
                     this.add_server = None;
                     cx.notify();
@@ -5353,6 +5387,8 @@ impl Render for Root {
                     self.member_safety_view(cx)
                 } else if self.voice_view_open() {
                     self.voice_view(window, cx)
+                } else if self.current_channel().is_some_and(Channel::is_forum) {
+                    self.forum_view(cx)
                 } else {
                     // The New Thread panel sits beside the whole chat column, header included.
                     div()
@@ -5448,6 +5484,7 @@ impl Render for Root {
                 self.main_row(rail, sidebar, content, cx)
             })
             .child(self.user_panel(cx))
+            .children(self.forum_layer(cx))
             .children(self.context_menu(window, cx))
             .children(self.menu_submenu(window, cx))
             .children(self.delete_modal(cx))

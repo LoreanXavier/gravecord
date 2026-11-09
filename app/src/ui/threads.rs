@@ -80,7 +80,7 @@ impl Root {
         let threads: Vec<Thread> = self
             .guild_threads(Some(parent))
             .into_iter()
-            .filter(|thread| thread.joined)
+            .filter(|thread| (!thread.archived && thread.joined) || self.channel == Some(thread.id))
             .collect();
         let count = threads.len();
         threads

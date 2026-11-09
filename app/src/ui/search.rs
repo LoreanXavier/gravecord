@@ -64,7 +64,7 @@ pub(crate) fn operators(query: &str) -> (Vec<(&'static str, String)>, String) {
     (found, content.join(" "))
 }
 
-fn encode(text: &str) -> String {
+pub(super) fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {

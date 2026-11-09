@@ -1,0 +1,35 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "sidebar": {
+    "class": "sidebarList_pog62O"
+  },
+  "guild-header": {
+    "class": "header_XH4OpX"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "chat-header": {
+    "class": "title_z_gUBg"
+  },
+  "search": {
+    "class": "searchBar_i16Ad0"
+  },
+  "forum-list": {
+    "class": "list_BkGrJJ"
+  },
+  "forum-search": {
+    "class": "header_BkGrJJ"
+  },
+  "forum-pinned-card": {
+    "class": "container_SOY5H6"
+  },
+  "forum-sort-popout": {
+    "class": "menu_M3qk4j"
+  }
+}
