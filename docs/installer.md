@@ -32,8 +32,10 @@ binary is saved beside it as `gravecord-next.exe`.
 - Unit test: the 18 setup tests passed (payload, paths, manifest, update/removal and icon encoding).
 - Ran live on the hidden desktop: silent install and reinstall of the packaged payload into a scratch folder with
   `--no-register`; removal with the rebuilt uninstaller preserved a foreign file and removed its own executable.
+  The refreshed package was also installed into a second scratch folder: its app hash matched the portable exe,
+  and its bundled uninstaller removed the installed files while preserving a foreign file.
 - Frame read: the welcome window captured on the hidden desktop. Other installer pages and interactive installation
   are unverified.
-- Import inspection: the existing packaged app and setup import no VCRUNTIME or MSVCP140 DLL. This checks direct
+- Import inspection: the refreshed packaged app and setup import no VCRUNTIME, MSVCP140 or MSVCRT DLL. This checks direct
   imports on this machine, not operation on a clean Windows installation.
 - Registration, shortcuts, running-app refusal, locked portable fallback and data deletion are not live-tested.
