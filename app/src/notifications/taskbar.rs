@@ -1,4 +1,4 @@
-//! Procedural taskbar overlays. Owned handles stay on the notification worker.
+//! Selected taskbar overlays. Owned handles stay on the notification worker.
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -28,6 +28,7 @@ pub(super) struct Taskbar {
     icons: [Option<HICON>; 11],
     applied: Option<Option<usize>>,
     count: i64,
+    icon_set: crate::branding::IconSet,
 }
 impl Taskbar {
     pub fn new(handle: usize) -> Self {
@@ -37,6 +38,7 @@ impl Taskbar {
             icons: [None; 11],
             applied: None,
             count: 0,
+            icon_set: crate::branding::selected(),
         }
     }
     pub fn ready(&mut self) -> windows::core::Result<()> {
@@ -60,11 +62,10 @@ impl Taskbar {
         };
         let (icon, description) = if let Some(index) = index {
             if self.icons[index].is_none() {
-                let font = (index != 10).then(crate::fonts::semibold).flatten();
-                let Some(pixels) = super::badge_art::raster(index, font.as_deref()) else {
+                let Some(pixels) = crate::branding::badge_pixels(self.icon_set, index) else {
                     return Err(windows::core::Error::new(
                         windows::core::HRESULT(0x80004005u32 as i32),
-                        "badge font unavailable",
+                        "badge image unavailable",
                     ));
                 };
                 self.icons[index] = Some(super::native_icon::create(16, &pixels)?);
@@ -83,6 +84,33 @@ impl Taskbar {
         }
         self.applied = Some(index);
         Ok(())
+    }
+    pub fn set_badge(
+        &mut self,
+        count: i64,
+        set: crate::branding::IconSet,
+    ) -> windows::core::Result<()> {
+        if self.icon_set != set {
+            if let Some(api) = &self.api {
+                unsafe {
+                    api.SetOverlayIcon(
+                        self.hwnd,
+                        HICON::default(),
+                        &HSTRING::from("No Notifications"),
+                    )?;
+                }
+            }
+            for icon in &mut self.icons {
+                if let Some(icon) = icon.take() {
+                    unsafe {
+                        let _ = DestroyIcon(icon);
+                    }
+                }
+            }
+            self.icon_set = set;
+            self.applied = None;
+        }
+        self.badge(count)
     }
     pub fn flash(&self, enabled: bool) {
         let mut owner = 0;

@@ -75,6 +75,49 @@ fn palette_of(name: &str) -> Option<Theme> {
 }
 
 impl Root {
+    pub(super) fn icon_set_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::branding::{self, IconSet};
+        let selected = branding::selected();
+        let options = [
+            (IconSet::Gravecord, "Gravecord"),
+            (IconSet::Original, "Original"),
+        ]
+        .into_iter()
+        .map(|(set, label)| {
+            div()
+                .id(SharedString::from(format!("icon-set-{}", set.name())))
+                .flex_1()
+                .h(px(64.))
+                .px(px(16.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color(if set == selected {
+                    "--border-strong"
+                } else {
+                    "--border-subtle"
+                }))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .cursor_pointer()
+                .on_click(cx.listener(move |_, _, window, cx| {
+                    branding::select(set);
+                    crate::notifications::refresh_window_icons(window);
+                    cx.notify();
+                }))
+                .child(img(branding::preview(set)).size(px(32.)))
+                .child(div().flex_1().child(label))
+                .child(super::radio_dot(set == selected))
+        });
+        div().id("appearance-icon-set").flex().flex_col().gap(px(8.)).pb(px(24.))
+            .text_size(px(16.)).line_height(px(20.)).text_color(color("--text-strong"))
+            .child(div().font_weight(FontWeight(600.)).child("Icon Set"))
+            .child(div().text_size(px(14.)).line_height(px(18.)).text_color(color("--text-subtle"))
+                .child("Choose Gravecord or original icons. Windows shortcuts keep the Gravecord icon."))
+            .child(div().flex().gap(px(12.)).children(options)).into_any_element()
+    }
+
     /// A 48px swatch with its 1px inset ring; the chosen one wears a 4px brand ring and a check.
     fn swatch(
         &self,

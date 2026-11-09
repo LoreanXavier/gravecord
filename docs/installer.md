@@ -16,7 +16,7 @@
 - Updating over an install asks a running gravecord to close (WM_CLOSE), then offers Retry/Cancel if it stays open.
 - WebView2 (captcha, activities) is checked; if missing the window says so and links the Microsoft page. Nothing is downloaded.
 - The exe is unsigned, so SmartScreen warns on first run.
-- The app and setup icon is a generated plain letter G mark (`crates/dc-setup/src/icon_gen.rs`, embedded by the build scripts).
+- The app and setup embed the supplied Gravecord Side-eye ICO. Setup uses its supplied 64/128px raster; the in-app icon-set preference does not change executable or shortcut resources.
 
 ## Test options
 

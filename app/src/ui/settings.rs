@@ -1302,7 +1302,7 @@ impl Root {
         let Some(open) = self.settings.as_ref() else {
             return div().into_any_element();
         };
-        let body = match open.page {
+        let mut body = match open.page {
             Page::Account => self.account_page(),
             page => pages::nodes(page)
                 .iter()
@@ -1316,6 +1316,9 @@ impl Root {
                 })
                 .collect(),
         };
+        if open.page == Page::Appearance {
+            body.insert(0, self.icon_set_picker(cx));
+        }
         div()
             .parity("settings-content")
             .flex_1()

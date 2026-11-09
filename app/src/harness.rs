@@ -359,6 +359,10 @@ pub async fn run(
             ["notification", action] => {
                 root.update(cx, |root, cx| root.script_notification(action, cx));
             }
+            ["icons", choice] => {
+                crate::branding::select(crate::branding::IconSet::from_name(Some(choice)));
+                root.update(cx, |_, cx| cx.notify());
+            }
             ["slowmode", millis] => {
                 if let Ok(millis) = millis.parse::<u64>() {
                     root.update(cx, |root, cx| root.script_slowmode(millis, cx));

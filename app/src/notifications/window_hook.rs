@@ -10,7 +10,9 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         UI::{
             Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass},
-            WindowsAndMessaging::{RegisterWindowMessageW, WM_NCDESTROY},
+            WindowsAndMessaging::{
+                DestroyIcon, HICON, RegisterWindowMessageW, SendMessageW, WM_NCDESTROY, WM_SETICON,
+            },
         },
     },
     core::w,
@@ -22,6 +24,70 @@ struct State {
     binding: usize,
     sender: Option<SyncSender<Command>>,
     generation: Option<Arc<AtomicUsize>>,
+    icons: Option<WindowIcons>,
+}
+
+struct WindowIcons {
+    set: crate::branding::IconSet,
+    small: HICON,
+    large: HICON,
+}
+impl Drop for WindowIcons {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyIcon(self.small);
+            let _ = DestroyIcon(self.large);
+        }
+    }
+}
+
+pub(super) fn refresh_icons(window: &gpui::Window) {
+    let Some(hwnd) = hwnd(window) else {
+        return;
+    };
+    let mut pointer = 0;
+    if !unsafe { GetWindowSubclass(hwnd, Some(callback), SUBCLASS_ID, Some(&mut pointer)) }
+        .as_bool()
+    {
+        return;
+    }
+    let set = crate::branding::selected();
+    if unsafe { &*(pointer as *const State) }
+        .icons
+        .as_ref()
+        .is_some_and(|icons| icons.set == set)
+    {
+        return;
+    }
+    let Some(small) =
+        crate::branding::app_pixels(set, 16).and_then(|p| super::native_icon::create(16, &p).ok())
+    else {
+        return;
+    };
+    let Some(large) =
+        crate::branding::app_pixels(set, 32).and_then(|p| super::native_icon::create(32, &p).ok())
+    else {
+        unsafe {
+            let _ = DestroyIcon(small);
+        }
+        return;
+    };
+    // Only our top-level window owns these handles. Replace both before releasing the previous pair.
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(0)),
+            Some(LPARAM(small.0 as isize)),
+        );
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(1)),
+            Some(LPARAM(large.0 as isize)),
+        );
+        (*(pointer as *mut State)).icons = Some(WindowIcons { set, small, large });
+    }
 }
 fn message() -> u32 {
     static MESSAGE: OnceLock<u32> = OnceLock::new();
@@ -52,6 +118,7 @@ pub(super) fn install(window: &gpui::Window) {
         binding: 0,
         sender: None,
         generation: None,
+        icons: None,
     }));
     if !unsafe { SetWindowSubclass(hwnd, Some(callback), SUBCLASS_ID, state as usize) }.as_bool() {
         unsafe {

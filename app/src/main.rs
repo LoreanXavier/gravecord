@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod branding;
 mod editor;
 mod fonts;
 #[cfg(feature = "capture")]

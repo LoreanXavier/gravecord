@@ -27,11 +27,10 @@ dc-voice.workspace = true
 dc-webhost.workspace = true
 gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features = ["windows-manifest"] }
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 md-5 = "0.10"
 openh264.workspace = true
 reqwest.workspace = true
-resvg = "0.46"
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

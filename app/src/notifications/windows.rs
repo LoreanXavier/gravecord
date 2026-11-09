@@ -75,9 +75,9 @@ pub(super) fn run(
                     applied_generation = 0;
                 }
                 Command::TaskbarReady => {}
-                Command::Badge(count) => {
+                Command::Badge(count, set) => {
                     if let Some(taskbar) = &mut taskbar
-                        && let Err(error) = taskbar.badge(count)
+                        && let Err(error) = taskbar.set_badge(count, set)
                     {
                         tracing::warn!(code=?error.code(), "taskbar badge failed");
                     }

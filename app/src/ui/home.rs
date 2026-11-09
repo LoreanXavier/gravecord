@@ -97,7 +97,7 @@ impl Root {
                         }))
                         .child(
                             svg()
-                                .path("icons/home.svg")
+                                .path(crate::branding::home_path())
                                 .size(px(24.))
                                 .flex_none()
                                 .text_color(color(if selected {

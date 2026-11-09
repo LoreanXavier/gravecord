@@ -942,14 +942,21 @@ impl LoginView {
                     .h(px(900. * scale))
                     .object_fit(ObjectFit::Fill)
             }))
-            .children(self.art.logo.clone().map(|logo| {
-                img(logo)
-                    .absolute()
-                    .left(px(48.))
-                    .top(px(48.))
-                    .w(px(124.))
-                    .h(px(24.))
-            }))
+            .children(
+                (if crate::branding::selected() == crate::branding::IconSet::Gravecord {
+                    Some(crate::branding::login_logo())
+                } else {
+                    self.art.logo.clone()
+                })
+                .map(|logo| {
+                    img(logo)
+                        .absolute()
+                        .left(px(48.))
+                        .top(px(48.))
+                        .w(px(124.))
+                        .h(px(24.))
+                }),
+            )
             .into_any_element()
     }
 
@@ -1199,13 +1206,22 @@ impl LoginView {
                                     .size(px(160.))
                                     .child(draw_matrix(matrix)),
                             )
-                            .children(self.art.qr_logo.clone().map(|logo| {
-                                img(logo)
-                                    .absolute()
-                                    .left(px(63.))
-                                    .top(px(63.))
-                                    .size(px(50.))
-                            }))
+                            .children(
+                                (if crate::branding::selected()
+                                    == crate::branding::IconSet::Gravecord
+                                {
+                                    Some(crate::branding::qr_logo())
+                                } else {
+                                    self.art.qr_logo.clone()
+                                })
+                                .map(|logo| {
+                                    img(logo)
+                                        .absolute()
+                                        .left(px(63.))
+                                        .top(px(63.))
+                                        .size(px(50.))
+                                }),
+                            )
                     });
                 column
                     .child(code)

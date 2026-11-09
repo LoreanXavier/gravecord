@@ -1763,6 +1763,7 @@ dependencies = [
  "anyhow",
  "dc-tokens",
  "embed-resource",
+ "image",
  "windows 0.62.2",
  "zstd 0.13.4",
 ]
@@ -3335,7 +3336,6 @@ dependencies = [
  "openh264",
  "raw-window-handle",
  "reqwest",
- "resvg",
  "serde_json",
  "tokio",
  "tracing",
