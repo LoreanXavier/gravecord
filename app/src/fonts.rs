@@ -23,8 +23,9 @@ const FACES: [&str; 13] = [
 ];
 
 fn cache_dir() -> Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    let dir = PathBuf::from(base).join("gravecord").join("fonts");
+    let dir = crate::storage::data_dir()
+        .context("LOCALAPPDATA is not set")?
+        .join("fonts");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
