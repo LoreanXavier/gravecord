@@ -82,6 +82,21 @@ pub fn create_shortcut(link: &Path, target: &Path, work_dir: &Path) -> Result<()
         shell.SetWorkingDirectory(PCWSTR(wide(work_dir).as_ptr()))?;
         shell.SetDescription(PCWSTR(wide("gravecord").as_ptr()))?;
         shell.SetIconLocation(PCWSTR(wide(target).as_ptr()), 0)?;
+        // The toast notifier and the installed shortcut share this application identity.
+        let properties: windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore =
+            windows::core::Interface::cast(&shell)?;
+        let mut app_id = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::default();
+        windows::Win32::System::Com::StructuredStorage::PropVariantChangeType(
+            &mut app_id,
+            &windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from("gravecord.desktop"),
+            windows::Win32::System::Com::StructuredStorage::PVCHF_DEFAULT,
+            windows::Win32::System::Variant::VT_LPWSTR,
+        )?;
+        properties.SetValue(
+            &windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID,
+            &app_id,
+        )?;
+        properties.Commit()?;
         let file: IPersistFile = windows::core::Interface::cast(&shell)?;
         if let Some(parent) = link.parent() {
             std::fs::create_dir_all(parent)?;
@@ -429,5 +444,46 @@ pub fn pick_folder(owner: HWND, start: &Path) -> Option<PathBuf> {
         let path = PathBuf::from(OsString::from_wide(name.as_wide()));
         CoTaskMemFree(Some(name.0 as *const c_void));
         Some(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shortcut_carries_the_toast_application_identity() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "gravecord-shortcut-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&scratch).unwrap();
+        let link = scratch.join("test.lnk");
+        create_shortcut(&link, &std::env::current_exe().unwrap(), &scratch).unwrap();
+        unsafe {
+            let shell: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+            let file: IPersistFile = windows::core::Interface::cast(&shell).unwrap();
+            file.Load(
+                PCWSTR(wide(&link).as_ptr()),
+                windows::Win32::System::Com::STGM_READ,
+            )
+            .unwrap();
+            let properties: windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore =
+                windows::core::Interface::cast(&shell).unwrap();
+            let value = properties
+                .GetValue(&windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID)
+                .unwrap();
+            assert_eq!(value.vt(), windows::Win32::System::Variant::VT_LPWSTR);
+            assert_eq!(
+                windows::core::BSTR::try_from(&value).unwrap().to_string(),
+                "gravecord.desktop"
+            );
+        }
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_dir(scratch).unwrap();
     }
 }

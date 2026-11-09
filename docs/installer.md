@@ -39,3 +39,10 @@ binary is saved beside it as `gravecord-next.exe`.
 - Import inspection: the refreshed packaged app and setup import no VCRUNTIME, MSVCP140 or MSVCRT DLL. This checks direct
   imports on this machine, not operation on a clean Windows installation.
 - Registration, shortcuts, running-app refusal, locked portable fallback and data deletion are not live-tested.
+
+## Desktop notification identity
+
+New shortcuts carry `gravecord.desktop` as their AppUserModelID, matching the WinRT notifier. The scratch-shortcut
+unit test creates a link outside the Start Menu, reloads the property and removes the link. The property was read
+back successfully. Registered installation and actual Windows toast display still need a live check; a portable
+folder without an installed shortcut is not covered by this notification setup.
