@@ -76,6 +76,7 @@ mod forums;
 mod menu;
 mod modal;
 mod mosaic;
+mod nameplates;
 mod nitro;
 mod nitro_purchase;
 mod notifications;
@@ -236,6 +237,7 @@ pub struct Root {
     slowmode: dc_state::slowmode::SlowmodeStore,
     slowmode_ticking: bool,
     presence_ticking: bool,
+    nameplates: Rc<RefCell<nameplates::Cache>>,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
@@ -481,6 +483,7 @@ impl Root {
             slowmode: Default::default(),
             slowmode_ticking: false,
             presence_ticking: false,
+            nameplates: Default::default(),
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
@@ -1274,6 +1277,9 @@ impl Root {
             })
             .collect();
         for user in users {
+            if let Some(plate) = &user.nameplate {
+                self.request_image(format!("nameplate:{}", plate.sku_id), plate.static_url());
+            }
             let (key, url) = avatar_source(&user);
             self.request_image(key, url);
             if let Some(url) = user.tag.as_ref().and_then(dc_state::ServerTag::badge_url) {
@@ -1318,6 +1324,12 @@ impl Root {
                 _ => None,
             })
         });
+        let first_nameplate = list.and_then(|list| {
+            list.rows.iter().find_map(|row| match row {
+                MemberRow::Member { user, .. } if user.nameplate.is_some() => Some(user.id),
+                _ => None,
+            })
+        });
         let rows: Vec<AnyElement> = list
             .map(|list| list.rows.as_slice())
             .unwrap_or_default()
@@ -1348,15 +1360,28 @@ impl Root {
                         .unwrap_or_else(|| user.display_name().to_owned());
                     let activity = self.presence_line(user, self.guild, true);
                     let height = if activity.is_some() { 42. } else { 40. };
+                    let has_nameplate = user.nameplate.is_some();
+                    let text_width = Rc::new(std::cell::Cell::new(0.));
+                    let measured_width = text_width.clone();
+                    let nameplate =
+                        self.member_nameplate(user, text_width, first_nameplate == Some(user.id));
                     let item = div()
+                        .relative()
                         .h(px(height))
                         .w(px(248.))
                         .pl(px(8.))
-                        .pr(px(8.))
+                        .pr(px(if has_nameplate { 32. } else { 8. }))
                         .rounded(px(8.))
                         .flex()
                         .items_center()
-                        .hover(|style| style.bg(color("--background-mod-subtle")))
+                        .hover(|style| style.bg(color("--interactive-background-hover")))
+                        .when(
+                            self.profile
+                                .as_ref()
+                                .is_some_and(|profile| profile.user == user.id),
+                            |this| this.bg(color("--interactive-background-selected")),
+                        )
+                        .children(nameplate)
                         .child(
                             div()
                                 .relative()
@@ -1369,9 +1394,10 @@ impl Root {
                         )
                         .child(
                             div()
+                                .relative()
                                 .ml(px(12.))
                                 .min_w(px(0.))
-                                .max_w(px(188.))
+                                .max_w(px(if has_nameplate { 164. } else { 188. }))
                                 .flex()
                                 .flex_col()
                                 .items_start()
@@ -1411,7 +1437,19 @@ impl Root {
                                             this.parity("presence-line")
                                         })
                                         .child(line)
-                                })),
+                                }))
+                                .child(
+                                    gpui::canvas(
+                                        move |bounds, _, _| {
+                                            measured_width.set(f32::from(bounds.size.width))
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full(),
+                                ),
                         );
                     div()
                         .flex_none()

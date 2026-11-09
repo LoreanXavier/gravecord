@@ -2,6 +2,7 @@
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
 pub mod autocomplete;
+pub mod collectibles;
 pub mod confusables;
 pub mod experiments;
 pub mod frecency;
@@ -43,6 +44,7 @@ pub struct User {
     /// `primary_guild`: the server tag shown after the name, when the user turned it on.
     pub tag: Option<ServerTag>,
     pub bot: bool,
+    pub nameplate: Option<collectibles::Nameplate>,
 }
 
 /// A user's server tag (`primary_guild` with `identity_enabled`): the guild, its badge hash and the tag text.
@@ -85,6 +87,7 @@ impl User {
             discriminator: text(&value["discriminator"]).unwrap_or_else(|| "0".to_owned()),
             tag: ServerTag::from_value(&value["primary_guild"]),
             bot: value["bot"].as_bool().unwrap_or(false),
+            nameplate: collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]),
         })
     }
 

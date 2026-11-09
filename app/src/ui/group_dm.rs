@@ -625,6 +625,7 @@ mod tests {
             discriminator: "0".to_owned(),
             tag: None,
             bot: false,
+            nameplate: None,
         }
     }
 

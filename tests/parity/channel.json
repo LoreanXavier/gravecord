@@ -10,5 +10,6 @@
   "search": { "class": "searchBar_i16Ad0" },
   "messages": { "class": "messagesWrapper_8AE1Qq" },
   "composer": { "class": "channelTextArea_z_gUBg" },
-  "composer-text": { "class": "textArea_2x8-Qn" }
+  "composer-text": { "class": "textArea_2x8-Qn" },
+  "member-nameplate": { "class": "container_AFi54G" }
 }

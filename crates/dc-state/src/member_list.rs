@@ -50,6 +50,9 @@ impl Row {
                 discriminator: user["discriminator"].as_str().unwrap_or("0").to_owned(),
                 tag: crate::ServerTag::from_value(&user["primary_guild"]),
                 bot: user["bot"].as_bool().unwrap_or(false),
+                nameplate: crate::collectibles::Nameplate::from_value(
+                    &user["collectibles"]["nameplate"],
+                ),
             },
             nick: member["nick"].as_str().map(str::to_owned),
             roles: member["roles"]
