@@ -1,0 +1,19 @@
+[package]
+name = "dc-detect"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+# Game detection: the running process list (Windows, read only) and the matcher that turns it and the detectable
+# games list into detected games, after the official client's process observer and GameStore (modules 760751, 397369).
+
+[dependencies]
+regex = "1"
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
