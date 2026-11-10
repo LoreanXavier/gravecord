@@ -5,6 +5,10 @@
 //! `stream start` / `stream stop` run a Go Live stream from the synthetic source (only when alone in the channel).
 //! `note` appends the app's state to `<capture>.log`. The clipboard is shared with the owner's desktop, so scripts never
 //! press ctrl-c; `note` reports the selection directly.
+//!
+//! `native move x y` sends Win32 hit-test/move messages to this window. `native state` records the
+//! cached position and bounded move/leave trace. These do not move the OS pointer: Windows may
+//! generate extra leave messages, so this verifies message forwarding, not physical mouse input.
 
 use crate::editor::Editor;
 use crate::ui::Root;
@@ -16,6 +20,8 @@ use gpui::{
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
+
+mod native;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
 
@@ -128,6 +134,15 @@ pub async fn run(
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));
                 }
+            }
+            ["native", "move", x, y] => {
+                if let Some(position) = at(x, y) {
+                    let result = native::move_pointer(window, position, cx).await;
+                    let _ = writeln!(output, "native move: {result}");
+                }
+            }
+            ["native", "state"] => {
+                let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }
             // Positive `dy` scrolls the content up, as a wheel turned toward the user does.
             ["scroll", x, y, dy] => {
