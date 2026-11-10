@@ -20,6 +20,7 @@ use serde_json::json;
 pub(super) enum Target {
     InventoryFeed,
     InventoryFeedAtPointer,
+    InventoryAuthor { user: Id },
     Guild(Id),
     Channel(Id),
     Category(Id),
@@ -665,6 +666,14 @@ impl Root {
     ) {
         let developer = self.developer_mode();
         let items = match target {
+            Target::InventoryAuthor { .. } => {
+                let mut items = vec![Entry::Row(Row::new(Act::Profile, "Profile"))];
+                if developer {
+                    items.push(Entry::Separator);
+                    items.push(Entry::Row(Row::new(Act::CopyId, "Copy User ID")));
+                }
+                items
+            }
             Target::InventoryFeed | Target::InventoryFeedAtPointer => vec![
                 Entry::Row(
                     Row::new(Act::InventoryAbout, "About Recent Activity").icon("circle_info"),
@@ -858,7 +867,7 @@ impl Root {
         cx.notify();
     }
 
-    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         if self.context.open.take().is_some() {
             cx.notify();
         }
@@ -971,7 +980,7 @@ impl Root {
                     | Target::Category(id)
                     | Target::Thread(id)
                     | Target::Dm(id) => id,
-                    Target::User { user, .. } => user,
+                    Target::User { user, .. } | Target::InventoryAuthor { user } => user,
                     Target::InventoryFeed | Target::InventoryFeedAtPointer => return,
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
@@ -1082,7 +1091,10 @@ impl Root {
                 });
             }
             (Act::LeaveGuild, Target::Guild(guild)) => self.leave_guild = Some(guild),
-            (Act::Profile, Target::User { user, .. }) => self.open_full_profile(user, window, cx),
+            (Act::Profile, Target::User { user, .. } | Target::InventoryAuthor { user }) => {
+                self.close_inventory_popout();
+                self.open_full_profile(user, window, cx)
+            }
             (Act::Profile | Act::Message, Target::Dm(channel)) => {
                 let user = self
                     .stores
@@ -1327,6 +1339,9 @@ impl Root {
                     div()
                         .parity_with_border("context-menu", 1.)
                         .id("context-menu-generic")
+                        .when(matches!(target, Target::InventoryAuthor { .. }), |d| {
+                            d.min_w(px(144.))
+                        })
                         .occlude()
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))

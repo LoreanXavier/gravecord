@@ -176,6 +176,10 @@ pub async fn run(
                 let state = cx.update(|cx| root.read(cx).inventory_status());
                 let _ = writeln!(output, "inventory: {state}");
             }
+            ["inventory", "popout", "state"] => {
+                let state = cx.update(|cx| root.read(cx).inventory_popout_status());
+                let _ = writeln!(output, "inventory popout: {state}");
+            }
             ["channel", "click", id] => {
                 let Ok(id) = id.parse::<u64>() else {
                     break;

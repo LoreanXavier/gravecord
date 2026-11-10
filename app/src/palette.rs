@@ -350,8 +350,97 @@ pub fn avatar_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
     quantize(&pixels, 5).unwrap_or_else(|| vec![[0, 0, 0]])
 }
 
+/// 654107/823545: reduce HSL saturation, then darken in Lab until overlay text is legible.
+pub fn inventory_overlay_color(rgb: [u8; 3], saturation: f64) -> [u8; 3] {
+    let lightness =
+        f64::from(*rgb.iter().min().unwrap()) / 2. + f64::from(*rgb.iter().max().unwrap()) / 2.;
+    // At fixed hue and lightness, scaling HSL saturation mixes RGB toward that lightness.
+    let mut rgb = rgb
+        .map(|v| (lightness + (f64::from(v) - lightness) * saturation.clamp(0., 1.)).round() as u8);
+    for _ in 1..8 {
+        let [r, g, b] = rgb.map(f64::from);
+        if 1. - (0.299 * r + 0.587 * g + 0.114 * b) / 255. >= 0.725 {
+            break;
+        }
+        rgb = darken_half(rgb);
+    }
+    rgb
+}
+
+/// chroma (310784) uses D65 Lab, reduces L by 18 * .5, and truncates RGB through num().
+fn darken_half(rgb: [u8; 3]) -> [u8; 3] {
+    let [r, g, b] = rgb.map(|v| {
+        let c = f64::from(v) / 255.;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let xyz = [
+        (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047,
+        0.2126729 * r + 0.7151522 * g + 0.072175 * b,
+        (0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883,
+    ]
+    .map(|v| {
+        if v > 0.008856452 {
+            v.powf(1. / 3.)
+        } else {
+            v / 0.12841855 + 0.137931034
+        }
+    });
+    let a = 500. * (xyz[0] - xyz[1]);
+    let b = 200. * (xyz[1] - xyz[2]);
+    let y = ((116. * xyz[1] - 16.).max(0.) - 9. + 16.) / 116.;
+    let [x, y, z] = [y + a / 500., y, y - b / 200.].map(|v| {
+        if v > 0.206896552 {
+            v * v * v
+        } else {
+            0.12841855 * (v - 0.137931034)
+        }
+    });
+    let x = x * 0.95047;
+    let z = z * 1.08883;
+    [
+        3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
+        -0.969266 * x + 1.8760108 * y + 0.041556 * z,
+        0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
+    ]
+    .map(|v| {
+        let value = 255.
+            * if v <= 0.00304 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1. / 2.4) - 0.055
+            };
+        value.clamp(0., 255.) as u8
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inventory_overlay_colors_match_the_pinned_runtime() {
+        for (input, expected) in [
+            ([255, 255, 255], [84, 84, 84]),
+            ([0, 0, 0], [0, 0, 0]),
+            ([255, 0, 0], [224, 0, 0]),
+            ([0, 255, 0], [0, 101, 0]),
+            ([0, 0, 255], [0, 0, 255]),
+            ([62, 59, 54], [62, 59, 54]),
+            ([92, 100, 244], [0, 57, 191]),
+        ] {
+            assert_eq!(super::inventory_overlay_color(input, 1.), expected);
+        }
+        assert_eq!(
+            super::inventory_overlay_color([92, 100, 244], 0.),
+            [54, 54, 54]
+        );
+        assert_eq!(
+            super::inventory_overlay_color([92, 100, 244], 0.5),
+            [31, 48, 108]
+        );
+    }
     #[test]
     fn screening_gradient_companion_matches_the_captured_palette() {
         assert_eq!(super::complementary_colors([65, 58, 46])[0], [82, 29, 75]);

@@ -66,6 +66,7 @@ mod history;
 mod home;
 mod inbox;
 mod inventory_feed;
+mod inventory_popout;
 mod invite;
 mod invite_embed;
 mod lightbox;
@@ -464,6 +465,7 @@ pub struct Root {
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
+    inventory_popout: inventory_popout::State,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
@@ -687,6 +689,7 @@ impl Root {
             tip_anchors: Rc::default(),
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
+            inventory_popout: inventory_popout::State::default(),
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -855,6 +858,13 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.inventory_games_fetched(&key, &body) {
+                    cx.notify();
+                    return;
+                }
+                if self.inventory_reply_fetched(&key, &body, cx) {
+                    return;
+                }
                 if self.inventory_fetched(&key, &body) {
                     self.schedule_inventory(cx);
                     cx.notify();
@@ -2113,6 +2123,7 @@ impl Root {
     #[cfg(feature = "capture")]
     pub fn open_editors(&self) -> Vec<Entity<Editor>> {
         let mut list: Vec<Entity<Editor>> = Vec::new();
+        list.extend(self.inventory_reply_editor());
         if self.channel_browser_open {
             list.extend(
                 self.channel_browser
@@ -5387,6 +5398,7 @@ impl Render for Root {
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
         self.prepare_inventory_feed(cx);
+        self.prepare_inventory_popout();
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
             .current_dm()
@@ -5456,18 +5468,45 @@ impl Render for Root {
             ))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
-                if keys.key == "escape" && this.inventory.about {
-                    this.inventory.about = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                    return;
-                }
                 if !event.is_held && this.voice_key_down(keys, cx) {
                     cx.stop_propagation();
                     return;
                 }
                 // The media viewer is the top layer: Escape and the arrows are its.
                 if this.lightbox_key(event, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && this.picker.as_ref().is_some_and(|picker| {
+                        matches!(picker.target, picker::Target::InventoryReply(_))
+                    })
+                {
+                    this.picker = None;
+                    this.skin_menu = false;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // 165862 closes the whole menu on Escape, before an underlying field consumes it.
+                if keys.key == "escape" && this.picker.is_none() && this.context.open.is_some() {
+                    this.close_context_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && this.picker.is_none()
+                    && this.profile.is_none()
+                    && this.close_inventory_popout()
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.inventory.about {
+                    this.inventory.about = false;
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -5827,6 +5866,7 @@ impl Render for Root {
             .children(self.add_target_popout(cx))
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
+            .children(self.inventory_popout_layer(window, cx))
             .children(self.profile_layer(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())

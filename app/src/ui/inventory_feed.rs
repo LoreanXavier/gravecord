@@ -322,6 +322,7 @@ impl Root {
 
     pub(super) fn prepare_inventory_feed(&mut self, cx: &mut Context<Self>) {
         self.schedule_inventory(cx);
+        self.prepare_inventory_games();
         if !self.ready || self.stores.current_user.is_none() {
             return;
         }
@@ -434,7 +435,13 @@ impl Root {
             .collect()
     }
 
-    fn inventory_card(&self, entry: &Entry, first: bool) -> Option<AnyElement> {
+    fn inventory_card(
+        &self,
+        entry: &Entry,
+        first: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let id = entry.id;
         let user = self.stores.users.get(&entry.author)?;
         let (title, art, first_badge) = match entry.kind {
             1 => {
@@ -551,6 +558,12 @@ impl Root {
             div()
                 .when(first, |d| d.parity_with_border("inventory-card", 1.))
                 .id(SharedString::from(format!("inventory-entry-{}", entry.id)))
+                .relative()
+                .cursor_pointer()
+                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                    this.inventory_card_hover(id, *inside, cx)
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_inventory_popout(id, cx)))
                 .ml(px(8.))
                 .mt(px(8.))
                 .w(px(248.))
@@ -558,12 +571,17 @@ impl Root {
                 .flex_none()
                 .p(px(8.))
                 .rounded(px(12.))
-                .bg(color("--background-surface-high"))
+                .bg(color(if self.inventory_popout_open(id) {
+                    "--interactive-background-selected"
+                } else {
+                    "--background-surface-high"
+                }))
                 .border_1()
                 .border_color(color("--border-muted"))
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .child(self.anchor_probe(format!("inventory-card-{id}")))
                 .child(info)
                 .child(
                     div()
@@ -610,7 +628,7 @@ impl Root {
                 3
             })
             .enumerate()
-            .filter_map(|(index, entry)| self.inventory_card(entry, index == 0))
+            .filter_map(|(index, entry)| self.inventory_card(entry, index == 0, cx))
             .collect::<Vec<_>>();
         let header = div()
             .h(px(42.))

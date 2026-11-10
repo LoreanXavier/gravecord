@@ -30,6 +30,7 @@ pub struct Entry {
     pub traits: Vec<Value>,
     pub extra: Value,
     pub expires_at: Option<i64>,
+    content: Value,
 }
 
 impl Entry {
@@ -48,7 +49,13 @@ impl Entry {
             traits: value["traits"].as_array().cloned().unwrap_or_default(),
             extra: value["extra"].clone(),
             expires_at: date(&value["expires_at"]),
+            content: value.clone(),
         })
+    }
+
+    /// 428249 passes the original content object to the message's unverified_content field.
+    pub fn unverified_content(&self) -> &Value {
+        &self.content
     }
 
     pub fn trait_value(&self, kind: u64, field: &str) -> Option<&Value> {

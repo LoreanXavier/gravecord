@@ -50,6 +50,7 @@ pub(crate) enum Target {
     ForwardNote,
     /// Any other text field with its own emoji button (New Thread, Create Channel, the profile popout).
     Field,
+    InventoryReply(Id),
     Reaction {
         channel: Id,
         message: Id,
@@ -78,6 +79,16 @@ pub(crate) enum Item {
 }
 
 impl Item {
+    pub(super) fn message_text(&self, tone: u8) -> String {
+        match self {
+            Self::Unicode(index) => toned(&EMOJIS[usize::from(*index)], tone)
+                .surrogates
+                .to_owned(),
+            Self::Custom { id, name, animated } => {
+                format!("<{}:{name}:{id}>", if *animated { "a" } else { "" })
+            }
+        }
+    }
     fn name(&self) -> &str {
         match self {
             Item::Unicode(index) => EMOJIS[usize::from(*index)].names[0],
@@ -297,7 +308,7 @@ impl Root {
     }
 
     /// `eA.frequently`: emoji picker uses, with this session's on top.
-    fn frequent_emoji(&self) -> Vec<Item> {
+    pub(super) fn frequent_emoji(&self) -> Vec<Item> {
         let frecency = self.emoji_frecency();
         frecency
             .frequently(now_ms(), |key| self.emoji_lookup(key).is_some())
@@ -435,7 +446,9 @@ impl Root {
                     | Target::StickerEmoji
                     | Target::OnboardingEmoji
                     | Target::ReasonEmoji(_) => "Find the perfect emoji",
-                    Target::Reaction { .. } => "Find the perfect reaction",
+                    Target::Reaction { .. } | Target::InventoryReply(_) => {
+                        "Find the perfect reaction"
+                    }
                 }
                 .to_owned(),
             );
@@ -644,7 +657,7 @@ impl Root {
         // Emoji of other servers and animated emoji need Nitro in a message: the upsell opens instead.
         if matches!(
             target,
-            Target::Composer | Target::ForwardNote | Target::Field
+            Target::Composer | Target::ForwardNote | Target::Field | Target::InventoryReply(_)
         ) && let Item::Custom { id, animated, .. } = &item
             && self.custom_emoji_locked(*id, *animated)
         {
@@ -657,6 +670,9 @@ impl Root {
             Item::Custom { id, .. } => id.to_string(),
         };
         match target {
+            Target::InventoryReply(entry) => {
+                self.send_inventory_reply(entry, text.clone(), false, cx)
+            }
             Target::Composer => {
                 self.emoji_used.push((usage_key, now_ms()));
                 self.composer
@@ -1014,9 +1030,13 @@ impl Root {
     ) -> Option<AnyElement> {
         let picker = self.picker.as_ref()?;
         let viewport = window.viewport_size();
+        let inventory_reply = matches!(picker.target, Target::InventoryReply(_));
         // Composer: the right edge 32px in from the window's, the bottom 8px above the composer.
         // Reactions: beside the hover bar, kept inside the window.
-        let reaction = matches!(picker.target, Target::Reaction { .. });
+        let reaction = matches!(
+            picker.target,
+            Target::Reaction { .. } | Target::InventoryReply(_)
+        );
         let trait_target = matches!(
             picker.target,
             Target::Trait(_)
@@ -1034,7 +1054,19 @@ impl Root {
         };
         // Composer: the right edge 32px in from the window's, the bottom at the anchor (8px above the composer).
         // Reactions: 8px left of the button, top-aligned, then nudged up to stay 12px inside the window.
-        let (left, top) = if trait_target {
+        let (left, top) = if inventory_reply {
+            // 289287.dF: top/right of the 18px button, inverted and shifted into the viewport.
+            let above = f32::from(picker.anchor.y) - height - 8.;
+            let top = if above >= 0. {
+                above
+            } else {
+                f32::from(picker.anchor.y) + 18. + 8.
+            };
+            (
+                f32::from(picker.anchor.x) - PICKER_WIDTH,
+                top.clamp(0., (f32::from(viewport.height) - height).max(0.)),
+            )
+        } else if trait_target {
             // Trait emoji: the left edge at the button's, above it, held inside the window (0 in the capture).
             let top = (f32::from(picker.anchor.y) - 8. - height)
                 .clamp(0., (f32::from(viewport.height) - height).max(0.));
@@ -1098,13 +1130,25 @@ impl Root {
         let focused = search.read(cx).focus_handle(cx).is_focused(window);
         let header = div()
             .h(px(53.))
+            .when(inventory_reply, |d| {
+                d.ml(px(-1.))
+                    .w(px(500.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+            })
             .px(px(16.))
             .pb(px(12.))
             .flex()
             .gap(px(12.))
             .child(
                 div()
-                    .w(px(if reaction { 260. } else { 300. }))
+                    .w(px(if inventory_reply {
+                        374.
+                    } else if reaction {
+                        260.
+                    } else {
+                        300.
+                    }))
                     .h(px(40.))
                     .rounded(px(8.))
                     .border_1()
@@ -1254,37 +1298,39 @@ impl Root {
                         )
                     })
             })
-            .child(
-                div()
-                    .id("picker-add-emoji")
-                    .w(px(102.))
-                    .h(px(40.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--border-muted"))
-                    .bg(color("--control-secondary-background-default"))
-                    .hover(|style| style.bg(color("--control-secondary-background-hover")))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--control-secondary-text-default"))
-                    // Emoji are uploaded on the server's Emoji page.
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(guild) = this.guild {
-                            this.picker = None;
-                            this.open_server_settings_at(
-                                guild,
-                                super::server_settings::Page::Emoji,
-                                cx,
-                            );
-                        }
-                    }))
-                    .child("Add Emoji"),
-            );
+            .when(!inventory_reply, |header| {
+                header.child(
+                    div()
+                        .id("picker-add-emoji")
+                        .w(px(102.))
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-muted"))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        // Emoji are uploaded on the server's Emoji page.
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(guild) = this.guild {
+                                this.picker = None;
+                                this.open_server_settings_at(
+                                    guild,
+                                    super::server_settings::Page::Emoji,
+                                    cx,
+                                );
+                            }
+                        }))
+                        .child("Add Emoji"),
+                )
+            });
         let sticky = picker
             .rows
             .get(picker.list.logical_scroll_top().item_ix)
@@ -1324,7 +1370,7 @@ impl Root {
                     .child(self.picker_rail(cx))
                     .child(
                         div()
-                            .w(px(448.))
+                            .w(px(if inventory_reply { 450. } else { 448. }))
                             .flex()
                             .flex_col()
                             .child(body)
@@ -1334,7 +1380,7 @@ impl Root {
         Some(
             deferred(
                 div()
-                    .parity_with_border("emoji-picker", 1.)
+                    .parity_with_border("emoji-picker", if inventory_reply { 0. } else { 1. })
                     .id("emoji-picker")
                     .occlude()
                     .absolute()
@@ -1345,6 +1391,7 @@ impl Root {
                     .pt(px(16.))
                     .rounded(px(8.))
                     .border_1()
+                    .when(inventory_reply, |d| d.border_0())
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-high"))
                     .shadow(vec![gpui::BoxShadow {

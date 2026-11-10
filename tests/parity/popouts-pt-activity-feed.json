@@ -1,0 +1,7 @@
+{
+  "inventory-popout": { "class": "popout_R0WNX5" },
+  "inventory-popout-header": { "class": "popoutContentHeader_R0WNX5" },
+  "inventory-popout-hero": { "class": "hero_R0WNX5" },
+  "inventory-popout-replies": { "class": "interactionsContainer_R0WNX5" },
+  "inventory-popout-input": { "class": "replyInput_R0WNX5" }
+}

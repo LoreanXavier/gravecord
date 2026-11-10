@@ -389,7 +389,11 @@ pub(crate) fn nonce() -> String {
     pin::nonce_at(now)
 }
 
-fn send_body(channel: u64, content: &str, reply: Option<(Option<u64>, u64, bool)>) -> Value {
+pub(crate) fn send_body(
+    channel: u64,
+    content: &str,
+    reply: Option<(Option<u64>, u64, bool)>,
+) -> Value {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64);
