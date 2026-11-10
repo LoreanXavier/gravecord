@@ -1,0 +1,33 @@
+{
+  "events-modal": {
+    "class": "root__KoJTP"
+  },
+  "events-header": {
+    "class": "flex_hkRWAH"
+  },
+  "events-content": {
+    "class": "content__KoJTP"
+  },
+  "events-create-button": {
+    "class": "button_F7qvhY",
+    "ancestor": "flex_hkRWAH"
+  },
+  "events-card": {
+    "class": "card__wH91U"
+  },
+  "events-card-status": {
+    "class": "statusContainer_dUw4ZS"
+  },
+  "event-card-more": {
+    "class": "secondary_F7qvhY",
+    "ancestor": "eventActions__wH91U"
+  },
+  "event-card-copy": {
+    "class": "hasText_F7qvhY",
+    "ancestor": "eventActions__wH91U"
+  },
+  "event-card-interested": {
+    "class": "active_F7qvhY",
+    "ancestor": "eventActions__wH91U"
+  }
+}

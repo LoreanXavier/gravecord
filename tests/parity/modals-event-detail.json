@@ -1,0 +1,38 @@
+{
+  "event-detail-modal": {
+    "class": "container_dvN-MP"
+  },
+  "event-detail-header": {
+    "class": "header_dvN-MP"
+  },
+  "event-detail-strip": {
+    "class": "strip_ydey4M"
+  },
+  "event-detail-tabs": {
+    "class": "tabs_ydey4M"
+  },
+  "event-detail-panel": {
+    "class": "tabPanel_7pDS2B"
+  },
+  "event-detail-footer": {
+    "class": "actionBar_dvN-MP"
+  },
+  "event-detail-more": {
+    "class": "secondary_F7qvhY",
+    "ancestor": "actionBar_dvN-MP"
+  },
+  "event-detail-copy": {
+    "class": "hasText_F7qvhY",
+    "ancestor": "actionBar_dvN-MP"
+  },
+  "event-detail-interested": {
+    "class": "active_F7qvhY",
+    "ancestor": "actionBar_dvN-MP"
+  },
+  "event-detail-info-header": {
+    "class": "header_6_68tM"
+  },
+  "event-detail-info-body": {
+    "class": "body_6_68tM"
+  }
+}
