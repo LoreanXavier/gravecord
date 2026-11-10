@@ -5962,6 +5962,7 @@ fn status_label(status: &str) -> &'static str {
         "dnd" => "Do Not Disturb",
         "idle" => "Idle",
         "invisible" => "Invisible",
+        "offline" => "Offline",
         _ => "Online",
     }
 }
