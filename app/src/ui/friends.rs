@@ -11,7 +11,7 @@ use crate::parity::Parity;
 use dc_state::{Id, User};
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, SharedString, Subscription,
-    Window, deferred, div, img, prelude::*, px,
+    Window, deferred, div, img, prelude::*, px, svg,
 };
 use serde_json::json;
 
@@ -22,6 +22,41 @@ const NOTE_LIMIT: usize = 120;
 pub(super) const FRIEND_REQUEST_KEY: &str = "friend-request:";
 pub(super) const OPEN_DM_KEY: &str = "open-dm";
 const WUMPUS: &str = "https://discordapp.com/assets/25c27c1328c986f6.svg";
+
+// 396478 and friendsEmpty_Bb-Yop: the 440px note wrapper fills the remaining people column.
+fn friends_empty(note: &'static str) -> gpui::Div {
+    div()
+        .parity("friends-empty")
+        .flex_1()
+        .min_h(px(0.))
+        .w_full()
+        .flex()
+        .justify_center()
+        .items_center()
+        .child(
+            div()
+                .w_full()
+                .max_w(px(440.))
+                .h_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(
+                    div().max_w(px(440.)).child(
+                        div()
+                            .parity("friends-empty-note")
+                            .mt(px(8.))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(400.))
+                            .text_color(color("--text-muted"))
+                            .text_center()
+                            .child(note),
+                    ),
+                ),
+        )
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FriendsTab {
@@ -901,61 +936,139 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn friends_people(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn friends_people(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.friends_tab == FriendsTab::Add {
             return self.add_friend_form(cx);
         }
         let field = self.people_search_field(cx);
+        let search_focused = field.read(cx).focus_handle(cx).is_focused(window);
         let (label, people) = self.people_rows();
+        let searching = self
+            .people_search
+            .as_ref()
+            .is_some_and(|search| !search.query.is_empty());
+        // 596339 returns the empty state before the search/list when the unfiltered section is empty.
+        if people.is_empty() && !searching {
+            let note = match self.friends_tab {
+                FriendsTab::Online => {
+                    Some("There are no friends online at this time. Check back later!")
+                }
+                FriendsTab::Pending => Some(
+                    "There are no pending friend requests. Click “Add Friend” to send friend requests.",
+                ),
+                _ => None,
+            };
+            if let Some(note) = note {
+                return friends_empty(note).into_any_element();
+            }
+        }
+        let no_results = searching && people.is_empty();
         div()
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h(px(0.))
             .child(
                 div()
-                    .parity_with_border("people-search", 1.)
+                    .parity_with_border("people-search", if search_focused { 2. } else { 1. })
+                    .id("friends-search")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.notify()),
+                    )
+                    .flex_none()
                     .mt(px(12.))
                     .ml(px(24.))
                     .w(px(505.))
                     .h(px(40.))
                     .rounded(px(8.))
                     .bg(color("--input-background-default"))
-                    .border_1()
-                    .border_color(color("--background-mod-subtle"))
+                    .when(search_focused, |field| field.border_2())
+                    .when(!search_focused, |field| field.border_1())
+                    .border_color(color(if search_focused {
+                        "--input-border-active"
+                    } else {
+                        "--input-border-default"
+                    }))
                     .flex()
                     .items_center()
-                    .pl(px(11.))
-                    .child(icon("search_people", 16., "--interactive-text-default"))
+                    .pl(px(if search_focused { 10. } else { 11. }))
+                    .child(icon("search_people", 16., "--icon-strong"))
                     .child(
                         div()
                             .ml(px(11.))
                             .flex_1()
                             .min_w(px(0.))
-                            .pr(px(8.))
+                            .pr(px(if searching { 4. } else { 8. }))
                             .child(field),
-                    ),
+                    )
+                    .when(searching, |search| {
+                        search.child(
+                            div()
+                                .parity("friends-search-clear")
+                                .id("friends-search-clear")
+                                .group("friends-search-clear")
+                                .flex_none()
+                                .size(px(30.))
+                                .mr(px(if search_focused { 3. } else { 4. }))
+                                .rounded(px(4.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some(search) = this.people_search.as_mut() {
+                                        search.query.clear();
+                                        search.field.update(cx, |editor, cx| {
+                                            editor.set_text("");
+                                            window.focus(&editor.focus_handle(cx), cx);
+                                        });
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    svg()
+                                        .path("icons/circle_x_small.svg")
+                                        .size(px(16.))
+                                        .text_color(color("--icon-subtle"))
+                                        .group_hover("friends-search-clear", |style| {
+                                            style.text_color(color("--icon-strong"))
+                                        }),
+                                ),
+                        )
+                    }),
             )
-            .child(
-                div()
-                    .mt(px(24.))
-                    .ml(px(24.))
-                    .h(px(34.))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-default"))
-                    .child(label),
-            )
-            .child(
-                div()
-                    .id("people-list")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(
-                        people
-                            .iter()
-                            .map(|(user, kind)| self.person_row(user, *kind, cx)),
-                    ),
-            )
+            .when(no_results, |column| {
+                // Search margin-bottom 8 plus the empty people scroller's bottom padding 8.
+                column
+                    .child(div().flex_none().h(px(16.)))
+                    .child(friends_empty("No one with that name could be found."))
+            })
+            .when(!no_results, |column| {
+                column
+                    .child(
+                        div()
+                            .mt(px(24.))
+                            .ml(px(24.))
+                            .h(px(34.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .id("people-list")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .children(
+                                people
+                                    .iter()
+                                    .map(|(user, kind)| self.person_row(user, *kind, cx)),
+                            ),
+                    )
+            })
             .into_any_element()
     }
 

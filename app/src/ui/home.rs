@@ -497,8 +497,12 @@ impl Root {
             .children(rows)
     }
 
-    pub(super) fn friends_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let people = self.friends_people(cx);
+    pub(super) fn friends_panel(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let people = self.friends_people(window, cx);
         div()
             .flex()
             .flex_col()

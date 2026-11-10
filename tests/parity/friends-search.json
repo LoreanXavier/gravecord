@@ -1,0 +1,47 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "sidebar": {
+    "class": "sidebarList_pog62O"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "chat-header": {
+    "class": "theme-dark",
+    "tag": "SECTION"
+  },
+  "find-button": {
+    "class": "button_F7qvhY",
+    "tag": "BUTTON"
+  },
+  "friends-link": {
+    "class": "interactive_nl_k3a"
+  },
+  "people-column": {
+    "class": "peopleColumn_zrUwGA"
+  },
+  "active-now": {
+    "class": "nowPlayingColumn_zrUwGA"
+  },
+  "active-card": {
+    "class": "emptyCard_-7KzVR"
+  },
+  "friends-empty": {
+    "class": "friendsEmpty_Bb-Yop"
+  },
+  "friends-empty-note": {
+    "class": "text_PDJTSB",
+    "ancestor": "friendsEmpty_Bb-Yop"
+  },
+  "people-search": {
+    "class": "wrapper_UcGqzv"
+  },
+  "friends-search-clear": {
+    "class": "clearButton_0PLWhS"
+  }
+}

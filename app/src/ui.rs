@@ -5750,7 +5750,7 @@ impl Render for Root {
                 let content = if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
                     self.nitro_page(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() {
-                    self.friends_panel(cx).into_any_element()
+                    self.friends_panel(window, cx).into_any_element()
                 } else if self
                     .member_view
                     .as_ref()
