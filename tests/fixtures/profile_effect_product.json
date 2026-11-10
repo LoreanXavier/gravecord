@@ -1,0 +1,40 @@
+{
+  "sku_id": "1564419597501989044",
+  "name": "Deadpool",
+  "summary": "Show this effect when others view your profile.",
+  "type": 1,
+  "premium_type": 0,
+  "category_sku_id": "1561844530079076372",
+  "items": [
+    {
+      "type": 1,
+      "sku_id": "1564419597501989044",
+      "title": "Deadpool",
+      "description": "Show this effect when others view your profile.",
+      "accessibilityLabel": "Deadpool drops from a red sky swinging katanas, then peeks upside down from the top edge.",
+      "animationType": 2,
+      "thumbnailPreviewSrc": "https://cdn.discordapp.com/media/v1/collectibles-shop/3cb1a113675ef687485e8b96f427c0fdf9bb5f7b6727601429b7a08cc79b4bb6",
+      "reducedMotionSrc": "https://cdn.discordapp.com/media/v1/collectibles-shop/35e9095125857d9391360654122724228a3b003ae3a4dd1b46874508292679eb",
+      "effects": [
+        {
+          "src": "https://cdn.discordapp.com/media/v1/collectibles-shop/bcaa46b77f4673a24fdf1a272aabe63c086df7fe1e90920a7cd447e7b328b507",
+          "loop": false,
+          "duration": 5000,
+          "start": 0,
+          "loopDelay": 0,
+          "zIndex": 100,
+          "randomizedSources": []
+        },
+        {
+          "src": "https://cdn.discordapp.com/media/v1/collectibles-shop/8e155f8f5457201a07a21fff948dfd0d4f9b59475462314a4b8db24df11aa520",
+          "loop": true,
+          "duration": 5042,
+          "start": 5500,
+          "loopDelay": 3500,
+          "zIndex": 101,
+          "randomizedSources": []
+        }
+      ]
+    }
+  ]
+}
