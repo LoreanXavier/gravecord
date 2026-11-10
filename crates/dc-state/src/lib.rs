@@ -1134,6 +1134,7 @@ pub struct Stores {
     pub typing: HashMap<Id, Vec<(Id, Instant)>>,
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
+    pub relationship_nicknames: HashMap<Id, String>,
     /// RelationshipStore's spam-request and ignored-pending counters are separate sets.
     pub spam_relationships: HashSet<Id>,
     pub ignored_pending_relationships: HashSet<Id>,
@@ -1424,6 +1425,11 @@ impl Stores {
                     self.relationships.insert(user, kind);
                 }
                 if let Some(user) = id(&data["id"]) {
+                    if let Some(nickname) = text(&data["nickname"]) {
+                        self.relationship_nicknames.insert(user, nickname);
+                    } else if name == "RELATIONSHIP_UPDATE" {
+                        self.relationship_nicknames.remove(&user);
+                    }
                     if data["is_spam_request"] == true {
                         self.spam_relationships.insert(user);
                     } else {
@@ -1464,6 +1470,7 @@ impl Stores {
             "RELATIONSHIP_REMOVE" => {
                 if let Some(user) = id(&data["id"]) {
                     self.relationships.remove(&user);
+                    self.relationship_nicknames.remove(&user);
                     self.clear_relationship_request_flags(user);
                     if data["user_ignored"] != true {
                         self.ignored.remove(&user);
@@ -1560,6 +1567,10 @@ impl Stores {
     /// RelationshipStore `isIgnored`: ignored and not blocked.
     pub fn is_ignored(&self, user: Id) -> bool {
         self.ignored.contains(&user) && self.relationships.get(&user) != Some(&2)
+    }
+
+    pub fn friend_nickname(&self, user: Id) -> Option<&str> {
+        self.relationship_nicknames.get(&user).map(String::as_str)
     }
 
     pub fn add_private_channel(&mut self, data: &Value) {
@@ -1707,6 +1718,12 @@ impl Stores {
             .into_iter()
             .flatten()
             .filter_map(|entry| Some((id(&entry["id"])?, entry["type"].as_u64()?)))
+            .collect();
+        self.relationship_nicknames = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((id(&entry["id"])?, text(&entry["nickname"])?)))
             .collect();
         self.ignored = data["relationships"]
             .as_array()
@@ -1977,7 +1994,11 @@ impl Stores {
             .filter(|(_, kind)| **kind == RELATIONSHIP_FRIEND)
             .filter_map(|(user, _)| self.users.get(user))
             .collect();
-        friends.sort_by_key(|user| user.display_name().to_lowercase());
+        friends.sort_by_key(|user| {
+            self.friend_nickname(user.id)
+                .unwrap_or(user.display_name())
+                .to_lowercase()
+        });
         friends
     }
 
@@ -2368,6 +2389,61 @@ mod tests {
         assert!(guild.threads[0].joined);
         stores.dispatch("THREAD_DELETE", &json!({"guild_id": "1", "id": "9"}));
         assert!(stores.guilds[0].threads.is_empty());
+    }
+
+    #[test]
+    fn relationship_nicknames_follow_ready_add_update_and_removal() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "users":[{"id":"30","username":"Zed"},{"id":"31","username":"Beta"}],
+                "relationships":[{"id":"30","type":1,"nickname":"private name"},{"id":"31","type":1}]
+            }),
+        );
+        assert_eq!(stores.friend_nickname(30), Some("private name"));
+        assert_eq!(
+            stores
+                .friends()
+                .iter()
+                .map(|user| user.id)
+                .collect::<Vec<_>>(),
+            [31, 30]
+        );
+        // 994500 ADD preserves an omitted/null nickname; UPDATE clears it.
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"30","type":1,"nickname":null}),
+        );
+        assert_eq!(stores.friend_nickname(30), Some("private name"));
+        stores.dispatch(
+            "RELATIONSHIP_UPDATE",
+            &json!({"id":"30","type":1,"nickname":"aaa"}),
+        );
+        assert_eq!(stores.friend_nickname(30), Some("aaa"));
+        assert_eq!(
+            stores
+                .friends()
+                .iter()
+                .map(|user| user.id)
+                .collect::<Vec<_>>(),
+            [30, 31]
+        );
+        stores.dispatch("RELATIONSHIP_UPDATE", &json!({"id":"30","type":1}));
+        assert_eq!(stores.friend_nickname(30), None);
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"30","type":1,"nickname":""}),
+        );
+        assert_eq!(stores.friend_nickname(30), Some(""));
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id":"30"}));
+        assert_eq!(stores.friend_nickname(30), None);
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"30","type":1,"nickname":"stale"}),
+        );
+        stores.dispatch("READY", &json!({"relationships":[]}));
+        assert!(stores.relationship_nicknames.is_empty());
     }
 
     #[test]
