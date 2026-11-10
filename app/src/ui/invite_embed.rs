@@ -7,7 +7,7 @@
 //! c 85.16%)` where `c` is the icon's first palette color, or `--guild-profile-banner-background-default` without an
 //! icon. gpui draws only linear gradients, so the gradient is rendered to an image once per color.
 
-use super::{Root, color};
+use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::{Id, Message};
@@ -217,8 +217,125 @@ impl Root {
         Some(self.banner_image(self.guild_banner_base(guild), 300, 72))
     }
 
-    fn invite_card(&self, code: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn invalid_invite_card(&self, message: &Message, banned: bool, probe: bool) -> AnyElement {
+        let own = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.id == message.author.id);
+        let (label, detail) = if own {
+            ("You sent an invite, but", "Try sending a new invite")
+        } else if banned {
+            (
+                "You've been invited, but",
+                "Uh-oh. Looks like you've been banned.",
+            )
+        } else {
+            ("You've been invited, but", "Ask for a new invite")
+        };
+        // 679636 dD and 529200, measured in channel/dm-invalid-invite-darker-cozy.
+        let info = div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .flex_col()
+            .justify_center()
+            .child(
+                div()
+                    .when(probe, |d| d.parity("invalid-invite-title"))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-feedback-critical"))
+                    .truncate()
+                    .mb(px(4.))
+                    .child("Invalid Invite"),
+            )
+            .child(
+                div()
+                    .when(probe, |d| d.parity("invalid-invite-detail"))
+                    .text_size(px(14.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(400.))
+                    .text_color(color("--interactive-text-default"))
+                    .child(detail),
+            );
+        div()
+            .when(probe, |d| d.parity_with_border("invalid-invite", 1.))
+            .w_full()
+            .max_w(px(432.))
+            .min_w(px(160.))
+            .p(px(16.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .rounded(px(12.))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .when(probe, |d| d.parity("invalid-invite-label"))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-muted"))
+                    .truncate()
+                    .mb(px(12.))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .when(probe, |d| d.parity_with_border("invalid-invite-icon", 1.))
+                            .size(px(48.))
+                            .flex_none()
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--opacity-red-12"))
+                            .bg(color("--opacity-red-12"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("access_envelope", 26., "--icon-feedback-critical")),
+                    )
+                    .child(info),
+            )
+            .into_any_element()
+    }
+
+    fn invite_card(
+        &self,
+        code: &str,
+        message: &Message,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let body = self.fetched.get(&format!("invite:{code}"))?;
+        if body["invite_resolve_failed"] == true {
+            #[cfg(feature = "capture")]
+            let probe = self
+                .stores
+                .messages
+                .get(&message.channel_id)
+                .into_iter()
+                .flatten()
+                .flat_map(|message| {
+                    invite_codes(&message.content)
+                        .into_iter()
+                        .map(move |code| (message.id, code))
+                })
+                .find(|(_, code)| {
+                    self.fetched
+                        .get(&format!("invite:{code}"))
+                        .is_some_and(|body| body["invite_resolve_failed"] == true)
+                })
+                .is_some_and(|(id, first_code)| id == message.id && first_code == code);
+            #[cfg(not(feature = "capture"))]
+            let probe = false;
+            return Some(self.invalid_invite_card(message, body["banned"] == true, probe));
+        }
         let guild = &body["guild"];
         let id: Id = guild["id"].as_str()?.parse().ok()?;
         let name = guild["name"].as_str().unwrap_or_default().to_owned();
@@ -578,7 +695,7 @@ impl Root {
     ) -> Option<AnyElement> {
         let cards: Vec<AnyElement> = invite_codes(&message.content)
             .iter()
-            .filter_map(|code| self.invite_card(code, cx))
+            .filter_map(|code| self.invite_card(code, message, cx))
             .collect();
         (!cards.is_empty()).then(|| {
             div()

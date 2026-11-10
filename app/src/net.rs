@@ -897,12 +897,8 @@ pub async fn run(
                         }
                         Err(error) => {
                             warn!("fetch failed: {error}");
-                            // The shelf shows "Failed to fetch activities" instead of waiting.
-                            if key.starts_with("activity-shelf:") {
-                                let _ = updates.send(Update::Fetched {
-                                    key,
-                                    body: json!({"error": true}),
-                                });
+                            if let Some(body) = fetch_failure(&key, &error) {
+                                let _ = updates.send(Update::Fetched { key, body });
                             }
                         }
                     }
@@ -1066,6 +1062,18 @@ pub async fn run(
     }
 }
 
+fn fetch_failure(key: &str, error: &dc_http::Error) -> Option<Value> {
+    if key.starts_with("invite:") {
+        // 970163 resolves failures to an absent invite, with a separate USER_BANNED marker.
+        let banned = matches!(error, dc_http::Error::Status { body, .. } if body["code"] == 40007);
+        Some(json!({"invite_resolve_failed": true, "banned": banned}))
+    } else if key.starts_with("activity-shelf:") {
+        Some(json!({"error": true}))
+    } else {
+        None
+    }
+}
+
 /// Fetches `url` and writes it into the Downloads folder under a free name; whether it was saved.
 async fn save_download(url: &str, filename: &str) -> bool {
     let Some(folder) = std::env::var_os("USERPROFILE")
@@ -1226,6 +1234,44 @@ mod preview_tests {
             attachment_entry(1, "a", "b", Some("  "))
                 .get("description")
                 .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod fetch_failure_tests {
+    use super::fetch_failure;
+    use dc_http::Error;
+    use serde_json::json;
+
+    #[test]
+    fn invite_failure_keeps_ban_reason_without_leaking_the_error_body() {
+        let error = |code| Error::Status {
+            route: "/invites/fixture".into(),
+            status: reqwest::StatusCode::FORBIDDEN,
+            body: json!({"code": code, "message": "not rendered"}),
+        };
+        assert_eq!(
+            fetch_failure("invite:fixture", &error(40007)),
+            Some(json!({"invite_resolve_failed": true, "banned": true}))
+        );
+        assert_eq!(
+            fetch_failure("invite:fixture", &error(10006)),
+            Some(json!({"invite_resolve_failed": true, "banned": false}))
+        );
+        assert_eq!(
+            fetch_failure(
+                "invite:fixture",
+                &Error::RateLimited {
+                    route: "/invites/fixture".into()
+                }
+            ),
+            Some(json!({"invite_resolve_failed": true, "banned": false}))
+        );
+        assert_eq!(fetch_failure("profile:fixture", &error(40007)), None);
+        assert_eq!(
+            fetch_failure("activity-shelf:fixture", &error(40007)),
+            Some(json!({"error": true}))
         );
     }
 }
