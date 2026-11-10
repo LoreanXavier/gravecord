@@ -234,7 +234,11 @@ impl Root {
             .map(|(id, value)| {
                 let (label, subtext) = match value {
                     INHERIT => (
-                        Self::label("Use Category Default"),
+                        Self::label(if category.is_some() {
+                            "Use Category Default"
+                        } else {
+                            "Use Server Default"
+                        }),
                         Some(level_label(inherited).to_owned()),
                     ),
                     ONLY_MENTIONS => (
@@ -280,7 +284,7 @@ impl Root {
                     .absolute()
                     .top(px(top))
                     .right(px(right))
-                    .min_w(px(188.))
+                    .min_w(px(144.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
