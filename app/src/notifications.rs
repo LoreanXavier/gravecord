@@ -46,6 +46,9 @@ impl SoundThrottle {
     }
 }
 
+/// The application identity, from the one file the installer's shortcut uses as well.
+#[path = "../../crates/dc-setup/src/app_id.rs"]
+mod app_id;
 #[cfg(windows)]
 pub(crate) mod native_icon;
 #[cfg(windows)]
@@ -54,7 +57,7 @@ mod taskbar;
 mod window_hook;
 #[cfg(windows)]
 mod windows;
-pub const APP_ID: &str = "gravecord.desktop";
+pub use app_id::APP_ID;
 
 pub fn configure_process() {
     if storage::is_capture_run() {
@@ -368,6 +371,10 @@ pub(super) fn toast_xml(title: &str, body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_notifier_and_the_shortcut_use_the_same_pinned_identity() {
+        assert_eq!(APP_ID, "gravecord.desktop");
+    }
     #[test]
     fn sound_bursts_keep_one_leading_and_one_latest_trailing_sound() {
         let now = Instant::now();

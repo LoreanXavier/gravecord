@@ -60,6 +60,7 @@ impl AssetSource for Assets {
     }
 }
 
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
 fn find_upwards(name: &str) -> Option<PathBuf> {
     let start = std::env::current_dir().ok()?;
     start
@@ -68,14 +69,89 @@ fn find_upwards(name: &str) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-/// The icons: next to an installed executable, or up from a build folder or the working directory.
-fn find_assets() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok();
-    exe.iter()
-        .flat_map(|exe| exe.ancestors())
+/// Whether this is a development run, which may find the assets up from the working directory: a debug build, a
+/// capture build, or a `--capture` run. An installed or portable release looks beside its exe and nowhere else, so a
+/// stray `C:\app\assets` further up is never picked up.
+fn development_run() -> bool {
+    cfg!(debug_assertions) || storage::is_capture_run()
+}
+
+/// `app/assets` beside the exe, or for development runs up from the working directory.
+fn assets_in(exe: Option<&Path>, cwd: Option<&Path>, development: bool) -> Option<PathBuf> {
+    let beside = exe
+        .and_then(Path::parent)
         .map(|dir| dir.join("app/assets"))
-        .find(|path| path.exists())
-        .or_else(|| find_upwards("app/assets"))
+        .filter(|path| path.is_dir());
+    beside.or_else(|| {
+        if !development {
+            return None;
+        }
+        cwd?.ancestors()
+            .map(|dir| dir.join("app/assets"))
+            .find(|path| path.is_dir())
+    })
+}
+
+fn find_assets() -> Option<PathBuf> {
+    assets_in(
+        std::env::current_exe().ok().as_deref(),
+        std::env::current_dir().ok().as_deref(),
+        development_run(),
+    )
+}
+
+/// A message box that names a problem the user cannot otherwise see (the release build has no console).
+#[cfg(windows)]
+pub(crate) fn native_message(title: &str, text: &str) {
+    use ::windows::{
+        Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+        core::HSTRING,
+    };
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn native_message(title: &str, text: &str) {
+    eprintln!("{title}: {text}");
+}
+
+/// Appends `text` to `panic.log` in `dir`, newest last.
+fn append_log(dir: &Path, text: &str) {
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("panic.log"))
+    {
+        use std::io::Write as _;
+        let _ = writeln!(file, "{text}");
+    }
+}
+
+/// What the user is told when startup fails: the whole error chain, plainly.
+fn fatal_text(error: &anyhow::Error) -> String {
+    format!("gravecord could not start.\n\n{error:#}")
+}
+
+/// A fatal error returned from `main`: written to the active profile's `panic.log`, and shown in a message box
+/// unless this is a capture run, where it stays a logged error and a non-zero exit.
+fn report_fatal(error: &anyhow::Error) {
+    let text = fatal_text(error);
+    tracing::error!(error = %format!("{error:#}"), "fatal startup error");
+    eprintln!("{text}");
+    if let Some(dir) = storage::data_dir() {
+        append_log(&dir, &format!("fatal startup error: {error:#}\n"));
+    }
+    if !storage::is_capture_run() {
+        native_message("gravecord", &text);
+    }
 }
 
 struct Capture {
@@ -145,21 +221,8 @@ fn record_panics() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some(dir) = storage::data_dir() {
-            let _ = std::fs::create_dir_all(&dir);
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("panic.log"))
-            {
-                use std::io::Write as _;
-                let backtrace = std::backtrace::Backtrace::force_capture();
-                let _ = writeln!(
-                    file,
-                    "{info}
-{backtrace}
-"
-                );
-            }
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            append_log(&dir, &format!("{info}\n{backtrace}\n"));
         }
         restore_audio_in_time();
         previous(info);
@@ -208,16 +271,31 @@ fn initial_start() -> shell::Start {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            report_fatal(&error);
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     // Read once by gpui's renderer. Set before any other thread exists.
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
     }
     let (mut instance, instance_error) = match instance::claim() {
         Ok(instance::Launch::Forwarded) => return Ok(()),
+        Ok(instance::Launch::Unresponsive) => {
+            native_message("gravecord", instance::NOT_RESPONDING);
+            return Ok(());
+        }
         Ok(instance::Launch::Primary(instance)) => (instance, None),
         Err(error) => (None, Some(error)),
     };
+    let acknowledger = instance.as_ref().map(instance::Instance::acknowledger);
     let restore_requests = instance
         .as_mut()
         .and_then(instance::Instance::take_requests);
@@ -230,7 +308,9 @@ fn main() -> Result<()> {
         tracing::info!("single instance (capture no-op)");
     }
     notifications::configure_process();
-    let assets_root = find_assets().context("app/assets not found")?;
+    let assets_root = find_assets().context(
+        "The program files are incomplete: the app/assets folder was not found next to gravecord.exe. Reinstall gravecord.",
+    )?;
     let capture = capture_args();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -280,6 +360,10 @@ fn main() -> Result<()> {
                             .is_err()
                         {
                             break;
+                        }
+                        // Tells the launch that asked that this instance is alive and handled it.
+                        if let Some(acknowledger) = &acknowledger {
+                            acknowledger.acknowledge();
                         }
                     }
                 })
@@ -382,4 +466,73 @@ fn write_capture(cx: &mut App, window: gpui::AnyWindowHandle, path: &Path) {
 #[cfg(not(feature = "capture"))]
 fn write_capture(_: &mut App, _: gpui::AnyWindowHandle, _: &Path) {
     eprintln!("this build has no capture support, rebuild with --features capture");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gc-main-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn assets_are_found_beside_the_exe_only_in_a_release_run() {
+        let base = scratch("assets");
+        // A stray folder far above the exe, and the real one beside it.
+        std::fs::create_dir_all(base.join("app/assets")).unwrap();
+        let installed = base.join("Programs/gravecord");
+        std::fs::create_dir_all(&installed).unwrap();
+        let exe = installed.join("gravecord.exe");
+        assert_eq!(assets_in(Some(&exe), Some(&installed), false), None);
+        assert_eq!(
+            assets_in(Some(&exe), Some(&installed), true),
+            Some(base.join("app/assets"))
+        );
+        std::fs::create_dir_all(installed.join("app/assets")).unwrap();
+        assert_eq!(
+            assets_in(Some(&exe), Some(&installed), false),
+            Some(installed.join("app/assets"))
+        );
+        // A development run falls back to the working directory's ancestors, not the exe's.
+        let build = base.join("target/debug");
+        std::fs::create_dir_all(&build).unwrap();
+        assert_eq!(
+            assets_in(
+                Some(&build.join("gravecord.exe")),
+                Some(&base.join("target")),
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            assets_in(
+                Some(&build.join("gravecord.exe")),
+                Some(&base.join("target")),
+                true
+            ),
+            Some(base.join("app/assets"))
+        );
+        assert_eq!(assets_in(None, None, true), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_fatal_error_is_logged_to_the_profile_and_names_the_problem() {
+        let dir = scratch("fatal");
+        let error = anyhow::anyhow!("disk gone").context("app/assets not found");
+        let text = fatal_text(&error);
+        assert!(
+            text.contains("could not start") && text.contains("app/assets not found: disk gone")
+        );
+        append_log(&dir, &format!("fatal startup error: {error:#}\n"));
+        append_log(&dir, "second");
+        let log = std::fs::read_to_string(dir.join("panic.log")).unwrap();
+        assert!(log.contains("fatal startup error: app/assets not found: disk gone"));
+        assert!(log.trim_end().ends_with("second"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

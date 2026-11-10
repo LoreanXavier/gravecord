@@ -22,11 +22,22 @@ fn badge_index(count: i64) -> Option<usize> {
     }
 }
 
+/// The overlay's accessible description. The official client builds it from the zero-based icon index (module
+/// 1275 of desktop core: `${index} notifications`), so one notification reads "0 notifications" and ten or more read
+/// "9 notifications"; here it names the real count, in the official words.
+fn badge_description(count: i64) -> String {
+    match count {
+        -1 => "Unread messages".to_owned(),
+        0 => "No Notifications".to_owned(),
+        count => format!("{} notifications", count.max(1)),
+    }
+}
+
 pub(super) struct Taskbar {
     hwnd: HWND,
     api: Option<ITaskbarList3>,
     icons: [Option<HICON>; 11],
-    applied: Option<Option<usize>>,
+    applied: Option<(Option<usize>, String)>,
     count: i64,
     icon_set: crate::branding::IconSet,
 }
@@ -54,13 +65,14 @@ impl Taskbar {
     pub fn badge(&mut self, count: i64) -> windows::core::Result<()> {
         self.count = count;
         let index = badge_index(count);
-        if self.applied == Some(index) {
+        let description = badge_description(count);
+        if self.applied.as_ref() == Some(&(index, description.clone())) {
             return Ok(());
         }
         let Some(api) = &self.api else {
             return Ok(());
         };
-        let (icon, description) = if let Some(index) = index {
+        let icon = if let Some(index) = index {
             if self.icons[index].is_none() {
                 let Some(pixels) = crate::branding::badge_pixels(self.icon_set, index) else {
                     return Err(windows::core::Error::new(
@@ -70,19 +82,14 @@ impl Taskbar {
                 };
                 self.icons[index] = Some(super::native_icon::create(16, &pixels)?);
             }
-            let description = if count == -1 {
-                "Unread messages".to_owned()
-            } else {
-                format!("{index} notifications")
-            };
-            (self.icons[index].unwrap_or_default(), description)
+            self.icons[index].unwrap_or_default()
         } else {
-            (HICON::default(), "No Notifications".to_owned())
+            HICON::default()
         };
         unsafe {
-            api.SetOverlayIcon(self.hwnd, icon, &HSTRING::from(description))?;
+            api.SetOverlayIcon(self.hwnd, icon, &HSTRING::from(description.as_str()))?;
         }
-        self.applied = Some(index);
+        self.applied = Some((index, description));
         Ok(())
     }
     pub fn set_badge(
@@ -157,5 +164,18 @@ mod tests {
         assert_eq!(badge_index(9), Some(8));
         assert_eq!(badge_index(10), Some(9));
         assert_eq!(badge_index(1000), Some(9));
+    }
+
+    #[test]
+    fn the_overlay_description_names_the_real_count() {
+        assert_eq!(badge_description(0), "No Notifications");
+        assert_eq!(badge_description(-1), "Unread messages");
+        assert_eq!(badge_description(1), "1 notifications");
+        assert_eq!(badge_description(9), "9 notifications");
+        assert_eq!(badge_description(10), "10 notifications");
+        assert_eq!(badge_description(250), "250 notifications");
+        // The icon still tops out at the tenth image.
+        assert_eq!(badge_index(250), Some(9));
+        assert_eq!(badge_index(1), Some(0));
     }
 }

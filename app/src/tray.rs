@@ -169,12 +169,19 @@ impl State {
     }
 }
 
+/// Wait before attaching again after the window could not be hooked.
+#[cfg(windows)]
+const ATTACH_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Runtime {
     capture: bool,
     state: State,
     observed: Option<State>,
     #[cfg(windows)]
     binding: Option<windows::Binding>,
+    /// When a failed attach may be tried again; `attach` is called from render and must not retry every frame.
+    #[cfg(windows)]
+    attach_after: Option<std::time::Instant>,
     #[cfg(windows)]
     sender: UnboundedSender<Update>,
 }
@@ -189,6 +196,8 @@ impl Runtime {
             #[cfg(windows)]
             binding: None,
             #[cfg(windows)]
+            attach_after: None,
+            #[cfg(windows)]
             sender,
         }
     }
@@ -197,8 +206,16 @@ impl Runtime {
             return;
         }
         #[cfg(windows)]
-        if self.binding.is_none() {
+        if self.binding.is_none()
+            && self
+                .attach_after
+                .is_none_or(|after| std::time::Instant::now() >= after)
+        {
             self.binding = windows::Binding::new(window, self.sender.clone(), self.state);
+            self.attach_after = self
+                .binding
+                .is_none()
+                .then(|| std::time::Instant::now() + ATTACH_RETRY);
         }
         #[cfg(not(windows))]
         let _ = window;

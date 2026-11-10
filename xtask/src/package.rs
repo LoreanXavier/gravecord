@@ -1,6 +1,10 @@
 //! `cargo xtask package`: builds the release app and the setup stub, appends the payload and writes
 //! `gravecord-dist/gravecord-setup.exe`, then refreshes the portable folder next to it.
 //!
+//! Two environment variables serve tests of the packaging itself: `GRAVECORD_DIST_DIR` writes into another folder
+//! instead of `gravecord-dist`, and `GRAVECORD_PACKAGE_SKIP_BUILD=1` reuses the release build already in
+//! `target/dist`.
+//!
 //! The release build uses the static C runtime, so neither exe imports VCRUNTIME140. It goes to its own target folder
 //! so the flag change never invalidates the normal release cache.
 
@@ -12,6 +16,9 @@ use std::process::Command;
 const TARGET_DIR: &str = "target/dist";
 
 fn dist_dir(repo: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("GRAVECORD_DIST_DIR") {
+        return PathBuf::from(dir);
+    }
     repo.parent()
         .expect("repo has a parent")
         .join("gravecord-dist")
@@ -80,8 +87,44 @@ fn mirror(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What happened to the portable folder.
+#[derive(Debug, PartialEq, Eq)]
+enum Portable {
+    /// `gravecord.exe` and `app\assets` in the dist folder now match the new build.
+    Refreshed,
+    /// The exe was locked. The dist folder is untouched; the complete new build is in `gravecord-next\`.
+    Beside(PathBuf),
+}
+
+/// Refreshes the portable build in `dist`. The exe is replaced first; only when that works are the assets mirrored, so
+/// an old exe is never left with new assets. When the exe is locked (the owner has it open), the existing folder is
+/// left exactly as it was and the whole new build (exe plus assets) goes to `dist\gravecord-next\`.
+fn refresh_portable(dist: &Path, app_exe: &Path, assets: &Path) -> Result<Portable> {
+    let exe_data = std::fs::read(app_exe)?;
+    let target = dist.join("gravecord.exe");
+    match write_replacing(&target, &exe_data) {
+        Ok(()) => {
+            mirror(assets, &dist.join("app").join("assets"))?;
+            Ok(Portable::Refreshed)
+        }
+        Err(error) => {
+            let next = dist.join("gravecord-next");
+            std::fs::create_dir_all(&next)?;
+            write_replacing(&next.join("gravecord.exe"), &exe_data)?;
+            mirror(assets, &next.join("app").join("assets"))?;
+            println!(
+                "portable gravecord.exe is locked ({error}); {} left untouched",
+                dist.display()
+            );
+            Ok(Portable::Beside(next))
+        }
+    }
+}
+
 pub fn run(repo: &Path) -> Result<()> {
-    build(repo)?;
+    if std::env::var_os("GRAVECORD_PACKAGE_SKIP_BUILD").is_none() {
+        build(repo)?;
+    }
     let release = repo.join(TARGET_DIR).join("release");
     let app_exe = release.join("gravecord.exe");
     let stub_path = release.join("gravecord-setup.exe");
@@ -106,17 +149,98 @@ pub fn run(repo: &Path) -> Result<()> {
     );
 
     // The portable folder. The exe may be locked because the owner has it open; the setup is written either way.
-    match std::fs::copy(&app_exe, dist.join("gravecord.exe")) {
-        Ok(_) => println!("portable: {}", dist.join("gravecord.exe").display()),
-        Err(error) => {
-            let alternate = dist.join("gravecord-next.exe");
-            write_replacing(&alternate, &std::fs::read(&app_exe)?)?;
-            println!(
-                "portable gravecord.exe NOT refreshed ({error}); replacement written to {}",
-                alternate.display()
-            );
-        }
+    match refresh_portable(&dist, &app_exe, &assets)? {
+        Portable::Refreshed => println!("portable: {}", dist.join("gravecord.exe").display()),
+        Portable::Beside(next) => println!(
+            "portable NOT refreshed: complete new build (exe and app\\assets) written to {}",
+            next.display()
+        ),
     }
-    mirror(&assets, &dist.join("app").join("assets"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gc-package-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn source(base: &Path, version: &str) -> (PathBuf, PathBuf) {
+        let exe = base.join("new.exe");
+        std::fs::write(&exe, format!("exe-{version}")).unwrap();
+        let assets = base.join("src-assets");
+        std::fs::create_dir_all(assets.join("icons")).unwrap();
+        std::fs::write(assets.join("icons/a.svg"), format!("asset-{version}")).unwrap();
+        (exe, assets)
+    }
+
+    #[test]
+    fn an_unlocked_portable_folder_is_refreshed_as_a_whole() {
+        let base = scratch("ok");
+        let dist = base.join("dist");
+        std::fs::create_dir_all(dist.join("app/assets")).unwrap();
+        std::fs::write(dist.join("gravecord.exe"), "exe-old").unwrap();
+        std::fs::write(dist.join("app/assets/stale.svg"), "x").unwrap();
+        let (exe, assets) = source(&base, "new");
+        assert_eq!(
+            refresh_portable(&dist, &exe, &assets).unwrap(),
+            Portable::Refreshed
+        );
+        assert_eq!(
+            std::fs::read(dist.join("gravecord.exe")).unwrap(),
+            b"exe-new"
+        );
+        assert_eq!(
+            std::fs::read(dist.join("app/assets/icons/a.svg")).unwrap(),
+            b"asset-new"
+        );
+        assert!(!dist.join("app/assets/stale.svg").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_locked_exe_leaves_the_folder_alone_and_writes_a_complete_next_folder() {
+        let base = scratch("locked");
+        let dist = base.join("dist");
+        std::fs::create_dir_all(dist.join("app/assets/icons")).unwrap();
+        std::fs::write(dist.join("gravecord.exe"), "exe-old").unwrap();
+        std::fs::write(dist.join("app/assets/icons/a.svg"), "asset-old").unwrap();
+        let (exe, assets) = source(&base, "new");
+        // Held open without sharing: replacing it fails, the way a running exe does.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dist.join("gravecord.exe"))
+            .unwrap();
+        let outcome = refresh_portable(&dist, &exe, &assets).unwrap();
+        drop(held);
+        let next = dist.join("gravecord-next");
+        assert_eq!(outcome, Portable::Beside(next.clone()));
+        // The old folder is exactly as it was: old exe, old assets.
+        assert_eq!(
+            std::fs::read(dist.join("gravecord.exe")).unwrap(),
+            b"exe-old"
+        );
+        assert_eq!(
+            std::fs::read(dist.join("app/assets/icons/a.svg")).unwrap(),
+            b"asset-old"
+        );
+        // The new folder is complete and consistent.
+        assert_eq!(
+            std::fs::read(next.join("gravecord.exe")).unwrap(),
+            b"exe-new"
+        );
+        assert_eq!(
+            std::fs::read(next.join("app/assets/icons/a.svg")).unwrap(),
+            b"asset-new"
+        );
+        assert!(!dist.join("gravecord.exe.tmp").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

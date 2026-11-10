@@ -88,7 +88,9 @@ pub fn create_shortcut(link: &Path, target: &Path, work_dir: &Path) -> Result<()
         let mut app_id = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::default();
         windows::Win32::System::Com::StructuredStorage::PropVariantChangeType(
             &mut app_id,
-            &windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from("gravecord.desktop"),
+            &windows::Win32::System::Com::StructuredStorage::PROPVARIANT::from(
+                crate::app_id::APP_ID,
+            ),
             windows::Win32::System::Com::StructuredStorage::PVCHF_DEFAULT,
             windows::Win32::System::Variant::VT_LPWSTR,
         )?;
@@ -261,9 +263,36 @@ pub fn webview2_present() -> bool {
     })
 }
 
-/// Process ids whose image is exactly `exe`.
-pub fn running_pids(exe: &Path) -> Vec<u32> {
-    let wanted = exe.to_string_lossy().to_lowercase();
+/// A running process whose image name matches the one being looked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Running {
+    pub pid: u32,
+    /// False when the image path could not be read, so it is not known to be the wanted exe.
+    pub known: bool,
+}
+
+/// How one process relates to the exe being looked for.
+#[derive(Debug, PartialEq, Eq)]
+enum Match {
+    Yes,
+    No,
+    /// The image path could not be read. Only a process named `gravecord.exe` counts as possibly ours.
+    Unknown,
+}
+
+/// `image` is the process's full image path when it could be read; `name` its file name from the process list.
+fn classify(image: Option<&Path>, name: &str, wanted: &Path) -> Match {
+    match image {
+        Some(image) if crate::paths::same_path(image, wanted) => Match::Yes,
+        Some(_) => Match::No,
+        None if name.eq_ignore_ascii_case("gravecord.exe") => Match::Unknown,
+        None => Match::No,
+    }
+}
+
+/// Processes running `exe`, by image path (case, slashes, `\\?\`, junctions and 8.3 names do not matter).
+pub fn running(exe: &Path) -> Vec<Running> {
+    let wanted_name = exe.file_name().unwrap_or_default().to_string_lossy();
     let mut found = Vec::new();
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
@@ -278,33 +307,53 @@ pub fn running_pids(exe: &Path) -> Vec<u32> {
             let name = String::from_utf16_lossy(
                 &entry.szExeFile[..entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(0)],
             );
-            if name.eq_ignore_ascii_case(&exe.file_name().unwrap_or_default().to_string_lossy())
-                && let Ok(process) = OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION,
-                    false,
-                    entry.th32ProcessID,
-                )
+            if name.eq_ignore_ascii_case(&wanted_name) || name.eq_ignore_ascii_case("gravecord.exe")
             {
-                let mut buffer = [0u16; 1024];
-                let mut length = buffer.len() as u32;
-                if QueryFullProcessImageNameW(
-                    process,
-                    PROCESS_NAME_WIN32,
-                    PWSTR(buffer.as_mut_ptr()),
-                    &mut length,
-                )
-                .is_ok()
-                    && String::from_utf16_lossy(&buffer[..length as usize]).to_lowercase() == wanted
-                {
-                    found.push(entry.th32ProcessID);
+                let image = image_path(entry.th32ProcessID);
+                match classify(image.as_deref(), &name, exe) {
+                    Match::Yes => found.push(Running {
+                        pid: entry.th32ProcessID,
+                        known: true,
+                    }),
+                    Match::Unknown => found.push(Running {
+                        pid: entry.th32ProcessID,
+                        known: false,
+                    }),
+                    Match::No => {}
                 }
-                let _ = CloseHandle(process);
             }
             more = Process32NextW(snapshot, &mut entry).is_ok();
         }
         let _ = CloseHandle(snapshot);
     }
     found
+}
+
+fn image_path(pid: u32) -> Option<PathBuf> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let read = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        );
+        let _ = CloseHandle(process);
+        read.ok()?;
+        Some(PathBuf::from(OsString::from_wide(
+            &buffer[..length as usize],
+        )))
+    }
+}
+
+/// Process ids that are running `exe`, or might be (see `Match::Unknown`).
+pub fn running_pids(exe: &Path) -> Vec<u32> {
+    running(exe)
+        .into_iter()
+        .map(|process| process.pid)
+        .collect()
 }
 
 unsafe extern "system" fn close_window(window: HWND, param: LPARAM) -> windows::core::BOOL {
@@ -332,10 +381,16 @@ unsafe extern "system" fn close_window(window: HWND, param: LPARAM) -> windows::
 
 /// Asks the running copies of `exe` to close and waits up to `wait` for them to be gone. True when none is left.
 pub fn ask_to_close(exe: &Path, wait: Duration) -> bool {
-    let pids = running_pids(exe);
-    if pids.is_empty() {
+    let processes = running(exe);
+    if processes.is_empty() {
         return true;
     }
+    // Windows are only closed for processes known to run this exe; an unreadable one is waited for, never poked.
+    let pids: Vec<u32> = processes
+        .iter()
+        .filter(|process| process.known)
+        .map(|process| process.pid)
+        .collect();
     unsafe {
         let _ = EnumWindows(
             Some(close_window),
@@ -352,23 +407,39 @@ pub fn ask_to_close(exe: &Path, wait: Duration) -> bool {
     running_pids(exe).is_empty()
 }
 
-/// Deletes the running uninstaller and then its folder (when empty), after this process has exited.
+/// The helper that deletes the uninstaller after the process that started it has exited. Paths and the pid come
+/// through environment variables, never through the script text, so no character of a folder name is interpreted.
+const SELF_DELETE_SCRIPT: &str = "$ErrorActionPreference = 'SilentlyContinue'; \
+    try { Wait-Process -Id ([int]$env:GRAVECORD_WAIT_PID) -Timeout 300 } catch {}; \
+    for ($i = 0; $i -lt 40; $i++) { \
+        if (-not (Test-Path -LiteralPath $env:GRAVECORD_REMOVE_EXE)) { break }; \
+        Remove-Item -LiteralPath $env:GRAVECORD_REMOVE_EXE -Force -ErrorAction SilentlyContinue; \
+        if (Test-Path -LiteralPath $env:GRAVECORD_REMOVE_EXE) { Start-Sleep -Milliseconds 500 } }; \
+    for ($i = 0; $i -lt 10; $i++) { \
+        if (-not (Test-Path -LiteralPath $env:GRAVECORD_REMOVE_DIR)) { break }; \
+        if ([System.IO.Directory]::GetFileSystemEntries($env:GRAVECORD_REMOVE_DIR).Length -gt 0) { break }; \
+        try { [System.IO.Directory]::Delete($env:GRAVECORD_REMOVE_DIR, $false); break } catch { Start-Sleep -Milliseconds 500 } }";
+
+/// Starts the helper that deletes the running uninstaller and then its folder (when empty). Call it as the last act,
+/// after any dialog has been answered: the helper waits for this process to exit, so the order no longer races a
+/// slow answer. Retries cover a scanner that still holds the file.
 pub fn delete_self_later(exe: &Path, dir: &Path) {
     if !exe.is_absolute()
-        || exe.parent() != Some(dir)
+        || !crate::paths::same_path(exe.parent().unwrap_or(exe), dir)
         || !exe
             .file_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(crate::paths::UNINSTALLER))
     {
         return;
     }
-    // Paths are data, not shell source: percent signs, quotes and ampersands in a chosen folder stay literal.
-    // Directory.Delete without recursion leaves any files the user added in place.
-    let script = "Start-Sleep -Seconds 4; \
-        Remove-Item -LiteralPath $env:GRAVECORD_REMOVE_EXE -Force -ErrorAction SilentlyContinue; \
-        try { [System.IO.Directory]::Delete($env:GRAVECORD_REMOVE_DIR, $false) } catch {}";
     let _ = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            SELF_DELETE_SCRIPT,
+        ])
+        .env("GRAVECORD_WAIT_PID", std::process::id().to_string())
         .env("GRAVECORD_REMOVE_EXE", exe)
         .env("GRAVECORD_REMOVE_DIR", dir)
         .creation_flags(CREATE_NO_WINDOW)
@@ -486,10 +557,55 @@ mod tests {
             assert_eq!(value.vt(), windows::Win32::System::Variant::VT_LPWSTR);
             assert_eq!(
                 windows::core::BSTR::try_from(&value).unwrap().to_string(),
-                "gravecord.desktop"
+                crate::app_id::APP_ID
             );
         }
         std::fs::remove_file(link).unwrap();
         std::fs::remove_dir(scratch).unwrap();
+    }
+
+    #[test]
+    fn the_shortcut_and_the_app_share_one_identity_constant() {
+        assert_eq!(crate::app_id::APP_ID, "gravecord.desktop");
+    }
+
+    #[test]
+    fn the_self_delete_helper_never_interpolates_paths() {
+        for name in [
+            "GRAVECORD_WAIT_PID",
+            "GRAVECORD_REMOVE_EXE",
+            "GRAVECORD_REMOVE_DIR",
+        ] {
+            assert!(SELF_DELETE_SCRIPT.contains(&format!("$env:{name}")));
+        }
+        assert!(SELF_DELETE_SCRIPT.contains("Wait-Process -Id"));
+        assert!(!SELF_DELETE_SCRIPT.contains("C:\\"));
+    }
+
+    #[test]
+    fn image_paths_are_matched_by_place_and_unreadable_ones_only_by_name() {
+        let me = std::env::current_exe().unwrap();
+        let upper = PathBuf::from(me.to_string_lossy().to_uppercase());
+        let slashes = PathBuf::from(me.to_string_lossy().replace('\\', "/"));
+        let verbatim = PathBuf::from(format!(r"\\?\{}", me.display()));
+        for image in [&upper, &slashes, &verbatim] {
+            assert_eq!(classify(Some(image), "x.exe", &me), Match::Yes);
+        }
+        assert_eq!(
+            classify(Some(Path::new(r"C:\elsewhere\x.exe")), "x.exe", &me),
+            Match::No
+        );
+        assert_eq!(classify(None, "GraveCord.EXE", &me), Match::Unknown);
+        assert_eq!(classify(None, "other.exe", &me), Match::No);
+        // This very process is found through the real process list, whatever the spelling asked for.
+        for spelling in [&me, &upper, &slashes] {
+            assert!(
+                running(spelling)
+                    .iter()
+                    .any(|process| process.pid == std::process::id() && process.known),
+                "{}",
+                spelling.display()
+            );
+        }
     }
 }

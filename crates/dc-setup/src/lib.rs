@@ -1,6 +1,7 @@
 //! gravecord's Windows installer. See `docs/installer.md`.
 #![deny(unsafe_code)]
 
+pub mod app_id;
 pub mod icon_gen;
 pub mod install;
 pub mod paths;
@@ -32,6 +33,7 @@ pub fn run() -> i32 {
         Ok(exe) => exe,
         Err(_) => return 1,
     };
+    let silent = options.silent;
     let is_uninstaller = options.uninstall
         || exe
             .file_name()
@@ -44,7 +46,13 @@ pub fn run() -> i32 {
     match outcome {
         Ok(code) => code,
         Err(error) => {
-            log_failure(&format!("{error:#}"));
+            let message = format!("{error:#}");
+            log_failure(&message);
+            if silent {
+                eprintln!("{message}");
+            } else {
+                winsys::message(None, "gravecord setup", &message, winsys::Kind::Error);
+            }
             1
         }
     }
@@ -56,15 +64,19 @@ fn log_failure(message: &str) {
 }
 
 fn setup(options: Options, exe: &Path) -> anyhow::Result<i32> {
-    let image = std::fs::read(exe)?;
-    let archive = payload::read(&image)?;
-    let stub = image[..payload::stub_len(&image)].to_vec();
-    drop(image);
+    // Verified before anything else: a damaged setup refuses here, in the window and in silent mode alike.
+    let payload::Loaded { archive, stub } = payload::load(exe)?;
     let default_dir = paths::default_install_dir(&winsys::local_app_data()?);
 
     if options.silent {
         let archive = archive.ok_or_else(|| anyhow::anyhow!("this setup has no payload"))?;
-        let mut plan = install::Plan::new(options.dir.clone().unwrap_or(default_dir));
+        // A folder named on the command line gets the same checks and the same `gravecord` subfolder rule as the Change
+        // button in the window.
+        let dir = match &options.dir {
+            Some(chosen) => paths::resolve_from_disk(chosen).map_err(anyhow::Error::msg)?,
+            None => default_dir,
+        };
+        let mut plan = install::Plan::new(dir);
         plan.desktop_shortcut = options.desktop;
         plan.register = !options.no_register;
         if let Some(name) = &options.reg_key {
@@ -127,10 +139,6 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
             data_dir,
         },
     )?;
-    // This exe is the last file in the folder; it can only be deleted once it has exited.
-    if exe.starts_with(&dir) {
-        winsys::delete_self_later(exe, &dir);
-    }
     if !options.silent {
         winsys::message(
             None,
@@ -138,6 +146,14 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
             "gravecord was removed.",
             winsys::Kind::Info,
         );
+    }
+    // This exe is the last file in the folder; it can only be deleted once it has exited. The helper is started
+    // only now, after the dialog is gone, and waits for this process by id.
+    if exe
+        .parent()
+        .is_some_and(|parent| paths::same_path(parent, &dir))
+    {
+        winsys::delete_self_later(exe, &dir);
     }
     Ok(0)
 }

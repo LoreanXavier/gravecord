@@ -4,6 +4,7 @@
 
 use crate::login_art;
 use crate::net::{self, Update};
+use crate::tray::Action;
 use crate::ui::login::{Art, LoginEvent, LoginView};
 use crate::ui::{Root, RootEvent};
 use dc_auth::credentials::{ACTIVE, Store};
@@ -96,6 +97,12 @@ impl Shell {
 
     /// What reaches the main view from the network task.
     fn route(&mut self, update: Update, window: &mut Window, cx: &mut Context<Self>) {
+        // Quit is not a main-view matter: the tray menu and the installer's quit request must work from the login
+        // screen and while a session is still starting, where the main view does not exist to act on it.
+        if quits_from_any_screen(&update) {
+            cx.quit();
+            return;
+        }
         match (update, &self.screen) {
             (Update::AuthFailed, Screen::Main(root)) => {
                 debug!("the stored login is dead");
@@ -259,5 +266,22 @@ impl Render for Shell {
             Screen::Main(root) => root.clone().into_any_element(),
         };
         div().size_full().child(screen)
+    }
+}
+
+/// Updates that end the app whatever screen is showing.
+fn quits_from_any_screen(update: &Update) -> bool {
+    matches!(update, Update::Tray(Action::Quit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_quit_is_handled_before_the_screen_is_consulted() {
+        assert!(quits_from_any_screen(&Update::Tray(Action::Quit)));
+        assert!(!quits_from_any_screen(&Update::Tray(Action::Mute)));
+        assert!(!quits_from_any_screen(&Update::AuthFailed));
     }
 }

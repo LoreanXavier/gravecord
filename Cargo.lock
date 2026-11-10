@@ -1764,6 +1764,7 @@ dependencies = [
  "dc-tokens",
  "embed-resource",
  "image",
+ "sha2",
  "windows 0.62.2",
  "zstd 0.13.4",
 ]

@@ -12,7 +12,8 @@ use windows::{
             Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 DestroyIcon, HICON, IsIconic, PostMessageW, RegisterWindowMessageW, SW_RESTORE,
-                SW_SHOW, SendMessageW, SetForegroundWindow, ShowWindow, WM_NCDESTROY, WM_SETICON,
+                SW_SHOW, SendMessageW, SetForegroundWindow, ShowWindow, WM_CLOSE, WM_NCDESTROY,
+                WM_SETICON,
             },
         },
     },
@@ -20,6 +21,11 @@ use windows::{
 };
 
 const SUBCLASS_ID: usize = 1;
+
+fn setup_quit_message() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("gravecord.QuitForSetup")) })
+}
 struct State {
     ready: bool,
     binding: usize,
@@ -208,6 +214,13 @@ unsafe extern "system" fn callback(
             let _ = RemoveWindowSubclass(hwnd, Some(callback), id);
             drop(Box::from_raw(data as *mut State));
         }
+    } else if msg != 0 && msg == setup_quit_message() {
+        // The tray hook answers this on the main screen and never lets it through. Here there is no tray (login,
+        // session starting), so it becomes a plain close, which has nothing to hide to and ends the app.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        return LRESULT(0);
     } else if msg == restore_message() {
         unsafe {
             let command = if IsIconic(hwnd).as_bool() {

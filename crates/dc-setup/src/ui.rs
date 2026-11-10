@@ -204,10 +204,17 @@ impl App {
         match button {
             Button::Change => {
                 if let Some(picked) = winsys::pick_folder(self.hwnd, &self.dir) {
-                    let busy = std::fs::read_dir(&picked)
-                        .is_ok_and(|mut entries| entries.next().is_some());
-                    let ours = install::read_manifest(&picked).is_some();
-                    self.dir = paths::resolve_install_dir(&picked, busy, ours);
+                    match paths::resolve_from_disk(&picked) {
+                        Ok(dir) => self.dir = dir,
+                        Err(message) => {
+                            winsys::message(
+                                Some(self.hwnd),
+                                "Choose another folder",
+                                &message,
+                                winsys::Kind::Error,
+                            );
+                        }
+                    }
                     self.repaint();
                 }
             }

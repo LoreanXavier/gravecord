@@ -1,44 +1,98 @@
-//! The payload appended to the end of the setup exe: `[stub exe][zstd archive][archive length u64 LE][MAGIC]`.
+//! The payload appended to the end of the setup exe:
+//! `[stub exe][zstd archive][SHA-256 of the zstd archive][archive length u64 LE][MAGIC]`.
 //!
 //! The archive (before compression) is `ARCHIVE_MAGIC`, the version (u16 length, utf-8), the file count (u32), then per
 //! file the relative path (u16 length, utf-8, `/` separators), the size (u64) and the bytes.
+//!
+//! The hash covers the compressed archive and is checked before a single byte is decompressed or written. Tails of the
+//! first format (`GRVCDSET`, no hash) are refused with a message instead of being half-read.
 
 use anyhow::{Result, bail, ensure};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-pub const MAGIC: &[u8; 8] = b"GRVCDSET";
+pub const MAGIC: &[u8; 8] = b"GRVCDST2";
+/// The first format, which carried no hash. Only recognised so it can be refused.
+const LEGACY_MAGIC: &[u8; 8] = b"GRVCDSET";
 const ARCHIVE_MAGIC: &[u8; 4] = b"GCA1";
 const LEVEL: i32 = 10;
+const HASH_LEN: usize = 32;
+/// Hash, length and magic.
+const TAIL_LEN: usize = HASH_LEN + 8 + 8;
 
-#[derive(Debug, PartialEq, Eq)]
+pub const DAMAGED: &str = "The setup file is damaged: its contents do not match the checksum stored in it. Download gravecord-setup.exe again.";
+pub const OLD_FORMAT: &str = "This setup file was packaged by an older version and cannot be verified. Download gravecord-setup.exe again.";
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Entry {
     pub path: String,
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Archive {
     pub version: String,
     pub entries: Vec<Entry>,
 }
 
-/// The length of the stub in front of an appended payload, or the whole length when there is none.
-pub fn stub_len(exe: &[u8]) -> usize {
-    match payload_range(exe) {
-        Some((start, _)) => start,
-        None => exe.len(),
-    }
+/// What the end of an exe says about its payload.
+#[derive(Debug, PartialEq, Eq)]
+enum Tail {
+    None,
+    Legacy,
+    /// Byte range of the compressed archive and the hash stored for it.
+    Current {
+        start: u64,
+        end: u64,
+        hash: [u8; HASH_LEN],
+    },
 }
 
-/// Byte range of the compressed archive inside an exe image, if the image carries one.
-fn payload_range(exe: &[u8]) -> Option<(usize, usize)> {
-    let tail = exe.len().checked_sub(16)?;
-    if &exe[tail + 8..] != MAGIC {
-        return None;
+/// Reads the tail from the last bytes of an exe (at most `TAIL_LEN` of them) and the exe's total length.
+fn parse_tail(last: &[u8], total: u64) -> Result<Tail> {
+    let Some(magic) = last.len().checked_sub(8).map(|at| &last[at..]) else {
+        return Ok(Tail::None);
+    };
+    if magic == LEGACY_MAGIC {
+        return Ok(Tail::Legacy);
     }
-    let length = u64::from_le_bytes(exe[tail..tail + 8].try_into().ok()?) as usize;
-    let start = tail.checked_sub(length)?;
-    Some((start, tail))
+    if magic != MAGIC {
+        return Ok(Tail::None);
+    }
+    ensure!(last.len() >= TAIL_LEN, "payload is truncated");
+    let tail = &last[last.len() - TAIL_LEN..];
+    let hash: [u8; HASH_LEN] = tail[..HASH_LEN].try_into()?;
+    let length = u64::from_le_bytes(tail[HASH_LEN..HASH_LEN + 8].try_into()?);
+    let end = total
+        .checked_sub(TAIL_LEN as u64)
+        .ok_or_else(|| anyhow::anyhow!("payload is truncated"))?;
+    let start = end
+        .checked_sub(length)
+        .ok_or_else(|| anyhow::anyhow!("payload is truncated"))?;
+    Ok(Tail::Current { start, end, hash })
+}
+
+fn tail_of(exe: &[u8]) -> Result<Tail> {
+    let from = exe.len().saturating_sub(TAIL_LEN);
+    parse_tail(&exe[from..], exe.len() as u64)
+}
+
+/// The length of the stub in front of an appended payload, or the whole length when there is none.
+pub fn stub_len(exe: &[u8]) -> usize {
+    match tail_of(exe) {
+        Ok(Tail::Current { start, .. }) => start as usize,
+        // An older payload has no hash; its length sits in the 8 bytes before the magic.
+        Ok(Tail::Legacy) => exe
+            .len()
+            .checked_sub(16)
+            .and_then(|at| {
+                let length = u64::from_le_bytes(exe[at..at + 8].try_into().ok()?) as usize;
+                at.checked_sub(length)
+            })
+            .unwrap_or(exe.len()),
+        _ => exe.len(),
+    }
 }
 
 /// Encodes the archive and appends it to `stub` (which may already carry an older payload).
@@ -66,6 +120,7 @@ pub fn append(stub: &[u8], archive: &Archive) -> Result<Vec<u8>> {
     let packed = zstd::bulk::compress(&raw, LEVEL)?;
     let mut out = stub[..stub_len(stub)].to_vec();
     out.extend(&packed);
+    out.extend(Sha256::digest(&packed));
     out.extend((packed.len() as u64).to_le_bytes());
     out.extend(MAGIC);
     Ok(out)
@@ -91,12 +146,12 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Decodes the payload of an exe image. `Ok(None)` when the image has no payload.
-pub fn read(exe: &[u8]) -> Result<Option<Archive>> {
-    let Some((start, end)) = payload_range(exe) else {
-        return Ok(None);
-    };
-    let raw = zstd::stream::decode_all(&exe[start..end])?;
+/// Checks the hash of the compressed archive, and only then decompresses and parses it.
+fn decode(packed: &[u8], hash: &[u8; HASH_LEN]) -> Result<Archive> {
+    if Sha256::digest(packed).as_slice() != hash {
+        bail!(DAMAGED);
+    }
+    let raw = zstd::stream::decode_all(packed)?;
     let mut reader = Reader(&raw);
     if reader.take(4)? != ARCHIVE_MAGIC {
         bail!("payload has an unknown format");
@@ -118,13 +173,57 @@ pub fn read(exe: &[u8]) -> Result<Option<Archive>> {
             data: reader.take(size)?.to_vec(),
         });
     }
-    Ok(Some(Archive { version, entries }))
+    Ok(Archive { version, entries })
 }
 
-/// Reads the payload of the running executable.
-pub fn read_own() -> Result<Option<Archive>> {
-    let exe = std::fs::read(std::env::current_exe()?)?;
-    read(&exe)
+/// Decodes the payload of an exe image. `Ok(None)` when the image has no payload.
+pub fn read(exe: &[u8]) -> Result<Option<Archive>> {
+    match tail_of(exe)? {
+        Tail::None => Ok(None),
+        Tail::Legacy => bail!(OLD_FORMAT),
+        Tail::Current { start, end, hash } => {
+            Ok(Some(decode(&exe[start as usize..end as usize], &hash)?))
+        }
+    }
+}
+
+/// An exe read from disk: its payload (verified) and the stub in front of it.
+pub struct Loaded {
+    pub archive: Option<Archive>,
+    pub stub: Vec<u8>,
+}
+
+/// Reads and verifies the payload of the exe at `path`, reading each byte once: the stub, then the archive.
+pub fn load(path: &Path) -> Result<Loaded> {
+    let mut file = std::fs::File::open(path)?;
+    let total = file.metadata()?.len();
+    let from = total.saturating_sub(TAIL_LEN as u64);
+    file.seek(SeekFrom::Start(from))?;
+    let mut last = Vec::new();
+    file.read_to_end(&mut last)?;
+    match parse_tail(&last, total)? {
+        Tail::None => {
+            let mut stub = Vec::with_capacity(total as usize);
+            file.seek(SeekFrom::Start(0))?;
+            file.read_to_end(&mut stub)?;
+            Ok(Loaded {
+                archive: None,
+                stub,
+            })
+        }
+        Tail::Legacy => bail!(OLD_FORMAT),
+        Tail::Current { start, end, hash } => {
+            file.seek(SeekFrom::Start(0))?;
+            let mut stub = vec![0u8; start as usize];
+            file.read_exact(&mut stub)?;
+            let mut packed = vec![0u8; (end - start) as usize];
+            file.read_exact(&mut packed)?;
+            Ok(Loaded {
+                archive: Some(decode(&packed, &hash)?),
+                stub,
+            })
+        }
+    }
 }
 
 /// Collects `gravecord.exe` and every file under `app/assets` for the payload.
@@ -191,6 +290,7 @@ mod tests {
         let image = append(&stub, &sample()).unwrap();
         assert!(image.starts_with(&stub));
         assert_eq!(&image[image.len() - 8..], MAGIC);
+        assert!(image.len() > stub.len() + TAIL_LEN);
         assert_eq!(stub_len(&image), stub.len());
         assert_eq!(read(&image).unwrap().unwrap(), sample());
     }
@@ -215,15 +315,74 @@ mod tests {
 
     #[test]
     fn damaged_payloads_are_errors_not_panics() {
-        let mut image = append(b"MZ", &sample()).unwrap();
-        let at = image.len() - 20;
-        image[at] ^= 0xff;
-        assert!(read(&image).is_err());
         // A length that points before the start of the file.
         let mut bogus = vec![0u8; 4];
+        bogus.extend([0u8; HASH_LEN]);
         bogus.extend(u64::MAX.to_le_bytes());
         bogus.extend(MAGIC);
-        assert!(read(&bogus).unwrap().is_none());
+        assert!(read(&bogus).is_err());
+        // A tail shorter than its own fields.
+        assert!(read(MAGIC).is_err());
+    }
+
+    #[test]
+    fn a_flipped_byte_anywhere_in_the_archive_is_refused_by_the_hash() {
+        let image = append(b"MZ", &sample()).unwrap();
+        let packed = 2..image.len() - TAIL_LEN;
+        for at in [
+            packed.start,
+            (packed.start + packed.end) / 2,
+            packed.end - 1,
+        ] {
+            let mut damaged = image.clone();
+            damaged[at] ^= 0x01;
+            let error = read(&damaged).unwrap_err().to_string();
+            assert_eq!(error, DAMAGED, "byte {at}");
+        }
+        // A damaged stored hash is just as fatal.
+        let mut damaged = image.clone();
+        let at = image.len() - TAIL_LEN;
+        damaged[at] ^= 0x80;
+        assert_eq!(read(&damaged).unwrap_err().to_string(), DAMAGED);
+        // The intact image still reads.
+        assert_eq!(read(&image).unwrap().unwrap(), sample());
+    }
+
+    #[test]
+    fn the_first_format_is_refused_not_half_read() {
+        let mut old = b"MZ".to_vec();
+        old.extend(b"some zstd bytes");
+        old.extend(15u64.to_le_bytes());
+        old.extend(LEGACY_MAGIC);
+        assert_eq!(read(&old).unwrap_err().to_string(), OLD_FORMAT);
+        assert_eq!(stub_len(&old), 2);
+    }
+
+    #[test]
+    fn load_reads_the_same_archive_and_stub_from_a_file() {
+        let dir = std::env::temp_dir().join(format!("gc-payload-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = b"MZ-stub".to_vec();
+        let good = dir.join("good.exe");
+        std::fs::write(&good, append(&stub, &sample()).unwrap()).unwrap();
+        let loaded = load(&good).unwrap();
+        assert_eq!(loaded.archive.unwrap(), sample());
+        assert_eq!(loaded.stub, stub);
+
+        let plain = dir.join("plain.exe");
+        std::fs::write(&plain, b"no payload here at all, just bytes").unwrap();
+        let loaded = load(&plain).unwrap();
+        assert!(loaded.archive.is_none());
+        assert_eq!(loaded.stub, b"no payload here at all, just bytes");
+
+        let mut image = append(&stub, &sample()).unwrap();
+        let at = image.len() - TAIL_LEN - 3;
+        image[at] ^= 0xff;
+        let bad = dir.join("bad.exe");
+        std::fs::write(&bad, image).unwrap();
+        assert_eq!(load(&bad).err().unwrap().to_string(), DAMAGED);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

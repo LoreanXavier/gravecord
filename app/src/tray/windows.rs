@@ -19,6 +19,15 @@ use windows::{
 const SUBCLASS: usize = 3;
 const ICON_ID: u32 = 1;
 const KEY_SELECT: u32 = NIN_SELECT | NINF_KEY;
+/// Applies the desired state off the render path, and retries a failed update on a backoff.
+const TIMER_ID: usize = 0x6743;
+/// `SetTimer` rounds anything below 10 ms up to it.
+const COALESCE_MS: u32 = 10;
+
+/// Milliseconds to wait before the next try after `failures` consecutive failures: 0.5 s, doubling, at most 30 s.
+fn retry_delay(failures: u32) -> u32 {
+    (500u32 << failures.saturating_sub(1).min(7)).min(30_000)
+}
 
 fn callback_message() -> u32 {
     static MESSAGE: OnceLock<u32> = OnceLock::new();
@@ -59,6 +68,9 @@ struct Native {
     exiting: Cell<bool>,
     hooked: Cell<bool>,
     warned: Cell<bool>,
+    /// Consecutive failed updates; 0 once one works.
+    failures: Cell<u32>,
+    timer_set: Cell<bool>,
     icons: RefCell<Vec<(IconKey, OwnedIcon)>>,
     sender: UnboundedSender<Update>,
 }
@@ -93,6 +105,8 @@ impl Binding {
             exiting: Cell::new(false),
             hooked: Cell::new(false),
             warned: Cell::new(false),
+            failures: Cell::new(0),
+            timer_set: Cell::new(false),
             icons: RefCell::new(Vec::new()),
             sender,
         });
@@ -106,18 +120,20 @@ impl Binding {
             return None;
         }
         native.hooked.set(true);
-        native.apply();
+        // This runs inside a render. The shell call happens a moment later, from the window's message loop.
+        native.request();
         Some(Self(native))
     }
     pub(super) fn refresh(&self, state: State) {
         self.0.desired.set(state);
-        self.0.apply();
+        self.0.request();
     }
 }
 impl Drop for Binding {
     fn drop(&mut self) {
         let native = &self.0;
         native.enabled.set(false);
+        native.stop_timer();
         native.remove();
         if native.hooked.get()
             && unsafe { RemoveWindowSubclass(native.hwnd, Some(callback), SUBCLASS) }.as_bool()
@@ -148,6 +164,28 @@ impl Native {
         let icon = crate::notifications::native_icon::create(size as i32, &pixels).ok()?;
         self.icons.borrow_mut().push((key, OwnedIcon(icon)));
         Some(icon)
+    }
+    /// Asks for the desired state to be applied soon. While updates keep failing the backoff timer decides when to
+    /// try again, so a render (or a burst of them) never calls the shell.
+    fn request(&self) {
+        if self.failures.get() == 0 {
+            self.schedule(COALESCE_MS);
+        }
+    }
+    fn schedule(&self, milliseconds: u32) {
+        if !self.enabled.get() || !self.hooked.get() || self.timer_set.get() {
+            return;
+        }
+        if unsafe { SetTimer(Some(self.hwnd), TIMER_ID, milliseconds, None) } != 0 {
+            self.timer_set.set(true);
+        }
+    }
+    fn stop_timer(&self) {
+        if self.timer_set.replace(false) {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_ID);
+            }
+        }
     }
     fn apply(&self) {
         if !self.enabled.get() || !self.hooked.get() {
@@ -197,13 +235,30 @@ impl Native {
         self.present.set(true);
         self.applied.set(Some(key));
         self.warned.set(false);
+        self.failures.set(0);
     }
     fn failed(&self) {
         if !self.warned.replace(true) {
             tracing::warn!("system tray update unavailable");
         }
+        // Retry later on a growing delay; the Explorer restart message retries at once on its own.
+        let failures = self.failures.get().saturating_add(1);
+        self.failures.set(failures);
+        self.schedule(retry_delay(failures));
         if !self.present.get() && !unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
-            self.show();
+            self.show_without_focus();
+        }
+    }
+    /// Makes the window visible without taking the foreground: the app may be starting in the background and the
+    /// icon that would have represented it is missing, but that is no reason to steal focus from what the user is doing.
+    fn show_without_focus(&self) {
+        unsafe {
+            let command = if IsIconic(self.hwnd).as_bool() {
+                SW_RESTORE
+            } else {
+                SW_SHOWNOACTIVATE
+            };
+            let _ = ShowWindow(self.hwnd, command);
         }
     }
     fn remove(&self) {
@@ -329,12 +384,19 @@ unsafe extern "system" fn callback(
             native.exiting.set(true);
             let _ = native.sender.send(Update::Tray(Action::Quit));
             return LRESULT(0);
+        } else if message == WM_TIMER && wparam.0 == TIMER_ID {
+            native.stop_timer();
+            native.apply();
+            return LRESULT(0);
         } else if message == restart_message() {
+            // Explorer was restarted: its tray is empty and new, so start over without waiting out any backoff.
+            native.stop_timer();
+            native.failures.set(0);
             native.present.set(false);
             native.applied.set(None);
             native.apply();
         } else if message == WM_SETTINGCHANGE {
-            native.apply();
+            native.request();
         } else if message == WM_CLOSE && native.hides_close() {
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -357,6 +419,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_updates_back_off_instead_of_retrying_every_frame() {
+        let delays: Vec<u32> = (1..=9).map(retry_delay).collect();
+        assert_eq!(
+            delays,
+            [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]
+        );
+        assert_eq!(retry_delay(0), 500);
+        assert_eq!(retry_delay(u32::MAX), 30_000);
+    }
+
+    #[test]
     fn setup_quit_dispatch_bypasses_tray_even_after_state_refresh() {
         let message = setup_quit_message();
         assert_ne!(message, 0);
@@ -370,6 +443,8 @@ mod tests {
             exiting: Cell::new(false),
             hooked: Cell::new(false),
             warned: Cell::new(false),
+            failures: Cell::new(0),
+            timer_set: Cell::new(false),
             icons: RefCell::new(Vec::new()),
             sender,
         });
