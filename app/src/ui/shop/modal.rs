@@ -1,0 +1,1074 @@
+//! The product modal (`modalRoot_fEFP8r`): the information rail at the left with the price and the Buy and gift buttons,
+//! and the preview at the right (a profile card and a chat line wearing the item). Buy, gift and "Buy with Orbs" stop at
+//! the checkout summary: no purchase request, payment data or Orbs spend is ever sent from here. Official modules
+//! followed: 987421 (the buttons), 44120 (the checkout), 786953 (the modal).
+
+use super::cards::{item_static, orbs_badge};
+use super::data::{self, Product};
+use super::{Root, color, icon, text};
+use crate::parity::Parity;
+use gpui::{
+    AnyElement, Context, IntoElement, ObjectFit, SharedString, Window, deferred, div, img,
+    prelude::*, px,
+};
+
+/// The checkout the Buy and gift buttons open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Checkout {
+    pub sku: String,
+    pub gift: bool,
+    /// The Orbs "Review" step instead of the money checkout.
+    pub orbs: bool,
+    pub stage: ClaimStage,
+}
+
+/// Where an Orbs claim is: the review, the three orders calls in flight, the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimStage {
+    Review,
+    Working,
+    Done,
+    Failed,
+}
+
+impl Root {
+    pub(super) fn shop_open_product(&mut self, sku: &str, cx: &mut Context<Self>) {
+        self.shop.modal = Some(sku.to_owned());
+        self.shop.checkout = None;
+        self.shop
+            .modal_scroll
+            .set_offset(gpui::point(px(0.), px(0.)));
+        if !self.shop.products.contains_key(sku) {
+            self.shop_request(&format!("shop:product:{sku}"), data::product_route(sku));
+        }
+        cx.notify();
+    }
+
+    pub(super) fn shop_close_modal(&mut self, cx: &mut Context<Self>) {
+        if self.shop.checkout.is_some() {
+            self.shop.checkout = None;
+        } else {
+            self.shop.modal = None;
+        }
+        cx.notify();
+    }
+
+    /// "Buy for ..." and the gift button: opens the checkout summary. An unverified account would get the verify modal
+    /// first in the official client; that check needs the account's flags, so here the summary opens directly.
+    pub(super) fn shop_buy(&mut self, sku: &str, gift: bool, cx: &mut Context<Self>) {
+        if !gift && self.shop_claimable(sku) {
+            self.shop_send_keyed("shop:claim", data::claim_premium(sku));
+            cx.notify();
+            return;
+        }
+        let orbs = !gift
+            && self
+                .shop_product(sku)
+                .is_some_and(|product| product.orbs_exclusive());
+        self.shop.checkout = Some(Checkout {
+            sku: sku.to_owned(),
+            gift,
+            orbs,
+            stage: ClaimStage::Review,
+        });
+        if self.shop.modal.is_none() {
+            self.shop.modal = Some(sku.to_owned());
+        }
+        cx.notify();
+    }
+
+    /// The heart: adds the sku to the wishlist or takes it off. The account write goes through the request path that a
+    /// harness run refuses; the request shapes are in `data` and tested there.
+    pub(super) fn shop_toggle_wishlist(&mut self, sku: &str, cx: &mut Context<Self>) {
+        let write = if self.shop.wishlist.remove(sku) {
+            match self.shop.wishlist_id.clone() {
+                Some(id) => data::wishlist_remove(&id, sku),
+                None => {
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            self.shop.wishlist.insert(sku.to_owned());
+            data::wishlist_add(sku)
+        };
+        self.shop_send(write);
+        cx.notify();
+    }
+
+    /// A Nitro subscriber's free claim ("Add to your collection"): a Nitro-tier product whose Nitro price is zero.
+    pub(super) fn shop_claimable(&self, sku: &str) -> bool {
+        self.shop_has_nitro()
+            && self.shop_product(sku).is_some_and(|product| {
+                product.premium_type.is_some()
+                    && product
+                        .fiat_price(true)
+                        .is_some_and(|price| price.amount == 0)
+            })
+    }
+
+    /// The Orbs button state of a product against the current balance.
+    pub(super) fn shop_orb_state(&self, product: &Product) -> data::OrbButton {
+        data::OrbButton::check(
+            product.price(data::PRICE_DEFAULT, Some(data::ORB)),
+            self.shop.balance,
+        )
+    }
+
+    /// "Claim with Orbs": the orders API chain of the official checkout. Create the order, sign it, read the
+    /// entitlements, then refetch the balance. The button is inert unless the balance covers the price.
+    fn shop_claim_orbs(&mut self, cx: &mut Context<Self>) {
+        let Some(checkout) = self.shop.checkout.clone() else {
+            return;
+        };
+        let Some(product) = self.shop_product(&checkout.sku) else {
+            return;
+        };
+        if checkout.stage != ClaimStage::Review
+            || self.shop_orb_state(&product) != data::OrbButton::Ready
+        {
+            return;
+        }
+        if let Some(open) = self.shop.checkout.as_mut() {
+            open.stage = ClaimStage::Working;
+        }
+        self.shop_send_keyed("shop:order:create", data::orb_order_create(&checkout.sku));
+        cx.notify();
+    }
+
+    /// The answers of the claim chain: each step starts the next, a missing id or a failure ends in `Failed`.
+    pub(super) fn shop_order_fetched(
+        &mut self,
+        key: &str,
+        body: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let answer = &body["body"];
+        let failed = body["fetch_failed"] == true || answer["code"].is_number();
+        let stage = |this: &mut Root, stage: ClaimStage| {
+            if let Some(open) = this.shop.checkout.as_mut() {
+                open.stage = stage;
+            }
+        };
+        match key {
+            "shop:order:create" => match answer["id"].as_str() {
+                Some(id) if !failed => {
+                    let write = data::order_sign(id, answer["revision"].as_i64());
+                    self.shop_send_keyed("shop:order:sign", write);
+                    self.shop.order = Some(id.to_owned());
+                }
+                _ => stage(self, ClaimStage::Failed),
+            },
+            "shop:order:sign" if !failed => {
+                if let Some(id) = self.shop.order.clone() {
+                    let _ = self.requests.send(crate::net::Request::Fetch {
+                        key: "shop:order:entitlements".to_owned(),
+                        route: data::order_entitlements_route(&id),
+                    });
+                }
+            }
+            "shop:order:entitlements" if !failed => {
+                stage(self, ClaimStage::Done);
+                let _ = self.requests.send(crate::net::Request::Fetch {
+                    key: "shop:balance".to_owned(),
+                    route: data::BALANCE_ROUTE.to_owned(),
+                });
+            }
+            _ => stage(self, ClaimStage::Failed),
+        }
+        cx.notify();
+    }
+
+    fn shop_send_keyed(&mut self, key: &str, write: data::Write) {
+        let method = match write.method {
+            "POST" => reqwest::Method::POST,
+            "DELETE" => reqwest::Method::DELETE,
+            "PUT" => reqwest::Method::PUT,
+            _ => reqwest::Method::PATCH,
+        };
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: Some(key.to_owned()),
+            method,
+            route: write.route,
+            body: write.body,
+        });
+    }
+
+    /// Sends a `data::Write` through the REST request path.
+    fn shop_send(&mut self, write: data::Write) {
+        let method = match write.method {
+            "POST" => reqwest::Method::POST,
+            "DELETE" => reqwest::Method::DELETE,
+            "PUT" => reqwest::Method::PUT,
+            _ => reqwest::Method::PATCH,
+        };
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: Some("shop:wishlist".to_owned()),
+            method,
+            route: write.route,
+            body: write.body,
+        });
+    }
+
+    pub(in crate::ui) fn shop_modal(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let sku = self.shop.modal.clone()?;
+        let product = self.shop_product(&sku);
+        let height = (f32::from(window.viewport_size().height) - 112.).clamp(300., 608.);
+        let body: AnyElement = match product {
+            Some(product) => self.shop_modal_body(&product, window, cx),
+            None => div().into_any_element(),
+        };
+        let checkout = self.shop_checkout(cx);
+        let modal = div()
+            .parity("shop-modal")
+            .occlude()
+            .relative()
+            .w(px(960.))
+            .h(px(height))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .bg(color("--modal-background"))
+            .flex()
+            .child(body);
+        Some(
+            deferred(
+                div()
+                    .id("shop-modal-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(color("--background-scrim"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| this.shop_close_modal(cx)))
+                    .child(modal)
+                    .children(checkout),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    fn shop_modal_body(
+        &mut self,
+        product: &Product,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let nitro = self.shop_has_nitro();
+        let orbs_only = product.orbs_exclusive();
+        let sku = product.sku_id.clone();
+        let category = self
+            .shop
+            .home
+            .categories
+            .iter()
+            .chain(self.shop.orbs.categories.iter())
+            .chain(self.shop.collections.iter())
+            .find(|category| category.sku_id == product.category_sku_id)
+            .cloned();
+        let banner = category
+            .as_ref()
+            .filter(|_| !orbs_only)
+            .and_then(|category| {
+                category
+                    .hero_banner_url
+                    .clone()
+                    .or_else(|| category.catalog_banner_url.clone())
+            })
+            .and_then(|url| self.shop_img(&url));
+        let collection = category.map(|category| category.name);
+        let wished = self.shop.wishlist.contains(&sku);
+        let price = product
+            .fiat_price(nitro)
+            .or_else(|| product.price(data::PRICE_DEFAULT, Some(data::ORB)))
+            .cloned();
+        let nitro_price = (!nitro && !orbs_only)
+            .then(|| product.fiat_price(true).cloned())
+            .flatten();
+        let left_preview = self.shop_preview(product, 330., true, true, window, cx);
+        let claimable = self.shop_claimable(&sku);
+        let orb_state = self.shop_orb_state(product);
+        let orb_amount = price.as_ref().map(|price| price.amount).unwrap_or_default();
+        let buy_label = match (&price, orbs_only) {
+            (Some(_), false) if claimable => "Add to your collection".to_owned(),
+            (Some(price), false) => format!("Buy for {}", price.text()),
+            (Some(_), true) => "Redeem".to_owned(),
+            _ => "Unavailable".to_owned(),
+        };
+        let buy = {
+            let sku = sku.clone();
+            let blocked = orbs_only && orb_state != data::OrbButton::Ready;
+            let button = div()
+                .id("shop-modal-buy")
+                .parity("shop-modal-buy")
+                .h(px(40.))
+                .w(px(if orbs_only { 282. } else { 234. }))
+                .rounded(px(8.))
+                .bg(color("--background-brand"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .when(blocked, |button| button.opacity(0.5).cursor_not_allowed())
+                .when(!blocked, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|button| button.bg(color("--brand-560")))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.shop_buy(&sku, false, cx);
+                        }))
+                })
+                .child(text(16., 20., 500., "--white").child(buy_label))
+                .when(orbs_only, |button| {
+                    button
+                        .child(icon("shop_orb_18", 18., "--white"))
+                        .child(text(16., 20., 500., "--white").child(orb_amount.to_string()))
+                });
+            let tip = orb_state.modal_tip().filter(|_| orbs_only);
+            match tip {
+                Some(tip) => self
+                    .with_tip(
+                        "shop-modal-buy-tip",
+                        crate::ui::tooltip::Tip::text(tip, crate::ui::tooltip::Side::Top),
+                        button,
+                        cx,
+                    )
+                    .into_any_element(),
+                None => button.into_any_element(),
+            }
+        };
+        let gift = {
+            let sku = sku.clone();
+            div()
+                .id("shop-modal-gift")
+                .size(px(40.))
+                .flex_none()
+                .rounded(px(8.))
+                .bg(color("--background-brand"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|button| button.bg(color("--brand-560")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.shop_buy(&sku, true, cx);
+                }))
+                .child(icon("shop_gift_modal", 20., "--white"))
+        };
+        let pricing = div()
+            .flex()
+            .flex_col()
+            .gap(px(13.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(20.))
+                    .gap(px(4.))
+                    .when(orbs_only, |row| {
+                        let dim = orb_state != data::OrbButton::Ready;
+                        row.w_full()
+                            .justify_between()
+                            .child(
+                                text(12., 16., 500., "--text-default")
+                                    .when(dim, |label| label.opacity(0.5))
+                                    .child(if orb_state == data::OrbButton::NotRedeemable {
+                                        "Not available"
+                                    } else {
+                                        "Using Orbs"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .when(dim, |price| price.opacity(0.5))
+                                    .child(icon("shop_orb_18", 20., "--text-default"))
+                                    .child(
+                                        text(16., 20., 600., "--text-default")
+                                            .child(orb_amount.to_string()),
+                                    ),
+                            )
+                    })
+                    .when(!orbs_only, |row| {
+                        row.child(
+                            text(16., 20., 600., "--text-strong").child(
+                                price.as_ref().map(|price| price.text()).unwrap_or_default(),
+                            ),
+                        )
+                    }),
+            )
+            .children(nitro_price.map(|nitro_price| {
+                div()
+                    .mt(px(-8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(icon("shop_nitro_16", 16., "--interactive-text-default"))
+                    .child(
+                        text(12., 16., 500., "--interactive-text-default")
+                            .child(format!("{} with Nitro.", nitro_price.text())),
+                    )
+                    .child(
+                        text(12., 16., 600., "--interactive-text-default")
+                            .id("shop-modal-subscribe")
+                            .underline()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
+                            .child("Subscribe now"),
+                    )
+            }))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .when(price.is_some(), |row| row.child(buy))
+                    .when(!orbs_only && price.is_some(), |row| row.child(gift)),
+            );
+        let left = div()
+            .parity("shop-modal-left")
+            .relative()
+            .flex_none()
+            .w(px(330.))
+            .h_full()
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .children(orbs_only.then(|| {
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(4.))
+                    .child(orbs_badge())
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .size(px(260.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(left_preview),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(24.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                text(24., 32., 600., "--text-strong").child(product.name.clone()),
+                            )
+                            .child(
+                                text(14., 18., 400., "--text-default")
+                                    .child(self.shop_summary(product)),
+                            ),
+                    )
+                    .child(pricing),
+            );
+        let close = |cx: &mut Context<Self>| {
+            div()
+                .id("shop-modal-close")
+                .size(px(32.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.shop.modal = None;
+                    this.shop.checkout = None;
+                    cx.notify();
+                }))
+                .child(icon("shop_close_16", 16., "--text-strong"))
+        };
+        let round = |id: &'static str, name: &'static str, tint: &'static str| {
+            div()
+                .id(id)
+                .size(px(32.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(icon(name, 16., tint))
+        };
+        let heart = {
+            let sku = sku.clone();
+            round(
+                "shop-modal-heart",
+                "shop_heart_16",
+                if wished {
+                    "--text-feedback-critical"
+                } else {
+                    "--text-strong"
+                },
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.shop_toggle_wishlist(&sku, cx);
+            }))
+        };
+        let share = round("shop-modal-share", "shop_share", "--text-strong").on_click(cx.listener(
+            |this, _, _, cx| {
+                cx.stop_propagation();
+                this.shop.notice = Some("Link copied".to_owned());
+                cx.notify();
+            },
+        ));
+        let user = self
+            .stores
+            .current_user
+            .as_ref()
+            .map(|user| user.username.clone())
+            .unwrap_or_default();
+        let deco_art = (product.kind == data::KIND_AVATAR_DECORATION)
+            .then(|| {
+                let id = product
+                    .items
+                    .first()
+                    .map_or(product.sku_id.clone(), |item| item.sku_id.clone());
+                self.shop_img(&item_static(&id))
+            })
+            .flatten();
+        let avatar = |size: f32, art: Option<std::sync::Arc<gpui::Image>>| {
+            div()
+                .relative()
+                .size(px(size * 1.2))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(size))
+                        .rounded_full()
+                        .bg(color("--background-brand"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("sb_discord", size * 0.6, "--white")),
+                )
+                .children(art.map(|art| {
+                    img(art)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size(px(size * 1.2))
+                        .object_fit(ObjectFit::Contain)
+                }))
+        };
+        let ring = |inner: AnyElement| {
+            div()
+                .size(px(92.))
+                .rounded_full()
+                .bg(color("--background-surface-high"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(inner)
+        };
+        let status = div()
+            .absolute()
+            .left(px(66.))
+            .top(px(66.))
+            .size(px(24.))
+            .rounded_full()
+            .bg(color("--background-surface-high"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .size(px(16.))
+                    .rounded_full()
+                    .bg(color("--status-danger"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(8.))
+                            .h(px(2.))
+                            .rounded(px(1.))
+                            .bg(color("--white")),
+                    ),
+            );
+        let effect = (product.kind == data::KIND_PROFILE_EFFECT)
+            .then(|| product.sku_id.parse::<u64>().ok())
+            .flatten()
+            .and_then(|sku| {
+                let surface = crate::ui::profile_effects::Surface::shop_preview(302., true, true);
+                self.profile_effect_layer("shop-modal", sku, surface, window, cx)
+            });
+        let profile = div()
+            .relative()
+            .flex_none()
+            .w(px(302.))
+            .h(px(224.))
+            .rounded(px(8.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .child(div().h(px(105.)).w_full().bg(gpui::rgb(0x5c64f4)))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(9.))
+                    .top(px(54.))
+                    .child(ring(avatar(80., deco_art.clone()).into_any_element()))
+                    .child(status),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(15.))
+                    .top(px(161.))
+                    .flex()
+                    .flex_col()
+                    .child(text(20., 24., 700., "--text-strong").child(user.clone()))
+                    .child(div().h(px(3.)))
+                    .child(text(14., 18., 500., "--text-strong").child(user.clone())),
+            )
+            .children(effect);
+        let chat_shown = product.kind == data::KIND_AVATAR_DECORATION;
+        let chat = chat_shown.then(|| {
+            div()
+                .relative()
+                .top(px(-38.))
+                .ml(px(42.))
+                .flex_none()
+                .w(px(322.))
+                .h(px(132.))
+                .rounded(px(8.))
+                .bg(color("--background-base-low"))
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(12.))
+                        .child(avatar(32., deco_art))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(8.))
+                                        .items_baseline()
+                                        .child(text(16., 22., 500., "--text-strong").child(user))
+                                        .child(
+                                            text(12., 16., 500., "--text-muted").child("1:18 PM"),
+                                        ),
+                                )
+                                .child(
+                                    text(16., 22., 400., "--text-default")
+                                        .child("Look at my beautiful decoration"),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-subtle"))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(icon("shop_mock_plus", 24., "--interactive-text-default"))
+                        .child(icon("shop_mock_emoji", 24., "--interactive-text-default")),
+                )
+        });
+        let right = div()
+            .parity("shop-modal-preview")
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .overflow_hidden()
+            .bg(color("--background-surface-highest"))
+            .children(banner.map(|banner| {
+                img(banner)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(294.))
+                    .object_fit(ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(16.))
+                    .left(px(16.))
+                    .h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon("shop_collection_16", 16., "--text-strong"))
+                    .child(
+                        text(14., 18., 600., "--text-strong")
+                            .child(collection.unwrap_or_else(|| "Shop".to_owned())),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(16.))
+                    .right(px(16.))
+                    .flex()
+                    .gap(px(10.))
+                    .child(heart)
+                    .child(share)
+                    .child(close(cx)),
+            )
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w(px(if chat_shown { 344. } else { 302. }))
+                            .child(profile)
+                            .children(chat),
+                    ),
+            );
+        let content = div()
+            .w(px(945.))
+            .h(px(650.))
+            .flex()
+            .child(left)
+            .child(right);
+        let handle = self.shop.modal_scroll.clone();
+        div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .id("shop-modal-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&handle)
+                    .child(content),
+            )
+            .child(classic_scrollbar(handle))
+            .into_any_element()
+    }
+
+    /// The summary line: bundles list their parts (`{joinedItems}` is the server's placeholder for that list).
+    fn shop_summary(&self, product: &Product) -> String {
+        if product.summary.contains("{joinedItems}") {
+            let names: Vec<&str> = product
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect();
+            let joined: Vec<&str> = product
+                .bundled
+                .iter()
+                .map(|part| part.name.as_str())
+                .collect();
+            let list = if joined.is_empty() { names } else { joined };
+            product.summary.replace("{joinedItems}", &list.join(", "))
+        } else {
+            product.summary.clone()
+        }
+    }
+
+    /// The checkout summary (`payment-modal` / `gift-payment-modal`): what is bought, for whom and the total. The
+    /// payment step is not reached from here: nothing is sent.
+    fn shop_checkout(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let checkout = self.shop.checkout.clone()?;
+        let product = self.shop_product(&checkout.sku)?;
+        let nitro = self.shop_has_nitro();
+        let total = product
+            .fiat_price(nitro)
+            .or_else(|| product.price(data::PRICE_DEFAULT, Some(data::ORB)))
+            .map(|price| price.text())
+            .unwrap_or_default();
+        if checkout.orbs {
+            return Some(self.shop_orb_checkout(&product, checkout.stage, cx));
+        }
+        let title = if checkout.gift {
+            "Send a Gift"
+        } else {
+            "Checkout"
+        };
+        Some(
+            div()
+                .id("shop-checkout")
+                .parity("shop-checkout")
+                .occlude()
+                .absolute()
+                .w(px(480.))
+                .rounded(px(8.))
+                .bg(color("--modal-background"))
+                .flex()
+                .flex_col()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(24.))
+                        .pb(px(16.))
+                        .child(text(24., 32., 600., "--text-strong").child(title)),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(16.))
+                        .flex()
+                        .justify_between()
+                        .child(text(16., 20., 500., "--text-default").child(product.name))
+                        .child(text(16., 20., 600., "--text-strong").child(total)),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(16.))
+                        .flex()
+                        .justify_between()
+                        .bg(color("--background-base-low"))
+                        .child(
+                            div()
+                                .id(SharedString::from("shop-checkout-back"))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.shop.checkout = None;
+                                    cx.notify();
+                                }))
+                                .child(text(14., 18., 600., "--text-strong").child("Back")),
+                        )
+                        .child(
+                            div()
+                                .h(px(32.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--background-brand"))
+                                .opacity(0.5)
+                                .flex()
+                                .items_center()
+                                .child(text(14., 18., 500., "--white").child("Add Payment Method")),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The Orbs "Review" step of the unified checkout (`ORB_CHECKOUT`): the item, the "Orbs Balance" payment row and
+    /// the "Claim with Orbs" button, disabled with its tooltip when the balance does not cover the price.
+    fn shop_orb_checkout(
+        &mut self,
+        product: &Product,
+        stage: ClaimStage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = self.shop_orb_state(product);
+        let price = product
+            .price(data::PRICE_DEFAULT, Some(data::ORB))
+            .map(|price| price.amount)
+            .unwrap_or_default();
+        let balance = self.shop.balance.unwrap_or_default();
+        let orbs = |amount: i64, tint: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon("shop_orb_18", 18., tint))
+                .child(text(16., 20., 600., tint).child(amount.to_string()))
+        };
+        let blocked = state != data::OrbButton::Ready || stage != ClaimStage::Review;
+        let label = match stage {
+            ClaimStage::Review => "Claim with Orbs",
+            ClaimStage::Working => "Claiming...",
+            ClaimStage::Done => "Done",
+            ClaimStage::Failed => "Something went wrong",
+        };
+        let claim = div()
+            .id("shop-orb-claim")
+            .parity("shop-orb-claim")
+            .h(px(40.))
+            .px(px(16.))
+            .rounded(px(8.))
+            .bg(color("--background-brand"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(blocked, |button| button.opacity(0.5).cursor_not_allowed())
+            .when(!blocked, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|button| button.bg(color("--brand-560")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.shop_claim_orbs(cx);
+                    }))
+            })
+            .child(text(16., 20., 500., "--white").child(label));
+        let claim = match state.checkout_tip().filter(|_| stage == ClaimStage::Review) {
+            Some(tip) => self
+                .with_tip(
+                    "shop-orb-claim-tip",
+                    crate::ui::tooltip::Tip::text(tip, crate::ui::tooltip::Side::Top),
+                    claim,
+                    cx,
+                )
+                .into_any_element(),
+            None => claim.into_any_element(),
+        };
+        div()
+            .id("shop-checkout")
+            .parity("shop-checkout")
+            .occlude()
+            .absolute()
+            .w(px(480.))
+            .rounded(px(8.))
+            .bg(color("--modal-background"))
+            .flex()
+            .flex_col()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(24.))
+                    .pb(px(16.))
+                    .flex()
+                    .justify_between()
+                    .child(text(16., 20., 500., "--text-default").child(product.name.clone()))
+                    .child(orbs(price, "--text-strong")),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(16.))
+                    .flex()
+                    .justify_between()
+                    .child(text(14., 18., 500., "--text-default").child("Orbs Balance"))
+                    .child(orbs(balance, "--text-default")),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(16.))
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .bg(color("--background-base-low"))
+                    .child(
+                        div()
+                            .id(SharedString::from("shop-checkout-back"))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.shop.checkout = None;
+                                cx.notify();
+                            }))
+                            .child(text(14., 18., 600., "--text-strong").child("Back")),
+                    )
+                    .child(claim),
+            )
+            .into_any_element()
+    }
+}
+
+/// The platform's classic scrollbar the official modal shows (`overflow-y: scroll` with a light color scheme): a
+/// 15px track, 17px arrow buttons and a 9px thumb.
+fn classic_scrollbar(handle: gpui::ScrollHandle) -> impl IntoElement {
+    use gpui::{Bounds, canvas, fill, point, size};
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let track = grey(252);
+            let ink = grey(139);
+            window.paint_quad(fill(bounds, track));
+            let max = handle.max_offset().y;
+            let viewport = bounds.size.height;
+            let arrow = px(17.);
+            let span = viewport - arrow * 2.;
+            let center = bounds.left() + px(7.5);
+            for (row, width) in [1., 1., 3., 3., 5., 5., 7.].into_iter().enumerate() {
+                let up = Bounds::new(
+                    point(center - px(width / 2.), bounds.top() + px(5. + row as f32)),
+                    size(px(width), px(1.)),
+                );
+                let down = Bounds::new(
+                    point(
+                        center - px(width / 2.),
+                        bounds.bottom() - px(5. + row as f32 + 1.),
+                    ),
+                    size(px(width), px(1.)),
+                );
+                window.paint_quad(fill(up, ink));
+                window.paint_quad(fill(down, ink));
+            }
+            let thumb = if max > px(0.) {
+                (span * (viewport / (viewport + max))).max(px(20.))
+            } else {
+                span
+            };
+            let scrolled = if max > px(0.) {
+                -handle.offset().y / max
+            } else {
+                0.
+            };
+            let top = bounds.top() + arrow + (span - thumb) * scrolled;
+            let area = Bounds::new(point(bounds.left() + px(3.), top), size(px(9.), thumb));
+            window.paint_quad(fill(area, ink));
+        },
+    )
+    .absolute()
+    .top_0()
+    .right_0()
+    .w(px(15.))
+    .h_full()
+}
+
+fn grey(level: u8) -> gpui::Rgba {
+    let value = f32::from(level) / 255.;
+    gpui::Rgba {
+        r: value,
+        g: value,
+        b: value,
+        a: 1.,
+    }
+}
