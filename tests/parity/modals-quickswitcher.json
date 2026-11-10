@@ -1,3 +1,6 @@
 {
-  "titlebar": { "class": "bar_3zSH5d" }
+  "titlebar": { "class": "bar_3zSH5d" },
+  "quick-switcher": { "class": "container_dvN-MP" },
+  "switcher-input": { "class": "input_a1DYes" },
+  "switcher-first-result": { "class": "result_hm_rAU", "ancestor": "quickswitcher_a1DYes" }
 }

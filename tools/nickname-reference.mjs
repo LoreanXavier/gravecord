@@ -10,11 +10,24 @@ try {
     ${PRELUDE}
     const key = '__gravecordNicknameReference';
     const store = req(994500).A;
+    const search = req(450827).A;
+    // Refresh only this user's derived search index; no dispatcher or relationship mutation.
+    const refreshSearch = user => {
+      search._handleRelationshipUpdate({ relationship: { id: user } });
+      // 787578 merges with ??, so a null nickname cannot clear a cached preview. Empty has no search match.
+      if (store.getNickname(user) == null) search.updateUsers([{ id: user, friendNickname: '' }], 'fixture_nickname_restore');
+    };
+    if (typeof search?._handleRelationshipUpdate !== 'function') throw new Error('search refresh unavailable');
     if (${mode === 'restore'}) {
       const saved = window[key];
-      if (!saved) return { restored: false };
+      if (!saved) {
+        const user = req(734057).A.getChannel('1568693333864480939')?.recipients?.[0];
+        if (user) refreshSearch(user);
+        return { restored: false };
+      }
       if (saved.descriptor) Object.defineProperty(store, 'getNickname', saved.descriptor);
       else delete store.getNickname;
+      refreshSearch(saved.user);
       delete window[key];
       store.emitChange();
       return { restored: true, nickname: store.getNickname(saved.user) ?? null };
@@ -29,6 +42,7 @@ try {
       Object.defineProperty(store, 'getNickname', { configurable: true, writable: true,
         value: function(id) { return id === user ? 'fixture nickname' : original.call(this, id); } });
     }
+    refreshSearch(window[key].user);
     store.emitChange();
     return { viewOnly: true, nickname: 'fixture nickname' };
   })()`)));

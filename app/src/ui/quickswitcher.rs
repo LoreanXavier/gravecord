@@ -7,8 +7,9 @@
 use super::actions::FRECENCY_KEY;
 use super::{Root, avatar_source, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
+use crate::parity::Parity;
 use dc_state::frecency::{Frecency, Kind, Usage};
-use dc_state::{ChannelKind, Id};
+use dc_state::{ChannelKind, Id, User};
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, Image, ImageFormat, IntoElement,
     SharedString, Subscription, Window, deferred, div, img, prelude::*, px, rgba,
@@ -16,6 +17,39 @@ use gpui::{
 use std::sync::Arc;
 
 const MAX_RESULTS: usize = 15;
+
+// The prefix/substring tiers of 787578. Equal scores keep username, friend nickname, global name order.
+// Fuzzy/normalized matches and guild nicknames still need the full search index.
+fn matched_user_name<'a>(
+    user: &'a User,
+    nickname: Option<&'a str>,
+    query: &str,
+) -> Option<&'a str> {
+    let mut best = None;
+    let mut best_score = 0;
+    for name in [
+        Some(user.username.as_str()),
+        nickname,
+        user.global_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let lower = name.to_lowercase();
+        let score = if lower.starts_with(query) {
+            10
+        } else if lower.contains(query) {
+            5
+        } else {
+            0
+        };
+        if score > best_score {
+            best = Some(name);
+            best_score = score;
+        }
+    }
+    best
+}
 
 /// The tutorial arrows: asset, rotation in degrees, its laid-out box (x, y, width, height) relative to the
 /// switcher's left and the tutorial's top, measured from the capture.
@@ -110,6 +144,7 @@ impl Root {
                 ..editor_style()
             };
             let mut editor = Editor::new(style, cx);
+            editor.set_single_line(true);
             editor.set_placeholder("Where would you like to go?".to_owned());
             editor
         });
@@ -180,17 +215,17 @@ impl Root {
             return Vec::new();
         };
         let current = self.channel;
+        let raw = switcher.query.trim();
         let mut out: Vec<Destination> = Vec::new();
         let push = |destination: Destination, out: &mut Vec<Destination>| {
             let id = match destination {
                 Destination::Dm(id) | Destination::Channel(id) => Some(id),
                 Destination::Guild(_) => None,
             };
-            if (id.is_none() || id != current) && !out.contains(&destination) {
+            if (!raw.is_empty() || id.is_none() || id != current) && !out.contains(&destination) {
                 out.push(destination);
             }
         };
-        let raw = switcher.query.trim();
         if raw.is_empty() {
             for channel in &self.channel_history {
                 if let Some(destination) = self.destination_for_channel(*channel) {
@@ -249,11 +284,9 @@ impl Root {
         let matches = |name: &str| query.is_empty() || name.to_lowercase().contains(&query);
         if mode.is_none() || mode == Some('@') {
             for dm in &self.stores.private_channels {
-                if self
-                    .stores
-                    .dm_recipient(dm)
-                    .is_some_and(|user| matches(user.display_name()) || matches(&user.username))
-                {
+                if self.stores.dm_recipient(dm).is_some_and(|user| {
+                    matched_user_name(user, self.nickname_for(user.id), &query).is_some()
+                }) {
                     push(Destination::Dm(dm.id), &mut out);
                 }
             }
@@ -285,7 +318,8 @@ impl Root {
                     .iter()
                     .find(|known| known.id == *id)
                     .and_then(|dm| self.stores.dm_recipient(dm))
-                    .map(|user| user.display_name().to_lowercase()),
+                    .and_then(|user| matched_user_name(user, self.nickname_for(user.id), &query))
+                    .map(str::to_lowercase),
                 Destination::Channel(id) => self
                     .stores
                     .guilds
@@ -377,7 +411,7 @@ impl Root {
                 let picture = user
                     .as_ref()
                     .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
-                unread = self.stores.is_unread(channel);
+                unread = self.stores.read_states.mentions(channel) > 0;
                 (
                     div()
                         .size(px(20.))
@@ -385,7 +419,22 @@ impl Root {
                         .children(picture.map(|picture| img(picture).size(px(20.)).rounded_full()))
                         .into_any_element(),
                     user.as_ref()
-                        .map(|user| user.display_name().to_owned())
+                        .map(|user| {
+                            let query = self
+                                .quick_switcher
+                                .as_ref()
+                                .map(|s| {
+                                    s.query.trim().trim_start_matches('@').trim().to_lowercase()
+                                })
+                                .unwrap_or_default();
+                            let nickname = self.nickname_for(user.id);
+                            let matched = matched_user_name(user, nickname, &query);
+                            // 320264 falls back to the relationship/display name when username matched.
+                            match matched {
+                                Some(name) if name != user.username => name.to_owned(),
+                                _ => nickname.unwrap_or(user.display_name()).to_owned(),
+                            }
+                        })
                         .unwrap_or_default(),
                     user.map(|user| user.username),
                     None,
@@ -445,12 +494,15 @@ impl Root {
             }
         };
         div()
+            .when(index == 0, |row| row.parity("switcher-first-result"))
             .id(SharedString::from(format!("switcher-row-{index}")))
             .h(px(34.))
             .px(px(10.))
             .rounded(px(3.))
             .cursor_pointer()
-            .when(selected, |this| this.bg(color("--background-mod-strong")))
+            .when(selected, |this| {
+                this.bg(color("--interactive-background-selected"))
+            })
             .flex()
             .items_center()
             .text_color(if unread {
@@ -480,11 +532,7 @@ impl Root {
                     .line_height(px(34.))
                     .child(
                         div()
-                            .text_color(if selected {
-                                color("--interactive-text-active")
-                            } else {
-                                color("--interactive-text-default")
-                            })
+                            .text_color(color("--interactive-text-default"))
                             .when(unread, |this| this.text_color(color("--text-strong")))
                             .child(name),
                     )
@@ -540,8 +588,9 @@ impl Root {
         let switcher = self.quick_switcher.as_ref()?;
         let results = self.switcher_results();
         let empty_query = switcher.query.trim().is_empty();
+        let has_query_results = !empty_query && !results.is_empty();
         let viewport = window.viewport_size();
-        let height = 397.4_f32;
+        let height = 398.42188_f32;
         let top = ((f32::from(viewport.height) - height) / 2.).max(8.);
         let left = ((f32::from(viewport.width) - 680.) / 2.).max(8.);
         let rows: Vec<AnyElement> = results
@@ -564,6 +613,7 @@ impl Root {
         // The arrows: three on the left, mirrored on the right, 60px outside the box and 80px above it.
         let arrows: Vec<AnyElement> = ARROWS
             .iter()
+            .filter(|(asset, _, _)| !has_query_results || *asset == ARROWS[0].0)
             .flat_map(|(asset, degrees, [x, y, width, height])| {
                 [false, true].into_iter().filter_map(move |right| {
                     let picture = self.arrow_image(asset, *degrees, right, (*width, *height))?;
@@ -577,7 +627,14 @@ impl Root {
                         div()
                             .absolute()
                             .left(px(base_x))
-                            .top(px(top + 9. - 80. + y))
+                            .top(px(top + 9. - 80.
+                                + y
+                                + if has_query_results {
+                                    // 910839 moves the horizontal arrow nine pixels below the selected row's top.
+                                    (69. + switcher.selected as f32 * 34.).min(250.)
+                                } else {
+                                    0.
+                                }))
                             .child(img(picture).w(px(*width)).h(px(*height)))
                             .into_any_element(),
                     )
@@ -585,6 +642,7 @@ impl Root {
             })
             .collect();
         let modal = div()
+            .parity_with_border("quick-switcher", 1.)
             .id("quick-switcher")
             .occlude()
             .absolute()
@@ -612,10 +670,11 @@ impl Root {
                     .flex_col()
                     .child(
                         div()
+                            .parity_with_border("switcher-input", 1.)
                             .h(px(70.))
                             .rounded(px(8.))
                             .border_1()
-                            .border_color(color("--border-normal"))
+                            .border_color(color("--input-border-default"))
                             .bg(color("--input-background-default"))
                             .px(px(12.))
                             .flex()
@@ -628,6 +687,8 @@ impl Root {
                             .id("switcher-results")
                             // `resultsArea_a1DYes` is 262 tall: 16 above a 236px scroller and 10 below it.
                             .h(px(236.))
+                            .mr(px(-17.))
+                            .pr(px(16.))
                             .mt(px(16.))
                             .mb(px(10.))
                             .overflow_y_scroll()
@@ -650,7 +711,9 @@ impl Root {
                     )
                     .child(
                         div()
+                            .h(px(28.421875))
                             .pt(px(10.))
+                            .when(!empty_query, |this| this.border_t_1().border_color(color("--border-subtle")))
                             .flex()
                             .items_center()
                             .text_size(px(12.))
@@ -707,7 +770,7 @@ impl Root {
                             .line_height(px(24.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--white"))
-                            .child(if empty_query {
+                            .child(if !has_query_results {
                                 "Search for servers, channels or DMs"
                             } else {
                                 "Select a result and press ENTER to jump to it"
@@ -724,7 +787,35 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::rotated_svg;
+    use super::{matched_user_name, rotated_svg};
+    use dc_state::User;
+
+    #[test]
+    fn user_search_keeps_the_best_name_and_stable_ties() {
+        let user = User {
+            username: "an_alice".into(),
+            global_name: Some("Alice Example".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            matched_user_name(&user, Some("Alice Friend"), "alice"),
+            Some("Alice Friend")
+        );
+        assert_eq!(
+            matched_user_name(&user, Some("Alice Friend"), "example"),
+            Some("Alice Example")
+        );
+        assert_eq!(
+            matched_user_name(&user, Some("an_alias"), "an_"),
+            Some("an_alice")
+        );
+        assert_eq!(
+            matched_user_name(&user, Some("Alice Friend"), "friend"),
+            Some("Alice Friend")
+        );
+        assert_eq!(matched_user_name(&user, None, "friend"), None);
+        assert_eq!(matched_user_name(&user, Some(""), "friend"), None);
+    }
 
     #[test]
     fn rotates_inside_a_box_of_its_own() {
