@@ -171,6 +171,10 @@ pub(super) fn select(mut all: Vec<Candidate>, show_non_video: bool) -> Vec<Candi
     all
 }
 
+pub(super) fn hides_participants(all: &[Candidate], show_non_video: bool) -> bool {
+    !show_non_video && all.iter().any(|candidate| !candidate.has_video())
+}
+
 /// Whether the video of a user tile is drawn (module 83982: `!localVideoDisabled && hasVideo`), else the avatar.
 pub(super) fn shows_video(candidate: &Candidate) -> bool {
     candidate.kind == TileKind::User && candidate.video && !candidate.local_video_disabled
@@ -229,6 +233,26 @@ mod tests {
             // The owner has a camera on: the stream sorts first (``).
             ..user(id, name, true)
         }
+    }
+
+    #[test]
+    fn hidden_notice_requires_a_participant_removed_by_the_filter() {
+        assert!(!hides_participants(&[], false));
+        let people = vec![user(1, "one", false)];
+        assert!(!hides_participants(&people, true));
+        assert_eq!(select(people.clone(), true).len(), 1);
+        assert!(hides_participants(&people, false));
+        assert!(select(people, false).is_empty());
+
+        let cameras = vec![user(2, "two", true), stream(2, "two", true)];
+        assert!(!hides_participants(&cameras, false));
+        assert_eq!(select(cameras, false).len(), 2);
+        let hidden_camera = vec![Candidate {
+            local_video_disabled: true,
+            ..user(2, "two", true)
+        }];
+        assert!(hides_participants(&hidden_camera, false));
+        assert!(select(hidden_camera, false).is_empty());
     }
 
     #[test]

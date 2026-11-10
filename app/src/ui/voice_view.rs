@@ -698,6 +698,9 @@ impl Root {
     ) -> AnyElement {
         let shown = self.controls_shown();
         let everyone = self.participants(guild, channel);
+        let show_non_video = call_setting(SHOW_NON_VIDEO);
+        let candidates: Vec<_> = everyone.iter().map(|person| person.tile.clone()).collect();
+        let hides_participants = video_tiles::hides_participants(&candidates, show_non_video);
         // `getUserParticipantCount`: users, not streams, whatever the filter hides.
         let user_count = everyone
             .iter()
@@ -707,10 +710,7 @@ impl Root {
             .into_iter()
             .map(|person| ((person.tile.user, person.tile.kind), person))
             .collect();
-        let order = video_tiles::select(
-            by_key.values().map(|person| person.tile.clone()).collect(),
-            call_setting(SHOW_NON_VIDEO),
-        );
+        let order = video_tiles::select(candidates, show_non_video);
         let mut by_key = by_key;
         let people: Vec<Participant> = order
             .iter()
@@ -786,7 +786,7 @@ impl Root {
                 .into_any_element()
         } else if let Some(index) = focused {
             self.focus_body(&people, index, width, height, cx)
-        } else if people.is_empty() {
+        } else if people.is_empty() && hides_participants {
             self.no_video_view(width, height, cx)
         } else {
             div()
@@ -865,9 +865,10 @@ impl Root {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap(px(16.))
+                    .gap(px(24.))
                     .child(
                         div()
+                            .parity("voice-hidden-notice")
                             .text_size(px(20.))
                             .line_height(px(24.))
                             .font_weight(FontWeight(500.))
@@ -876,9 +877,10 @@ impl Root {
                     )
                     .child(
                         div()
+                            .parity_with_border("voice-show-all", 1.)
                             .id("voice-show-all")
                             .h(px(40.))
-                            .px(px(16.))
+                            .px(px(15.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(mid("--control-secondary-border-default"))
