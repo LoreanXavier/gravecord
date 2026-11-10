@@ -13,6 +13,27 @@ use tracing::{debug, warn};
 
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
+fn diagnostic_route(route: &str) -> &str {
+    match route.split_once('?') {
+        Some((path, query))
+            if query
+                .split('&')
+                .any(|pair| pair.starts_with("refresh_token=")) =>
+        {
+            path
+        }
+        _ => route,
+    }
+}
+
+fn transport_error(error: reqwest::Error, route: &str) -> Error {
+    Error::Transport(if diagnostic_route(route) != route {
+        error.without_url()
+    } else {
+        error
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("request failed: {0}")]
@@ -122,7 +143,10 @@ impl Client {
         if let Some(body) = body {
             request = request.json(body);
         }
-        Ok(request.send().await?)
+        request
+            .send()
+            .await
+            .map_err(|error| transport_error(error, route))
     }
 
     pub async fn request(
@@ -131,25 +155,29 @@ impl Client {
         route: &str,
         body: Option<&Value>,
     ) -> Result<Value, Error> {
+        let diagnostic = diagnostic_route(route);
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let response = self.send(&method, route, body).await?;
             let status = response.status();
-            debug!("{method} {route}: {status}");
+            debug!("{method} {diagnostic}: {status}");
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
                 if slowmode_rejection(&body) {
                     return Err(Error::Status {
-                        route: route.to_owned(),
+                        route: diagnostic.to_owned(),
                         status,
                         body,
                     });
                 }
                 let wait = retry_after(&body);
-                warn!("{route} rate limited for {wait:?}, attempt {attempt}");
+                warn!("{diagnostic} rate limited for {wait:?}, attempt {attempt}");
                 tokio::time::sleep(wait).await;
                 continue;
             }
-            let text = response.text().await?;
+            let text = response
+                .text()
+                .await
+                .map_err(|error| transport_error(error, route))?;
             let value = if text.is_empty() {
                 Value::Null
             } else {
@@ -160,13 +188,13 @@ impl Client {
             }
             self.note_status(status, &value);
             return Err(Error::Status {
-                route: route.to_owned(),
+                route: diagnostic.to_owned(),
                 status,
                 body: value,
             });
         }
         Err(Error::RateLimited {
-            route: route.to_owned(),
+            route: diagnostic.to_owned(),
         })
     }
 
@@ -362,6 +390,22 @@ mod tests {
         assert_eq!(headers["x-discord-timezone"], "Europe/Istanbul");
         assert_eq!(headers["origin"], "https://discordapp.com");
         assert_eq!(headers["referer"], "https://discordapp.com/channels/@me");
+    }
+
+    #[test]
+    fn inventory_refresh_queries_are_removed_from_diagnostics() {
+        let route = "/content-inventory/users/@me?feature=inbox&refresh_token=fixture-cursor&for_game_profile=false";
+        assert_eq!(diagnostic_route(route), "/content-inventory/users/@me");
+        assert_eq!(diagnostic_route("/messages?limit=50"), "/messages?limit=50");
+        let error = reqwest::Client::new()
+            .get("https://example.invalid/")
+            .header("invalid\nheader", "value")
+            .build()
+            .unwrap_err()
+            .with_url(reqwest::Url::parse(&format!("https://example.invalid{route}")).unwrap());
+        let safe = transport_error(error, route);
+        assert!(!format!("{safe:?}").contains("fixture-cursor"));
+        assert!(!format!("{safe}").contains("fixture-cursor"));
     }
 
     #[test]
