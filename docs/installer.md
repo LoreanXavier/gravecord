@@ -20,9 +20,30 @@
 - The exe is unsigned, so SmartScreen warns on first run.
 - The app and setup embed the supplied Gravecord Side-eye ICO. Setup uses its supplied 64/128px raster; the in-app icon-set preference does not change executable or shortcut resources.
 
+## Window
+
+One dark window, 520x360 logical pixels, painted by hand in `draw.rs` and `ui.rs`. The caption is dark (immersive dark mode attribute, Windows 10 1809 and later) and on Windows 11 takes the window's own colour, so title bar and body are one surface; where the attributes are not supported the system caption stays. One type scale: title 24, body 14, caption 12 (Segoe UI, semibold for titles and buttons), every size and distance scaled by the window's dpi. Buttons have an 8 pixel radius in the brand colour (primary) or a raised surface, with hover, pressed and keyboard focus looks. Tab and Shift+Tab move through the controls in reading order, Space presses the focused one, Enter presses the focused push button or else the page's primary button, Escape closes the window except while files are being copied.
+
+- Welcome: install location (a long path keeps its drive and last folders and shows an ellipsis in the middle, `elide.rs`), Change, the desktop shortcut checkbox, Install. Over an existing install of ours (the folder holds `install.manifest`) the button reads Update and the note says settings are kept. A missing WebView2 Runtime adds a notice with the Microsoft link.
+- Progress: step in words (Copying files, Creating shortcuts, Finishing), percentage and a determinate bar; the caption's close button is greyed while it runs.
+- Done: Launch gravecord (primary) and Close.
+- Failed: the message, what to do, Copy details (puts the version, the folder and the error text on the clipboard) and Close.
+- The version line shows the payload's version, or the setup's own when there is no payload, and is left out when it is empty or 0.0.0.
+- The uninstaller's questions, its closing notice and the "gravecord is still open" prompt use the same look (`dialog.rs`). Buttons: Cancel and Remove; Delete data and Keep data (Escape and the close button keep the data); Close; Cancel and Retry. If a dialog window cannot be created the plain message box is used instead.
+
 ## Test options
 
-`--silent --dir <folder> --no-register` installs without a window and without shortcuts or registry. `--reg-key <name>` and `--shortcut-name <name>` change the names used, `--desktop` adds the desktop shortcut. The uninstaller takes `--silent`, `--purge-data` and `--data-dir <folder>`. `--screenshot <png> [--state welcome|welcome-webview|progress|done|failed]` renders a page and exits.
+`--silent --dir <folder> --no-register` installs without a window and without shortcuts or registry. `--reg-key <name>` and `--shortcut-name <name>` change the names used, `--desktop` adds the desktop shortcut. The uninstaller takes `--silent`, `--purge-data` and `--data-dir <folder>`.
+
+`--screenshot <png>` paints a page or dialog to a PNG (the whole window, caption included) and exits; nothing is installed or read from the real install. Companions:
+
+- `--screenshot-page <name>`: `welcome` (default), `webview` (the missing WebView2 notice), `update` (the page shown over an existing install), `progress`, `update-progress`, `done`, `update-done`, `error`, and the dialogs `uninstall`, `keep-data`, `removed`, `running`. The older `--state` is the same option (`welcome-webview` and `failed` still work).
+- `--screenshot-progress <0..1>`: where the progress pages stand, for example `0.42`; the step words follow from it.
+- `--screenshot-dpi <96..480>`: paints at that scale (96 is 100 percent, 120 is 125, 144 is 150, 192 is 200). The window frame is the system's, at the monitor's own scale.
+- `--screenshot-version <text>`: version line to show instead of the carried one.
+- `--screenshot-button <name>:<hover|pressed|focus>`: puts one control in that state (`change`, `desktop`, `install`, `launch`, `close`, `copy`, `link`; `primary` and `secondary` for dialogs). `focus` shows the keyboard ring.
+
+Launch it on the hidden desktop (`cargo xtask headless <setup exe> --screenshot ...`) and start one at a time: with several at once a capture can come out black.
 
 Silent install and uninstall return failure if the running app does not close; they do not open a Retry dialog.
 Uninstaller cleanup: after the "gravecord was removed." dialog has been answered (or, silent, as the last act), a hidden

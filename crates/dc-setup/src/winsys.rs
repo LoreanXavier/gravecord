@@ -621,6 +621,71 @@ pub fn pick_folder(owner: HWND, start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Puts `text` on the clipboard as Unicode text. Returns whether it worked.
+pub fn copy_text(owner: HWND, text: &str) -> bool {
+    use windows::Win32::Foundation::GlobalFree;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    let data = wide(text);
+    let bytes = data.len() * 2;
+    unsafe {
+        if OpenClipboard(Some(owner)).is_err() {
+            return false;
+        }
+        let mut done = false;
+        if EmptyClipboard().is_ok()
+            && let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes)
+        {
+            let target = GlobalLock(memory);
+            if target.is_null() {
+                let _ = GlobalFree(Some(memory));
+            } else {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().cast::<u8>(),
+                    target.cast::<u8>(),
+                    bytes,
+                );
+                let _ = GlobalUnlock(memory);
+                // The clipboard owns the memory once this call succeeds.
+                if SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))).is_ok() {
+                    done = true;
+                } else {
+                    let _ = GlobalFree(Some(memory));
+                }
+            }
+        }
+        let _ = CloseClipboard();
+        done
+    }
+}
+
+/// Gives the window the dark caption: the immersive dark mode attribute (Windows 10 1809 and later), and on Windows 11
+/// the caption, border and caption text colours, so the title bar and the body read as one surface. Where an
+/// attribute is not supported the call fails and the system caption stays as it is.
+pub fn dark_caption(hwnd: HWND, caption: u32, text: u32) {
+    use windows::Win32::Graphics::Dwm::{DWMWINDOWATTRIBUTE, DwmSetWindowAttribute};
+    let set = |attribute: i32, value: u32| unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWINDOWATTRIBUTE(attribute),
+            (&value as *const u32).cast(),
+            4,
+        )
+        .is_ok()
+    };
+    // 20 is the documented number; builds 17763 to 18985 only know 19.
+    if !set(20, 1) {
+        set(19, 1);
+    }
+    set(34, caption); // border colour
+    set(35, caption); // caption colour
+    set(36, text); // caption text colour
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

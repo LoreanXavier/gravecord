@@ -216,7 +216,110 @@ pub struct Options {
     pub data_dir: Option<PathBuf>,
     /// Renders the window, saves a PNG and exits.
     pub screenshot: Option<PathBuf>,
-    pub state: Option<String>,
+    /// Which page or dialog `screenshot` paints (the welcome page when absent).
+    pub screenshot_page: Option<ShotPage>,
+    /// Progress shown by the progress pages, in thousandths.
+    pub screenshot_progress: Option<u32>,
+    /// Scale to paint at, in dpi (96 is 100 percent).
+    pub screenshot_dpi: Option<u32>,
+    /// Version text to paint instead of the one the setup carries.
+    pub screenshot_version: Option<String>,
+    /// A button painted hovered, pressed or focused.
+    pub screenshot_button: Option<(ShotButton, ShotMode)>,
+}
+
+/// A page or dialog the screenshot option can paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShotPage {
+    Welcome,
+    Webview,
+    Update,
+    Progress,
+    UpdateProgress,
+    Done,
+    UpdateDone,
+    Error,
+    Uninstall,
+    KeepData,
+    Removed,
+    Running,
+}
+
+impl ShotPage {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "welcome" => Self::Welcome,
+            "webview" | "welcome-webview" => Self::Webview,
+            "update" => Self::Update,
+            "progress" => Self::Progress,
+            "update-progress" => Self::UpdateProgress,
+            "done" => Self::Done,
+            "update-done" => Self::UpdateDone,
+            "error" | "failed" => Self::Error,
+            "uninstall" => Self::Uninstall,
+            "keep-data" => Self::KeepData,
+            "removed" => Self::Removed,
+            "running" => Self::Running,
+            _ => return None,
+        })
+    }
+}
+
+/// A button the screenshot option can put in a state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShotButton {
+    Change,
+    Desktop,
+    Install,
+    Launch,
+    Close,
+    Copy,
+    Link,
+    /// The right-hand (default) button of a dialog.
+    Primary,
+    /// The left-hand button of a dialog.
+    Secondary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShotMode {
+    Hover,
+    Pressed,
+    Focus,
+}
+
+/// `change:hover`, `install:pressed`, `desktop:focus` and so on.
+pub fn parse_shot_button(text: &str) -> Result<(ShotButton, ShotMode), String> {
+    let bad =
+        || format!("{text} is not a button state; use name:hover, name:pressed or name:focus");
+    let (name, mode) = text.split_once(':').ok_or_else(bad)?;
+    let button = match name {
+        "change" => ShotButton::Change,
+        "desktop" => ShotButton::Desktop,
+        "install" | "update" => ShotButton::Install,
+        "launch" => ShotButton::Launch,
+        "close" => ShotButton::Close,
+        "copy" => ShotButton::Copy,
+        "link" => ShotButton::Link,
+        "primary" => ShotButton::Primary,
+        "secondary" => ShotButton::Secondary,
+        _ => return Err(bad()),
+    };
+    let mode = match mode {
+        "hover" => ShotMode::Hover,
+        "pressed" => ShotMode::Pressed,
+        "focus" => ShotMode::Focus,
+        _ => return Err(bad()),
+    };
+    Ok((button, mode))
+}
+
+/// `0.42` is 420 thousandths; anything outside 0..=1 is refused.
+pub fn parse_fraction(text: &str) -> Result<u32, String> {
+    match text.parse::<f64>() {
+        Ok(value) if (0.0..=1.0).contains(&value) => Ok((value * 1000.0).round() as u32),
+        _ => Err(format!("{text} is not a progress fraction between 0 and 1")),
+    }
 }
 
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String> {
@@ -238,7 +341,26 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, St
             "--reg-key" => options.reg_key = Some(value(&flag, &mut args)?),
             "--shortcut-name" => options.shortcut_name = Some(value(&flag, &mut args)?),
             "--screenshot" => options.screenshot = Some(value(&flag, &mut args)?.into()),
-            "--state" => options.state = Some(value(&flag, &mut args)?),
+            "--state" | "--screenshot-page" => {
+                let name = value(&flag, &mut args)?;
+                options.screenshot_page = Some(
+                    ShotPage::parse(&name).ok_or_else(|| format!("{name} is not a page name"))?,
+                );
+            }
+            "--screenshot-progress" => {
+                options.screenshot_progress = Some(parse_fraction(&value(&flag, &mut args)?)?)
+            }
+            "--screenshot-dpi" => {
+                let text = value(&flag, &mut args)?;
+                match text.parse::<u32>() {
+                    Ok(dpi) if (96..=480).contains(&dpi) => options.screenshot_dpi = Some(dpi),
+                    _ => return Err(format!("{text} is not a dpi between 96 and 480")),
+                }
+            }
+            "--screenshot-version" => options.screenshot_version = Some(value(&flag, &mut args)?),
+            "--screenshot-button" => {
+                options.screenshot_button = Some(parse_shot_button(&value(&flag, &mut args)?)?)
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -332,6 +454,64 @@ mod tests {
         assert!(parse_args(args(&["--dir"])).is_err());
         assert!(parse_args(args(&["--nope"])).is_err());
         assert_eq!(parse_args(args(&[])).unwrap(), Options::default());
+    }
+
+    #[test]
+    fn screenshot_options() {
+        let options = parse_args(args(&[
+            "--screenshot",
+            r"C:\t\a.png",
+            "--screenshot-page",
+            "update-progress",
+            "--screenshot-progress",
+            "0.42",
+            "--screenshot-dpi",
+            "144",
+            "--screenshot-version",
+            "1.2.3",
+            "--screenshot-button",
+            "install:hover",
+        ]))
+        .unwrap();
+        assert_eq!(options.screenshot, Some(PathBuf::from(r"C:\t\a.png")));
+        assert_eq!(options.screenshot_page, Some(ShotPage::UpdateProgress));
+        assert_eq!(options.screenshot_progress, Some(420));
+        assert_eq!(options.screenshot_dpi, Some(144));
+        assert_eq!(options.screenshot_version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            options.screenshot_button,
+            Some((ShotButton::Install, ShotMode::Hover))
+        );
+        // The older option still names a page.
+        let old = parse_args(args(&["--state", "welcome-webview"])).unwrap();
+        assert_eq!(old.screenshot_page, Some(ShotPage::Webview));
+        assert_eq!(
+            parse_args(args(&["--screenshot-page", "failed"]))
+                .unwrap()
+                .screenshot_page,
+            Some(ShotPage::Error)
+        );
+    }
+
+    #[test]
+    fn screenshot_options_refuse_nonsense() {
+        for bad in [
+            &["--screenshot-page", "nope"][..],
+            &["--screenshot-page"],
+            &["--screenshot-progress", "1.5"],
+            &["--screenshot-progress", "-0.1"],
+            &["--screenshot-progress", "half"],
+            &["--screenshot-dpi", "50"],
+            &["--screenshot-dpi", "x"],
+            &["--screenshot-button", "install"],
+            &["--screenshot-button", "install:wiggle"],
+            &["--screenshot-button", "nothing:hover"],
+        ] {
+            assert!(parse_args(args(bad)).is_err(), "{bad:?}");
+        }
+        assert_eq!(parse_fraction("0"), Ok(0));
+        assert_eq!(parse_fraction("1"), Ok(1000));
+        assert_eq!(parse_fraction("0.4285"), Ok(429));
     }
 
     #[test]

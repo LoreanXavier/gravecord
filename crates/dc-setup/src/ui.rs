@@ -1,26 +1,32 @@
-//! The setup window: one native Win32 window, painted by hand in the app's dark Discord colours. Four pages (location,
-//! progress, finished, failed) and no option pages.
+//! The setup window: one native Win32 window, painted by hand in the app's dark colours. Four pages (location,
+//! progress, finished, failed) and no option pages. Type, colours and controls come from `draw`; the dialogs the
+//! uninstaller and the retry prompt use are in `dialog`.
 #![allow(unsafe_code)]
 
+use crate::draw::{self, ButtonView, CheckView, Face, Fonts, Palette, Scale};
 use crate::install::{self, Plan};
+use crate::paths::{self, ShotButton, ShotMode, ShotPage};
 use crate::payload::Archive;
-use crate::{icon_gen, paths, winsys};
-use dc_tokens::Theme;
+use crate::{dialog, elide, winsys, wording};
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 const WM_PROGRESS: u32 = WM_APP + 1;
 const WM_FINISHED: u32 = WM_APP + 2;
+const TIMER_COPIED: usize = 1;
 /// Client size at 96 dpi.
 const WIDTH: i32 = 520;
 const HEIGHT: i32 = 360;
@@ -36,12 +42,12 @@ enum Page {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Button {
     Change,
-    Install,
-    Finish,
-    Close,
     Desktop,
+    Install,
     Launch,
-    WebView,
+    Close,
+    Copy,
+    Link,
 }
 
 #[derive(Default)]
@@ -51,147 +57,91 @@ struct Shared {
     result: Mutex<Option<Result<(), String>>>,
 }
 
-struct Fonts {
-    title: HFONT,
-    heading: HFONT,
-    body: HFONT,
-    small: HFONT,
-}
-
 struct App {
     hwnd: HWND,
-    dpi: i32,
-    fonts: Option<Fonts>,
+    scale: Scale,
+    fonts: Fonts,
     page: Page,
     dir: PathBuf,
+    /// The folder already holds an install of ours, so setup updates it.
+    updating: bool,
     desktop: bool,
-    launch: bool,
     webview_missing: bool,
     hover: Option<Button>,
+    pressed: Option<Button>,
+    focus: Option<Button>,
+    /// The focus ring shows only after the keyboard has been used.
+    keyboard: bool,
+    tracking: bool,
+    /// After Copy details: whether the clipboard took the text. Cleared by a timer.
+    copied: Option<bool>,
     error: String,
     archive: Option<Arc<Archive>>,
     stub: Arc<Vec<u8>>,
     shared: Arc<Shared>,
-    version: String,
-}
-
-struct Palette {
-    window: COLORREF,
-    panel: COLORREF,
-    track: COLORREF,
-    text: COLORREF,
-    muted: COLORREF,
-    brand: COLORREF,
-    brand_hover: COLORREF,
-    secondary: COLORREF,
-    secondary_hover: COLORREF,
-    danger: COLORREF,
-    white: COLORREF,
-}
-
-fn token(name: &str) -> (u8, u8, u8) {
-    let value = Theme::Dark.color(name);
-    ((value >> 24) as u8, (value >> 16) as u8, (value >> 8) as u8)
-}
-
-fn rgb((r, g, b): (u8, u8, u8)) -> COLORREF {
-    COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
-}
-
-fn lighten((r, g, b): (u8, u8, u8), amount: u32) -> (u8, u8, u8) {
-    let up = |c: u8| (c as u32 + (255 - c as u32) * amount / 100) as u8;
-    (up(r), up(g), up(b))
-}
-
-fn palette() -> Palette {
-    let brand = token("--background-brand");
-    let secondary = token("--background-surface-highest");
-    Palette {
-        window: rgb(token("--background-base-lower")),
-        panel: rgb(token("--background-base-lowest")),
-        track: rgb(token("--background-surface-highest")),
-        text: rgb(token("--text-default")),
-        muted: rgb(token("--text-muted")),
-        brand: rgb(brand),
-        brand_hover: rgb(lighten(brand, 12)),
-        secondary: rgb(secondary),
-        secondary_hover: rgb(lighten(secondary, 10)),
-        danger: rgb(token("--status-danger")),
-        white: rgb((255, 255, 255)),
-    }
+    version: Option<String>,
 }
 
 impl App {
     fn px(&self, value: i32) -> i32 {
-        value * self.dpi / 96
+        self.scale.px(value)
     }
 
     fn rect(&self, left: i32, top: i32, right: i32, bottom: i32) -> RECT {
-        RECT {
-            left: self.px(left),
-            top: self.px(top),
-            right: self.px(right),
-            bottom: self.px(bottom),
-        }
+        self.scale.rect(left, top, right, bottom)
     }
 
-    fn make_fonts(&mut self) {
-        if let Some(old) = self.fonts.take() {
-            unsafe {
-                for font in [old.title, old.heading, old.body, old.small] {
-                    let _ = DeleteObject(font.into());
-                }
-            }
-        }
-        let make = |height: i32, weight: i32| unsafe {
-            CreateFontW(
-                -(height * self.dpi / 96),
-                0,
-                0,
-                0,
-                weight,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY,
-                0,
-                w!("Segoe UI"),
-            )
-        };
-        self.fonts = Some(Fonts {
-            title: make(28, 600),
-            heading: make(20, 600),
-            body: make(14, 400),
-            small: make(12, 400),
-        });
-    }
-
-    /// The buttons of the current page with their rectangles, in logical pixels.
+    /// The controls of the current page with their rectangles, in tab order.
     fn buttons(&self) -> Vec<(Button, RECT)> {
+        let link = self.rect(46, 246, 270, 266);
         let mut list = Vec::new();
         match self.page {
             Page::Welcome => {
-                list.push((Button::Change, self.rect(404, 142, 488, 178)));
-                list.push((Button::Desktop, self.rect(32, 196, 400, 224)));
-                list.push((Button::Install, self.rect(368, 298, 488, 336)));
+                list.push((Button::Change, self.rect(404, 134, 488, 170)));
+                list.push((Button::Desktop, self.rect(32, 186, 320, 212)));
                 if self.webview_missing {
-                    list.push((Button::WebView, self.rect(32, 270, 250, 290)));
+                    list.push((Button::Link, link));
                 }
+                list.push((Button::Install, self.rect(368, 298, 488, 336)));
             }
             Page::Installing => {}
             Page::Done => {
-                list.push((Button::Launch, self.rect(32, 196, 400, 224)));
-                list.push((Button::Finish, self.rect(368, 298, 488, 336)));
                 if self.webview_missing {
-                    list.push((Button::WebView, self.rect(32, 270, 250, 290)));
+                    list.push((Button::Link, link));
                 }
+                list.push((Button::Close, self.rect(232, 298, 320, 336)));
+                list.push((Button::Launch, self.rect(328, 298, 488, 336)));
             }
-            Page::Failed => list.push((Button::Close, self.rect(368, 298, 488, 336))),
+            Page::Failed => {
+                list.push((Button::Copy, self.rect(268, 298, 392, 336)));
+                list.push((Button::Close, self.rect(400, 298, 488, 336)));
+            }
         }
         list
+    }
+
+    fn rect_of(&self, id: Button) -> Option<RECT> {
+        self.buttons()
+            .into_iter()
+            .find_map(|(button, rect)| (button == id).then_some(rect))
+    }
+
+    /// The button Enter presses on this page.
+    fn primary(&self) -> Option<Button> {
+        match self.page {
+            Page::Welcome => Some(Button::Install),
+            Page::Done => Some(Button::Launch),
+            Page::Failed => Some(Button::Close),
+            Page::Installing => None,
+        }
+    }
+
+    fn face(&self, id: Button) -> Face {
+        Face {
+            hover: self.hover == Some(id),
+            pressed: self.pressed == Some(id),
+            focus: self.keyboard && self.focus == Some(id),
+        }
     }
 
     fn hit(&self, x: i32, y: i32) -> Option<Button> {
@@ -200,19 +150,63 @@ impl App {
         })
     }
 
+    /// Moves the keyboard focus to the next control (or the previous one) in tab order.
+    fn tab(&mut self, backwards: bool) {
+        let order: Vec<Button> = self
+            .buttons()
+            .into_iter()
+            .map(|(button, _)| button)
+            .collect();
+        if order.is_empty() {
+            return;
+        }
+        let at = self.focus.and_then(|f| order.iter().position(|b| *b == f));
+        let next = match (at, backwards) {
+            (None, false) => 0,
+            (None, true) => order.len() - 1,
+            (Some(i), false) => (i + 1) % order.len(),
+            (Some(i), true) => (i + order.len() - 1) % order.len(),
+        };
+        self.focus = Some(order[next]);
+        self.keyboard = true;
+        self.repaint();
+    }
+
+    fn set_page(&mut self, page: Page) {
+        self.page = page;
+        self.hover = None;
+        self.pressed = None;
+        self.focus = None;
+        self.keyboard = false;
+        self.copied = None;
+        if self.hwnd.0.is_null() {
+            return;
+        }
+        // The copy cannot be cancelled half way without leaving a broken install, so the caption's close button is
+        // greyed while it runs.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_COPIED);
+            let menu = GetSystemMenu(self.hwnd, false);
+            let state = if page == Page::Installing {
+                MF_GRAYED
+            } else {
+                MF_ENABLED
+            };
+            let _ = EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | state);
+        }
+    }
+
     fn click(&mut self, button: Button) {
         match button {
             Button::Change => {
                 if let Some(picked) = winsys::pick_folder(self.hwnd, &self.dir) {
                     match paths::resolve_from_disk(&picked) {
-                        Ok(dir) => self.dir = dir,
+                        Ok(dir) => {
+                            self.updating = dir.join(paths::MANIFEST).is_file();
+                            self.dir = dir;
+                        }
                         Err(message) => {
-                            winsys::message(
-                                Some(self.hwnd),
-                                "Choose another folder",
-                                &message,
-                                winsys::Kind::Error,
-                            );
+                            dialog::error(Some(self.hwnd), "Choose another folder", &message);
                         }
                     }
                     self.repaint();
@@ -224,13 +218,7 @@ impl App {
                 self.repaint();
             }
             Button::Launch => {
-                self.launch = !self.launch;
-                self.repaint();
-            }
-            Button::Finish => {
-                if self.launch {
-                    winsys::launch(&self.dir.join("gravecord.exe"), &self.dir);
-                }
+                winsys::launch(&self.dir.join("gravecord.exe"), &self.dir);
                 unsafe {
                     let _ = DestroyWindow(self.hwnd);
                 }
@@ -238,7 +226,24 @@ impl App {
             Button::Close => unsafe {
                 let _ = DestroyWindow(self.hwnd);
             },
-            Button::WebView => winsys::open_url(winsys::WEBVIEW2_URL),
+            Button::Copy => {
+                let version = self
+                    .version
+                    .as_ref()
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default();
+                let details = format!(
+                    "gravecord setup{version}\nInstall folder: {}\n\n{}",
+                    self.dir.display(),
+                    self.error
+                );
+                self.copied = Some(winsys::copy_text(self.hwnd, &details));
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_COPIED, 2500, None);
+                }
+                self.repaint();
+            }
+            Button::Link => winsys::open_url(winsys::WEBVIEW2_URL),
         }
     }
 
@@ -260,7 +265,7 @@ impl App {
             self.fail(message);
             return;
         }
-        self.page = Page::Installing;
+        self.set_page(Page::Installing);
         self.shared.permille.store(0, Ordering::Relaxed);
         *self.shared.status.lock().unwrap() = "Preparing".into();
         self.repaint();
@@ -282,387 +287,337 @@ impl App {
 
     fn fail(&mut self, message: String) {
         self.error = message;
-        self.page = Page::Failed;
+        self.set_page(Page::Failed);
         self.repaint();
     }
 
     fn paint(&self, hdc: HDC) {
-        let Some(fonts) = &self.fonts else { return };
-        let colors = palette();
-        let (width, height) = (self.px(WIDTH), self.px(HEIGHT));
+        let colors = draw::palette();
+        let fonts = &self.fonts;
         unsafe {
-            fill(
-                hdc,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: width,
-                    bottom: height,
-                },
-                colors.window,
-            );
             SetBkMode(hdc, TRANSPARENT);
-
-            self.draw_logo(hdc, &colors);
-            text(
+            draw::logo(hdc, &colors, self.px(32), self.px(26), self.px(48));
+            draw::text(
                 hdc,
                 fonts.title,
                 colors.text,
-                self.rect(104, 26, 488, 62),
+                self.rect(92, 20, 488, 54),
                 "gravecord",
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
-            let subtitle = if self.version.is_empty() {
-                "Native Discord client".to_owned()
-            } else {
-                format!("Native Discord client  \u{b7}  version {}", self.version)
+            let subtitle = match &self.version {
+                Some(version) => format!("Native Discord client  \u{b7}  version {version}"),
+                None => "Native Discord client".to_owned(),
             };
-            text(
+            draw::text(
                 hdc,
-                fonts.small,
+                fonts.caption,
                 colors.muted,
-                self.rect(104, 62, 488, 84),
+                self.rect(92, 54, 488, 74),
                 &subtitle,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
 
             match self.page {
-                Page::Welcome => self.paint_welcome(hdc, fonts, &colors),
-                Page::Installing => self.paint_progress(hdc, fonts, &colors),
-                Page::Done => {
-                    text(
-                        hdc,
-                        fonts.heading,
-                        colors.text,
-                        self.rect(32, 124, 488, 160),
-                        "gravecord is installed.",
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                    );
-                    self.check(
-                        hdc,
-                        fonts,
-                        &colors,
-                        Button::Launch,
-                        "Launch gravecord",
-                        self.launch,
-                    );
-                    self.paint_webview(hdc, fonts, &colors);
-                    self.button(hdc, fonts, &colors, Button::Finish, "Finish", true);
-                }
-                Page::Failed => {
-                    text(
-                        hdc,
-                        fonts.heading,
-                        colors.danger,
-                        self.rect(32, 124, 488, 160),
-                        "Setup could not finish",
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-                    );
-                    text(
-                        hdc,
-                        fonts.body,
-                        colors.text,
-                        self.rect(32, 168, 488, 280),
-                        &self.error,
-                        DT_LEFT | DT_WORDBREAK,
-                    );
-                    self.button(hdc, fonts, &colors, Button::Close, "Close", true);
-                }
+                Page::Welcome => self.paint_welcome(hdc, &colors),
+                Page::Installing => self.paint_progress(hdc, &colors),
+                Page::Done => self.paint_done(hdc, &colors),
+                Page::Failed => self.paint_failed(hdc, &colors),
             }
         }
     }
 
-    unsafe fn paint_welcome(&self, hdc: HDC, fonts: &Fonts, colors: &Palette) {
+    unsafe fn push(&self, hdc: HDC, colors: &Palette, id: Button, label: &str, primary: bool) {
+        let Some(rect) = self.rect_of(id) else { return };
         unsafe {
-            text(
+            draw::button(
                 hdc,
-                fonts.small,
-                colors.muted,
-                self.rect(32, 118, 488, 138),
-                "Install location",
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-            round(hdc, self.rect(32, 142, 396, 178), 8, colors.panel);
-            let mut path = self.rect(44, 142, 386, 178);
-            let mut wide: Vec<u16> = self.dir.to_string_lossy().encode_utf16().collect();
-            SelectObject(hdc, fonts.body.into());
-            SetTextColor(hdc, colors.text);
-            DrawTextW(
-                hdc,
-                &mut wide,
-                &mut path,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS,
-            );
-            self.button(hdc, fonts, colors, Button::Change, "Change", false);
-            self.check(
-                hdc,
-                fonts,
+                &self.fonts,
                 colors,
-                Button::Desktop,
-                "Create a desktop shortcut",
-                self.desktop,
+                self.scale,
+                &ButtonView {
+                    rect,
+                    label,
+                    primary,
+                    face: self.face(id),
+                },
             );
-            self.paint_webview(hdc, fonts, colors);
-            text(
-                hdc,
-                fonts.small,
-                colors.muted,
-                self.rect(32, 310, 350, 330),
-                "Installs for your user only. No administrator rights needed.",
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-            self.button(hdc, fonts, colors, Button::Install, "Install", true);
         }
     }
 
-    unsafe fn paint_progress(&self, hdc: HDC, fonts: &Fonts, colors: &Palette) {
+    unsafe fn paint_welcome(&self, hdc: HDC, colors: &Palette) {
+        let fonts = &self.fonts;
+        unsafe {
+            draw::text(
+                hdc,
+                fonts.caption,
+                colors.muted,
+                self.rect(32, 108, 488, 128),
+                "Install location",
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            let field = self.rect(32, 134, 396, 170);
+            draw::round(hdc, field, self.px(8), colors.panel);
+            // A path too long for the field keeps its drive and its last folders, as Windows path boxes do.
+            let room = field.right - field.left - self.px(24);
+            let font = fonts.body;
+            let shown = elide::elide_path(&self.dir.to_string_lossy(), &|candidate| {
+                draw::text_width(hdc, font, candidate) <= room
+            });
+            draw::text(
+                hdc,
+                font,
+                colors.text,
+                RECT {
+                    left: field.left + self.px(12),
+                    right: field.right - self.px(12),
+                    ..field
+                },
+                &shown,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            self.push(hdc, colors, Button::Change, "Change", false);
+
+            if let Some(rect) = self.rect_of(Button::Desktop) {
+                draw::checkbox(
+                    hdc,
+                    fonts,
+                    colors,
+                    self.scale,
+                    &CheckView {
+                        rect,
+                        label: "Create a desktop shortcut",
+                        on: self.desktop,
+                        face: self.face(Button::Desktop),
+                    },
+                );
+            }
+            self.paint_webview(hdc, colors);
+
+            let note = if self.updating {
+                "gravecord is already installed here. Setup updates it and keeps your settings."
+            } else {
+                "Installs for your user only. No administrator rights needed."
+            };
+            draw::wrapped_centered(
+                hdc,
+                fonts.caption,
+                colors.muted,
+                self.rect(32, 298, 352, 336),
+                note,
+            );
+            self.push(
+                hdc,
+                colors,
+                Button::Install,
+                if self.updating { "Update" } else { "Install" },
+                true,
+            );
+        }
+    }
+
+    unsafe fn paint_progress(&self, hdc: HDC, colors: &Palette) {
+        let fonts = &self.fonts;
         let permille = self.shared.permille.load(Ordering::Relaxed).min(1000) as i32;
         let status = self.shared.status.lock().unwrap().clone();
         unsafe {
-            text(
+            draw::text(
+                hdc,
+                fonts.title,
+                colors.text,
+                self.rect(32, 110, 488, 146),
+                if self.updating {
+                    "Updating gravecord"
+                } else {
+                    "Installing gravecord"
+                },
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            draw::text(
                 hdc,
                 fonts.body,
                 colors.text,
-                self.rect(32, 140, 400, 166),
-                &status,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                self.rect(32, 168, 400, 192),
+                wording::step_words(&status),
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
-            text(
+            draw::text(
                 hdc,
                 fonts.body,
                 colors.muted,
-                self.rect(400, 140, 488, 166),
+                self.rect(400, 168, 488, 192),
                 &format!("{}%", permille / 10),
-                DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
+                DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
-            let bar = self.rect(32, 176, 488, 186);
-            round(hdc, bar, self.px(10), colors.track);
-            let fill_to = bar.left + (bar.right - bar.left) * permille / 1000;
-            if fill_to - bar.left > self.px(10) {
-                round(
+            let bar = self.rect(32, 200, 488, 208);
+            let height = bar.bottom - bar.top;
+            draw::round(hdc, bar, height / 2, colors.track);
+            if permille > 0 {
+                let wide = ((bar.right - bar.left) * permille / 1000).max(height);
+                draw::round(
                     hdc,
                     RECT {
-                        right: fill_to,
+                        right: bar.left + wide,
                         ..bar
                     },
-                    self.px(10),
+                    height / 2,
                     colors.brand,
                 );
             }
+            draw::text(
+                hdc,
+                fonts.caption,
+                colors.muted,
+                self.rect(32, 224, 488, 244),
+                "Please keep this window open.",
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
         }
     }
 
-    unsafe fn paint_webview(&self, hdc: HDC, fonts: &Fonts, colors: &Palette) {
+    unsafe fn paint_done(&self, hdc: HDC, colors: &Palette) {
+        let fonts = &self.fonts;
+        unsafe {
+            let mark = self.rect(32, 110, 68, 146);
+            draw::disc(hdc, mark, colors.success);
+            draw::tick(hdc, mark, colors.white, self.scale);
+            draw::text(
+                hdc,
+                fonts.title,
+                colors.text,
+                self.rect(80, 110, 488, 146),
+                if self.updating {
+                    "gravecord is updated."
+                } else {
+                    "gravecord is installed."
+                },
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            draw::text(
+                hdc,
+                fonts.body,
+                colors.muted,
+                self.rect(80, 150, 488, 174),
+                "Start it now, or open it later from the Start menu.",
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            self.paint_webview(hdc, colors);
+            self.push(hdc, colors, Button::Close, "Close", false);
+            self.push(hdc, colors, Button::Launch, "Launch gravecord", true);
+        }
+    }
+
+    unsafe fn paint_failed(&self, hdc: HDC, colors: &Palette) {
+        let fonts = &self.fonts;
+        unsafe {
+            let mark = self.rect(32, 110, 68, 146);
+            draw::disc(hdc, mark, colors.danger);
+            draw::text(
+                hdc,
+                fonts.title,
+                colors.white,
+                mark,
+                "!",
+                DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            draw::text(
+                hdc,
+                fonts.title,
+                colors.text,
+                self.rect(80, 110, 488, 146),
+                "Setup could not finish",
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+            );
+            let panel = self.rect(32, 160, 488, 252);
+            draw::round(hdc, panel, self.px(8), colors.panel);
+            let inner = RECT {
+                left: panel.left + self.px(14),
+                top: panel.top + self.px(10),
+                right: panel.right - self.px(14),
+                bottom: panel.bottom - self.px(10),
+            };
+            // The full text always goes to the clipboard; on screen a very long one drops to the smaller size, and
+            // past that ends in an ellipsis.
+            let width = inner.right - inner.left;
+            let needed = draw::wrapped_height(hdc, fonts.body, width, &self.error);
+            let room = inner.bottom - inner.top;
+            let (font, ends) = if needed <= room {
+                (fonts.body, DRAW_TEXT_FORMAT(0))
+            } else if draw::wrapped_height(hdc, fonts.caption, width, &self.error) <= room {
+                (fonts.caption, DRAW_TEXT_FORMAT(0))
+            } else {
+                (fonts.caption, DT_END_ELLIPSIS)
+            };
+            draw::text(
+                hdc,
+                font,
+                colors.text,
+                inner,
+                &self.error,
+                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | ends,
+            );
+            draw::wrapped_centered(
+                hdc,
+                fonts.caption,
+                colors.muted,
+                self.rect(32, 258, 488, 292),
+                "Close any program that may be using gravecord, then run setup again. If it still fails, copy the details and send them with your report.",
+            );
+            let label = match self.copied {
+                None => "Copy details",
+                Some(true) => "Copied",
+                Some(false) => "Could not copy",
+            };
+            self.push(hdc, colors, Button::Copy, label, false);
+            self.push(hdc, colors, Button::Close, "Close", true);
+        }
+    }
+
+    /// The notice about the missing WebView2 Runtime: a panel with the explanation and the link.
+    unsafe fn paint_webview(&self, hdc: HDC, colors: &Palette) {
         if !self.webview_missing {
             return;
         }
+        let fonts = &self.fonts;
         unsafe {
-            text(
+            draw::round(hdc, self.rect(32, 220, 488, 274), self.px(8), colors.panel);
+            draw::text(
                 hdc,
-                fonts.small,
+                fonts.caption,
                 colors.muted,
-                self.rect(32, 240, 488, 270),
-                "The WebView2 Runtime is not installed. Captcha and activities need it; the rest works without.",
-                DT_LEFT | DT_WORDBREAK,
+                self.rect(46, 228, 474, 246),
+                "The WebView2 Runtime is not installed. Captcha and activities need it.",
+                DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
             );
-            let hot = self.hover == Some(Button::WebView);
-            text(
-                hdc,
-                fonts.small,
-                if hot {
-                    colors.white
-                } else {
-                    rgb(token("--text-link"))
-                },
-                self.rect(32, 270, 250, 290),
-                "Open the Microsoft download page",
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-            );
-        }
-    }
-
-    unsafe fn button(
-        &self,
-        hdc: HDC,
-        fonts: &Fonts,
-        colors: &Palette,
-        id: Button,
-        label: &str,
-        primary: bool,
-    ) {
-        let Some((_, rect)) = self.buttons().into_iter().find(|(button, _)| *button == id) else {
-            return;
-        };
-        let hot = self.hover == Some(id);
-        let fill = match (primary, hot) {
-            (true, false) => colors.brand,
-            (true, true) => colors.brand_hover,
-            (false, false) => colors.secondary,
-            (false, true) => colors.secondary_hover,
-        };
-        unsafe {
-            round(hdc, rect, self.px(8), fill);
-            text(
-                hdc,
-                fonts.body,
-                colors.white,
-                rect,
-                label,
-                DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-            );
-        }
-    }
-
-    unsafe fn check(
-        &self,
-        hdc: HDC,
-        fonts: &Fonts,
-        colors: &Palette,
-        id: Button,
-        label: &str,
-        on: bool,
-    ) {
-        let Some((_, rect)) = self.buttons().into_iter().find(|(button, _)| *button == id) else {
-            return;
-        };
-        let size = self.px(20);
-        let top = rect.top + (rect.bottom - rect.top - size) / 2;
-        let boxed = RECT {
-            left: rect.left,
-            top,
-            right: rect.left + size,
-            bottom: top + size,
-        };
-        unsafe {
-            if on {
-                round(hdc, boxed, self.px(5), colors.brand);
-                let pen = CreatePen(PS_SOLID, self.px(2).max(2), colors.white);
-                let old = SelectObject(hdc, pen.into());
-                let (x, y, s) = (boxed.left, boxed.top, size);
-                let _ = MoveToEx(hdc, x + s * 22 / 100, y + s * 52 / 100, None);
-                let _ = LineTo(hdc, x + s * 42 / 100, y + s * 70 / 100);
-                let _ = LineTo(hdc, x + s * 78 / 100, y + s * 30 / 100);
-                SelectObject(hdc, old);
-                let _ = DeleteObject(pen.into());
-            } else {
-                round(hdc, boxed, self.px(5), colors.muted);
-                let inner = RECT {
-                    left: boxed.left + 2,
-                    top: boxed.top + 2,
-                    right: boxed.right - 2,
-                    bottom: boxed.bottom - 2,
-                };
-                round(hdc, inner, self.px(4), colors.window);
-            }
-            let label_rect = RECT {
-                left: boxed.right + self.px(10),
+            let Some(rect) = self.rect_of(Button::Link) else {
+                return;
+            };
+            let face = self.face(Button::Link);
+            let label = "Open the Microsoft download page";
+            let shown = RECT {
+                right: rect.left + draw::text_width(hdc, fonts.link, label),
                 ..rect
             };
-            text(
+            draw::text(
                 hdc,
-                fonts.body,
-                colors.text,
-                label_rect,
+                if face.hover {
+                    fonts.link
+                } else {
+                    fonts.caption
+                },
+                if face.hover {
+                    colors.link_hover
+                } else {
+                    colors.link
+                },
+                shown,
                 label,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
+            if face.focus {
+                draw::ring(hdc, shown, self.px(4), colors, self.scale);
+            }
         }
-    }
-
-    /// The logo is the executable's icon art, composited on the window colour so it needs no alpha blit.
-    unsafe fn draw_logo(&self, hdc: HDC, colors: &Palette) {
-        let size = self.px(56);
-        let pixels = icon_gen::render_rgba(size as u32);
-        let background = [
-            colors.window.0 & 0xff,
-            (colors.window.0 >> 8) & 0xff,
-            (colors.window.0 >> 16) & 0xff,
-        ];
-        let mut bgra = Vec::with_capacity(pixels.len());
-        for pixel in pixels.chunks(4) {
-            let alpha = pixel[3] as u32;
-            let mixed = |channel: usize, base: u32| {
-                ((pixel[channel] as u32 * alpha + base * (255 - alpha)) / 255) as u8
-            };
-            bgra.extend([
-                mixed(2, background[2]),
-                mixed(1, background[1]),
-                mixed(0, background[0]),
-                255,
-            ]);
-        }
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: size,
-                biHeight: -size,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        unsafe {
-            SetDIBitsToDevice(
-                hdc,
-                self.px(32),
-                self.px(26),
-                size as u32,
-                size as u32,
-                0,
-                0,
-                0,
-                size as u32,
-                bgra.as_ptr().cast(),
-                &info,
-                DIB_RGB_COLORS,
-            );
-        }
-    }
-}
-
-unsafe fn fill(hdc: HDC, rect: RECT, color: COLORREF) {
-    unsafe {
-        let brush = CreateSolidBrush(color);
-        FillRect(hdc, &rect, brush);
-        let _ = DeleteObject(brush.into());
-    }
-}
-
-unsafe fn round(hdc: HDC, rect: RECT, radius: i32, color: COLORREF) {
-    unsafe {
-        let brush = CreateSolidBrush(color);
-        let old_brush = SelectObject(hdc, brush.into());
-        let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-        let _ = RoundRect(
-            hdc,
-            rect.left,
-            rect.top,
-            rect.right + 1,
-            rect.bottom + 1,
-            radius,
-            radius,
-        );
-        SelectObject(hdc, old_pen);
-        SelectObject(hdc, old_brush);
-        let _ = DeleteObject(brush.into());
-    }
-}
-
-unsafe fn text(
-    hdc: HDC,
-    font: HFONT,
-    color: COLORREF,
-    mut rect: RECT,
-    value: &str,
-    format: DRAW_TEXT_FORMAT,
-) {
-    let mut wide: Vec<u16> = value.encode_utf16().collect();
-    unsafe {
-        SelectObject(hdc, font.into());
-        SetTextColor(hdc, color);
-        DrawTextW(hdc, &mut wide, &mut rect, format);
     }
 }
 
@@ -684,15 +639,9 @@ fn run_install(
 }
 
 /// Asks a running gravecord at `exe` to close; if it will not, tells the user and lets them retry or give up.
-pub fn close_running(exe: &std::path::Path, owner: Option<HWND>) -> anyhow::Result<()> {
+pub fn close_running(exe: &Path, owner: Option<HWND>) -> anyhow::Result<()> {
     while !winsys::ask_to_close(exe, std::time::Duration::from_secs(8)) {
-        let retry = winsys::message(
-            owner,
-            "gravecord is running",
-            "gravecord is still open. Close it, then choose Retry.",
-            winsys::Kind::AskRetry,
-        );
-        if !retry {
+        if !dialog::ask_retry(owner) {
             anyhow::bail!("gravecord is still running; close it and run setup again.");
         }
     }
@@ -716,6 +665,7 @@ unsafe extern "system" fn window_proc(
             return DefWindowProcW(hwnd, message, wparam, lparam);
         }
         let app = &mut *app;
+        let point = |lparam: LPARAM| (lparam.0 as i16 as i32, (lparam.0 >> 16) as i16 as i32);
         match message {
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
@@ -730,10 +680,26 @@ unsafe extern "system" fn window_proc(
             }
             WM_ERASEBKGND => LRESULT(1),
             WM_MOUSEMOVE => {
-                let (x, y) = (lparam.0 as i16 as i32, (lparam.0 >> 16) as i16 as i32);
+                let (x, y) = point(lparam);
+                if !app.tracking {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    app.tracking = TrackMouseEvent(&mut track).is_ok();
+                }
                 let hover = app.hit(x, y);
                 if hover != app.hover {
                     app.hover = hover;
+                    app.repaint();
+                }
+                LRESULT(0)
+            }
+            draw::WM_MOUSELEAVE => {
+                app.tracking = false;
+                if app.hover.take().is_some() {
                     app.repaint();
                 }
                 LRESULT(0)
@@ -745,30 +711,66 @@ unsafe extern "system" fn window_proc(
                 }
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
+            WM_LBUTTONDOWN => {
+                let (x, y) = point(lparam);
+                app.pressed = app.hit(x, y);
+                if app.pressed.is_some() {
+                    SetCapture(hwnd);
+                    app.focus = app.pressed;
+                    app.keyboard = false;
+                }
+                app.repaint();
+                LRESULT(0)
+            }
             WM_LBUTTONUP => {
-                let (x, y) = (lparam.0 as i16 as i32, (lparam.0 >> 16) as i16 as i32);
-                if let Some(button) = app.hit(x, y) {
-                    app.click(button);
+                let (x, y) = point(lparam);
+                let pressed = app.pressed.take();
+                let _ = ReleaseCapture();
+                app.repaint();
+                if let (Some(pressed), Some(over)) = (pressed, app.hit(x, y))
+                    && pressed == over
+                {
+                    app.click(over);
+                }
+                LRESULT(0)
+            }
+            WM_CAPTURECHANGED => {
+                if app.pressed.take().is_some() {
+                    app.repaint();
                 }
                 LRESULT(0)
             }
             WM_KEYDOWN => {
                 let key = wparam.0 as u16;
-                if key == VK_RETURN.0 {
-                    match app.page {
-                        Page::Welcome => app.click(Button::Install),
-                        Page::Done => app.click(Button::Finish),
-                        Page::Failed => app.click(Button::Close),
-                        Page::Installing => {}
+                let repeat = lparam.0 & (1 << 30) != 0;
+                if key == VK_TAB.0 {
+                    let back = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                    app.tab(back);
+                } else if key == VK_RETURN.0 && !repeat {
+                    // Enter presses the focused push button; on a checkbox, a link or nothing it presses the primary one.
+                    let target = match app.focus {
+                        Some(Button::Desktop | Button::Link) | None => app.primary(),
+                        other => other,
+                    };
+                    if let Some(button) = target {
+                        app.click(button);
+                    }
+                } else if key == VK_SPACE.0 && !repeat {
+                    if let Some(button) = app.focus
+                        && app.buttons().iter().any(|(b, _)| *b == button)
+                    {
+                        app.click(button);
                     }
                 } else if key == VK_ESCAPE.0 && app.page != Page::Installing {
                     let _ = DestroyWindow(hwnd);
-                } else if key == VK_SPACE.0 {
-                    match app.page {
-                        Page::Welcome => app.click(Button::Desktop),
-                        Page::Done => app.click(Button::Launch),
-                        _ => {}
-                    }
+                }
+                LRESULT(0)
+            }
+            WM_TIMER => {
+                if wparam.0 == TIMER_COPIED {
+                    let _ = KillTimer(Some(hwnd), TIMER_COPIED);
+                    app.copied = None;
+                    app.repaint();
                 }
                 LRESULT(0)
             }
@@ -780,7 +782,7 @@ unsafe extern "system" fn window_proc(
                 let result = app.shared.result.lock().unwrap().take();
                 match result {
                     Some(Ok(())) => {
-                        app.page = Page::Done;
+                        app.set_page(Page::Done);
                         app.repaint();
                     }
                     Some(Err(message)) => app.fail(message),
@@ -789,8 +791,8 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DPICHANGED => {
-                app.dpi = (wparam.0 & 0xffff) as i32;
-                app.make_fonts();
+                app.scale = Scale((wparam.0 & 0xffff) as i32);
+                app.fonts = Fonts::new(app.scale);
                 let suggested = &*(lparam.0 as *const RECT);
                 let _ = SetWindowPos(
                     hwnd,
@@ -832,7 +834,7 @@ unsafe fn paint_buffered(app: &App, target: HDC) {
         let memory = CreateCompatibleDC(Some(target));
         let bitmap = CreateCompatibleBitmap(target, width, height);
         let old = SelectObject(memory, bitmap.into());
-        fill(
+        draw::fill(
             memory,
             RECT {
                 left: 0,
@@ -840,7 +842,7 @@ unsafe fn paint_buffered(app: &App, target: HDC) {
                 right: width,
                 bottom: height,
             },
-            palette().window,
+            draw::palette().window,
         );
         app.paint(memory);
         let _ = BitBlt(target, 0, 0, width, height, Some(memory), 0, 0, SRCCOPY);
@@ -850,51 +852,124 @@ unsafe fn paint_buffered(app: &App, target: HDC) {
     }
 }
 
+/// What the screenshot option asks for.
+pub struct Shot {
+    pub path: PathBuf,
+    pub page: ShotPage,
+    /// Progress for the progress pages, in thousandths.
+    pub progress: Option<u32>,
+    pub dpi: Option<u32>,
+    pub version: Option<String>,
+    pub button: Option<(ShotButton, ShotMode)>,
+}
+
 pub struct Start {
     pub dir: PathBuf,
+    /// Where the uninstaller dialogs say the settings live.
+    pub data_dir: PathBuf,
     pub archive: Option<Archive>,
     pub stub: Vec<u8>,
-    pub screenshot: Option<PathBuf>,
-    pub state: Option<String>,
+    pub shot: Option<Shot>,
+}
+
+/// The step label the installer would report at this progress.
+fn label_at(permille: u32) -> &'static str {
+    match permille {
+        0..900 => "Copying files",
+        900..960 => "Adding shortcuts",
+        960..1000 => "Registering the app",
+        _ => "Done",
+    }
+}
+
+/// Paints one of the dialogs instead of a page. Returns the exit code, or `None` for a page.
+fn dialog_shot(start: &Start, shot: &Shot) -> Option<i32> {
+    let spec = match shot.page {
+        ShotPage::Uninstall => dialog::confirm_removal(&start.dir),
+        ShotPage::KeepData => dialog::keep_data(&start.data_dir),
+        ShotPage::Removed => dialog::removed(),
+        ShotPage::Running => dialog::still_running(),
+        _ => return None,
+    };
+    let last = spec.labels.len() - 1;
+    let button = shot.button.and_then(|(button, mode)| match button {
+        ShotButton::Primary => Some((spec.default, mode)),
+        ShotButton::Secondary => Some((if spec.default == 0 { last } else { 0 }, mode)),
+        _ => None,
+    });
+    Some(if dialog::screenshot(&spec, shot.dpi, button, &shot.path) {
+        0
+    } else {
+        1
+    })
 }
 
 /// Runs the window until it closes. Returns the process exit code.
 pub fn run(start: Start) -> i32 {
     winsys::com_init();
+    if let Some(shot) = &start.shot
+        && let Some(code) = dialog_shot(&start, shot)
+    {
+        return code;
+    }
+    let shot = start.shot;
+    let carried = start
+        .archive
+        .as_ref()
+        .map(|a| a.version.clone())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    let version = match shot.as_ref().and_then(|s| s.version.clone()) {
+        Some(text) => wording::version_label(&text),
+        None => wording::version_label(&carried),
+    };
+    let screenshot_page = shot.as_ref().map(|s| s.page);
+    let updating = match screenshot_page {
+        Some(page) => matches!(
+            page,
+            ShotPage::Update | ShotPage::UpdateProgress | ShotPage::UpdateDone
+        ),
+        None => start.dir.join(paths::MANIFEST).is_file(),
+    };
     let mut app = Box::new(App {
         hwnd: HWND::default(),
-        dpi: 96,
-        fonts: None,
+        scale: Scale(96),
+        fonts: Fonts::new(Scale(96)),
         page: Page::Welcome,
         dir: start.dir,
+        updating,
         desktop: false,
-        launch: true,
-        webview_missing: !winsys::webview2_present(),
+        // A screenshot never depends on what this machine has installed.
+        webview_missing: match screenshot_page {
+            Some(page) => page == ShotPage::Webview,
+            None => !winsys::webview2_present(),
+        },
         hover: None,
+        pressed: None,
+        focus: None,
+        keyboard: false,
+        tracking: false,
+        copied: None,
         error: String::new(),
-        version: start
-            .archive
-            .as_ref()
-            .map(|a| a.version.clone())
-            .unwrap_or_default(),
+        version,
         archive: start.archive.map(Arc::new),
         stub: Arc::new(start.stub),
         shared: Arc::new(Shared::default()),
     });
-    if let Some(state) = start.state.as_deref() {
-        match state {
-            "progress" => {
+    if let (Some(shot), Some(page)) = (&shot, screenshot_page) {
+        match page {
+            ShotPage::Progress | ShotPage::UpdateProgress => {
+                let permille = shot.progress.unwrap_or(420);
                 app.page = Page::Installing;
-                app.shared.permille.store(420, Ordering::Relaxed);
-                *app.shared.status.lock().unwrap() = "Copying files".into();
+                app.shared.permille.store(permille, Ordering::Relaxed);
+                *app.shared.status.lock().unwrap() = label_at(permille).into();
             }
-            "done" => app.page = Page::Done,
-            "failed" => {
+            ShotPage::Done | ShotPage::UpdateDone => app.page = Page::Done,
+            ShotPage::Error => {
                 app.page = Page::Failed;
                 app.error =
-                    "Could not replace C:\\example\\gravecord.exe: Access is denied.".into();
+                    "Could not replace C:\\Users\\example\\AppData\\Local\\Programs\\gravecord\\gravecord.exe: Access is denied. (os error 5)"
+                        .into();
             }
-            "welcome-webview" => app.webview_missing = true,
             _ => {}
         }
     }
@@ -944,34 +1019,80 @@ pub fn run(start: Start) -> i32 {
         };
         let app = &mut *app_ptr;
         app.hwnd = hwnd;
-        app.dpi = GetDpiForWindow(hwnd).max(96) as i32;
-        app.make_fonts();
-        // Size the outer window so the client area is exactly WIDTH x HEIGHT at this dpi.
-        let mut outer = RECT {
-            left: 0,
-            top: 0,
-            right: app.px(WIDTH),
-            bottom: app.px(HEIGHT),
+        let real_dpi = GetDpiForWindow(hwnd).max(96) as i32;
+        let forced = shot.as_ref().and_then(|s| s.dpi);
+        app.scale = Scale(forced.map(|d| d as i32).unwrap_or(real_dpi));
+        app.fonts = Fonts::new(app.scale);
+        if app.page == Page::Installing {
+            app.set_page(Page::Installing);
+        }
+        winsys::dark_caption(hwnd, draw::palette().window.0, draw::palette().text.0);
+
+        // Size the outer window so the client area is exactly WIDTH x HEIGHT at this scale.
+        let (ow, oh) = if forced.is_some() {
+            // A forced scale differs from the monitor's, so the frame is measured instead of computed.
+            let (mut outer, mut inner) = (RECT::default(), RECT::default());
+            let _ = GetWindowRect(hwnd, &mut outer);
+            let _ = GetClientRect(hwnd, &mut inner);
+            (
+                (outer.right - outer.left) - (inner.right - inner.left) + app.px(WIDTH),
+                (outer.bottom - outer.top) - (inner.bottom - inner.top) + app.px(HEIGHT),
+            )
+        } else {
+            let mut outer = RECT {
+                left: 0,
+                top: 0,
+                right: app.px(WIDTH),
+                bottom: app.px(HEIGHT),
+            };
+            let _ = AdjustWindowRectExForDpi(
+                &mut outer,
+                style,
+                false,
+                WINDOW_EX_STYLE(0),
+                app.scale.0 as u32,
+            );
+            (outer.right - outer.left, outer.bottom - outer.top)
         };
-        let _ =
-            AdjustWindowRectExForDpi(&mut outer, style, false, WINDOW_EX_STYLE(0), app.dpi as u32);
-        let (ow, oh) = (outer.right - outer.left, outer.bottom - outer.top);
         let x = (GetSystemMetrics(SM_CXSCREEN) - ow) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - oh) / 2;
         let _ = SetWindowPos(hwnd, None, x.max(0), y.max(0), ow, oh, SWP_NOZORDER);
+
+        if let Some((button, mode)) = shot.as_ref().and_then(|s| s.button) {
+            let target = match button {
+                ShotButton::Change => Button::Change,
+                ShotButton::Desktop => Button::Desktop,
+                ShotButton::Install | ShotButton::Primary => Button::Install,
+                ShotButton::Launch => Button::Launch,
+                ShotButton::Close | ShotButton::Secondary => Button::Close,
+                ShotButton::Copy => Button::Copy,
+                ShotButton::Link => Button::Link,
+            };
+            match mode {
+                ShotMode::Hover => app.hover = Some(target),
+                ShotMode::Pressed => {
+                    app.hover = Some(target);
+                    app.pressed = Some(target);
+                }
+                ShotMode::Focus => {
+                    app.focus = Some(target);
+                    app.keyboard = true;
+                }
+            }
+        }
         let _ = ShowWindow(
             hwnd,
-            if start.screenshot.is_some() {
+            if shot.is_some() {
                 SW_SHOWNOACTIVATE
             } else {
                 SW_SHOW
             },
         );
 
-        let code = if let Some(path) = &start.screenshot {
+        let code = if let Some(shot) = &shot {
             // PrintWindow renders the whole window, caption included, without needing it on a visible desktop.
             let _ = UpdateWindow(hwnd);
-            match capture(hwnd, path) {
+            match capture(hwnd, &shot.path) {
                 Ok(()) => 0,
                 Err(_) => 1,
             }
@@ -989,8 +1110,25 @@ pub fn run(start: Start) -> i32 {
     }
 }
 
-unsafe fn capture(hwnd: HWND, path: &std::path::Path) -> anyhow::Result<()> {
+/// Saves the whole window, caption included, as a PNG.
+pub(crate) unsafe fn capture(hwnd: HWND, path: &Path) -> anyhow::Result<()> {
     unsafe {
+        // Let the window receive its first paint and frame messages before it is read back.
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut message = MSG::default();
+        while std::time::Instant::now() < until {
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME,
+        );
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect)?;
         let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
@@ -1023,7 +1161,10 @@ unsafe fn capture(hwnd: HWND, path: &std::path::Path) -> anyhow::Result<()> {
         let _ = DeleteDC(memory);
         ReleaseDC(None, screen);
         anyhow::ensure!(printed, "PrintWindow failed");
-        std::fs::write(path, icon_gen::png(width as u32, height as u32, &rgba))?;
+        std::fs::write(
+            path,
+            crate::icon_gen::png(width as u32, height as u32, &rgba),
+        )?;
         Ok(())
     }
 }

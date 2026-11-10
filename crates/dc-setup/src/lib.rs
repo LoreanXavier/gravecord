@@ -2,12 +2,16 @@
 #![deny(unsafe_code)]
 
 pub mod app_id;
+mod dialog;
+mod draw;
+pub mod elide;
 pub mod icon_gen;
 pub mod install;
 pub mod paths;
 pub mod payload;
 mod ui;
 mod winsys;
+pub mod wording;
 
 use paths::Options;
 use std::path::{Path, PathBuf};
@@ -17,7 +21,7 @@ pub fn run() -> i32 {
     let options = match paths::parse_args(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(message) => {
-            winsys::message(None, "gravecord setup", &message, winsys::Kind::Error);
+            dialog::error(None, "gravecord setup", &message);
             return 2;
         }
     };
@@ -51,7 +55,7 @@ pub fn run() -> i32 {
             if silent {
                 eprintln!("{message}");
             } else {
-                winsys::message(None, "gravecord setup", &message, winsys::Kind::Error);
+                dialog::error(None, "gravecord setup", &message);
             }
             1
         }
@@ -93,12 +97,24 @@ fn setup(options: Options, exe: &Path) -> anyhow::Result<i32> {
         return Ok(0);
     }
 
+    let shot = options.screenshot.map(|path| ui::Shot {
+        path,
+        page: options.screenshot_page.unwrap_or(paths::ShotPage::Welcome),
+        progress: options.screenshot_progress,
+        dpi: options.screenshot_dpi,
+        version: options.screenshot_version,
+        button: options.screenshot_button,
+    });
+    let data_dir = match &options.data_dir {
+        Some(dir) => dir.clone(),
+        None => winsys::local_app_data()?.join("gravecord"),
+    };
     Ok(ui::run(ui::Start {
         dir: options.dir.unwrap_or(default_dir),
+        data_dir,
         archive,
         stub,
-        screenshot: options.screenshot,
-        state: options.state,
+        shot,
     }))
 }
 
@@ -116,20 +132,10 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
     };
     let mut purge = options.purge_data;
     if !options.silent {
-        let ask = format!("Remove gravecord from {}?", dir.display());
-        if !winsys::message(None, "Uninstall gravecord", &ask, winsys::Kind::AskYes) {
+        if !dialog::ask_removal(None, &dir) {
             return Ok(0);
         }
-        let keep = winsys::message(
-            None,
-            "Uninstall gravecord",
-            &format!(
-                "Keep your settings and sign-in data?\n\n{}\n\nYes keeps it, so a later install picks up where you left off. No deletes it.",
-                data_dir.display()
-            ),
-            winsys::Kind::AskYes,
-        );
-        purge = !keep;
+        purge = !dialog::ask_keep_data(None, &data_dir);
     }
     close_running(&dir.join("gravecord.exe"), options.silent)?;
     install::uninstall(
@@ -140,12 +146,7 @@ fn uninstall(options: &Options, exe: &Path) -> anyhow::Result<i32> {
         },
     )?;
     if !options.silent {
-        winsys::message(
-            None,
-            "Uninstall gravecord",
-            "gravecord was removed.",
-            winsys::Kind::Info,
-        );
+        dialog::info(None, "Uninstall gravecord", "gravecord was removed.");
     }
     // This exe is the last file in the folder; it can only be deleted once it has exited. The helper is started
     // only now, after the dialog is gone, and waits for this process by id.
