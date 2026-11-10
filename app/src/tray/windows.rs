@@ -28,6 +28,10 @@ fn restart_message() -> u32 {
     static MESSAGE: OnceLock<u32> = OnceLock::new();
     *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) })
 }
+fn setup_quit_message() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("gravecord.QuitForSetup")) })
+}
 
 struct OwnedIcon(HICON);
 impl Drop for OwnedIcon {
@@ -52,6 +56,7 @@ struct Native {
     applied: Cell<Option<IconKey>>,
     present: Cell<bool>,
     enabled: Cell<bool>,
+    exiting: Cell<bool>,
     hooked: Cell<bool>,
     warned: Cell<bool>,
     icons: RefCell<Vec<(IconKey, OwnedIcon)>>,
@@ -69,7 +74,7 @@ impl Binding {
         else {
             return None;
         };
-        if callback_message() == 0 || restart_message() == 0 {
+        if callback_message() == 0 || restart_message() == 0 || setup_quit_message() == 0 {
             return None;
         }
         let hwnd = HWND(handle.hwnd.get() as *mut _);
@@ -85,6 +90,7 @@ impl Binding {
             applied: Cell::new(None),
             present: Cell::new(false),
             enabled: Cell::new(true),
+            exiting: Cell::new(false),
             hooked: Cell::new(false),
             warned: Cell::new(false),
             icons: RefCell::new(Vec::new()),
@@ -280,8 +286,17 @@ impl Native {
             if action == Action::VoiceSettings {
                 self.show();
             }
+            if action == Action::Quit {
+                self.exiting.set(true);
+            }
             let _ = self.sender.send(Update::Tray(action));
         }
+    }
+}
+
+impl Native {
+    fn hides_close(&self) -> bool {
+        !self.exiting.get() && self.desired.get().hide_on_close(self.present.get())
     }
 }
 
@@ -308,13 +323,19 @@ unsafe extern "system" fn callback(
             drop(Rc::from_raw(pointer));
         }
     } else if native.enabled.get() {
-        if message == restart_message() {
+        if message != 0 && message == setup_quit_message() {
+            // Setup posts this before WM_CLOSE. Keep the following close out of the tray path,
+            // even if a network update refreshes the desired tray state before shutdown runs.
+            native.exiting.set(true);
+            let _ = native.sender.send(Update::Tray(Action::Quit));
+            return LRESULT(0);
+        } else if message == restart_message() {
             native.present.set(false);
             native.applied.set(None);
             native.apply();
         } else if message == WM_SETTINGCHANGE {
             native.apply();
-        } else if message == WM_CLOSE && native.desired.get().hide_on_close(native.present.get()) {
+        } else if message == WM_CLOSE && native.hides_close() {
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
@@ -329,4 +350,47 @@ unsafe extern "system" fn callback(
         }
     }
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_quit_dispatch_bypasses_tray_even_after_state_refresh() {
+        let message = setup_quit_message();
+        assert_ne!(message, 0);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let native = Rc::new(Native {
+            hwnd: HWND::default(),
+            desired: Cell::new(State::default()),
+            applied: Cell::new(None),
+            present: Cell::new(true),
+            enabled: Cell::new(true),
+            exiting: Cell::new(false),
+            hooked: Cell::new(false),
+            warned: Cell::new(false),
+            icons: RefCell::new(Vec::new()),
+            sender,
+        });
+        assert!(native.hides_close());
+        // This message branch only queues an action; it never uses the HWND or touches the shell.
+        unsafe {
+            callback(
+                HWND::default(),
+                message,
+                WPARAM(0),
+                LPARAM(0),
+                SUBCLASS,
+                Rc::as_ptr(&native) as usize,
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Update::Tray(Action::Quit))
+        ));
+        native.desired.set(State::default());
+        assert!(!native.hides_close());
+        assert_eq!(Rc::strong_count(&native), 1);
+    }
 }

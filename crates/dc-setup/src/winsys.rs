@@ -32,9 +32,9 @@ use windows::Win32::UI::Shell::{FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, IDYES, MB_ICONERROR, MB_ICONINFORMATION,
     MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MESSAGEBOX_STYLE, MessageBoxW, PostMessageW,
-    SW_SHOWNORMAL, WM_CLOSE,
+    RegisterWindowMessageW, SW_SHOWNORMAL, WM_CLOSE,
 };
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::{PCWSTR, PWSTR, w};
 
 pub const WEBVIEW2_URL: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
 const PUBLISHER: &str = "LoreanXavier";
@@ -313,6 +313,12 @@ unsafe extern "system" fn close_window(window: HWND, param: LPARAM) -> windows::
     unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
     if pids.contains(&pid) {
         unsafe {
+            // Newer clients distinguish setup shutdown from the caption's close-to-tray action.
+            // WM_CLOSE remains for older clients and for windows without the tray hook.
+            let quit = RegisterWindowMessageW(w!("gravecord.QuitForSetup"));
+            if quit != 0 {
+                let _ = PostMessageW(Some(window), quit, Default::default(), Default::default());
+            }
             let _ = PostMessageW(
                 Some(window),
                 WM_CLOSE,

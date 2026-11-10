@@ -13,7 +13,7 @@
 - Per user, no administrator rights. Default folder `%LOCALAPPDATA%\Programs\gravecord`; Change opens the folder picker. A chosen folder that already holds other files gets a `gravecord` subfolder.
 - Start Menu shortcut; Desktop shortcut is an unticked checkbox; Apps & features entry under `HKCU\...\Uninstall\gravecord` (icon, version, size, publisher LoreanXavier).
 - Everything created is listed in `install.manifest` in the install folder; the uninstaller removes exactly that, then deletes itself. It asks whether to keep `%LOCALAPPDATA%\gravecord` (settings and sign-in), keeping by default. Installing never touches that folder.
-- Updating over an install asks a running gravecord to close (WM_CLOSE), then offers Retry/Cancel if it stays open.
+- Updating over an install posts a cooperative setup-quit message, followed by WM_CLOSE for older clients and windows without a tray hook. It offers Retry/Cancel if the process stays open. Older tray builds that predate this message may need Quit from their tray menu first. No process is forcibly terminated.
 - WebView2 (captcha, activities) is checked; if missing the window says so and links the Microsoft page. Nothing is downloaded.
 - The exe is unsigned, so SmartScreen warns on first run.
 - The app and setup embed the supplied Gravecord Side-eye ICO. Setup uses its supplied 64/128px raster; the in-app icon-set preference does not change executable or shortcut resources.
@@ -46,3 +46,12 @@ New shortcuts carry `gravecord.desktop` as their AppUserModelID, matching the Wi
 unit test creates a link outside the Start Menu, reloads the property and removes the link. The property was read
 back successfully. Registered installation and actual Windows toast display still need a live check; a portable
 folder without an installed shortcut is not covered by this notification setup.
+
+## Setup shutdown and the tray
+
+The setup-quit message marks the receiving tray binding as exiting and queues the existing Quit
+action. A following WM_CLOSE bypasses close-to-tray even if another update refreshes the tray state.
+The callback unit test exercises dispatch and that persistent bypass without a window, shell icon,
+user profile or actual quit. Native running-app shutdown through setup remains unverified; the
+silent failure/Retry path still handles uncooperative or older clients. Old setup executables only
+send WM_CLOSE and cannot request this bypass.
