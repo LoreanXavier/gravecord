@@ -37,7 +37,16 @@ fn ordered_roles(guild: &dc_state::Guild, member: &dc_state::members::Member) ->
 
 impl Root {
     pub(super) fn profile_role_chips(&self, user: Id, strong: Hsla) -> Option<AnyElement> {
-        let guild = self.current_guild()?;
+        self.profile_role_chips_for(self.guild?, user, strong)
+    }
+
+    pub(super) fn profile_role_chips_for(
+        &self,
+        guild: Id,
+        user: Id,
+        strong: Hsla,
+    ) -> Option<AnyElement> {
+        let guild = self.stores.guilds.iter().find(|known| known.id == guild)?;
         let member = self.stores.members.get(guild.id, user)?;
         let roles = ordered_roles(guild, member);
         if roles.is_empty() {

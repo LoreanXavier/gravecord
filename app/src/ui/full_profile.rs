@@ -15,7 +15,7 @@ use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, SharedString, Subscription, Window,
-    deferred, div, hsla, img, prelude::*, px, rgba,
+    deferred, div, hsla, img, prelude::*, px, rgba, svg,
 };
 use serde_json::Value;
 
@@ -28,6 +28,7 @@ pub(super) enum Tab {
 
 pub(super) struct FullProfile {
     pub user: Id,
+    guild: Option<Id>,
     pub tab: Tab,
     pub(super) note: Entity<Editor>,
     /// The note as last saved, so a blur only writes a change.
@@ -64,6 +65,27 @@ pub(super) fn time_ago(seconds: i64) -> String {
 /// Milliseconds since the Unix epoch of a snowflake.
 fn snowflake_ms(id: Id) -> i64 {
     (id >> 22) as i64 + 1_420_070_400_000
+}
+
+fn profile_route(user: Id, guild: Option<Id>) -> String {
+    let mut route = format!(
+        "/users/{user}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
+    );
+    if let Some(guild) = guild {
+        route.push_str(&format!("&guild_id={guild}"));
+    }
+    route
+}
+
+/// 370480.An formats the server's ISO date in the current local timezone.
+fn profile_date(value: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%b %-d, %Y")
+                .to_string()
+        })
 }
 
 impl Root {
@@ -118,18 +140,14 @@ impl Root {
         });
         self.full_profile = Some(FullProfile {
             user,
+            guild: self.guild,
             tab: Tab::Activity,
             note,
             saved_note: String::new(),
             _events: events,
         });
         for (key, route) in [
-            (
-                format!("profile:{user}"),
-                format!(
-                    "/users/{user}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
-                ),
-            ),
+            (format!("profile:{user}"), profile_route(user, self.guild)),
             (
                 format!("outbox:{user}"),
                 format!("/content-inventory/users/{user}/outbox"),
@@ -152,7 +170,18 @@ impl Root {
             return;
         };
         let user = open.user;
-        if key == format!("outbox:{user}") {
+        if key == format!("profile:{user}") {
+            if let Some(guild) = open.guild
+                && let Some(body) = self.fetched.get(key)
+                && body["guild_member_profile"]["guild_id"].as_str()
+                    == Some(guild.to_string().as_str())
+                && body["guild_member"].is_object()
+            {
+                self.stores
+                    .members
+                    .apply_member(guild, &body["guild_member"], Some(&body["user"]));
+            }
+        } else if key == format!("outbox:{user}") {
             let entries: Vec<Value> = self.fetched[key]["entries"]
                 .as_array()
                 .cloned()
@@ -244,6 +273,71 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(tint)
             .child(text.into())
+    }
+
+    fn full_profile_member_since(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+        strong: Hsla,
+        subtle: Hsla,
+    ) -> AnyElement {
+        let account_date = super::dm_profile::member_since(user);
+        let text = |value: String| {
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(strong)
+                .child(value)
+        };
+        let member = guild.and_then(|guild| {
+            self.stores
+                .guild(guild)
+                .zip(self.stores.members.get(guild, user))
+        });
+        let Some((guild, member)) = member else {
+            return text(account_date).into_any_element();
+        };
+        let guild_image = self.images.get(&format!("guild:{}", guild.id)).cloned();
+        div()
+            .parity("full-profile-member-since")
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        svg()
+                            .path("icons/home.svg")
+                            .size(px(16.))
+                            .text_color(strong),
+                    )
+                    .child(text(account_date)),
+            )
+            .child(div().size(px(4.)).rounded_full().bg(subtle))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .children(guild_image.map(|image| img(image).size_full()))
+                            .when(guild.icon.is_none(), |d| {
+                                d.text_size(px(8.))
+                                    .text_color(strong)
+                                    .child(guild.acronym())
+                            }),
+                    )
+                    .children(member.joined_at.as_deref().and_then(profile_date).map(text)),
+            )
+            .into_any_element()
     }
 
     /// One `card_Bu4Al8`: art, title, subtitle and the badges row.
@@ -441,6 +535,14 @@ impl Root {
             }
         };
         let relationship = self.stores.relationships.get(&id).copied();
+        let friend_since = (relationship == Some(RELATIONSHIP_FRIEND))
+            .then(|| {
+                self.stores
+                    .relationship_since
+                    .get(&id)
+                    .and_then(|since| profile_date(since))
+            })
+            .flatten();
         let me = self.stores.current_user.as_ref().map(|known| known.id) == Some(id);
 
         // `profileHeader_s3DB6Y`: the 140px banner and the avatar over its edge.
@@ -575,11 +677,41 @@ impl Root {
             _ => None,
         };
         let buttons = div()
+            .parity("full-profile-buttons")
             .h(px(32.))
             .flex()
             .gap(px(8.))
+            .when(relationship == Some(RELATIONSHIP_FRIEND) && !me, |d| {
+                d.child(
+                    div()
+                        .id("full-profile-message-primary")
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(rgba(0xffffff14))
+                        .bg(gpui::rgb(0x555555))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon("chat_bubble", 16., "--white"))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--white"))
+                                .child("Message"),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.full_profile = None;
+                            this.open_dm_with(id, cx);
+                        })),
+                )
+            })
             .children(primary)
-            .when(!me, |this| {
+            .when(!me && relationship != Some(RELATIONSHIP_FRIEND), |this| {
                 this.child(
                     secondary_button("full-profile-message", "chat_bubble").on_click(cx.listener(
                         move |this, _, _, cx| {
@@ -651,7 +783,8 @@ impl Root {
                             .mt(px(-4.))
                             .pt(px(4.))
                             .pl(px(32.))
-                            .pr(px(24.))
+                            // `profileBody` pads 24 and keeps a stable 8px gutter for its thin scrollbar.
+                            .pr(px(32.))
                             .pb(px(32.))
                             .flex()
                             .flex_col()
@@ -661,14 +794,32 @@ impl Root {
                             .when_some(bio, |this, bio| {
                                 this.child(section(None).child(self.bio(&bio, strong, cx)))
                             })
-                            .child(
-                                section(Some("Member Since")).child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(strong)
-                                        .child(super::dm_profile::member_since(id)),
-                                ),
+                            .child(section(Some("Member Since")).child(
+                                self.full_profile_member_since(id, open.guild, strong, subtle),
+                            ))
+                            .when_some(friend_since, |d, date| {
+                                d.child(
+                                    section(Some("Friends Since")).child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .text_color(strong)
+                                            .child(date),
+                                    ),
+                                )
+                            })
+                            .when_some(
+                                open.guild.and_then(|guild| {
+                                    self.profile_role_chips_for(guild, id, strong)
+                                }),
+                                |d, roles| {
+                                    d.child(
+                                        section(Some("Roles"))
+                                            .parity("full-profile-roles")
+                                            .gap(px(4.))
+                                            .child(roles),
+                                    )
+                                },
                             )
                             .when(!me, |this| {
                                 this.child(
@@ -934,7 +1085,24 @@ fn status_dot_120(status: &str) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use super::time_ago;
+    use super::{profile_date, profile_route, time_ago};
+
+    #[test]
+    fn the_profile_request_names_the_guild_only_when_one_is_in_view() {
+        assert!(!profile_route(7, None).contains("guild_id"));
+        assert!(profile_route(7, None).starts_with("/users/7/profile?type=popout"));
+        assert!(profile_route(7, Some(9)).ends_with("&guild_id=9"));
+    }
+
+    #[test]
+    fn profile_dates_read_as_month_day_year() {
+        // Noon UTC is the same calendar day in every zone from UTC-11 to UTC+11.
+        assert_eq!(
+            profile_date("2021-10-29T12:00:00.000000+00:00").as_deref(),
+            Some("Oct 29, 2021")
+        );
+        assert_eq!(profile_date("not a date"), None);
+    }
 
     #[test]
     fn time_ago_rounds_into_the_official_bands() {

@@ -1138,6 +1138,7 @@ pub struct Stores {
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
     pub relationship_nicknames: HashMap<Id, String>,
+    pub relationship_since: HashMap<Id, String>,
     /// RelationshipStore's spam-request and ignored-pending counters are separate sets.
     pub spam_relationships: HashSet<Id>,
     pub ignored_pending_relationships: HashSet<Id>,
@@ -1165,6 +1166,8 @@ pub struct Stores {
     pub prefs: HashMap<&'static str, u64>,
     /// The account's proto settings as the server last gave them, for a change to be built on.
     settings_raw: Vec<u8>,
+    /// READY carried the account's settings, so `settings_raw` is the whole of them and a write may be built from it.
+    settings_loaded: bool,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
     pub read_states: read_state::ReadStates,
@@ -1439,6 +1442,11 @@ impl Stores {
                     } else if name == "RELATIONSHIP_UPDATE" {
                         self.relationship_nicknames.remove(&user);
                     }
+                    if let Some(since) = text(&data["since"]) {
+                        self.relationship_since.insert(user, since);
+                    } else if name == "RELATIONSHIP_UPDATE" {
+                        self.relationship_since.remove(&user);
+                    }
                     if data["is_spam_request"] == true {
                         self.spam_relationships.insert(user);
                     } else {
@@ -1481,6 +1489,7 @@ impl Stores {
                     self.relationships.remove(&user);
                     self.relationship_nicknames.remove(&user);
                     self.clear_relationship_request_flags(user);
+                    self.relationship_since.remove(&user);
                     if data["user_ignored"] != true {
                         self.ignored.remove(&user);
                     }
@@ -1627,7 +1636,13 @@ impl Stores {
 
     /// Changes one client preference: the new value shows at once, and the PATCH body value comes back (the whole of
     /// the top-level message it lives in, see `settings::set_pref`).
+    ///
+    /// Empty until the account's settings have arrived (READY carries them): a patch built from nothing would
+    /// replace the whole message on the server and wipe everything else in it. An empty value is never sent.
     pub fn set_pref(&mut self, pref: &'static settings::ProtoPref, value: u64) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
         let (patch, updated) = settings::set_pref(&self.settings_raw, pref, value);
         self.settings_raw = updated;
         self.prefs.insert(pref.key, value);
@@ -1638,7 +1653,11 @@ impl Stores {
         settings::content_dismissed(&self.settings_raw, content)
     }
 
+    /// Empty until the account's settings have arrived, as `set_pref`.
     pub fn dismiss_content(&mut self, content: u16) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
         let (patch, updated) = settings::dismiss_content(&self.settings_raw, content);
         self.settings_raw = updated;
         patch
@@ -1652,6 +1671,9 @@ impl Stores {
     /// Chooses a status (`online`, `idle`, `dnd`, `invisible`) until `expires_at_ms` (zero: until changed). The new
     /// status shows at once; the PATCH body value comes back.
     pub fn set_status(&mut self, status: &str, expires_at_ms: u64, now_ms: u64) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
         let (patch, updated) =
             settings::set_status(&self.settings_raw, status, expires_at_ms, now_ms);
         self.settings_raw = updated;
@@ -1665,6 +1687,9 @@ impl Stores {
         custom: Option<&settings::CustomStatus>,
         now_ms: u64,
     ) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
         let (patch, updated) = settings::set_custom_status(&self.settings_raw, custom, now_ms);
         self.settings_raw = updated;
         patch
@@ -1711,8 +1736,10 @@ impl Stores {
             .unwrap_or_default();
         self.prefs.clear();
         self.settings_raw.clear();
+        self.settings_loaded = false;
         if let Some(proto) = data["user_settings_proto"].as_str() {
             self.settings_raw = settings::decode(proto);
+            self.settings_loaded = true;
             self.read_prefs(proto, false);
         }
         self.session_id = text(&data["session_id"]);
@@ -1733,6 +1760,12 @@ impl Stores {
             .into_iter()
             .flatten()
             .filter_map(|entry| Some((id(&entry["id"])?, text(&entry["nickname"])?)))
+            .collect();
+        self.relationship_since = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((id(&entry["id"])?, text(&entry["since"])?)))
             .collect();
         self.ignored = data["relationships"]
             .as_array()
@@ -2401,6 +2434,67 @@ mod tests {
     }
 
     #[test]
+    fn settings_are_not_written_before_they_have_arrived() {
+        let mut stores = Stores::default();
+        // Nothing loaded: a patch would replace the whole message on the server.
+        assert_eq!(stores.dismiss_content(133), "");
+        assert_eq!(stores.set_pref(&settings::THEME, 2), "");
+        assert_eq!(stores.set_status("idle", 0, 0), "");
+        assert_eq!(stores.set_custom_status(None, 0), "");
+        assert!(!stores.content_dismissed(133));
+        // READY without the settings field leaves it so.
+        stores.dispatch("READY", &json!({"users": []}));
+        assert_eq!(stores.dismiss_content(133), "");
+        // An account whose settings are empty has still sent them.
+        stores.dispatch("READY", &json!({"users": [], "user_settings_proto": ""}));
+        assert_ne!(stores.dismiss_content(133), "");
+        assert!(stores.content_dismissed(133));
+    }
+
+    #[test]
+    fn friendship_dates_follow_ready_add_update_and_removal() {
+        let mut stores = Stores::default();
+        let since = "2026-11-09T12:00:00.000000+00:00";
+        stores.dispatch(
+            "READY",
+            &json!({
+                "users":[{"id":"30","username":"Zed"},{"id":"31","username":"Beta"}],
+                "relationships":[{"id":"30","type":1,"since":since},{"id":"31","type":1}]
+            }),
+        );
+        assert_eq!(
+            stores.relationship_since.get(&30).map(String::as_str),
+            Some(since)
+        );
+        assert!(!stores.relationship_since.contains_key(&31));
+        // 994500: ADD keeps a date it does not carry, UPDATE drops one it does not carry.
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"30","type":1}));
+        assert_eq!(
+            stores.relationship_since.get(&30).map(String::as_str),
+            Some(since)
+        );
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"31","type":1,"since":"2026-11-10T08:00:00+00:00"}),
+        );
+        assert!(stores.relationship_since.contains_key(&31));
+        stores.dispatch(
+            "RELATIONSHIP_UPDATE",
+            &json!({"id":"30","type":1,"since":null}),
+        );
+        assert!(!stores.relationship_since.contains_key(&30));
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id":"31"}));
+        assert!(!stores.relationship_since.contains_key(&31));
+        // A new READY replaces everything.
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"30","type":1,"since":since}),
+        );
+        stores.dispatch("READY", &json!({"users":[],"relationships":[]}));
+        assert!(stores.relationship_since.is_empty());
+    }
+
+    #[test]
     fn relationship_nicknames_follow_ready_add_update_and_removal() {
         let mut stores = Stores::default();
         stores.dispatch(
@@ -2851,7 +2945,10 @@ mod tests {
     #[test]
     fn a_status_choice_shows_at_once_and_follows_other_sessions() {
         let mut stores = Stores::default();
-        stores.dispatch("READY", &json!({"sessions": [{"status": "dnd"}]}));
+        stores.dispatch(
+            "READY",
+            &json!({"sessions": [{"status": "dnd"}], "user_settings_proto": ""}),
+        );
         assert_eq!(stores.status, "dnd");
         let patch = stores.set_status("idle", 5_000, 1);
         assert_eq!(stores.status, "idle");

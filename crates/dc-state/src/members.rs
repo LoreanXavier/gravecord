@@ -13,6 +13,7 @@ pub struct Member {
     pub avatar: Option<String>,
     pub avatar_decoration: Option<crate::collectibles::AvatarDecoration>,
     pub roles: Vec<Id>,
+    pub joined_at: Option<String>,
     /// `pending`: still in rules screening, so not mentionable (`isPending`).
     pub pending: bool,
 }
@@ -34,6 +35,7 @@ impl Member {
                 .flatten()
                 .filter_map(id)
                 .collect(),
+            joined_at: text(&member["joined_at"]),
             pending: member["pending"].as_bool().unwrap_or(false),
         })
     }
@@ -66,6 +68,11 @@ impl GuildMembers {
     /// Message member objects may omit the avatar; only an explicit null removes it.
     pub fn apply_member(&mut self, guild: Id, value: &Value, user: Option<&Value>) {
         if let Some(mut member) = Member::from_value(value, user) {
+            if value.get("joined_at").is_none() {
+                member.joined_at = self
+                    .get(guild, member.user.id)
+                    .and_then(|known| known.joined_at.clone());
+            }
             if value.get("avatar").is_none() {
                 member.avatar = self
                     .get(guild, member.user.id)
@@ -176,6 +183,37 @@ mod tests {
             &json!({"guild_id": "9", "user": {"id": "1"}}),
         );
         assert_eq!(store.of(9).len(), 1);
+    }
+
+    #[test]
+    fn the_join_date_survives_members_that_do_not_carry_it() {
+        let mut store = GuildMembers::default();
+        let user = json!({"id": "1", "username": "ann"});
+        store.apply_member(
+            9,
+            &json!({"roles": [], "joined_at": "2026-11-05T10:00:00+00:00"}),
+            Some(&user),
+        );
+        // A message's member object has no `joined_at`.
+        store.apply_member(9, &json!({"roles": ["5"], "nick": "A"}), Some(&user));
+        let member = store.get(9, 1).expect("the member is known");
+        assert_eq!(
+            member.joined_at.as_deref(),
+            Some("2026-11-05T10:00:00+00:00")
+        );
+        assert_eq!(member.roles, vec![5]);
+        // A later full object replaces it.
+        store.apply_member(
+            9,
+            &json!({"roles": [], "joined_at": "2026-11-06T10:00:00+00:00"}),
+            Some(&user),
+        );
+        assert_eq!(
+            store
+                .get(9, 1)
+                .and_then(|member| member.joined_at.as_deref()),
+            Some("2026-11-06T10:00:00+00:00")
+        );
     }
 
     #[test]
