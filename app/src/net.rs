@@ -234,6 +234,51 @@ pub enum Request {
 pub(crate) const MESSAGE_PAGE: u32 = 50;
 /// Held while a settings-proto PATCH is in flight.
 static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The routes that change the account itself: its settings, its per-server notification settings, its relationships,
+/// its profile, its server memberships, and anything that spends or grants.
+fn account_route(route: &str) -> bool {
+    let path = route.split('?').next().unwrap_or(route);
+    // Opening a DM channel changes nothing about the account.
+    if path == "/users/@me/channels" {
+        return false;
+    }
+    path == "/users/@me"
+        || path.starts_with("/users/@me/")
+        || path.ends_with("/members/@me")
+        || path.starts_with("/oauth2/")
+        || path.starts_with("/store/")
+        || path.contains("/billing/")
+}
+
+/// A harness run (the `capture` feature, or `--capture`) never writes to the account by accident: such a request is
+/// refused here, whatever the caller checked, unless the run says `GRAVECORD_ALLOW_ACCOUNT_WRITE=1`. A settings write
+/// with no settings in it is refused in every build: the server would replace the whole message with nothing.
+fn account_write_refused(
+    capture: bool,
+    allowed: bool,
+    method: &reqwest::Method,
+    route: &str,
+    body: Option<&Value>,
+) -> bool {
+    if method == reqwest::Method::GET {
+        return false;
+    }
+    let empty_settings = route.starts_with("/users/@me/settings-proto/")
+        && body.is_some_and(|body| body["settings"].as_str().is_some_and(str::is_empty));
+    empty_settings || (capture && !allowed && account_route(route))
+}
+
+fn refuses_account_write(method: &reqwest::Method, route: &str, body: Option<&Value>) -> bool {
+    let allowed = std::env::var("GRAVECORD_ALLOW_ACCOUNT_WRITE").as_deref() == Ok("1");
+    account_write_refused(
+        crate::storage::is_capture_run(),
+        allowed,
+        method,
+        route,
+        body,
+    )
+}
 /// The picker's unicode emoji sheet (module 617057): 40px cells, 42 to a row, drawn at 1680 by 1560.
 const EMOJI_SHEET: &str = "https://cdn.discordapp.com/assets/content/c357d57faac49918709981e6fb30e526fa62b6d440f99fd8bd2b88f0542ad6c5.png";
 /// Emoji with skin tones come from their own sheet (`spritesheet--40.png`, module 125371), 10 to a row
@@ -683,6 +728,14 @@ pub async fn run(
                 });
             }
             Request::GuildSettings { body } => {
+                if refuses_account_write(
+                    &reqwest::Method::PATCH,
+                    "/users/@me/guilds/settings",
+                    Some(&body),
+                ) {
+                    warn!("guild settings write refused in this run");
+                    continue;
+                }
                 tokio::spawn(async move {
                     if let Err(error) = client
                         .request(
@@ -703,6 +756,14 @@ pub async fn run(
                 body,
             } => {
                 let updates = updates.clone();
+                if refuses_account_write(&method, &route, body.as_ref()) {
+                    warn!("account write refused in this run");
+                    if let Some(key) = key {
+                        let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
+                        let _ = updates.send(Update::Fetched { key, body });
+                    }
+                    continue;
+                }
                 tokio::spawn(async move {
                     // The server merges a settings PATCH into what it read a moment before, so two sent at once lose
                     // one of them: they go one after the other.
@@ -1156,8 +1217,72 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 
 #[cfg(test)]
 mod tests {
-    use super::{guild_member_requests, percent_encode, send_body};
+    use super::{account_write_refused, guild_member_requests, percent_encode, send_body};
+    use reqwest::Method;
     use serde_json::json;
+
+    #[test]
+    fn a_harness_run_cannot_write_to_the_account_unless_it_says_so() {
+        let refused = |capture, allowed, method: Method, route: &str| {
+            account_write_refused(capture, allowed, &method, route, None)
+        };
+        for route in [
+            "/users/@me/settings-proto/1",
+            "/users/@me/settings-proto/2",
+            "/users/@me/guilds/settings",
+            "/users/@me/relationships/7",
+            "/users/@me/guilds/9",
+            "/users/@me",
+            "/guilds/9/members/@me",
+            "/oauth2/authorize?client_id=1",
+            "/users/@me/billing/subscriptions",
+        ] {
+            assert!(refused(true, false, Method::PATCH, route), "{route}");
+            assert!(refused(true, false, Method::DELETE, route), "{route}");
+            // The run that says so, and every normal build, may.
+            assert!(!refused(true, true, Method::PATCH, route), "{route}");
+            assert!(!refused(false, false, Method::PATCH, route), "{route}");
+            // Reading is never refused.
+            assert!(!refused(true, false, Method::GET, route), "{route}");
+        }
+        // Fixture work stays possible: messages, channels, opening a DM.
+        for route in [
+            "/channels/5/messages",
+            "/guilds/9/channels",
+            "/users/@me/channels",
+            "/channels/5/messages/6/ack",
+        ] {
+            assert!(!refused(true, false, Method::POST, route), "{route}");
+        }
+    }
+
+    #[test]
+    fn a_settings_write_with_nothing_in_it_is_refused_everywhere() {
+        let empty = json!({"settings": ""});
+        let filled = json!({"settings": "CgIIAQ=="});
+        let route = "/users/@me/settings-proto/1";
+        assert!(account_write_refused(
+            false,
+            false,
+            &Method::PATCH,
+            route,
+            Some(&empty)
+        ));
+        assert!(account_write_refused(
+            true,
+            true,
+            &Method::PATCH,
+            route,
+            Some(&empty)
+        ));
+        assert!(!account_write_refused(
+            false,
+            false,
+            &Method::PATCH,
+            route,
+            Some(&filled)
+        ));
+    }
 
     #[test]
     fn member_requests_carry_a_query_or_ids_in_chunks_of_a_hundred() {
