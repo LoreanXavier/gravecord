@@ -1,0 +1,20 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "sidebar": {
+    "class": "sidebarList_pog62O"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "discover-header": {
+    "class": "headerBar_Y0eJLL"
+  },
+  "discover-hero": {
+    "class": "container_-6JdM0"
+  }
+}
