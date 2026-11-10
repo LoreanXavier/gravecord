@@ -116,6 +116,7 @@ pub(super) struct State {
     pub focus: video_tiles::Focus,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
+    pub(super) background: super::call_background::State,
 }
 
 impl Default for State {
@@ -132,6 +133,7 @@ impl Default for State {
             suggest: false,
             focus: Default::default(),
             colors: RefCell::new(HashMap::new()),
+            background: Default::default(),
         }
     }
 }
@@ -847,16 +849,12 @@ impl Root {
 
     /// `713397.js`: nobody has video and the others are hidden. The call container's glow with the heading and
     /// the button that turns "Show Non-Video Participants" back on.
-    fn no_video_view(&self, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn no_video_view(&mut self, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
+        let background = self.call_empty_background(width, height, cx);
         div()
             .absolute()
             .inset_0()
-            .child(
-                img(self.disconnected_background(width, height))
-                    .absolute()
-                    .inset_0()
-                    .size_full(),
-            )
+            .children(background.map(|image| img(image).absolute().inset_0().size_full()))
             .child(
                 div()
                     .absolute()

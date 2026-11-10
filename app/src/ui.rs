@@ -40,6 +40,7 @@ mod audit_spec;
 mod autocomplete;
 mod badge_paths;
 mod blocked;
+mod call_background;
 mod channel_settings;
 mod channel_settings_pages;
 mod composer_plus;
@@ -476,6 +477,7 @@ impl Root {
             this.release_nameplates(cx);
             this.release_member_avatars(cx);
             this.release_inline_videos(cx);
+            this.release_call_background(cx);
         })
         .detach();
         audio_menu::restore_audio_prefs();
@@ -5378,7 +5380,7 @@ impl Render for Root {
             cx.processor(|this, index, _, cx| this.row(index, cx)),
         )
         .size_full();
-        div()
+        let element = div()
             .id("root")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
@@ -5956,7 +5958,9 @@ impl Render for Root {
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
-            .children(self.splash_layer(window))
+            .children(self.splash_layer(window));
+        self.end_call_background_frame(cx);
+        element
     }
 }
 

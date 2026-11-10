@@ -168,6 +168,10 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "nickname: {result}");
             }
+            ["call-background", "state"] => {
+                let state = cx.update(|cx| root.read(cx).call_background_status());
+                let _ = writeln!(output, "call background: {state}");
+            }
             ["friends", tab] => {
                 let note = cx.update(|cx| {
                     window.update(cx, |_, window, cx| {
