@@ -1,0 +1,14 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "schedule-message": {
+    "class": "container_dvN-MP"
+  },
+  "schedule-date-field": {
+    "class": "container_tafmhI"
+  },
+  "schedule-time-field": {
+    "class": "selectField_vWC4bk"
+  }
+}
