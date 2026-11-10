@@ -1,0 +1,18 @@
+{
+  "settings-modal": { "class": "container_dvN-MP" },
+  "settings-sidebar": { "class": "sidebar_cR4ic2" },
+  "settings-content": { "class": "content_3Rvb29" },
+  "settings-header": { "class": "contentHeader_3Rvb29" },
+  "settings-panel": { "class": "panel_nNq2Vb" },
+  "clips-card": { "class": "card_ldBGOa" },
+  "clips-card-header": { "class": "cardHeader_ldBGOa" },
+  "clips-card-body": { "class": "cardBody_ldBGOa" },
+  "clips-keybind": { "class": "keyRecorder_GHRMF2" },
+  "clips-slider": { "class": "slider_OnqacX" },
+  "clips-notice": { "class": "root_vb4RFD" },
+  "clips-length-select": { "class": "selectField_vWC4bk" },
+  "clips-divider": { "class": "divider_ZaYWLb" },
+  "clips-edit-location": { "class": "md_F7qvhY", "ancestor": "panel_nNq2Vb" },
+  "clips-edit-keybind": { "class": "sm_F7qvhY", "ancestor": "panel_nNq2Vb" },
+  "clips-storage-input": { "class": "container_0PLWhS", "ancestor": "panel_nNq2Vb" }
+}
