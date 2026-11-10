@@ -90,3 +90,22 @@ The callback unit test exercises dispatch and that persistent bypass without a w
 user profile or actual quit. Native running-app shutdown through setup remains unverified; the
 silent failure/Retry path still handles uncooperative or older clients. Old setup executables only
 send WM_CLOSE and cannot request this bypass.
+
+## Automatic updates
+
+The app checks `update.json` (see `DECISIONS.md`, "Open on startup, window behaviour and automatic updates") at launch and
+every hour. `cargo xtask package` writes it beside the setup: `version` (from `app/Cargo.toml`), `url` (the setup's
+name, relative to the feed), `size` and `sha256` of the setup file just written. Publishing a release is attaching
+`gravecord-setup.exe` and `update.json` to the GitHub release of `LoreanXavier/gravecord`; the default feed is
+`https://github.com/LoreanXavier/gravecord/releases/latest/download/update.json`. A missing feed (no release yet) is a
+normal "no update". Override with `GRAVECORD_UPDATE_FEED` (https only).
+
+An update downloads into `%LOCALAPPDATA%\gravecord\update\`, is checked against the feed's size and SHA-256, and waits
+behind the title bar's green download button. The click runs it as `gravecord-setup-<version>.exe --silent --launch --dir
+<install folder>` and quits the app. That is the installer's own silent update above: it closes the running app, stages
+and swaps with rollback, and starts the new version (`--launch`). A hash mismatch, a wrong size, another host, a
+downgrade or an equal version are refused and the file is deleted. A portable folder or a development build never updates.
+
+Open on startup writes the per-user `Run` value `gravecord` under `HKCU\Software\Microsoft\Windows\CurrentVersion`
+(`"<exe>" --start-inactive [--start-minimized]`). The uninstaller does not remove it: after an uninstall it points at a
+file that is gone and Windows ignores it. The app rewrites its path at each launch only when the value already exists.

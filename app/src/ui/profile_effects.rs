@@ -275,7 +275,7 @@ fn decode_width(info: Sniff, wanted: u32, budget: usize) -> u32 {
 }
 
 /// Scales straight-alpha pixels by averaging premultiplied ones, so transparent edges do not darken.
-fn scale(image: RgbaImage, width: u32, height: u32) -> RgbaImage {
+pub(super) fn scale(image: RgbaImage, width: u32, height: u32) -> RgbaImage {
     if image.width() == width && image.height() == height {
         return image;
     }
@@ -298,7 +298,7 @@ fn scale(image: RgbaImage, width: u32, height: u32) -> RgbaImage {
     scaled
 }
 
-fn render_image(mut buffer: RgbaImage) -> Arc<RenderImage> {
+pub(super) fn render_image(mut buffer: RgbaImage) -> Arc<RenderImage> {
     for pixel in buffer.pixels_mut() {
         pixel.0.swap(0, 2);
     }

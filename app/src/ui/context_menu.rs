@@ -7,6 +7,7 @@
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::spellcheck;
 use dc_state::permissions::{self, CREATE_INSTANT_INVITE, MANAGE_CHANNELS, MANAGE_THREADS};
 use dc_state::{Channel, ChannelKind, Id};
 use gpui::{
@@ -20,13 +21,20 @@ use serde_json::json;
 pub(super) enum Target {
     InventoryFeed,
     InventoryFeedAtPointer,
-    InventoryAuthor { user: Id },
+    InventoryAuthor {
+        user: Id,
+    },
     Guild(Id),
     Channel(Id),
     Category(Id),
     Thread(Id),
     Dm(Id),
-    User { user: Id, guild: Option<Id> },
+    User {
+        user: Id,
+        guild: Option<Id>,
+    },
+    /// The composer's text area (`textarea-context`, module 194400).
+    Composer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +91,16 @@ pub(super) enum Act {
     Volume,
     VoiceMute,
     SoundboardMute,
+    /// Composer text menu: a spelling suggestion (by position), the dictionary rows, the switch, the help page, and
+    /// the clipboard rows.
+    Correction(u8),
+    AddToDictionary,
+    RemoveFromDictionary,
+    Spellcheck,
+    SpellLanguages,
+    Cut,
+    Copy,
+    Paste,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,6 +114,8 @@ pub(super) struct Row {
     pub check: Option<bool>,
     pub danger: bool,
     pub disabled: bool,
+    /// The key combination shown at the right (`shortcut` of the menu item, module 165862).
+    pub shortcut: Option<&'static str>,
 }
 
 impl Row {
@@ -109,7 +129,13 @@ impl Row {
             check: None,
             danger: false,
             disabled: false,
+            shortcut: None,
         }
+    }
+
+    fn shortcut(mut self, keys: &'static str) -> Self {
+        self.shortcut = Some(keys);
+        self
     }
 
     fn caret(mut self) -> Self {
@@ -181,6 +207,61 @@ fn group(entries: &mut Vec<Entry>, rows: Vec<Row>) {
     }
     entries.push(Entry::Separator);
     entries.extend(rows.into_iter().map(Entry::Row));
+}
+
+/// The help page the composer menu's Languages row opens: `getArticleURL(SPELLCHECK)` (module 413756).
+const SPELLCHECK_HELP: &str = "https://support.discord.com/hc/en-us/articles/360000877191";
+
+/// What the composer's text menu was opened on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ComposerMenu {
+    /// The misspelled word under the click: its byte range and text.
+    pub word: Option<(std::ops::Range<usize>, String)>,
+    pub suggestions: Vec<String>,
+    /// A learned word that stands in the text (`findLearnedWordIn`).
+    pub learned: Option<String>,
+    pub selection: bool,
+    pub enabled: bool,
+}
+
+/// `textarea-context` (module 194400) with the spelling section of module 413756: the corrections, then Add to
+/// Dictionary (or Remove from Dictionary when the click is on no misspelling and the text holds a learned word), the
+/// Spellcheck switch and Languages, then Cut and Copy with a selection, then Paste. The Suggestions submenu, the send
+/// button switch and the AI rows of the official menu are account features this client does not have yet.
+pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
+    let mut out = Vec::new();
+    group(
+        &mut out,
+        menu.suggestions
+            .iter()
+            .take(spellcheck::MAX_SUGGESTIONS)
+            .enumerate()
+            .map(|(index, word)| Row::new(Act::Correction(index as u8), word.clone()))
+            .collect(),
+    );
+    let mut spelling = Vec::new();
+    if menu.word.is_some() {
+        spelling.push(Row::new(Act::AddToDictionary, "Add to Dictionary"));
+    }
+    if menu.learned.is_some() && menu.word.is_none() {
+        spelling.push(Row::new(
+            Act::RemoveFromDictionary,
+            "Remove from Dictionary",
+        ));
+    }
+    spelling.push(Row::new(Act::Spellcheck, "Spellcheck").check(menu.enabled));
+    if menu.enabled {
+        spelling.push(Row::new(Act::SpellLanguages, "Languages"));
+    }
+    group(&mut out, spelling);
+    let mut clipboard = Vec::new();
+    if menu.selection {
+        clipboard.push(Row::new(Act::Cut, "Cut").shortcut("Ctrl+X"));
+        clipboard.push(Row::new(Act::Copy, "Copy").shortcut("Ctrl+C"));
+    }
+    clipboard.push(Row::new(Act::Paste, "Paste").shortcut("Ctrl+V"));
+    group(&mut out, clipboard);
+    tidy(out)
 }
 
 /// What a channel menu depends on.
@@ -576,6 +657,8 @@ pub(super) struct Open {
 #[derive(Default)]
 pub(super) struct State {
     pub open: Option<Open>,
+    /// What the composer menu was opened on, kept while it is open.
+    pub composer: Option<ComposerMenu>,
     /// People whose soundboard sounds are muted here, for the whole session.
     pub soundboard_muted: std::collections::HashSet<Id>,
     /// Each person's volume (a factor) and local mute in the call.
@@ -684,6 +767,7 @@ impl Root {
                         .check(self.inventory_hidden()),
                 ),
             ],
+            Target::Composer => composer_items(&self.context.composer.clone().unwrap_or_default()),
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -867,6 +951,57 @@ impl Root {
         cx.notify();
     }
 
+    /// A right click in the composer: the field selects the misspelled word under the pointer, the checker supplies its
+    /// suggestions (off the interface thread; the menu opens when they are back), and the menu lists them first.
+    pub(super) fn open_composer_menu(
+        &mut self,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let click = self
+            .composer
+            .update(cx, |composer, cx| composer.context_click(at, window, cx));
+        let text = self.composer.read(cx).text().to_owned();
+        let enabled = spellcheck::is_enabled();
+        let menu = ComposerMenu {
+            learned: click
+                .word
+                .is_none()
+                .then(|| spellcheck::find_learned_word_in(&text))
+                .flatten(),
+            word: click.word.clone().filter(|_| enabled),
+            suggestions: Vec::new(),
+            selection: !click.selected.is_empty(),
+            enabled,
+        };
+        let Some((_, word)) = menu.word.clone() else {
+            self.context.composer = Some(menu);
+            self.open_context_menu(Target::Composer, at, cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let suggestions = cx
+                .background_executor()
+                .spawn(async move {
+                    spellcheck::ensure_languages();
+                    spellcheck::service()
+                        .suggest(&word)
+                        .recv()
+                        .ok()
+                        .unwrap_or_default()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let mut menu = menu;
+                menu.suggestions = suggestions;
+                this.context.composer = Some(menu);
+                this.open_context_menu(Target::Composer, at, cx);
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         if self.context.open.take().is_some() {
             cx.notify();
@@ -982,7 +1117,9 @@ impl Root {
                     | Target::Thread(id)
                     | Target::Dm(id) => id,
                     Target::User { user, .. } | Target::InventoryAuthor { user } => user,
-                    Target::InventoryFeed | Target::InventoryFeedAtPointer => return,
+                    Target::InventoryFeed | Target::InventoryFeedAtPointer | Target::Composer => {
+                        return;
+                    }
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
             }
@@ -1182,6 +1319,67 @@ impl Root {
                     self.context.soundboard_muted.insert(user);
                 }
             }
+            (Act::Correction(index), Target::Composer) => {
+                let menu = self.context.composer.clone().unwrap_or_default();
+                if let (Some((range, word)), Some(correction)) =
+                    (menu.word, menu.suggestions.get(usize::from(index)))
+                {
+                    let correction = correction.clone();
+                    self.composer.update(cx, |composer, cx| {
+                        // The word must still stand where it was; else the occurrence nearest the caret is used.
+                        let text = composer.text().to_owned();
+                        let range = if text.get(range.clone()) == Some(word.as_str()) {
+                            Some(range)
+                        } else {
+                            text.match_indices(word.as_str())
+                                .map(|(at, _)| at..at + word.len())
+                                .min_by_key(|found| {
+                                    let caret = composer.collapsed_caret().unwrap_or(range.start);
+                                    found.start.abs_diff(caret)
+                                })
+                        };
+                        if let Some(range) = range {
+                            composer.replace_range(range, &correction, cx);
+                        }
+                    });
+                    window.focus(
+                        &gpui::Focusable::focus_handle(self.composer.read(cx), cx),
+                        cx,
+                    );
+                }
+            }
+            (Act::AddToDictionary, Target::Composer) => {
+                if let Some((_, word)) = self.context.composer.as_ref().and_then(|m| m.word.clone())
+                {
+                    spellcheck::learn_word(&word);
+                    self.refresh_spelling(cx);
+                }
+            }
+            (Act::RemoveFromDictionary, Target::Composer) => {
+                if let Some(word) = self
+                    .context
+                    .composer
+                    .as_ref()
+                    .and_then(|m| m.learned.clone())
+                {
+                    spellcheck::unlearn_word(&word);
+                    self.refresh_spelling(cx);
+                }
+            }
+            (Act::Spellcheck, Target::Composer) => {
+                spellcheck::toggle();
+                self.refresh_spelling(cx);
+            }
+            (Act::SpellLanguages, Target::Composer) => cx.open_url(SPELLCHECK_HELP),
+            (Act::Cut, Target::Composer) => self
+                .composer
+                .update(cx, |composer, cx| composer.cut_selection(cx)),
+            (Act::Copy, Target::Composer) => self
+                .composer
+                .update(cx, |composer, cx| composer.copy_selection(cx)),
+            (Act::Paste, Target::Composer) => self
+                .composer
+                .update(cx, |composer, cx| composer.paste_clipboard(cx)),
             // Calls are voice: never started from here. The rest have no page yet (see the report).
             _ => {}
         }
@@ -1197,6 +1395,12 @@ impl Root {
         if let Some(call) = &self.call {
             call.controls.set_user_mix(user, volume, muted);
         }
+    }
+
+    /// The store changed: the composer draws its underlines again (a learned word is gone from them at once).
+    fn refresh_spelling(&mut self, cx: &mut Context<Self>) {
+        self.composer.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     fn dm_user(&self, channel: Id) -> Option<Id> {
@@ -1600,6 +1804,16 @@ impl Root {
                             .child(sub)
                     })),
             )
+            .children(row.shortcut.map(|keys| {
+                div()
+                    .ml(px(8.))
+                    .flex_none()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(tint)
+                    .child(keys)
+            }))
             .children(row.check.map(|on| {
                 div()
                     .ml(px(
@@ -1911,5 +2125,46 @@ mod tests {
         assert!(shown.contains(&"Close DM".to_owned()));
         assert!(shown.contains(&"Mute @ann".to_owned()));
         assert!(shown.contains(&"Invite to Server".to_owned()));
+    }
+
+    #[test]
+    fn composer_menu_lists_corrections_dictionary_switch_then_clipboard() {
+        let menu = ComposerMenu {
+            word: Some((0..4, "helo".to_owned())),
+            suggestions: ["hello", "halo", "helot", "hele", "help", "held"]
+                .map(str::to_owned)
+                .to_vec(),
+            learned: None,
+            selection: true,
+            enabled: true,
+        };
+        assert_eq!(
+            labels(&composer_items(&menu)),
+            [
+                "hello",
+                "halo",
+                "helot",
+                "hele",
+                "help",
+                "-",
+                "Add to Dictionary",
+                "Spellcheck",
+                "Languages",
+                "-",
+                "Cut",
+                "Copy",
+                "Paste"
+            ]
+        );
+        // No misspelling under the click, a learned word in the text, the switch off, nothing selected.
+        let menu = ComposerMenu {
+            learned: Some("zorp".to_owned()),
+            enabled: false,
+            ..ComposerMenu::default()
+        };
+        assert_eq!(
+            labels(&composer_items(&menu)),
+            ["Remove from Dictionary", "Spellcheck", "-", "Paste"]
+        );
     }
 }

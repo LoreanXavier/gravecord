@@ -17,8 +17,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD,
-    REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW,
+    REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW,
+    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -218,6 +218,103 @@ pub fn unregister_uninstall(key_name: &str) -> Result<()> {
         let _ = RegDeleteTreeW(root.0, PCWSTR(wide(key_name).as_ptr()));
     }
     Ok(())
+}
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_APPROVED_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+/// The Run value the app's "open on startup" switch writes (`app/src/autostart.rs`).
+const STARTUP_VALUE: &str = "gravecord";
+
+/// The text of the Run value, if there is one.
+fn startup_command() -> Option<String> {
+    let mut key = HKEY::default();
+    unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(wide(RUN_KEY).as_ptr()),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+        .ok()
+        .ok()?;
+        let key = Key(key);
+        let name = wide(STARTUP_VALUE);
+        let mut length = 0u32;
+        RegQueryValueExW(
+            key.0,
+            PCWSTR(name.as_ptr()),
+            None,
+            None,
+            None,
+            Some(&mut length),
+        )
+        .ok()
+        .ok()?;
+        let mut data = vec![0u8; length as usize];
+        RegQueryValueExW(
+            key.0,
+            PCWSTR(name.as_ptr()),
+            None,
+            None,
+            Some(data.as_mut_ptr()),
+            Some(&mut length),
+        )
+        .ok()
+        .ok()?;
+        let units: Vec<u16> = data[..length as usize]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        Some(
+            String::from_utf16_lossy(&units)
+                .trim_end_matches('\0')
+                .to_owned(),
+        )
+    }
+}
+
+/// Whether a Run command starts an exe inside `dir` (the command's first, quoted part).
+pub fn startup_command_is_in(command: &str, dir: &Path) -> bool {
+    let command = command.trim();
+    let exe = match command.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(""),
+        None => command.split(" --").next().unwrap_or(command),
+    };
+    let exe = Path::new(exe);
+    exe.parent()
+        .is_some_and(|parent| crate::paths::same_path(parent, dir))
+}
+
+/// Removes the app's "open on startup" value when it starts the exe of the install being removed. A value that
+/// starts something else (another copy) is left alone.
+pub fn remove_startup_entry(dir: &Path) {
+    let Some(command) = startup_command() else {
+        return;
+    };
+    if !startup_command_is_in(&command, dir) {
+        return;
+    }
+    for path in [RUN_KEY, STARTUP_APPROVED_KEY] {
+        let mut key = HKEY::default();
+        unsafe {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(wide(path).as_ptr()),
+                None,
+                KEY_WRITE,
+                &mut key,
+            )
+            .is_ok()
+            {
+                let key = Key(key);
+                let _ = RegDeleteValueW(key.0, PCWSTR(wide(STARTUP_VALUE).as_ptr()));
+            }
+        }
+    }
 }
 
 /// Whether the Microsoft Edge WebView2 Runtime is installed (machine-wide or per user).
@@ -527,6 +624,24 @@ pub fn pick_folder(owner: HWND, start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_startup_command_is_matched_to_its_install_folder() {
+        let dir = Path::new(r"C:\Users\x\AppData\Local\Programs\gravecord");
+        assert!(startup_command_is_in(
+            r#""C:\Users\x\AppData\Local\Programs\gravecord\gravecord.exe" --start-inactive"#,
+            dir
+        ));
+        assert!(startup_command_is_in(
+            r#""c:\users\x\appdata\local\programs\GRAVECORD\gravecord.exe" --start-inactive --start-minimized"#,
+            dir
+        ));
+        assert!(!startup_command_is_in(
+            r#""D:\other\gravecord.exe" --start-inactive"#,
+            dir
+        ));
+        assert!(!startup_command_is_in("", dir));
+    }
     #[test]
     fn shortcut_carries_the_toast_application_identity() {
         let unique = std::time::SystemTime::now()

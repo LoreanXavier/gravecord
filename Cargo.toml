@@ -6,6 +6,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 publish = false
+repository = "https://github.com/LoreanXavier/gravecord"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -82,6 +83,14 @@ incremental = false
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# The sticker player renders Lottie frames in real time, even in debug builds.
+[profile.dev.package.rasterlottie]
+opt-level = 3
+[profile.dev.package."tiny-skia@0.12.0"]
+opt-level = 3
+[profile.dev.package."tiny-skia-path@0.12.0"]
+opt-level = 3
 
 # The voice processors run in real time even in debug builds.
 [profile.dev.package.deep_filter]

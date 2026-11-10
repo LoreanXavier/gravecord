@@ -532,6 +532,12 @@ pub async fn run(
             }
             // Shows the profile effect of a collectibles product over the open profile, in this process only (the
             // product is read with a GET): `profile-effect <sku> [at <ms>]`, `profile-effect off`, `profile-effect state`.
+            // Capture only: `sticker clock <ms>|off` freezes every playing sticker at that time, `sticker state` prints
+            // what the sticker player holds.
+            ["sticker", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_sticker_player(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["profile-effect", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_profile_effect(rest, cx));
                 let _ = writeln!(output, "{line}");

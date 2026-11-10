@@ -77,10 +77,12 @@ pub mod login;
 mod logout;
 mod presence;
 mod schedule_message;
+mod sticker_player;
 mod stickers;
 mod tray;
 mod unread_badges;
 mod unread_dms;
+mod update_button;
 pub use logout::RootEvent;
 mod channel_browser;
 mod discover;
@@ -535,10 +537,16 @@ impl Root {
         })
         .detach();
         audio_menu::restore_audio_prefs();
+        // The background updater reaches this session's window through the same channel as the tray.
+        crate::updater::attach(updates.clone());
         let voice = settings::VoiceState::restore();
         let mut setting_choices = voice.choices();
         setting_choices.extend(settings::prefs::restore());
-        let composer = cx.new(|cx| Editor::new(editor_style(), cx));
+        let composer = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_spellcheck(true);
+            editor
+        });
         cx.subscribe(&composer, |this, composer, event, cx| match event {
             EditorEvent::Submit(_) if this.screening_pending() => {}
             EditorEvent::Submit(_) if this.slash.pending.is_some() => {
@@ -776,6 +784,7 @@ impl Root {
             Update::Rpc(event) => self.rpc_event(event, cx),
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
+            Update::Updater => cx.notify(),
             Update::Slowmode {
                 channel,
                 kind,
@@ -1288,6 +1297,9 @@ impl Root {
                 if key.starts_with(profile_effects::ART_PREFIX) {
                     self.profile_effect_art_failed(&key, cx);
                 }
+                if key.starts_with(sticker_player::PREFIX) {
+                    self.sticker_art_failed(&key);
+                }
                 if key.starts_with(inline_video::PREFIX) {
                     self.inline_video_failed(&key);
                     cx.notify();
@@ -1298,6 +1310,9 @@ impl Root {
             }
             Update::Image { key, bytes } if key.starts_with(nameplates::ANIMATION_PREFIX) => {
                 self.nameplate_animation_fetched(&key, bytes, cx);
+            }
+            Update::Image { key, bytes } if key.starts_with(sticker_player::PREFIX) => {
+                self.sticker_art_fetched(&key, bytes, cx);
             }
             Update::Image { key, bytes } if key.starts_with(inline_video::PREFIX) => {
                 self.inline_video_fetched(&key, bytes);
@@ -2517,6 +2532,7 @@ impl Root {
                     .into_any_element(),
             }
         });
+        let update_button = self.update_button(cx);
         div()
             .parity("titlebar")
             .relative()
@@ -2575,9 +2591,11 @@ impl Root {
                     .child(
                         // `ar` in module 596339: an anchor to the Help Center (`tP.C`, https:// + support host).
                         bar_button("help", "help")
-                            .mr(px(16.))
+                            // The bar's items sit 12 apart (`trailing_3zSH5d`); the update button, when up, follows.
+                            .mr(px(if update_button.is_some() { 12. } else { 16. }))
                             .on_click(|_, _, cx| cx.open_url("https://support.discord.com")),
                     )
+                    .children(update_button)
                     .child(
                         div()
                             .w(px(1.))
@@ -4571,7 +4589,7 @@ impl Root {
             self.attachments(message, cx),
             self.files(message, cx),
             self.embeds(message, cx),
-            self.message_stickers(&message.sticker_items),
+            self.message_stickers(message.id, &message.sticker_items, cx),
             self.invite_cards(message, cx),
         ]
         .into_iter()
@@ -5339,7 +5357,22 @@ impl Root {
                                     .items_center()
                                     .children(self.pending_chips(cx))
                                     .child(
-                                        div().flex_1().min_w(px(80.)).child(self.composer.clone()),
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(80.))
+                                            .on_mouse_down(
+                                                MouseButton::Right,
+                                                cx.listener(
+                                                    |this, event: &MouseDownEvent, window, cx| {
+                                                        this.open_composer_menu(
+                                                            event.position,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                ),
+                                            )
+                                            .child(self.composer.clone()),
                                     ),
                             )
                             .child(
@@ -5670,6 +5703,7 @@ impl Render for Root {
         self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
         self.profile_effects_sweep(window, cx);
+        self.sticker_player_sweep(window, cx);
         let avatars = (
             self.data_revision,
             self.guild,
@@ -6359,6 +6393,7 @@ impl Render for Root {
             .children(self.quick_switcher_modal(window, cx))
             .children(self.activity_shelf_layer(window, cx))
             .children(self.activity_dialog_layer(cx))
+            .children(self.update_dialog_layer(cx))
             .children(self.oauth_layer(window, cx))
             .children(self.activity_pip_layer(window))
             .children(self.notify_menu(window, cx))

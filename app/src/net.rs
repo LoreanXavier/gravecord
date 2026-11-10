@@ -19,6 +19,8 @@ pub enum Update {
     Games(Box<crate::games::GameScan>),
     NotificationClicked(u64),
     Tray(crate::tray::Action),
+    /// The updater's state changed (`updater::state`): the title bar button follows it.
+    Updater,
     /// The connecting screen's spinner, fetched and decoded.
     Spinner(Arc<crate::spinner::Clip>),
     /// `None` resets from the channel's interval; a value sets the server's remaining cooldown.
@@ -1310,7 +1312,9 @@ pub async fn run(
                             if url
                                 .split('?')
                                 .next()
-                                .is_some_and(|path| path.ends_with(".json")) =>
+                                .is_some_and(|path| path.ends_with(".json"))
+                                // The sticker player renders the frames itself from the file as it is.
+                                && !key.starts_with("stickeranim:") =>
                         {
                             // Lottie sticker art: one frame at twice the picker's cell, drawn off the UI thread.
                             match tokio::task::spawn_blocking(move || {

@@ -3,6 +3,7 @@ name = "gravecord"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
 
 [features]
 # Offscreen frame capture for the parity harness. Pulls in gpui's test support, so it stays out of normal builds.
@@ -32,6 +33,8 @@ gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features 
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 md-5 = "0.10"
+# The update setup file is verified against the SHA-256 in the feed (updater.rs).
+sha2 = "0.10"
 # Standard stickers are Lottie JSON (module 148355 draws them with lottie-web); rasterlottie (MIT OR Apache-2.0) draws
 # them on the CPU, as Serein does (DECISIONS.md).
 rasterlottie = { version = "=0.2.2", default-features = false }
@@ -50,7 +53,7 @@ wuff = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Threading", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_WinRT", "Win32_Foundation", "Win32_System_Com", "Win32_System_Registry", "Win32_System_Threading", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Globalization"] }
 
 [build-dependencies]
 embed-resource = "3"

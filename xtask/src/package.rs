@@ -5,6 +5,9 @@
 //! instead of `gravecord-dist`, and `GRAVECORD_PACKAGE_SKIP_BUILD=1` reuses the release build already in
 //! `target/dist`.
 //!
+//! Next to the setup it writes `update.json`, the feed the app's updater reads (`app/src/updater.rs`): version, setup
+//! file name, size and SHA-256 of the exact file just written. Publishing a release is copying those two files.
+//!
 //! The release build uses the static C runtime, so neither exe imports VCRUNTIME140. It goes to its own target folder
 //! so the flag change never invalidates the normal release cache.
 
@@ -58,6 +61,36 @@ fn write_replacing(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&temp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&temp);
     })
+}
+
+/// The update feed for `setup`: the version from the app's manifest, the size and SHA-256 of the file's bytes. The setup
+/// address is relative, so it resolves next to the feed wherever the two files are published.
+fn update_feed(version: &str, setup_name: &str, setup: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let hash: String = Sha256::digest(setup)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let feed = serde_json::json!({
+        "version": version,
+        "url": setup_name,
+        "size": setup.len(),
+        "sha256": hash,
+    });
+    serde_json::to_string_pretty(&feed).expect("a feed is valid JSON")
+        + "
+"
+}
+
+/// Writes the feed next to the setup, through a temporary file like the setup itself.
+fn write_update_feed(dist: &Path, version: &str, setup: &[u8]) -> Result<PathBuf> {
+    let path = dist.join("update.json");
+    let temp = dist.join("update.json.tmp");
+    std::fs::write(&temp, update_feed(version, "gravecord-setup.exe", setup))?;
+    std::fs::rename(&temp, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })?;
+    Ok(path)
 }
 
 /// Makes `to` hold exactly the files of `from`.
@@ -132,8 +165,9 @@ pub fn run(repo: &Path) -> Result<()> {
     let dist = dist_dir(repo);
     std::fs::create_dir_all(&dist)?;
 
+    let version = app_version(repo)?;
     let archive = Archive {
-        version: app_version(repo)?,
+        version: version.clone(),
         entries: payload::collect(&app_exe, &assets)?,
     };
     let image = payload::append(&std::fs::read(&stub_path)?, &archive)?;
@@ -146,6 +180,12 @@ pub fn run(repo: &Path) -> Result<()> {
         image.len() as f64 / 1048576.0,
         std::fs::metadata(&app_exe)?.len() as f64 / 1048576.0,
         std::fs::metadata(&stub_path)?.len() as f64 / 1048576.0,
+    );
+
+    let feed = write_update_feed(&dist, &version, &image)?;
+    println!(
+        "update feed: {} (publish it with the setup)",
+        feed.display()
     );
 
     // The portable folder. The exe may be locked because the owner has it open; the setup is written either way.
@@ -178,6 +218,33 @@ mod tests {
         std::fs::create_dir_all(assets.join("icons")).unwrap();
         std::fs::write(assets.join("icons/a.svg"), format!("asset-{version}")).unwrap();
         (exe, assets)
+    }
+
+    #[test]
+    fn the_update_feed_describes_the_exact_setup_bytes() {
+        use sha2::{Digest, Sha256};
+        let base = scratch("feed");
+        let setup = b"setup image bytes";
+        let path = write_update_feed(&base, "1.2.3", setup).unwrap();
+        assert_eq!(path, base.join("update.json"));
+        let feed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(feed["version"], "1.2.3");
+        assert_eq!(feed["url"], "gravecord-setup.exe");
+        assert_eq!(feed["size"], setup.len());
+        let expected: String = Sha256::digest(setup)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(feed["sha256"], expected.as_str());
+        assert_eq!(feed["sha256"].as_str().unwrap().len(), 64);
+        assert!(!base.join("update.json.tmp").exists());
+        // A second write replaces the first.
+        write_update_feed(&base, "1.2.4", b"other").unwrap();
+        let feed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(feed["version"], "1.2.4");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

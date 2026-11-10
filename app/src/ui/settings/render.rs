@@ -679,7 +679,13 @@ impl Root {
                         )
                     })
                     .unwrap_or_else(|| self.choice_on(key, *on));
-                let disabled = self.voice_disabled(key)
+                // The System page's startup switches: the registry's truth, and start minimized off without it.
+                let (on, system_disabled) = match self.system_switch(key) {
+                    Some((on, disabled)) => (on, disabled),
+                    None => (on, false),
+                };
+                let disabled = system_disabled
+                    || self.voice_disabled(key)
                     || (*key == crate::sounds::SELECTED_CHANNEL
                         && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));
                 let row = self.switch_row(

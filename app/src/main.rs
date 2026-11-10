@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod branding;
 mod editor;
 mod fonts;
@@ -20,11 +21,13 @@ mod rpc;
 mod shell;
 mod sounds;
 mod speech;
+mod spellcheck;
 mod spinner;
 mod storage;
 mod text_buffer;
 mod tray;
 mod ui;
+mod updater;
 mod video_clip;
 
 use anyhow::{Context as _, Result};
@@ -326,6 +329,12 @@ fn run() -> Result<()> {
     let faces = runtime.block_on(fonts::load(&font_client))?;
     let start = initial_start();
     let handle = runtime.handle().clone();
+    // The Run value's arguments (`--start-minimized`, `--start-inactive`). Minimized only means anything with a signed
+    // in session: the tray icon that brings the window back exists from then on, and the login screen has none.
+    let flags = autostart::LaunchFlags::parse(std::env::args());
+    let hidden =
+        flags.minimized && !storage::is_capture_run() && matches!(start, shell::Start::Token(_));
+    autostart::refresh_at_launch();
 
     application()
         .with_assets(Assets { root: assets_root })
@@ -345,6 +354,9 @@ fn run() -> Result<()> {
                             appears_transparent: true,
                             ..Default::default()
                         }),
+                        // No window and no flash when started to the tray; no focus theft when started by Windows.
+                        show: !hidden,
+                        focus: !hidden && !flags.inactive,
                         ..Default::default()
                     },
                     move |window, cx| {
@@ -354,7 +366,11 @@ fn run() -> Result<()> {
                 )
                 .expect("the window must open");
             let shell = window.entity(cx).expect("the shell exists");
-            cx.activate(true);
+            if hidden {
+                let _ = window.update(cx, |_, window, _| autostart::place_hidden(window, bounds));
+            } else if !flags.inactive {
+                cx.activate(true);
+            }
 
             if let Some(mut requests) = restore_requests {
                 cx.spawn(async move |cx| {

@@ -1,14 +1,15 @@
 //! The text field on gpui's input handler, so the OS input method composes straight into it (Turkish, CJK).
 //! Used by the composer; search and every other field follow.
 
+use crate::spellcheck;
 use crate::text_buffer::TextBuffer;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Size, Style, TextAlign,
-    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, div, fill, point, prelude::*, px,
-    size,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, SharedString, Size, Style,
+    Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, div, fill,
+    point, prelude::*, px, size,
 };
 use std::cell::RefCell;
 use std::ops::Range;
@@ -17,6 +18,37 @@ use std::rc::Rc;
 /// The composer's text: 16px on 22px lines. Other fields (the quick switcher's 22px) set their own.
 pub const LINE_HEIGHT: f32 = 22.;
 pub const FONT_SIZE: f32 = 16.;
+
+/// How long the text rests before it goes to the checker: the 250 ms the page's own language detector waits
+/// (`debounce(..., 250)` in module 334604).
+const SPELL_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What a right click on the field found: the word it landed on when that word is misspelled (its byte range and
+/// text), and the selected text for Cut and Copy.
+pub struct ContextClick {
+    pub word: Option<(Range<usize>, String)>,
+    pub selected: String,
+}
+
+/// The squiggle's red, wavelength and amplitude: Blink's `DocumentMarkerPainter` constants (the bundle has none).
+const SQUIGGLE_RED: u32 = 0xff0000;
+const SQUIGGLE_STEP: f32 = 2.;
+const SQUIGGLE_AMPLITUDE: f32 = 2.;
+const SQUIGGLE_THICKNESS: f32 = 1.;
+
+/// The misspellings of the text, kept while the text changes.
+#[derive(Default)]
+struct Spell {
+    /// Byte ranges of misspelled words in `text`.
+    raw: Vec<Range<usize>>,
+    /// The text `raw` belongs to.
+    text: String,
+    /// The text last sent to the checker.
+    requested: String,
+    /// The text changed by typing and the caret has not moved by hand since: the word at the caret is left unmarked.
+    typing_hold: bool,
+    task: Option<Task<()>>,
+}
 
 pub enum EditorEvent {
     Submit(String),
@@ -131,6 +163,8 @@ pub struct Editor {
     masked: bool,
     /// A form field: Enter reports `Submit` with no text and leaves the field as it is.
     keeps_text: bool,
+    /// Underlines misspelled words (the composer).
+    spell: Option<Spell>,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -155,6 +189,156 @@ impl Editor {
             reports_all_edits: false,
             masked: false,
             keeps_text: false,
+            spell: None,
+        }
+    }
+
+    /// Marks misspelled words with the system spell checker, as the official composer's text area does.
+    pub fn set_spellcheck(&mut self, on: bool) {
+        self.spell = on.then(Spell::default);
+    }
+
+    /// Brings the misspellings up to date with the text: ranges move with the edit, and a check of the new text
+    /// starts once the text has rested (a newer edit drops the waiting one).
+    fn sync_spell(&mut self, cx: &mut Context<Self>) {
+        let Some(spell) = self.spell.as_mut() else {
+            return;
+        };
+        let text = self.buffer.text();
+        if spell.text != text {
+            spell.raw = spellcheck::shift_ranges(&spell.text, text, &spell.raw);
+            spell.text = text.to_owned();
+            spell.typing_hold = true;
+        }
+        if !spellcheck::is_enabled() || spell.requested == text {
+            return;
+        }
+        spell.requested = text.to_owned();
+        if text.trim().is_empty() {
+            spell.raw.clear();
+            spell.task = None;
+            return;
+        }
+        let checked = text.to_owned();
+        spell.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SPELL_DEBOUNCE).await;
+            let sent = checked.clone();
+            let answer = cx
+                .background_executor()
+                .spawn(async move {
+                    spellcheck::ensure_languages();
+                    spellcheck::service().check(sent).recv().ok()
+                })
+                .await;
+            if let Some(ranges) = answer {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(spell) = this.spell.as_mut()
+                        && spell.text == checked
+                    {
+                        spell.raw = ranges;
+                        cx.notify();
+                    }
+                });
+            }
+        }));
+    }
+
+    /// The misspellings to draw or act on: none while the switch is off, none for a learned word, none for the word
+    /// being typed (Blink marks it once the caret leaves) or one inside the input method's composition.
+    fn spell_marks(&self, focused: bool) -> Vec<Range<usize>> {
+        let Some(spell) = self.spell.as_ref() else {
+            return Vec::new();
+        };
+        if !spellcheck::is_enabled() {
+            return Vec::new();
+        }
+        let text = self.buffer.text();
+        let selection = self.buffer.selection();
+        let marked = self.buffer.marked();
+        spell
+            .raw
+            .iter()
+            .filter(|range| {
+                text.get((*range).clone())
+                    .is_some_and(|word| !spellcheck::has_learned_word(word))
+            })
+            .filter(|range| {
+                !(focused
+                    && spell.typing_hold
+                    && selection.is_empty()
+                    && range.start <= selection.start
+                    && selection.start <= range.end)
+            })
+            .filter(|range| {
+                marked
+                    .as_ref()
+                    .is_none_or(|marked| marked.end <= range.start || range.end <= marked.start)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// A right click: the caret goes to the click unless it landed in the selection; a misspelled word under the
+    /// click gets selected (Blink's `SelectClosestMisspellingFromHitTestResult`). Returns what the menu needs.
+    pub fn context_click(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ContextClick {
+        window.focus(&self.focus, cx);
+        let at = self.index_for_window_point(position);
+        let selection = self.buffer.selection();
+        if selection.is_empty() || at < selection.start || at > selection.end {
+            let word = self
+                .spell_marks(false)
+                .into_iter()
+                .find(|range| range.start <= at && at <= range.end);
+            match word {
+                Some(range) => {
+                    self.buffer.set_caret(range.start);
+                    self.buffer.select_to(range.end);
+                }
+                None => self.buffer.set_caret(at),
+            }
+            if let Some(spell) = self.spell.as_mut() {
+                spell.typing_hold = false;
+            }
+        }
+        let selection = self.buffer.selection();
+        let word = self
+            .spell_marks(false)
+            .into_iter()
+            .find(|range| *range == selection)
+            .map(|range| (range.clone(), self.buffer.text()[range].to_owned()));
+        cx.notify();
+        ContextClick {
+            word,
+            selected: self.buffer.selected_text().to_owned(),
+        }
+    }
+
+    pub fn copy_selection(&self, cx: &mut Context<Self>) {
+        if !self.masked && !self.buffer.selection().is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                self.buffer.selected_text().to_owned(),
+            ));
+        }
+    }
+
+    pub fn cut_selection(&mut self, cx: &mut Context<Self>) {
+        if self.masked || self.buffer.selection().is_empty() {
+            return;
+        }
+        self.copy_selection(cx);
+        self.buffer.backspace();
+        cx.emit(EditorEvent::Edited);
+        cx.notify();
+    }
+
+    pub fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.insert(&text, cx);
         }
     }
 
@@ -245,6 +429,11 @@ impl Editor {
         if self.buffer.marked().is_some() {
             return;
         }
+        if matches!(stroke.key.as_str(), "left" | "right" | "home" | "end")
+            && let Some(spell) = self.spell.as_mut()
+        {
+            spell.typing_hold = false;
+        }
         let before = self
             .reports_all_edits
             .then(|| self.buffer.text().to_owned());
@@ -326,6 +515,9 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        if let Some(spell) = self.spell.as_mut() {
+            spell.typing_hold = false;
+        }
         let at = self.index_for_window_point(event.position);
         if event.modifiers.shift {
             self.buffer.select_to(at);
@@ -466,6 +658,7 @@ impl EntityInputHandler for Editor {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_spell(cx);
         div()
             .id("editor")
             .w_full()
@@ -620,7 +813,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, style, laid, placeholder, selection, caret, multiline, masked, ellipsis) = {
+        let (focus, style, laid, placeholder, selection, caret, multiline, masked, ellipsis, marks) = {
             let editor = self.editor.read(cx);
             (
                 editor.focus.clone(),
@@ -632,6 +825,7 @@ impl Element for EditorElement {
                 editor.enter_inserts_newline,
                 editor.masked,
                 editor.ellipsis_placeholder,
+                editor.spell_marks(editor.focus.is_focused(window)),
             )
         };
         window.handle_input(
@@ -737,6 +931,7 @@ impl Element for EditorElement {
                 cx,
             );
         }
+        paint_squiggles(&laid, &marks, bounds.origin, style.line_height, window);
         if focus.is_focused(window)
             && let Some(position) = laid.position(caret)
         {
@@ -747,6 +942,73 @@ impl Element for EditorElement {
                 ),
                 style.caret,
             ));
+        }
+    }
+}
+
+/// The red wave under each misspelled range, row by row (a word that wraps gets a piece on each row). The wave sits one
+/// pixel under the baseline, as Blink places it; the baseline rounds like gpui's own line painting.
+fn paint_squiggles(
+    laid: &Laid,
+    marks: &[Range<usize>],
+    origin: Point<Pixels>,
+    line_height: f32,
+    window: &mut Window,
+) {
+    if marks.is_empty() || laid.masked_text.is_some() {
+        return;
+    }
+    let tops = laid.paragraph_tops();
+    let height = px(line_height);
+    let color: Hsla = gpui::rgb(SQUIGGLE_RED).into();
+    for mark in marks {
+        let Some(index) = laid
+            .lines
+            .iter()
+            .rposition(|(_, start)| *start <= mark.start)
+        else {
+            continue;
+        };
+        let (line, start) = &laid.lines[index];
+        let (from, to) = (mark.start - start, mark.end - start);
+        let Some(word) = line.text.get(from..to) else {
+            continue;
+        };
+        let layout = &line.unwrapped_layout;
+        let ascent = layout.ascent.round();
+        let descent = layout.descent.round();
+        let padding_top = ((height - ascent - descent) / 2.).floor();
+        // (row top, x start, x end) pieces, joined while they stay on one row.
+        let mut pieces: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
+        for (at, c) in word.char_indices() {
+            let first = from + at;
+            let Some(position) = line.position_for_index(first, height) else {
+                continue;
+            };
+            let width = layout.x_for_index(first + c.len_utf8()) - layout.x_for_index(first);
+            match pieces.last_mut() {
+                Some(piece) if piece.0 == position.y => piece.2 = position.x + width,
+                _ => pieces.push((position.y, position.x, position.x + width)),
+            }
+        }
+        for (row, x0, x1) in pieces {
+            let top = origin.y + tops[index] + row + padding_top + ascent + px(1.);
+            let mut path = PathBuilder::stroke(px(SQUIGGLE_THICKNESS));
+            let mut x = origin.x + x0;
+            let end = origin.x + x1;
+            let mut low = false;
+            path.move_to(point(x, top));
+            while x < end {
+                x = (x + px(SQUIGGLE_STEP)).min(end);
+                low = !low;
+                path.line_to(point(
+                    x,
+                    top + if low { px(SQUIGGLE_AMPLITUDE) } else { px(0.) },
+                ));
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
         }
     }
 }

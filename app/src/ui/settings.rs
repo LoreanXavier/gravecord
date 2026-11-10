@@ -15,6 +15,7 @@ mod server_boost_page;
 mod soundboard;
 pub(crate) use render::radio_dot;
 mod swatches;
+mod system;
 mod voice;
 mod voice_camera;
 pub(super) use clips::ClipsState;
@@ -1017,7 +1018,8 @@ impl Root {
                         "--text-muted",
                     ))
                     .child(footnote(
-                        format!("{} (x64)", pin::CLIENT_VERSION),
+                        // The official line is the host's version; gravecord's is its own.
+                        format!("{} (x64)", env!("CARGO_PKG_VERSION")),
                         "--text-muted",
                     )),
             )

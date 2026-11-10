@@ -83,6 +83,8 @@ pub(crate) struct Stickers {
     favorites: Option<Vec<Id>>,
     /// The sticker waiting in the composer (`ADD_STICKER_PREVIEW`).
     staged: Option<Id>,
+    /// Frames of the stickers that move (`sticker_player`).
+    pub(super) player: super::sticker_player::Shared,
 }
 
 impl Stickers {
@@ -110,6 +112,16 @@ pub(super) fn art_url(sticker: &Sticker) -> String {
         _ => format!(
             "https://media.discordapp.net/stickers/{id}.webp?size={ART_SIZE}&quality=lossless"
         ),
+    }
+}
+
+/// Module 378058 `zg` for a sticker that animates: the Lottie file, or the media proxy's animated PNG or GIF (no
+/// `passthrough=false`, and a GIF as itself rather than as the still).
+pub(super) fn animated_art_url(id: Id, format: Format) -> String {
+    match format {
+        Format::Lottie => format!("https://discord.com/stickers/{id}.json"),
+        Format::Gif => format!("https://media.discordapp.net/stickers/{id}.gif?size={ART_SIZE}"),
+        _ => format!("https://media.discordapp.net/stickers/{id}.png?size={ART_SIZE}"),
     }
 }
 
@@ -939,7 +951,9 @@ impl Root {
             }
             Cell::Sticker(sticker) => {
                 let locked = self.sticker_sendability(sticker) == Sendability::SendableWithPremium;
-                let picture = self.images.get(&art_key(sticker.id)).cloned();
+                // Module 357354: `isInteracting` is the inspected cell, and a grid this narrow prefers animation.
+                let picture =
+                    self.sticker_art(sticker.id, sticker.format(), 96., inspected, false, cx);
                 let on = cell.clone();
                 let chosen = sticker.id;
                 div()
@@ -960,7 +974,7 @@ impl Root {
                         this.choose_sticker(chosen, event.modifiers().alt, cx);
                     }))
                     .children(picture.map(|picture| {
-                        img(picture)
+                        picture
                             .size(px(96.))
                             .when(locked, |this| this.grayscale(true))
                     }))
@@ -1434,12 +1448,19 @@ impl Root {
     /// The staged sticker's preview above the composer (`ADD_STICKER_PREVIEW`): a 48px picture and a remove button.
     pub(super) fn staged_sticker_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.sticker_ui.staged?;
+        // Module 989161 draws the preview with `isInteracting` while it is focused or hovered.
+        let format = self
+            .stores
+            .stickers
+            .sticker(id)
+            .and_then(|sticker| sticker.format());
+        let picture = self.sticker_art(id, format, 48., false, false, cx);
         Some(
             div()
                 .relative()
                 .flex_none()
                 .size(px(48.))
-                .children(self.sticker_picture(id, 48.))
+                .children(picture.map(|picture| picture.size(px(48.))))
                 .child(
                     div()
                         .id("staged-sticker-remove")
@@ -1469,22 +1490,37 @@ impl Root {
     }
 
     /// A sticker in a message (`stickerContainer`): 160px, from the media proxy or the Lottie renderer.
-    pub(super) fn message_stickers(&self, stickers: &[(Id, String, u64)]) -> Option<AnyElement> {
+    pub(super) fn message_stickers(
+        &self,
+        message: Id,
+        stickers: &[(Id, String, u64)],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if stickers.is_empty() {
             return None;
         }
+        // `isInteracting` of the message row (module 679636 `rH`): the pointer is over the message.
+        let interacting = self.hovered == Some(message);
         Some(
             div()
                 .flex()
                 .flex_wrap()
                 .gap(px(4.))
-                .children(stickers.iter().map(|(id, _, _)| {
+                .children(stickers.iter().map(|(id, _, format_type)| {
+                    let picture = self.sticker_art(
+                        *id,
+                        Format::from_wire(*format_type),
+                        MESSAGE_STICKER,
+                        interacting,
+                        false,
+                        cx,
+                    );
                     div()
                         .id(SharedString::from(format!("message-sticker-{id}")))
                         .size(px(MESSAGE_STICKER))
                         .flex_none()
                         .cursor_pointer()
-                        .children(self.sticker_picture(*id, MESSAGE_STICKER))
+                        .children(picture.map(|picture| picture.size(px(MESSAGE_STICKER))))
                 }))
                 .into_any_element(),
         )

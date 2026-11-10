@@ -22,6 +22,7 @@ pub(super) const LOCAL: &[(&str, bool)] = &[
     ("reduced_motion", false),
     ("enable_switch_icons", false),
     ("os_minimize_to_tray", false),
+    ("os_start_minimized", false),
 ];
 
 const STORAGE_KEY: &str = "settings.prefs";

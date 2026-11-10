@@ -373,6 +373,11 @@ fn uninstall_as(dir: &Path, removal: &Removal, me: Option<&Path>) -> Result<()> 
     for key in &manifest.reg_keys {
         winsys::unregister_uninstall(key)?;
     }
+    // A registered install may have an "open on startup" value; one that starts this folder's exe goes with it. An
+    // install made with no registration (the tests) never touches the registry.
+    if !manifest.reg_keys.is_empty() {
+        winsys::remove_startup_entry(dir);
+    }
     if removal.purge_data {
         remove_data(&removal.data_dir)?;
     }

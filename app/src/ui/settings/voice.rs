@@ -933,6 +933,7 @@ impl Root {
             self.apply_stream_attenuation();
             return;
         }
+        self.system_setting_changed(key, on);
         if self.pref_changed(key, on, index) {
             return;
         }

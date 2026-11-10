@@ -254,11 +254,12 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let banner = self.shop_cover(
+        let banner = self.shop_cover_left(
             category
-                .hero_banner_url
+                .catalog_banner_url
                 .as_deref()
-                .or(category.catalog_banner_url.as_deref()),
+                .or(category.hero_banner_url.as_deref()),
+            865. / 180.,
         );
         let logo = category
             .hero_logo_url
@@ -278,7 +279,7 @@ impl Root {
                     .relative()
                     .w_full()
                     .h(px(180.))
-                    .rounded(px(16.))
+                    .rounded(px(32.))
                     .overflow_hidden()
                     .bg(color("--background-base-low"))
                     .cursor_pointer()

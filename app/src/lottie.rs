@@ -17,6 +17,17 @@ pub fn first_frame_png(json: &[u8], size: u32) -> Option<Vec<u8>> {
 
 /// Frame `frame` (in the animation's own frame numbers; `None` is its in point) as PNG bytes.
 pub fn frame_png(json: &[u8], size: u32, frame: Option<f32>) -> Option<Vec<u8>> {
+    let animation = parse(json)?;
+    let at = frame.unwrap_or(animation.in_point);
+    let (pixels, width, height) = straight_pixels(&animation, size, at)?;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(png)
+}
+
+fn parse(json: &[u8]) -> Option<Animation> {
     if json.len() > MAX_JSON {
         return None;
     }
@@ -28,12 +39,16 @@ pub fn frame_png(json: &[u8], size: u32, frame: Option<f32>) -> Option<Vec<u8>> 
     {
         return None;
     }
+    Some(animation)
+}
+
+/// One frame as straight-alpha RGBA, `size` pixels on the longer side of the canvas.
+fn straight_pixels(animation: &Animation, size: u32, at: f32) -> Option<(Vec<u8>, u32, u32)> {
     let scale = size as f32 / animation.width.max(animation.height) as f32;
-    let at = frame.unwrap_or(animation.in_point);
     let rendered = Renderer::default()
-        .render_frame(&animation, at, RenderConfig::new(Rgba8::TRANSPARENT, scale))
+        .render_frame(animation, at, RenderConfig::new(Rgba8::TRANSPARENT, scale))
         .ok()?;
-    // The renderer returns premultiplied pixels; PNG holds straight alpha.
+    // The renderer returns premultiplied pixels; PNG and GPUI's images hold straight alpha.
     let mut pixels = rendered.pixels;
     for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
@@ -45,16 +60,39 @@ pub fn frame_png(json: &[u8], size: u32, frame: Option<f32>) -> Option<Vec<u8>> 
             }
         }
     }
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(
-            &pixels,
-            rendered.width,
-            rendered.height,
-            image::ExtendedColorType::Rgba8,
-        )
-        .ok()?;
-    Some(png)
+    Some((pixels, rendered.width, rendered.height))
+}
+
+/// A parsed Lottie file played frame by frame. The official player (module 445972, rlottie) reads the frame count
+/// and rate from the file: `lottie_frame_count` is the in point to the out point, and frame `i` is drawn at the in
+/// point plus `i`.
+pub struct Source {
+    animation: Animation,
+    frames: usize,
+}
+
+impl Source {
+    pub fn parse(json: &[u8]) -> Option<Self> {
+        let animation = parse(json)?;
+        let frames = (animation.duration_frames().floor() as usize).max(1);
+        (animation.frame_rate > 0.).then_some(Self { animation, frames })
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames
+    }
+
+    /// The file's frame rate in frames per second.
+    pub fn frame_rate(&self) -> f32 {
+        self.animation.frame_rate
+    }
+
+    /// Frame `index` as straight-alpha RGBA pixels, `size` on the longer side.
+    pub fn render(&self, index: usize, size: u32) -> Option<image::RgbaImage> {
+        let at = self.animation.in_point + index.min(self.frames - 1) as f32;
+        let (pixels, width, height) = straight_pixels(&self.animation, size, at)?;
+        image::RgbaImage::from_raw(width, height, pixels)
+    }
 }
 
 #[cfg(test)]
@@ -78,6 +116,31 @@ mod tests {
         assert_eq!(decoded.get_pixel(0, 0)[3], 0);
         let middle = decoded.get_pixel(25, 25);
         assert!(middle[0] > 240 && middle[1] < 15 && middle[3] == 255);
+    }
+
+    /// `GRAVECORD_LOTTIE_FILE=<json> cargo test -p gravecord lottie::tests::frame_cost -- --ignored --nocapture`
+    /// prints what one frame of a real sticker costs at the picker's and the message list's device sizes.
+    #[test]
+    #[ignore]
+    fn frame_cost() {
+        let path = std::env::var("GRAVECORD_LOTTIE_FILE").expect("GRAVECORD_LOTTIE_FILE");
+        let json = std::fs::read(path).expect("read");
+        let source = Source::parse(&json).expect("parses");
+        println!(
+            "frames={} fps={}",
+            source.frame_count(),
+            source.frame_rate()
+        );
+        for size in [96, 192, 160, 320] {
+            let _ = source.render(0, size);
+            let started = std::time::Instant::now();
+            let runs = source.frame_count().min(60);
+            for index in 0..runs {
+                source.render(index, size).expect("renders");
+            }
+            let each = started.elapsed() / runs as u32;
+            println!("size={size} per_frame={each:?} bytes={}", size * size * 4);
+        }
     }
 
     #[test]

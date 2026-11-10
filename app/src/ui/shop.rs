@@ -18,7 +18,7 @@ use crate::{
 use data::{Category, Filters, Home, Product, Sort};
 use gpui::{
     AnyElement, Context, Entity, Focusable, IntoElement, ScrollHandle, SharedString, Subscription,
-    Window, deferred, div, img, point, prelude::*, px,
+    Window, deferred, div, img, point, prelude::*, px, relative,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -1095,6 +1095,40 @@ impl Root {
     }
 
     // ---- shared drawing helpers ----
+
+    /// A catalog banner: `object-fit: cover; object-position: left` (`catalogBannerImage` of module 296329). An
+    /// image wider than its box keeps its left edge and its height; any other is covered from the centre.
+    pub(super) fn shop_cover_left(
+        &mut self,
+        url: Option<&str>,
+        box_aspect: f32,
+    ) -> Option<AnyElement> {
+        let image = self.shop_img(url?)?;
+        let aspect = image::ImageReader::new(std::io::Cursor::new(image.bytes()))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok())
+            .filter(|(_, height)| *height > 0)
+            .map(|(width, height)| width as f32 / height as f32);
+        match aspect {
+            Some(aspect) if aspect > box_aspect => Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(relative(aspect / box_aspect))
+                    .child(img(image).size_full().object_fit(gpui::ObjectFit::Fill))
+                    .into_any_element(),
+            ),
+            _ => Some(
+                img(image)
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element(),
+            ),
+        }
+    }
 
     /// A remote image filling its box, or the box alone while it loads.
     pub(super) fn shop_cover(&mut self, url: Option<&str>) -> Option<AnyElement> {
