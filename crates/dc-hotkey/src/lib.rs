@@ -4,6 +4,7 @@
 //! client's native input does, and reports when the whole keybind is down. Nothing is swallowed and nothing is logged.
 //! [`matcher`] holds the platform independent part.
 
+pub mod idle;
 pub mod matcher;
 #[cfg(windows)]
 mod windows;
