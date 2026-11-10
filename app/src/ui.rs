@@ -5604,6 +5604,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key == "escape" && this.vv.menu.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.thread_browser.is_some() {
                     this.thread_browser = None;
                     cx.notify();
