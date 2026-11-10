@@ -977,6 +977,7 @@ impl Root {
             )
         };
         let okay = |id: &'static str, tone: Tone, run: modal::Handler| modal::Button {
+            focus: None,
             id,
             label: "Okay".into(),
             tone,

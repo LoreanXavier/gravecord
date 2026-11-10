@@ -275,7 +275,7 @@ impl Root {
                                                 .text_size(px(16.))
                                                 .line_height(px(20.))
                                                 .font_weight(FontWeight(500.))
-                                                .child(recipient.display_name().to_owned()),
+                                                .child(self.private_channel_name(channel)),
                                         )
                                         .children(
                                             recipient

@@ -224,7 +224,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(text)
-                    .child(user.display_name().to_owned()),
+                    .child(self.dm_display_name(&user)),
             )
             .child(
                 div()

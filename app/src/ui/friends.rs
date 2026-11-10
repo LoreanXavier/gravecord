@@ -91,6 +91,29 @@ pub(crate) struct FriendMenu {
 }
 
 impl Root {
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_friends_tab(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if self.guild.is_some()
+            || self.channel.is_some()
+            || std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() != Ok("1")
+        {
+            return "friends tab requires Home and settings-write guard".into();
+        }
+        let tab = match name {
+            "all" => FriendsTab::All,
+            "online" => FriendsTab::Online,
+            "pending" => FriendsTab::Pending,
+            _ => return "usage: friends all | online | pending".into(),
+        };
+        self.set_friends_tab(tab, window, cx);
+        format!("friends tab: {name}")
+    }
+
     pub(super) fn set_friends_tab(
         &mut self,
         tab: FriendsTab,
@@ -350,6 +373,9 @@ impl Root {
             .unwrap_or_default();
         let matches = |user: &User| {
             query.is_empty()
+                || self
+                    .nickname_for(user.id)
+                    .is_some_and(|name| name.to_lowercase().contains(&query))
                 || user.display_name().to_lowercase().contains(&query)
                 || user.username.to_lowercase().contains(&query)
         };
@@ -555,7 +581,7 @@ impl Root {
                                             .line_height(px(20.))
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-strong"))
-                                            .child(user.display_name().to_owned()),
+                                            .child(self.dm_display_name(user)),
                                     )
                                     .child(
                                         div()

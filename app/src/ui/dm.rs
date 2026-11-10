@@ -103,7 +103,7 @@ impl Root {
                     .and_then(|id| id.parse::<u64>().ok())
             })
             .and_then(|guild| self.images.get(&format!("guild:{guild}")).cloned());
-        let name = user.display_name().to_owned();
+        let name = self.dm_display_name(&user);
         Some(
             // A list row's own margin is not measured, so the 16px above `container_w6h4R2` is padding on a wrapper.
             div().pt(px(16.)).child(

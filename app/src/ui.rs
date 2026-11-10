@@ -52,6 +52,7 @@ mod emoticons;
 mod file_actions;
 mod files;
 mod forward;
+mod friend_nickname;
 mod friends;
 mod full_profile;
 mod games_spec;
@@ -268,6 +269,8 @@ pub struct Root {
     #[cfg(feature = "capture")]
     capture_dm_rail: Option<(u64, bool)>,
     hovered_rail_dm: Option<Id>,
+    #[cfg(feature = "capture")]
+    capture_friend_nickname: bool,
     notification_focused: bool,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
@@ -338,6 +341,7 @@ pub struct Root {
     people_search: Option<friends::PeopleSearch>,
     friend_menu: Option<friends::FriendMenu>,
     confirm_remove_friend: Option<friends::RemoveFriend>,
+    friend_nickname: Option<friend_nickname::Dialog>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
     activity_shelf: Option<activity_shelf::ActivityShelf>,
     activities: activity_launch::Activities,
@@ -536,6 +540,8 @@ impl Root {
             #[cfg(feature = "capture")]
             capture_dm_rail: None,
             hovered_rail_dm: None,
+            #[cfg(feature = "capture")]
+            capture_friend_nickname: false,
             notification_focused: false,
             notification_sounds: Default::default(),
             rows: Vec::new(),
@@ -595,6 +601,7 @@ impl Root {
             people_search: None,
             friend_menu: None,
             confirm_remove_friend: None,
+            friend_nickname: None,
             quick_switcher: None,
             activity_shelf: None,
             activities: Default::default(),
@@ -834,6 +841,9 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.friend_nickname_fetched(&key, &body, cx) {
+                    return;
+                }
                 if key.starts_with("presence-button:") {
                     self.live_button_fetched(&key, body, cx);
                     return;
@@ -1373,6 +1383,9 @@ impl Root {
     }
 
     fn guild_display_name(&self, user: &User) -> String {
+        if self.current_guild().is_none() && self.current_dm().is_some() {
+            return self.dm_display_name(user);
+        }
         self.current_guild()
             .and_then(|guild| self.stores.members.get(guild.id, user.id))
             .and_then(|member| member.nick.clone())
@@ -1692,8 +1705,7 @@ impl Root {
             return thread.name;
         }
         self.current_dm()
-            .and_then(|channel| self.stores.dm_recipient(channel))
-            .map(|user| user.display_name().to_owned())
+            .map(|channel| self.private_channel_name(channel))
             .unwrap_or_default()
     }
 
@@ -2097,6 +2109,7 @@ impl Root {
         );
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
         list.extend(self.custom_status.as_ref().map(|open| open.input.clone()));
+        list.extend(self.friend_nickname.as_ref().map(|open| open.input.clone()));
         list.extend(self.modify_attachment_editors());
         if let Some(form) = self.poll.as_ref() {
             list.push(form.question.clone());
@@ -5604,10 +5617,13 @@ impl Render for Root {
                     return;
                 }
                 if event.keystroke.key == "escape"
-                    && (this.friend_menu.is_some() || this.confirm_remove_friend.is_some())
+                    && (this.friend_menu.is_some()
+                        || this.confirm_remove_friend.is_some()
+                        || this.friend_nickname.is_some())
                 {
                     this.friend_menu = None;
                     this.confirm_remove_friend = None;
+                    this.friend_nickname = None;
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -5905,6 +5921,7 @@ impl Render for Root {
             .children(self.mentions_filter_layer(cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
+            .children(self.friend_nickname_layer(window, cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
             .children(self.activity_shelf_layer(window, cx))

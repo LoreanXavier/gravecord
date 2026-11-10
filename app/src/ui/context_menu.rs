@@ -62,6 +62,7 @@ pub(super) enum Act {
     Apps,
     AddFriend,
     RemoveFriend,
+    FriendNickname,
     Ignore,
     Block,
     CloseDm,
@@ -413,6 +414,7 @@ pub(super) struct UserFacts {
     pub bot: bool,
     pub in_guild: bool,
     pub friend: bool,
+    pub nickname: bool,
     pub blocked: bool,
     pub ignored: bool,
     pub can_nick: bool,
@@ -455,6 +457,16 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if !facts.me {
         first.push(Row::new(Act::Call, "Start a Call"));
         first.push(Row::new(Act::Note, "Add Note").sub("Only visible to you"));
+        if facts.friend {
+            first.push(Row::new(
+                Act::FriendNickname,
+                if facts.nickname {
+                    "Change Friend Nickname"
+                } else {
+                    "Add Friend Nickname"
+                },
+            ));
+        }
     }
     if facts.dm.is_some() {
         first.push(Row::new(Act::CloseDm, "Close DM"));
@@ -750,7 +762,7 @@ impl Root {
                     return;
                 };
                 let facts = UserFacts {
-                    name: user.display_name().to_owned(),
+                    name: self.private_channel_name(dm),
                     me: self
                         .stores
                         .current_user
@@ -759,6 +771,7 @@ impl Root {
                     bot: user.bot,
                     in_guild: false,
                     friend: self.stores.relationships.get(&user.id) == Some(&1),
+                    nickname: self.nickname_for(user.id).is_some(),
                     blocked: self.stores.relationships.get(&user.id) == Some(&2),
                     ignored: self.stores.is_ignored(user.id),
                     developer,
@@ -789,6 +802,7 @@ impl Root {
                     bot: known.bot,
                     in_guild: guild.is_some(),
                     friend: self.stores.relationships.get(&user) == Some(&1),
+                    nickname: self.nickname_for(user).is_some(),
                     blocked: self.stores.relationships.get(&user) == Some(&2),
                     ignored: self.stores.is_ignored(user),
                     can_nick: guild.is_some_and(|guild| {
@@ -1086,6 +1100,14 @@ impl Root {
             }
             (Act::RemoveFriend, Target::User { user, .. }) => {
                 self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
+            }
+            (Act::FriendNickname, Target::User { user, .. }) => {
+                self.open_friend_nickname(user, window, cx)
+            }
+            (Act::FriendNickname, Target::Dm(channel)) => {
+                if let Some(user) = self.dm_user(channel) {
+                    self.open_friend_nickname(user, window, cx);
+                }
             }
             (Act::RemoveFriend, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
@@ -1426,6 +1448,20 @@ impl Root {
             color("--text-strong")
         };
         let has_sub = row.caret;
+        let label = gpui::StyledText::new(row.label.clone()).with_highlights(
+            (act == Act::Mute && matches!(target, Target::Dm(_)))
+                .then(|| row.label.find('@'))
+                .flatten()
+                .map(|start| {
+                    (
+                        start..row.label.len(),
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight(600.)),
+                            ..Default::default()
+                        },
+                    )
+                }),
+        );
         div()
             .id(SharedString::from(key))
             .relative()
@@ -1502,7 +1538,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(tint)
-                            .child(row.label.clone()),
+                            .child(label),
                     )
                     .children(row.sub.clone().map(|sub| {
                         div()
@@ -1731,6 +1767,9 @@ mod tests {
                 ..Default::default()
             };
             let items = user_items(&facts);
+            assert!(labels(&items).contains(&"Add Friend Nickname".into()));
+            facts.nickname = true;
+            assert!(labels(&user_items(&facts)).contains(&"Change Friend Nickname".into()));
             let remove = items
                 .iter()
                 .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::RemoveFriend))
@@ -1753,6 +1792,7 @@ mod tests {
             facts.me = false;
             facts.friend = false;
             facts.blocked = true;
+            assert!(!labels(&user_items(&facts)).contains(&"Change Friend Nickname".into()));
             assert!(user_items(&facts).iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::AddFriend && row.disabled)));
             assert!(!labels(&user_items(&facts)).contains(&"Remove Friend".into()));
         }

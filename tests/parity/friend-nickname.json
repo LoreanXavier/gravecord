@@ -1,0 +1,13 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "rail": { "class": "wrapper_5dqHTG" },
+  "user-panel": { "class": "panels_pog62O" },
+  "chat-header": { "class": "title_z_gUBg" },
+  "search": { "class": "searchBar_i16Ad0" },
+  "composer": { "class": "channelTextArea_z_gUBg" },
+  "dm-profile": { "class": "aside_HbUF2J" },
+  "friend-nickname-modal": { "class": "container_dvN-MP" },
+  "friend-nickname-input": { "class": "container_0PLWhS", "ancestor": "container_dvN-MP" },
+  "friend-nickname-label": { "class": "label_VhFsFg", "ancestor": "container_dvN-MP" },
+  "friend-nickname-reset": { "class": "text_nJgowo", "ancestor": "container_dvN-MP" }
+}

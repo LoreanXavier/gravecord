@@ -125,32 +125,6 @@ impl Root {
         }
     }
 
-    fn rail_dm_name(&self, channel: &PrivateChannel) -> String {
-        if let Some(name) = channel.name.as_ref().filter(|name| !name.is_empty()) {
-            return name.clone();
-        }
-        let names: Vec<_> = channel
-            .recipients
-            .iter()
-            .filter_map(|id| self.stores.users.get(id))
-            .map(User::display_name)
-            .collect();
-        if channel.kind == 1 {
-            return names.first().copied().unwrap_or("???").to_owned();
-        }
-        if names.is_empty() {
-            format!(
-                "{}'s Group",
-                self.stores
-                    .current_user
-                    .as_ref()
-                    .map_or("???", User::display_name)
-            )
-        } else {
-            names.join(", ")
-        }
-    }
-
     fn rail_dm_art(&self, channel: &PrivateChannel, highlighted: bool) -> AnyElement {
         let group_child = channel.kind == 3 && channel.icon.is_none();
         let scale = if group_child && highlighted { 1.1 } else { 1. };
@@ -306,7 +280,7 @@ impl Root {
                     )
                     .child(self.with_tip(
                         format!("rail-dm-{id}"),
-                        Tip::rail(Body::Heading(self.rail_dm_name(&channel).into())),
+                        Tip::rail(Body::Heading(self.private_channel_name(&channel).into())),
                         tile,
                         cx,
                     ))

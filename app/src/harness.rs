@@ -162,6 +162,20 @@ pub async fn run(
                     .update(|cx| root.update(cx, |root, cx| root.script_request_badge(value, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            ["nickname", mode] => {
+                let result = cx.update(|cx| {
+                    root.update(cx, |root, cx| root.script_nickname_preview(mode, cx))
+                });
+                let _ = writeln!(output, "nickname: {result}");
+            }
+            ["friends", tab] => {
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_friends_tab(tab, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             // Positive `dy` scrolls the content up, as a wheel turned toward the user does.
             ["scroll", x, y, dy] => {
                 if let (Some(position), Ok(dy)) = (at(x, y), dy.parse::<f32>()) {
@@ -266,6 +280,13 @@ pub async fn run(
                     for value in text.chars() {
                         composer.replace_text_in_range(None, &value.to_string(), window, cx);
                     }
+                });
+            }
+            // One committed input operation, like CDP Input.insertText; no system clipboard.
+            ["insert-text", ..] => {
+                let text = step.trim_start_matches("insert-text").trim_start();
+                with_composer(cx, window, &root, |editor, window, cx| {
+                    editor.replace_text_in_range(None, text, window, cx);
                 });
             }
             // Pastes a picture file as if it were on the clipboard (the system clipboard is never touched).

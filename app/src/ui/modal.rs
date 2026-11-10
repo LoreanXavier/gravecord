@@ -30,6 +30,7 @@ pub(super) struct Button {
     pub label: SharedString,
     pub tone: Tone,
     pub run: Handler,
+    pub focus: Option<gpui::FocusHandle>,
 }
 
 pub(super) fn button(
@@ -43,6 +44,7 @@ pub(super) fn button(
         label: label.into(),
         tone,
         run: Box::new(run),
+        focus: None,
     }
 }
 
@@ -86,10 +88,13 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
             color("--control-critical-secondary-text-default"),
         ),
     };
-    let run = spec.run;
+    let run = std::rc::Rc::new(spec.run);
+    let keyboard_run = run.clone();
+    let focus = spec.focus.clone();
     let disabled = spec.tone == Tone::PrimaryDisabled;
     div()
         .id(spec.id)
+        .when_some(spec.focus, |button, focus| button.track_focus(&focus))
         .when(disabled, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(15.)))
@@ -111,6 +116,19 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .font_weight(FontWeight(500.))
         .text_color(text)
         .child(spec.label)
+        .on_key_down(
+            cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                if focus.as_ref().is_some_and(|focus| focus.is_focused(window))
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    if !disabled {
+                        keyboard_run(this, window, cx);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             if !disabled {
                 run(this, window, cx);
