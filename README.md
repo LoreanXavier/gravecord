@@ -48,9 +48,14 @@ The aim is not a Discord-like app with its own ideas. It is the real thing, scre
 | ✅ | **Social** | DMs, group DMs, friends, profiles, right-click menus |
 | ✅ | **Voice** | End-to-end encrypted calls (DAVE), noise suppression with DeepFilterNet, echo cancellation, push to talk, soundboard |
 | ✅ | **Video** | Watching Go Live, sending Go Live, receiving camera, hardware H.264 |
-| ✅ | **Servers** | Roles, AutoMod, Community, Onboarding, Discovery, member safety and the rest of server settings |
+| ✅ | **Servers** | Roles, AutoMod, Community, Onboarding, Discovery, member safety and the rest of server settings, forums, Events with their create flow |
+| ✅ | **Presence** | Game detection with Registered Games, and Rich Presence: games that talk to Discord's local pipe show up as your activity |
+| ✅ | **Desktop** | Installer, automatic updates, start with Windows, tray, taskbar badges, notifications, one instance at a time, spellcheck |
+| 🟡 | **Expression** | Stickers with animation, the sticker picker, Nitro display name styles and profile effects drawn everywhere, the profile editor. Saving your own style needs Nitro and has not been tried on a real account |
+| 🟡 | **Shop and Quests** | The Shop with its previews and the steps up to payment, for money and for Orbs. Quest Home without quest cards yet |
+| 🟡 | **Clips** | The settings page and saving the last seconds of your own stream with a keybind. No gallery yet |
 | 🟡 | **Activities** | The shelf and launching work. Opening one past its sign-in has not been tried |
-| 🟡 | **Nitro** | The Nitro page and purchase dialogs up to payment. Subscriber states are still being built |
+| 🟡 | **Nitro** | The Nitro page and purchase dialogs up to payment. Subscriber screens are still being built |
 | ⏳ | **Not yet** | See [what is missing](#what-is-missing) |
 
 ## Screens
@@ -106,14 +111,14 @@ The voice engine was tested in live calls against the official client, in both d
 
 For a first release:
 
-- [ ] Installer and automatic updates
-- [ ] Desktop notifications and a checked tray icon
-- [ ] One instance at a time, start with Windows
-- [ ] Spellcheck
+- [ ] A first real login, a real notification and a real update, checked on a real account
+- [ ] Hours of everyday use without a crash
+- [ ] DM calls: ringing and the incoming call screen
+- [ ] Voice messages
 - [ ] Nitro subscriber screens and limits
-- [ ] Clips
+- [ ] The clips gallery
 
-And after that: DM calls, voice messages, stickers, Stage, Events, Game Overlay, game detection, Rich Presence, Shop, Quests, then macOS and Linux.
+And after that: Stage channels, Game Overlay, quest cards, Rich Presence for browser games, then macOS and Linux.
 
 ## Building
 
