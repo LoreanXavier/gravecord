@@ -581,7 +581,12 @@ impl Root {
                                             .line_height(px(20.))
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-strong"))
-                                            .child(self.dm_display_name(user)),
+                                            .child(super::name_styles::name(
+                                                format!("friend-name-{}", user.id),
+                                                self.dm_display_name(user),
+                                                self.name_styles(user, None).as_ref(),
+                                                super::name_styles::Display::Static,
+                                            )),
                                     )
                                     .child(
                                         div()

@@ -148,6 +148,10 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.discover_dump()));
                 let _ = writeln!(output, "{note}");
             }
+            ["shop", "dump"] => {
+                let note = cx.update(|cx| root.update(cx, |root, _| root.shop_dump()));
+                let _ = writeln!(output, "{note}");
+            }
             ["tray", "preview"] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
@@ -443,6 +447,11 @@ pub async fn run(
                 let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(true, cx));
                 let _ = writeln!(output, "stream start: {outcome}");
             }
+            // The fixture guild's General voice channel, the only one a script can name.
+            ["voice", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_voice(rest, cx));
+                let _ = writeln!(output, "voice: {line}");
+            }
             ["stream", "stop"] => {
                 root.update(cx, |root, cx| root.stream_stop(cx));
             }
@@ -477,10 +486,11 @@ pub async fn run(
             }
             // Capture only: the account's `premium_type` is set locally (none, 1, 2 or 3) to see the subscriber
             // states of the Nitro screens. Nothing is sent, and a normal build has no such step.
-            // The Clips page's own steps: `clips get`, `clips location <path>` (a folder dialog's answer).
+            // The Clips page's own steps: `clips get`, `clips location <path>` (a folder dialog's answer), and the
+            // engine's: `clips save` (the keybind), `clips status`, `clips list`.
             ["clips", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
-                    let line = root.script_clips(rest);
+                    let line = root.script_clips(rest, cx);
                     cx.notify();
                     line
                 });
@@ -514,6 +524,12 @@ pub async fn run(
                 if let Ok(millis) = millis.parse::<u64>() {
                     root.update(cx, |root, cx| root.script_slowmode_fixture(millis, cx));
                 }
+            }
+            // Shows the profile effect of a collectibles product over the open profile, in this process only (the
+            // product is read with a GET): `profile-effect <sku> [at <ms>]`, `profile-effect off`, `profile-effect state`.
+            ["profile-effect", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_profile_effect(rest, cx));
+                let _ = writeln!(output, "{line}");
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

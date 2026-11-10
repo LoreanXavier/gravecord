@@ -132,6 +132,8 @@ impl Root {
                 guild_guide: false,
                 channel_browser: false,
                 discover: Some(place),
+                quests: false,
+                shop: false,
             },
         );
         self.set_discover_place(place, cx);
@@ -463,13 +465,10 @@ impl Root {
                             this.open_discover(Place::Servers, cx);
                         })),
                     )
-                    // The Quests page has no destination in this client yet: the row is drawn and does nothing.
-                    .child(row(
-                        "discover-quests",
-                        "discover_nav_quests",
-                        "Quests",
-                        false,
-                    )),
+                    .child(
+                        row("discover-quests", "discover_nav_quests", "Quests", false)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
+                    ),
             )
     }
 

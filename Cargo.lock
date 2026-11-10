@@ -1686,6 +1686,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-clips"
+version = "0.0.0"
+dependencies = [
+ "dc-media",
+ "opus2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "dc-detect"
 version = "0.0.0"
 dependencies = [
@@ -1766,6 +1778,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-rpc"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "dc-setup"
 version = "0.0.0"
 dependencies = [
@@ -1800,6 +1821,7 @@ dependencies = [
  "chacha20poly1305",
  "cpal",
  "davey",
+ "dc-clips",
  "dc-media",
  "dc-proto",
  "dc-winaudio",
@@ -3328,6 +3350,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dc-auth",
+ "dc-clips",
  "dc-detect",
  "dc-gateway",
  "dc-hotkey",
@@ -3335,6 +3358,7 @@ dependencies = [
  "dc-markdown",
  "dc-media",
  "dc-proto",
+ "dc-rpc",
  "dc-state",
  "dc-tokens",
  "dc-voice",
@@ -3349,9 +3373,11 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "serde_json",
+ "tiny-skia 0.12.0",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
  "tts",
  "uuid",
  "windows 0.62.2",

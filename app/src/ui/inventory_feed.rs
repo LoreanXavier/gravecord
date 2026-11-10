@@ -539,7 +539,12 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(self.guild_author_color(entry.author, "--channels-default"))
-                            .child(name),
+                            .child(super::name_styles::name(
+                                format!("feed-author-{}", entry.author),
+                                name,
+                                self.name_styles(user, self.guild).as_ref(),
+                                super::name_styles::Display::Font,
+                            )),
                     ),
             )
             .child(

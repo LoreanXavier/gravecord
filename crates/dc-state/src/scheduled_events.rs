@@ -19,6 +19,32 @@ pub const ENTITY_STAGE_INSTANCE: u64 = 1;
 pub const ENTITY_VOICE: u64 = 2;
 pub const ENTITY_EXTERNAL: u64 = 3;
 
+/// `GuildScheduledEventUserResponses` (module 988794).
+pub const RESPONSE_UNINTERESTED: u64 = 0;
+pub const RESPONSE_INTERESTED: u64 = 1;
+
+/// The key of the whole series in the RSVP and count maps (`SERIES` in module 698441).
+const SERIES: &str = "SERIES";
+
+/// One user's answer to an event (`guild_scheduled_event_user`): who, what they answered, and their nickname there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventUser {
+    pub user_id: Id,
+    pub response: u64,
+    pub nick: Option<String>,
+}
+
+impl EventUser {
+    /// A user object of the gateway or REST shape; the answer defaults to interested when the server does not say.
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            user_id: id(&value["user_id"]).or_else(|| id(&value["user"]["id"]))?,
+            response: value["response"].as_u64().unwrap_or(RESPONSE_INTERESTED),
+            nick: text(&value["member"]["nick"]),
+        })
+    }
+}
+
 /// A scheduled event as the gateway and the REST API describe it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScheduledEvent {
@@ -100,6 +126,12 @@ impl ScheduledEvent {
 #[derive(Default)]
 pub struct GuildScheduledEventStore {
     events: HashMap<Id, ScheduledEvent>,
+    /// Event, then recurrence (or `SERIES`), then the answers in the order they arrived.
+    rsvps: HashMap<Id, HashMap<String, Vec<EventUser>>>,
+    /// Event, then recurrence (or `SERIES`): the interested count the server gave, moved by each answer.
+    counts: HashMap<Id, HashMap<String, i64>>,
+    /// The signed-in user, from `READY`: the store only counts a removed answer of someone else as the server's.
+    me: Option<Id>,
 }
 
 impl GuildScheduledEventStore {
@@ -142,6 +174,122 @@ impl GuildScheduledEventStore {
             .is_some_and(ScheduledEvent::is_active)
     }
 
+    /// `getRsvp`: the answer of `user` to the event (`recurrence` is a recurrence id, `None` the whole series).
+    pub fn get_rsvp(&self, event: Id, recurrence: Option<&str>, user: Id) -> Option<&EventUser> {
+        self.rsvps
+            .get(&event)?
+            .get(recurrence.unwrap_or(SERIES))?
+            .iter()
+            .find(|known| known.user_id == user)
+    }
+
+    /// `isInterestedInEventRecurrence`: interested in the series and not out of this recurrence, or in the recurrence.
+    pub fn is_interested_in_event_recurrence(
+        &self,
+        event: Id,
+        recurrence: Option<&str>,
+        me: Id,
+    ) -> bool {
+        let series = self.get_rsvp(event, None, me);
+        let one = self.get_rsvp(event, recurrence, me);
+        let in_series = series.is_some_and(|rsvp| rsvp.response == RESPONSE_INTERESTED);
+        let in_one = one.is_some_and(|rsvp| rsvp.response == RESPONSE_INTERESTED);
+        let out_of_one = one.is_some_and(|rsvp| rsvp.response == RESPONSE_UNINTERESTED);
+        in_series && !out_of_one || in_one
+    }
+
+    /// `getUserCount`: the series count, less what a recurrence's own count says when one is asked for.
+    pub fn get_user_count(&self, event: Id, recurrence: Option<&str>) -> i64 {
+        let Some(counts) = self.counts.get(&event) else {
+            return 0;
+        };
+        let series = counts.get(SERIES).copied().unwrap_or(0);
+        match recurrence {
+            None => series,
+            Some(recurrence) => series - counts.get(recurrence).copied().unwrap_or(0),
+        }
+    }
+
+    /// `hasUserCount`.
+    pub fn has_user_count(&self, event: Id, recurrence: Option<&str>) -> bool {
+        self.counts
+            .get(&event)
+            .is_some_and(|counts| counts.contains_key(recurrence.unwrap_or(SERIES)))
+    }
+
+    /// `getUsersForGuildEvent`.
+    pub fn get_users_for_guild_event(&self, event: Id, recurrence: Option<&str>) -> &[EventUser] {
+        self.rsvps
+            .get(&event)
+            .and_then(|by_recurrence| by_recurrence.get(recurrence.unwrap_or(SERIES)))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The count moves by one for an answer that is interested (of the series) or not interested (of a recurrence).
+    fn count_step(recurrence: Option<&str>, response: u64) -> i64 {
+        let counted = recurrence.is_some() && response == RESPONSE_UNINTERESTED
+            || recurrence.is_none() && response == RESPONSE_INTERESTED;
+        if counted { 1 } else { -1 }
+    }
+
+    fn move_count(&mut self, event: Id, recurrence: Option<&str>, by: i64) {
+        let count = self
+            .counts
+            .entry(event)
+            .or_default()
+            .entry(recurrence.unwrap_or(SERIES).to_owned())
+            .or_insert(0);
+        *count += by;
+    }
+
+    /// `GUILD_SCHEDULED_EVENT_USER_ADD`: the answer replaces the user's earlier one. The count moves only when the
+    /// answer is new, so the gateway's echo of an answer already applied here does not count it twice.
+    pub fn add_rsvp(&mut self, event: Id, recurrence: Option<&str>, user: EventUser) {
+        let known = self.get_rsvp(event, recurrence, user.user_id).cloned();
+        let response = user.response;
+        self.store_rsvp(event, recurrence, user);
+        if known.is_none_or(|known| known.response != response) {
+            self.move_count(event, recurrence, Self::count_step(recurrence, response));
+        }
+    }
+
+    fn store_rsvp(&mut self, event: Id, recurrence: Option<&str>, user: EventUser) {
+        let list = self
+            .rsvps
+            .entry(event)
+            .or_default()
+            .entry(recurrence.unwrap_or(SERIES).to_owned())
+            .or_default();
+        list.retain(|known| known.user_id != user.user_id);
+        list.push(user);
+    }
+
+    /// `GUILD_SCHEDULED_EVENT_USER_REMOVE`: the answer goes, and the count follows when it was one we knew (or was
+    /// someone else's: the server counted it).
+    pub fn remove_rsvp(&mut self, event: Id, recurrence: Option<&str>, user: Id, response: u64) {
+        let Some(list) = self
+            .rsvps
+            .get_mut(&event)
+            .and_then(|by_recurrence| by_recurrence.get_mut(recurrence.unwrap_or(SERIES)))
+        else {
+            if self.me != Some(user) {
+                self.move_count(event, recurrence, -Self::count_step(recurrence, response));
+            }
+            return;
+        };
+        let before = list.len();
+        list.retain(|known| known.user_id != user);
+        if list.len() != before || self.me != Some(user) {
+            self.move_count(event, recurrence, -Self::count_step(recurrence, response));
+        }
+    }
+
+    fn forget_event(&mut self, event: Id) {
+        self.events.remove(&event);
+        self.rsvps.remove(&event);
+        self.counts.remove(&event);
+    }
+
     fn set(&mut self, value: &Value) {
         if let Some(event) = ScheduledEvent::from_value(value) {
             self.events.insert(event.id, event);
@@ -149,7 +297,15 @@ impl GuildScheduledEventStore {
     }
 
     fn remove_guild(&mut self, guild: Id) {
-        self.events.retain(|_, event| event.guild_id != guild);
+        let gone: Vec<Id> = self
+            .events
+            .values()
+            .filter(|event| event.guild_id == guild)
+            .map(|event| event.id)
+            .collect();
+        for event in gone {
+            self.forget_event(event);
+        }
     }
 
     fn add_guild_events(&mut self, guild: &Value) {
@@ -171,6 +327,9 @@ impl GuildScheduledEventStore {
         match event {
             "READY" => {
                 self.events.clear();
+                self.rsvps.clear();
+                self.counts.clear();
+                self.me = id(&data["user"]["id"]);
                 for guild in data["guilds"].as_array().into_iter().flatten() {
                     self.add_guild_events(guild);
                 }
@@ -197,8 +356,15 @@ impl GuildScheduledEventStore {
                     .flatten()
                     .filter_map(|event| id(&event["id"]))
                     .collect();
-                self.events
-                    .retain(|key, known| known.guild_id != guild || listed.contains(key));
+                let gone: Vec<Id> = self
+                    .events
+                    .values()
+                    .filter(|known| known.guild_id == guild && !listed.contains(&known.id))
+                    .map(|known| known.id)
+                    .collect();
+                for event in gone {
+                    self.forget_event(event);
+                }
                 for event in data["guild_scheduled_events"]
                     .as_array()
                     .into_iter()
@@ -210,10 +376,72 @@ impl GuildScheduledEventStore {
             "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" => self.set(data),
             "GUILD_SCHEDULED_EVENT_DELETE" => {
                 if let Some(event) = id(&data["id"]) {
-                    self.events.remove(&event);
+                    self.forget_event(event);
                 }
             }
-            "LOGOUT" => self.events.clear(),
+            // The gateway's shape: `guild_scheduled_event_id`, `guild_scheduled_event_exception_id`, `user_id`.
+            "GUILD_SCHEDULED_EVENT_USER_ADD" | "GUILD_SCHEDULED_EVENT_USER_REMOVE" => {
+                let (Some(known_event), Some(user)) =
+                    (id(&data["guild_scheduled_event_id"]), id(&data["user_id"]))
+                else {
+                    return;
+                };
+                let recurrence = text(&data["guild_scheduled_event_exception_id"]);
+                let response = data["response"].as_u64().unwrap_or(RESPONSE_INTERESTED);
+                if event == "GUILD_SCHEDULED_EVENT_USER_ADD" {
+                    self.add_rsvp(
+                        known_event,
+                        recurrence.as_deref(),
+                        EventUser {
+                            user_id: user,
+                            response,
+                            nick: text(&data["member"]["nick"]),
+                        },
+                    );
+                } else {
+                    self.remove_rsvp(known_event, recurrence.as_deref(), user, response);
+                }
+            }
+            // `getGuildEventsForCurrentUser` and `fetchUsersForGuildEvent`: the answers the server lists.
+            "GUILD_SCHEDULED_EVENT_RSVPS_FETCH_SUCESS"
+            | "GUILD_SCHEDULED_EVENT_USERS_FETCH_SUCCESS" => {
+                for value in data.as_array().into_iter().flatten() {
+                    let (Some(known_event), Some(user)) = (
+                        id(&value["guild_scheduled_event_id"]),
+                        EventUser::from_value(value),
+                    ) else {
+                        continue;
+                    };
+                    let recurrence = text(&value["guild_scheduled_event_exception_id"]);
+                    self.store_rsvp(known_event, recurrence.as_deref(), user);
+                }
+            }
+            // `fetchGuildEventUserCounts`: the series count and, per recurrence, how many of it are not going.
+            "GUILD_SCHEDULED_EVENT_USER_COUNTS_FETCH_SUCCESS" => {
+                let Some(known_event) = id(&data["event_id"]) else {
+                    return;
+                };
+                let count = data["guild_scheduled_event_count"].as_i64().unwrap_or(0);
+                self.counts
+                    .entry(known_event)
+                    .or_default()
+                    .insert(SERIES.to_owned(), count);
+                if let Some(per_recurrence) =
+                    data["guild_scheduled_event_exception_counts"].as_object()
+                {
+                    for (recurrence, taken) in per_recurrence {
+                        self.counts
+                            .entry(known_event)
+                            .or_default()
+                            .insert(recurrence.clone(), count - taken.as_i64().unwrap_or(0));
+                    }
+                }
+            }
+            "LOGOUT" => {
+                self.events.clear();
+                self.rsvps.clear();
+                self.counts.clear();
+            }
             _ => {}
         }
     }
@@ -330,5 +558,63 @@ mod tests {
         assert!(store.get_guild_scheduled_event(9).is_none());
         store.dispatch("LOGOUT", &json!({}));
         assert!(store.upcoming(10).is_empty());
+    }
+    #[test]
+    fn answers_and_counts_follow_the_official_store() {
+        let mut store = GuildScheduledEventStore::default();
+        store.dispatch("READY", &json!({"user": {"id": "7"}, "guilds": []}));
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_CREATE",
+            &event("5", "10", "2026-11-12T10:00:00+00:00", 1),
+        );
+        // The server's count, then the current user's own answers.
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_USER_COUNTS_FETCH_SUCCESS",
+            &json!({"event_id": "5", "guild_scheduled_event_count": 1, "guild_scheduled_event_exception_counts": {}}),
+        );
+        assert_eq!(store.get_user_count(5, None), 1);
+        assert!(!store.is_interested_in_event_recurrence(5, None, 7));
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_RSVPS_FETCH_SUCESS",
+            &json!([{"guild_scheduled_event_id": "5", "user_id": "7", "response": 1}]),
+        );
+        assert!(store.is_interested_in_event_recurrence(5, None, 7));
+        // Toggling off moves the count, the gateway's echo of it does not move it twice.
+        store.remove_rsvp(5, None, 7, RESPONSE_INTERESTED);
+        assert_eq!(store.get_user_count(5, None), 0);
+        assert!(!store.is_interested_in_event_recurrence(5, None, 7));
+        store.add_rsvp(
+            5,
+            None,
+            EventUser {
+                user_id: 7,
+                response: RESPONSE_INTERESTED,
+                nick: None,
+            },
+        );
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_USER_ADD",
+            &json!({"guild_scheduled_event_id": "5", "user_id": "7", "guild_id": "10", "response": 1}),
+        );
+        assert_eq!(store.get_user_count(5, None), 1);
+        assert_eq!(store.get_users_for_guild_event(5, None).len(), 1);
+        // Someone else's answer arrives and goes.
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_USER_ADD",
+            &json!({"guild_scheduled_event_id": "5", "user_id": "8", "guild_id": "10", "response": 1}),
+        );
+        assert_eq!(store.get_user_count(5, None), 2);
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_USER_REMOVE",
+            &json!({"guild_scheduled_event_id": "5", "user_id": "8", "guild_id": "10", "response": 1}),
+        );
+        assert_eq!(store.get_user_count(5, None), 1);
+        // A deleted event takes its answers and counts along.
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_DELETE",
+            &json!({"id": "5", "guild_id": "10"}),
+        );
+        assert_eq!(store.get_user_count(5, None), 0);
+        assert!(store.get_users_for_guild_event(5, None).is_empty());
     }
 }

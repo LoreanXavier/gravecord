@@ -543,6 +543,8 @@ pub(crate) async fn run(
                 }
                 if enabled && (active || silence > 0) {
                     let data = if let Some(frame) = latest.filter(|_| active) {
+                        // The user's own voice, as it leaves, for the clip buffer of a live stream (off otherwise).
+                        dc_clips::recorder().push_voice(&frame);
                         for (sample, pair) in frame.iter().zip(stereo.as_chunks_mut::<2>().0) {
                             let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
                             pair[0] = sample;

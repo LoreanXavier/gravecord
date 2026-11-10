@@ -34,6 +34,8 @@ pub(super) struct Games {
     /// connection's own handshake already carried it.
     sent: (String, Vec<Value>),
     limiter: SendLimiter,
+    /// `LocalActivityStore`: the activities games set over the local RPC pipe.
+    local: dc_state::local_activity::LocalActivityStore,
     connected: bool,
     /// The stored object as last written, so an unchanged scan writes nothing.
     saved: Value,
@@ -62,6 +64,7 @@ impl Games {
             store,
             sent: (String::new(), Vec::new()),
             limiter: SendLimiter::default(),
+            local: dc_state::local_activity::LocalActivityStore::default(),
             connected: false,
             menu: RefCell::new(None),
             editors: RefCell::new(HashMap::new()),
@@ -137,7 +140,7 @@ impl Root {
         if !connected {
             return;
         }
-        if !crate::storage::is_capture_run() {
+        if !crate::storage::is_capture_run() || games::live_presence_allowed() {
             for (key, route) in self.detect.runtime.due_fetches(now_ms()) {
                 let _ = self.requests.send(Request::Fetch {
                     key: key.to_owned(),
@@ -239,21 +242,58 @@ impl Root {
         games::custom_status_activity(&custom.text, custom.expires_at_ms, emoji, now_ms())
     }
 
+    /// An event of the local RPC server: `LOCAL_ACTIVITY_UPDATE` and `RPC_APP_DISCONNECTED` change
+    /// `LocalActivityStore`, and the account's presence follows (module 491009). `RPC_APP_CONNECTED` changes no
+    /// activity.
+    pub(super) fn rpc_event(&mut self, event: dc_rpc::Event, cx: &mut Context<Self>) {
+        let changed = match event {
+            dc_rpc::Event::Connected { .. } => false,
+            dc_rpc::Event::Activity {
+                socket,
+                pid,
+                activity,
+                party_privacy,
+                ..
+            } => self
+                .detect
+                .local
+                .update(socket, pid, activity, party_privacy),
+            dc_rpc::Event::Disconnected { socket } => self.detect.local.disconnected(socket),
+        };
+        if changed {
+            self.refresh_own_presence();
+            cx.notify();
+        }
+    }
+
     /// `SelfPresenceStore` and `ConnectionStore`: the account's own presence follows the visible game, and a
     /// changed activity list goes to the gateway as op 3 (never in a harness run, see `Request::Presence`).
     pub(super) fn refresh_own_presence(&mut self) {
         let show = self.pref_on("activity_privacy_setting", true);
         let status = self.stores.status.clone();
-        let activities = games::shared_activities(
+        // What a game's handshake and `SET_ACTIVITY` read: the account, and the party privacy settings.
+        crate::rpc::set_user(self.stores.current_user.as_ref().map(crate::rpc::user_json));
+        crate::rpc::set_party_privacy(
+            self.pref_on("activity_privacy_friends_join_setting", true),
+            self.pref_on("activity_privacy_voice_join_setting", true),
+        );
+        let activities = games::shared_local_activities(
+            &self.detect.local,
             self.own_custom_status_activity(),
             self.detect.store.activity(),
             show,
             &status,
         );
         if !status.is_empty() {
+            // Invisible shows nothing, whatever another session reports.
+            let shown = if activities.is_empty() && status == "invisible" {
+                Vec::new()
+            } else {
+                games::own_visible_activities(&activities, self.stores.remote_activities())
+            };
             self.stores
                 .presence
-                .set_own(games::presence_status(&status), activities.clone());
+                .set_own(games::presence_status(&status), shown);
         }
         if status.is_empty() || !self.detect.connected || self.stores.current_user.is_none() {
             return;
@@ -452,7 +492,8 @@ impl Root {
                     })),
             )
             .when(open, |this| {
-                this.child(gpui::deferred(popout).with_priority(3))
+                // Below the select's own list (priority 2 in `select_with_list`), which opens over the buttons.
+                this.child(gpui::deferred(popout).with_priority(1))
             })
             .into_any_element()
     }

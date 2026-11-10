@@ -151,11 +151,18 @@ fn start_capture(
     source: StreamSource,
     frames: mpsc::Sender<EncodedFrame>,
     audio: mpsc::Sender<AudioChunk>,
+    clips: dc_clips::Tap,
 ) -> Result<Capture, &'static str> {
-    let video = move |frame| {
+    // The clip buffer sees every picture and every chunk of audio the capture makes, before the loop does: it is a
+    // second consumer of the stream's own encode (plan section 1.2). It does nothing while clipping is off.
+    let video_tap = clips.clone();
+    let video = move |frame: EncodedFrame| {
+        video_tap.push_video(&frame);
         let _ = frames.try_send(frame);
     };
-    let sound = move |chunk| {
+    let audio_tap = clips.clone();
+    let sound = move |chunk: AudioChunk| {
+        audio_tap.push_audio(dc_clips::Track::Application, &chunk.samples);
         let _ = audio.try_send(chunk);
     };
     match source {
@@ -167,10 +174,34 @@ fn start_capture(
             height,
             fps,
             bitrate,
-        } => Synthetic::start(width, height, fps, bitrate, video)
-            .map(|source| Capture::Synthetic(source, width, height))
-            .map_err(|_| "Test source could not start"),
+        } => {
+            test_tone(clips);
+            Synthetic::start(width, height, fps, bitrate, video)
+                .map(|source| Capture::Synthetic(source, width, height))
+                .map_err(|_| "Test source could not start")
+        }
     }
+}
+
+/// The test pattern has no audio, so a clip cut from it would have no audio track to check. This gives the clip
+/// buffer (only the buffer: nothing goes to the network) a 440 Hz tone in 20 ms steps for as long as the stream is live.
+/// A real source never runs it.
+fn test_tone(clips: dc_clips::Tap) {
+    let _ = std::thread::Builder::new()
+        .name("dc-clips-test-tone".into())
+        .spawn(move || {
+            let mut phase = 0.0f32;
+            while clips.is_live() {
+                let mut samples = Vec::with_capacity(1920);
+                for _ in 0..960 {
+                    let value = (phase * std::f32::consts::TAU).sin() * 0.2;
+                    phase = (phase + 440.0 / 48_000.0).fract();
+                    samples.extend_from_slice(&[value, value]);
+                }
+                clips.push_audio(dc_clips::Track::Application, &samples);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
 }
 
 /// A JPEG that fits 512 x 288 the way the official canvas does (`GK`, scaled by the smaller factor), quality 0.92.
@@ -278,6 +309,8 @@ pub(crate) async fn run(
     let (audio_send, mut sound) = mpsc::channel::<AudioChunk>(32);
     let mut capture: Option<Capture> = None;
     let mut capture_task: Option<tokio::task::JoinHandle<Result<Capture, &'static str>>> = None;
+    // The clip buffer's tap while this sender runs; dropping it, on any exit, frees the buffer.
+    let mut _clip_guard: Option<dc_clips::TapGuard> = None;
     let mut sender: Option<VideoSender> = None;
     let mut announced = false;
     let mut awaiting_keyframe = true;
@@ -451,7 +484,9 @@ pub(crate) async fn run(
                     // Capture starts once the connection is secured or waiting; the blocking start runs off the loop.
                     if (enabled || waiting) && capture.is_none() && capture_task.is_none() && let Some(source) = source {
                         let (frames, audio) = (frame_send.clone(), audio_send.clone());
-                        capture_task = Some(tokio::task::spawn_blocking(move || start_capture(source, frames, audio)));
+                        let tap = dc_clips::recorder().attach();
+                        _clip_guard = Some(dc_clips::TapGuard(tap.clone()));
+                        capture_task = Some(tokio::task::spawn_blocking(move || start_capture(source, frames, audio, tap)));
                     }
                     if capture_task.as_ref().is_some_and(|task| task.is_finished()) {
                         let task = capture_task.take().ok_or("Capture task missing")?;

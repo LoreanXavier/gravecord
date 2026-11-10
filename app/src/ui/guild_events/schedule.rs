@@ -24,12 +24,12 @@ pub(super) fn default_start(now: NaiveDateTime) -> NaiveDateTime {
 }
 
 /// `moment.format("ll")`: `Nov 10, 2026`.
-pub(super) fn date_label(date: NaiveDate) -> String {
+pub(in super::super) fn date_label(date: NaiveDate) -> String {
     date.format("%b %-d, %Y").to_string()
 }
 
 /// `moment.format("LT")`: `2:00 PM`.
-pub(super) fn time_label(time: NaiveTime) -> String {
+pub(in super::super) fn time_label(time: NaiveTime) -> String {
     let (pm, hour) = time.hour12();
     format!(
         "{hour}:{:02} {}",
@@ -39,7 +39,7 @@ pub(super) fn time_label(time: NaiveTime) -> String {
 }
 
 /// The time picker's options: every 15 minutes of the day.
-pub(super) fn time_options() -> Vec<NaiveTime> {
+pub(in super::super) fn time_options() -> Vec<NaiveTime> {
     (0..96)
         .filter_map(|slot| NaiveTime::from_hms_opt(slot / 4, (slot % 4) * 15, 0))
         .collect()
@@ -47,7 +47,7 @@ pub(super) fn time_options() -> Vec<NaiveTime> {
 
 /// A time typed into the picker: `2:30 PM`, `2pm`, `14:30`, `2.30`, `230 pm`. Without a meridiem the typed hour is
 /// taken as written (`2` is 02:00, `14` is 14:00).
-pub(super) fn parse_time(text: &str) -> Option<NaiveTime> {
+pub(in super::super) fn parse_time(text: &str) -> Option<NaiveTime> {
     let lower = text.trim().to_lowercase().replace(' ', "");
     let (digits, meridiem) = match lower.strip_suffix("am").or_else(|| lower.strip_suffix('a')) {
         Some(rest) => (rest, Some(false)),
@@ -84,7 +84,7 @@ pub(super) fn parse_time(text: &str) -> Option<NaiveTime> {
 
 /// The picker's list narrowed to the options whose label holds what was typed: those that start with it first, then
 /// the others, each in clock order (an approximation of the official match-sorter ranking).
-pub(super) fn filter_times(options: &[NaiveTime], typed: &str) -> Vec<NaiveTime> {
+pub(in super::super) fn filter_times(options: &[NaiveTime], typed: &str) -> Vec<NaiveTime> {
     let typed = typed.trim().to_lowercase();
     if typed.is_empty() {
         return options.to_vec();
@@ -175,7 +175,7 @@ pub(super) fn to_utc(local: NaiveDateTime) -> DateTime<Utc> {
 }
 
 /// `toISOString()`: `2026-11-10T14:00:00.000Z`.
-pub(super) fn iso_utc(local: NaiveDateTime) -> String {
+pub(in super::super) fn iso_utc(local: NaiveDateTime) -> String {
     to_utc(local).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
@@ -231,6 +231,35 @@ pub(super) fn recurrence_rule(frequency: Frequency, start: NaiveDateTime) -> Val
     rule
 }
 
+/// The option of the dropdown that a stored rule is, or none for a rule the dropdown cannot say.
+pub(super) fn frequency_of(rule: &Value, start: NaiveDateTime) -> Option<Frequency> {
+    if rule.is_null() {
+        return Some(Frequency::None);
+    }
+    [
+        Frequency::Weekly,
+        Frequency::Biweekly,
+        Frequency::Monthly,
+        Frequency::Yearly,
+        Frequency::Daily,
+        Frequency::Weekday,
+    ]
+    .into_iter()
+    .find(|frequency| {
+        let known = recurrence_rule(*frequency, start);
+        [
+            "frequency",
+            "interval",
+            "by_weekday",
+            "by_n_weekday",
+            "by_month",
+            "by_month_day",
+        ]
+        .iter()
+        .all(|key| known[*key] == rule[*key])
+    })
+}
+
 /// What is wrong with the schedule, in the order the official reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ScheduleError {
@@ -254,11 +283,23 @@ impl ScheduleError {
     }
 }
 
+#[cfg(test)]
 pub(super) fn schedule_error(
     start: Option<NaiveDateTime>,
     end: Option<NaiveDateTime>,
     end_required: bool,
     now: NaiveDateTime,
+) -> Option<ScheduleError> {
+    schedule_error_of(start, end, end_required, now, false)
+}
+
+/// `schedule_error`, where an event being edited may have started already (`n` of the validation in module 688218).
+pub(super) fn schedule_error_of(
+    start: Option<NaiveDateTime>,
+    end: Option<NaiveDateTime>,
+    end_required: bool,
+    now: NaiveDateTime,
+    editing: bool,
 ) -> Option<ScheduleError> {
     let Some(start) = start else {
         return Some(ScheduleError::NoStart);
@@ -266,7 +307,7 @@ pub(super) fn schedule_error(
     if end_required && end.is_none() {
         return Some(ScheduleError::EndRequired);
     }
-    if start < now {
+    if !editing && start < now {
         return Some(ScheduleError::StartPast);
     }
     if let Some(end) = end {
@@ -291,26 +332,156 @@ fn ordinal(day: u32) -> String {
     format!("{day}{suffix}")
 }
 
-/// `CC`: the card's date line, `Today at 2:00 PM`, `Tomorrow at ...`, else `Tue Nov 10th · 2:00 PM` (with the year when
-/// it is not this one).
+/// `moment(text)` in the local zone: an RFC 3339 time of the API as the wall clock shows it.
+pub(super) fn local_time(text: &str) -> Option<NaiveDateTime> {
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| time.with_timezone(&Local).naive_local())
+}
+
+/// `S`: `Tue Nov 10th · 2:00 PM`, with the year when it is not this one.
+fn full_label(time: NaiveDateTime, now: NaiveDateTime) -> String {
+    let year = if time.year() == now.year() {
+        String::new()
+    } else {
+        format!(", {}", time.year())
+    };
+    format!(
+        "{} {} {}{year} \u{b7} {}",
+        time.format("%a"),
+        time.format("%b"),
+        ordinal(time.day()),
+        time_label(time.time())
+    )
+}
+
+/// `CC`: the card's date line, `Today at 2:00 PM`, `Tomorrow at ...`, else `Tue Nov 10th · 2:00 PM` (with the year
+/// when it is not this one).
 pub(super) fn relative_label(start: NaiveDateTime, now: NaiveDateTime) -> String {
     let time = time_label(start.time());
     match (start.date() - now.date()).num_days() {
         0 => format!("Today at {time}"),
         1 => format!("Tomorrow at {time}"),
-        _ => {
-            let year = if start.year() == now.year() {
-                String::new()
+        _ => full_label(start, now),
+    }
+}
+
+/// What `CC` of module 974930 answers for a start and an end.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TimeStrings {
+    pub start: String,
+    /// The end: its time alone when it is on the start's day, else the full label.
+    pub end: Option<String>,
+    pub current_or_past: bool,
+    pub upcoming: bool,
+    pub diff_minutes: i64,
+}
+
+pub(super) fn time_strings(
+    start: NaiveDateTime,
+    end: Option<NaiveDateTime>,
+    now: NaiveDateTime,
+) -> TimeStrings {
+    TimeStrings {
+        start: relative_label(start, now),
+        end: end.map(|end| {
+            if end.date() == start.date() {
+                time_label(end.time())
             } else {
-                format!(", {}", start.year())
-            };
-            format!(
-                "{} {} {}{year} \u{b7} {time}",
-                start.format("%a"),
-                start.format("%b"),
-                ordinal(start.day())
-            )
-        }
+                full_label(end, now)
+            }
+        }),
+        current_or_past: start <= now,
+        upcoming: start <= now + Duration::hours(1),
+        diff_minutes: (start - now).num_minutes(),
+    }
+}
+
+/// How the status line of an event reads and is tinted (`D` of module 103355).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tone {
+    /// Upcoming: a brand icon, the text in the default colour.
+    Plain,
+    /// Starting soon or running late: the text is brand coloured too.
+    Soon,
+    /// Running now: green.
+    Live,
+    /// Completed.
+    Over,
+    /// Canceled: a critical icon.
+    Canceled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Status {
+    pub tone: Tone,
+    pub text: String,
+    /// For a running event with an end: the green lead of the text, which `text` then continues.
+    pub lead: Option<String>,
+}
+
+/// `z` and `R` of module 103355: the tone and the words of the status line. `with_end` is whether the caller shows the
+/// end (the detail does, the card does not); `external` picks "Happening Now" over "Live Now".
+pub(super) fn status_line(
+    strings: &TimeStrings,
+    status: u64,
+    external: bool,
+    with_end: bool,
+) -> Status {
+    use dc_state::scheduled_events::{STATUS_ACTIVE, STATUS_CANCELED, STATUS_COMPLETED};
+    let end = if with_end { strings.end.clone() } else { None };
+    let joined = match &end {
+        Some(end) => format!("{} \u{2014} {end}", strings.start),
+        None => strings.start.clone(),
+    };
+    let tone = if status == STATUS_CANCELED {
+        Tone::Canceled
+    } else if status == STATUS_ACTIVE {
+        Tone::Live
+    } else if status == STATUS_COMPLETED {
+        Tone::Over
+    } else if strings.current_or_past || strings.upcoming {
+        Tone::Soon
+    } else {
+        Tone::Plain
+    };
+    let live = if external {
+        "Happening Now"
+    } else {
+        "Live Now"
+    };
+    match tone {
+        Tone::Soon if strings.current_or_past => Status {
+            tone,
+            text: "Starting soon".to_owned(),
+            lead: None,
+        },
+        Tone::Soon => Status {
+            tone,
+            text: if strings.diff_minutes > 0 {
+                format!("Starting in {}m", strings.diff_minutes)
+            } else {
+                "Starting soon".to_owned()
+            },
+            lead: None,
+        },
+        Tone::Live => match end {
+            Some(end) => Status {
+                tone,
+                text: format!(" \u{2014} Ends {end}"),
+                lead: Some(live.to_owned()),
+            },
+            None => Status {
+                tone,
+                text: live.to_owned(),
+                lead: None,
+            },
+        },
+        _ => Status {
+            tone,
+            text: joined,
+            lead: None,
+        },
     }
 }
 
@@ -486,5 +657,78 @@ mod tests {
         let text = iso_utc(at(2026, 11, 10, 14, 0));
         assert!(text.ends_with(":00.000Z"), "{text}");
         assert_eq!(text.len(), 24);
+    }
+
+    #[test]
+    fn a_stored_rule_is_found_among_the_options() {
+        let start = at(2026, 11, 11, 14, 0);
+        for frequency in [
+            Frequency::Weekly,
+            Frequency::Biweekly,
+            Frequency::Monthly,
+            Frequency::Yearly,
+            Frequency::Daily,
+            Frequency::Weekday,
+        ] {
+            assert_eq!(
+                frequency_of(&recurrence_rule(frequency, start), start),
+                Some(frequency)
+            );
+        }
+        assert_eq!(frequency_of(&Value::Null, start), Some(Frequency::None));
+        let mut odd = recurrence_rule(Frequency::Weekly, start);
+        odd["by_weekday"] = json!([0, 2]);
+        assert_eq!(frequency_of(&odd, start), None);
+    }
+
+    #[test]
+    fn an_edited_event_may_have_started() {
+        let now = at(2026, 11, 10, 13, 10);
+        let started = at(2026, 11, 10, 9, 0);
+        assert_eq!(
+            schedule_error(Some(started), None, false, now),
+            Some(ScheduleError::StartPast)
+        );
+        assert_eq!(
+            schedule_error_of(Some(started), None, false, now, true),
+            None
+        );
+        assert_eq!(
+            schedule_error_of(
+                Some(started),
+                Some(at(2026, 11, 10, 10, 0)),
+                false,
+                now,
+                true
+            ),
+            Some(ScheduleError::EndPast)
+        );
+    }
+
+    #[test]
+    fn the_status_line_follows_the_card_rules() {
+        let now = at(2026, 11, 10, 13, 10);
+        let strings = time_strings(at(2026, 11, 11, 14, 0), Some(at(2026, 11, 11, 16, 0)), now);
+        assert_eq!(strings.start, "Tomorrow at 2:00 PM");
+        assert_eq!(strings.end.as_deref(), Some("4:00 PM"));
+        let card = status_line(&strings, 1, true, false);
+        assert_eq!(
+            (card.tone, card.text.as_str()),
+            (Tone::Plain, "Tomorrow at 2:00 PM")
+        );
+        let detail = status_line(&strings, 1, true, true);
+        assert_eq!(detail.text, "Tomorrow at 2:00 PM \u{2014} 4:00 PM");
+        let soon = time_strings(at(2026, 11, 10, 13, 40), None, now);
+        assert_eq!(status_line(&soon, 1, true, false).text, "Starting in 30m");
+        let late = time_strings(at(2026, 11, 10, 13, 0), None, now);
+        assert_eq!(status_line(&late, 1, true, false).text, "Starting soon");
+        let live = status_line(&late, 2, true, false);
+        assert_eq!(
+            (live.tone, live.text.as_str()),
+            (Tone::Live, "Happening Now")
+        );
+        let far = time_strings(at(2026, 11, 20, 9, 0), Some(at(2026, 11, 21, 9, 0)), now);
+        assert_eq!(far.start, "Fri Nov 20th \u{b7} 9:00 AM");
+        assert_eq!(far.end.as_deref(), Some("Sat Nov 21st \u{b7} 9:00 AM"));
     }
 }

@@ -59,6 +59,16 @@ impl Row {
                 .map(Box::new),
                 flags: user["flags"].as_u64().unwrap_or(0),
                 public_flags: user["public_flags"].as_u64().unwrap_or(0),
+                // 609425: the member's own style wins over the user's.
+                display_name_styles: crate::display_name_styles::DisplayNameStyles::from_value(
+                    &member["display_name_styles"],
+                )
+                .or_else(|| {
+                    crate::display_name_styles::DisplayNameStyles::from_value(
+                        &user["display_name_styles"],
+                    )
+                })
+                .map(Box::new),
             },
             nick: member["nick"].as_str().map(str::to_owned),
             roles: member["roles"]

@@ -45,7 +45,7 @@ pub(super) fn scrollbar(
 }
 
 /// Where a popover of `height` goes under (or, when it does not fit above `limit`, over) a field: 4px apart.
-pub(super) fn beside_field(field: Bounds<Pixels>, height: f32, limit: Pixels) -> Pixels {
+pub(in super::super) fn beside_field(field: Bounds<Pixels>, height: f32, limit: Pixels) -> Pixels {
     let below = field.bottom() + px(4.);
     if below + px(height) > limit {
         field.top() - px(4.) - px(height)
@@ -55,12 +55,12 @@ pub(super) fn beside_field(field: Bounds<Pixels>, height: f32, limit: Pixels) ->
 }
 
 /// How far a list of `count` rows of 40px starts scrolled so the picked row is the last one in view.
-pub(super) fn list_offset(picked: Option<usize>) -> f32 {
+pub(in super::super) fn list_offset(picked: Option<usize>) -> f32 {
     picked.map_or(0., |index| (index as f32 * 40. - 160.).max(0.))
 }
 
 /// The dropdown: a 1px bordered panel on `--background-surface-higher` with 5 rows in view, the picked one checked.
-pub(super) fn dropdown(
+pub(in super::super) fn dropdown(
     width: f32,
     labels: Vec<String>,
     picked: Option<usize>,
@@ -155,7 +155,7 @@ fn grid_start(month: NaiveDate) -> NaiveDate {
 /// next/previous buttons over a 7x6 grid of 40px days. Days outside `min..=max` are disabled, days outside the month are
 /// dimmed but can be picked, today (`selected`) is bold with a brand bar under it.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn calendar(
+pub(in super::super) fn calendar(
     month: NaiveDate,
     selected: NaiveDate,
     min: NaiveDate,

@@ -75,11 +75,14 @@ fn mouse_event(message: u32, mouse_data: u32) -> Option<(u32, bool)> {
     }
 }
 
-/// The callbacks have no user data, so the running hook's state is global. One hook runs at a time.
-static ACTIVE: Mutex<Option<Arc<Shared>>> = Mutex::new(None);
+thread_local! {
+    /// The callbacks have no user data, but Windows runs them on the thread that installed the hook, so each hook
+    /// thread keeps its own state here. Several hooks (push to talk, the clip keybind) can run side by side.
+    static ACTIVE: std::cell::RefCell<Option<Arc<Shared>>> = const { std::cell::RefCell::new(None) };
+}
 
 fn active() -> Option<Arc<Shared>> {
-    ACTIVE.lock().ok().and_then(|active| active.clone())
+    ACTIVE.with(|active| active.borrow().clone())
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -125,25 +128,17 @@ pub fn start(
         matcher: Mutex::new(Matcher::new(shortcut)),
         on_change: Box::new(on_change),
     });
-    {
-        let mut active = ACTIVE
-            .lock()
-            .map_err(|_| "The keyboard hook state is broken")?;
-        if active.is_some() {
-            return Err("The keyboard hook is already running");
-        }
-        *active = Some(shared.clone());
-    }
     let (ready, installed) = std::sync::mpsc::channel::<Result<u32, &'static str>>();
+    let for_thread = shared.clone();
     let thread = std::thread::Builder::new()
         .name("dc-hotkey".into())
-        .spawn(move || run(&ready));
+        .spawn(move || {
+            ACTIVE.with(|active| *active.borrow_mut() = Some(for_thread));
+            run(&ready);
+        });
     let thread = match thread {
         Ok(thread) => thread,
-        Err(_) => {
-            clear_active();
-            return Err("Could not start the keyboard hook thread");
-        }
+        Err(_) => return Err("Could not start the keyboard hook thread"),
     };
     match installed.recv() {
         Ok(Ok(thread_id)) => Ok(Hook {
@@ -153,17 +148,10 @@ pub fn start(
         }),
         other => {
             let _ = thread.join();
-            clear_active();
             Err(other
                 .unwrap_or(Err("The keyboard hook thread ended"))
                 .unwrap_err())
         }
-    }
-}
-
-fn clear_active() {
-    if let Ok(mut active) = ACTIVE.lock() {
-        *active = None;
     }
 }
 
@@ -222,7 +210,6 @@ impl Hook {
         // SAFETY: posts WM_QUIT to the hook thread's queue.
         unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) };
         let _ = thread.join();
-        clear_active();
         // Whatever was down is forgotten, and a held push to talk ends.
         self.shared.apply(|matcher| matcher.release_all());
     }
@@ -280,11 +267,11 @@ mod tests {
         assert_eq!(*log.lock().unwrap(), [true, false]);
     }
 
-    /// The hooks install on a thread with a message loop, a second start is refused while one runs, and stopping
-    /// removes them and lets go of a held keybind. No input is sent: it only watches the system, and the callback
-    /// keeps nothing, so running this beside a person typing is harmless.
+    /// The hooks install on a thread with a message loop, a second one runs beside the first (push to talk and the clip
+    /// keybind) with its own state, and stopping removes the hooks and lets go of a held keybind. No input is sent: it
+    /// only watches the system, and the callback keeps nothing, so running this beside a person typing is harmless.
     #[test]
-    fn the_hook_starts_once_and_stop_releases_push_to_talk() {
+    fn hooks_run_side_by_side_and_stop_releases_push_to_talk() {
         let changes = Arc::new(AtomicUsize::new(0));
         let held = Arc::new(Mutex::new(false));
         let (count, state) = (changes.clone(), held.clone());
@@ -293,17 +280,21 @@ mod tests {
             *state.lock().unwrap() = now;
         })
         .expect("the hook installs");
-        assert!(start(Vec::new(), |_| {}).is_err(), "only one hook runs");
+        let other_changes = Arc::new(AtomicUsize::new(0));
+        let counted = other_changes.clone();
+        let second = start(vec![[KEYBOARD_KEY, 136, 1]], move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("a second hook runs beside the first");
 
-        // Stand in for the callback seeing F24 go down.
-        active()
-            .expect("the hook is active")
-            .keyboard(WM_KEYDOWN, 135);
+        // Stand in for the callback seeing F24 go down: only the hook that watches it changes.
+        hook.shared.keyboard(WM_KEYDOWN, 135);
         assert!(*held.lock().unwrap());
+        assert_eq!(other_changes.load(Ordering::SeqCst), 0);
         hook.stop();
         assert!(!*held.lock().unwrap(), "stopping released push to talk");
         assert_eq!(changes.load(Ordering::SeqCst), 2);
-        assert!(active().is_none(), "the state is cleared");
+        second.stop();
 
         // And it can start again.
         start(Vec::new(), |_| {})

@@ -263,22 +263,31 @@ impl Root {
                             )),
                     ),
             )
-            .when(own, |this| this.child(status_bubble()))
-            .child(
-                div()
-                    .absolute()
-                    .top(px(8.))
-                    .right(px(12.))
-                    .size(px(32.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(hsla(0., 0., 1., 0.08))
-                    .bg(hsla(0., 0., 0., 0.56))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("more_horizontal", 16., "--white")),
-            );
+            .when(own, |this| this.child(status_bubble()));
+        // The button on the banner is on the top layer, above the profile effect, so it is drawn after it.
+        let more = div()
+            .absolute()
+            .top(px(8.))
+            .right(px(12.))
+            .size(px(32.))
+            .rounded_full()
+            .border_1()
+            .border_color(hsla(0., 0., 1., 0.08))
+            .bg(hsla(0., 0., 0., 0.56))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon("more_horizontal", 16., "--white"));
+        let effect = self.profile_effect_sku(user.id).and_then(|sku| {
+            let hovering = self.profile_effect_hovered("popout");
+            self.profile_effect_layer(
+                "popout",
+                sku,
+                super::profile_effects::Surface::profile(300., hovering),
+                window,
+                cx,
+            )
+        });
         let names = div()
             .flex()
             .flex_col()
@@ -373,7 +382,11 @@ impl Root {
         });
         let card = div()
             .id("profile-popout")
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.profile_effect_hover("popout", *inside, cx);
+            }))
             .occlude()
+            .relative()
             .w(px(300.))
             .rounded(px(8.))
             .bg(color("--background-surface-high"))
@@ -399,7 +412,9 @@ impl Root {
             .gap(px(8.))
             .child(header)
             .child(body)
-            .children(footer);
+            .children(footer)
+            .children(effect)
+            .child(more);
         let at: Point<Pixels> = if popout.left {
             point(popout.anchor.left() - px(308.), popout.anchor.top())
         } else {

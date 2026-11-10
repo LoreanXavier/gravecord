@@ -2,12 +2,16 @@
 //! three-step Create Event flow (module 688218, in `create.rs`). Measured in `design/dom/modals/events-empty-darker-cozy.json`
 //! and the `event-create-*` captures. The events themselves live in `dc_state::scheduled_events` (module 698441).
 //!
-//! Not built: the event cards of a non-empty list (module 327241). There is no capture of the card in the list, so the
-//! list area of a server that has events is left empty.
+//! The list shows one card per upcoming event (module 327241, in `list.rs`); a card opens the detail view
+//! (`detail.rs`) and its "..." button the menu with Add to Calendar, Start, Edit, Cancel and Copy Event Link
+//! (`menu.rs`). Report Event is drawn but does nothing: the app has no event report flow yet.
 
 mod create;
-mod pickers;
-mod schedule;
+mod detail;
+mod list;
+mod menu;
+pub(super) mod pickers;
+pub(super) mod schedule;
 
 use super::{Root, color, icon};
 use crate::net::Request;
@@ -18,6 +22,7 @@ use gpui::{
     px, rgba,
 };
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 /// `MANAGE_EVENTS`.
 pub(super) const MANAGE_EVENTS: u64 = 1 << 33;
@@ -25,6 +30,7 @@ pub(super) const MANAGE_EVENTS: u64 = 1 << 33;
 pub(super) const CREATE_EVENTS: u64 = 1 << 44;
 
 const CREATE_KEY: &str = "guild-events-create";
+const EDIT_KEY: &str = "guild-events-edit:";
 #[cfg(feature = "capture")]
 const DELETE_KEY: &str = "guild-events-delete:";
 const LIST_KEY: &str = "guild-events:";
@@ -34,6 +40,14 @@ const NAV_KEY: &str = "guild-nav:events:";
 pub(super) struct GuildEvents {
     guild: Id,
     create: Option<create::Create>,
+    /// The detail view of one event, over the list.
+    detail: Option<list::Detail>,
+    /// The "..." menu of an event.
+    menu: Option<menu::EventMenu>,
+    /// The Cancel Event, Start Event or End Event dialog.
+    confirm: Option<menu::Confirm>,
+    /// Creators the member request was already sent for.
+    asked: HashSet<Id>,
 }
 
 /// The dim layer behind a modal; a click on it closes the modal. `top_pad` nudges a modal that is taller than the
@@ -173,6 +187,10 @@ impl Root {
         self.guild_events = Some(GuildEvents {
             guild,
             create: None,
+            detail: None,
+            menu: None,
+            confirm: None,
+            asked: HashSet::new(),
         });
         let _ = self.requests.send(Request::Fetch {
             key: format!("{LIST_KEY}{guild}"),
@@ -189,11 +207,30 @@ impl Root {
         if key != "escape" {
             return false;
         }
+        if open.menu.is_some() {
+            if let Some(open) = self.guild_events.as_mut() {
+                open.menu = None;
+            }
+            cx.notify();
+            return true;
+        }
+        if open.confirm.is_some() {
+            if let Some(open) = self.guild_events.as_mut() {
+                open.confirm = None;
+            }
+            cx.notify();
+            return true;
+        }
         match open.create.as_ref() {
             Some(create) if create.open.is_some() => self.close_event_picker(cx),
             Some(_) => {
                 if let Some(open) = self.guild_events.as_mut() {
                     open.create = None;
+                }
+            }
+            None if open.detail.is_some() => {
+                if let Some(open) = self.guild_events.as_mut() {
+                    open.detail = None;
                 }
             }
             None => self.guild_events = None,
@@ -220,9 +257,48 @@ impl Root {
                     &json!({"guild_id": guild, "guild_scheduled_events": body}),
                 );
             }
+            if key.starts_with(LIST_KEY)
+                && let Ok(guild) = guild.parse::<Id>()
+                && body.is_array()
+            {
+                let events: Vec<Id> = self
+                    .stores
+                    .scheduled_events
+                    .upcoming(guild)
+                    .iter()
+                    .map(|event| event.id)
+                    .collect();
+                self.event_fetch_details(guild, &events);
+                self.event_prepare_users(guild, &events);
+            }
             cx.notify();
             // The sidebar keeps its own copy of the answer of its key.
             return key.starts_with(LIST_KEY);
+        }
+        #[cfg(feature = "capture")]
+        if key.starts_with(EDIT_KEY)
+            || key.starts_with(list::RSVP_KEY)
+            || key.starts_with(menu::CANCEL_KEY)
+        {
+            proof_log(&format!(
+                "answer {} ok={} status={}",
+                key, body["ok"], body["status"]
+            ));
+        }
+        if key.starts_with(EDIT_KEY) {
+            self.finish_edit_event(body, cx);
+            return true;
+        }
+        if key.starts_with(list::RSVP_KEY) {
+            self.event_rsvp_answered(key, body, cx);
+            return true;
+        }
+        if self.event_menu_answered(key, body, cx) {
+            return true;
+        }
+        if self.event_details_fetched(key, body) {
+            cx.notify();
+            return true;
         }
         #[cfg(feature = "capture")]
         if let Some((guild, event)) = key
@@ -271,10 +347,30 @@ impl Root {
         if let Some(create) = open.create.as_ref() {
             return self.create_event_layer(open.guild, create, window, cx);
         }
-        vec![self.events_modal(open.guild, cx)]
+        // A dialog hides what is under it, behind a second dim layer.
+        if let Some(confirm) = self.event_confirm_layer(cx) {
+            return vec![confirm];
+        }
+        let now = create::now();
+        let mut layers = Vec::new();
+        match open
+            .detail
+            .as_ref()
+            .and_then(|detail| self.event_detail_layer(detail, now, cx))
+        {
+            Some(detail) => layers.push(detail),
+            None => layers.push(self.events_modal(open.guild, now, cx)),
+        }
+        layers.extend(self.event_menu_layers(window, cx));
+        layers
     }
 
-    fn events_modal(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+    fn events_modal(
+        &self,
+        guild: Id,
+        now: chrono::NaiveDateTime,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let title = self.events_title(guild);
         let can_create = self
             .stores
@@ -288,7 +384,17 @@ impl Root {
                 .is_some_and(|(known, me)| {
                     permissions::can_in_guild(known, me, permissions::MANAGE_ROLES)
                 });
-        let none = self.visible_upcoming_events(guild).is_empty();
+        let upcoming: Vec<ScheduledEvent> = self
+            .visible_upcoming_events(guild)
+            .into_iter()
+            .cloned()
+            .collect();
+        let none = upcoming.is_empty();
+        let cards: Vec<AnyElement> = upcoming
+            .iter()
+            .enumerate()
+            .map(|(index, event)| self.event_card(event, now, index == 0, cx))
+            .collect();
         let header = div()
             .flex_none()
             .h(px(56.))
@@ -443,8 +549,17 @@ impl Root {
                     .pb(px(16.))
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .when(none, |this| this.child(empty)),
+                    .when(none, |this| this.child(empty))
+                    .when(!none, |this| {
+                        this.child(
+                            div()
+                                .id("events-scroll")
+                                .flex_1()
+                                .min_h(px(0.))
+                                .overflow_y_scroll()
+                                .child(div().flex().flex_col().gap(px(16.)).children(cards)),
+                        )
+                    }),
             );
         layer(
             "events-layer",

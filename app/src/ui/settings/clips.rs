@@ -9,6 +9,8 @@
 //! `alt+c`, module 532624), kept under its own key. Capture runs start from the defaults, so a frame never depends on
 //! what an earlier run saved.
 
+mod engine;
+
 use super::model::{ButtonKind, Choice, Runs};
 use super::render::{self, PANEL};
 use super::voice::{KEYBOARD_KEY, MOUSE_BUTTON, shortcut_text, windows_code};
@@ -529,6 +531,8 @@ pub(in crate::ui) struct ClipsState {
     focus: RefCell<Option<FocusHandle>>,
     /// The folder dialog is open.
     picking: bool,
+    /// The capture engine's side: the clips known, the save counter, the keybind hook (`engine.rs`).
+    engine: engine::Engine,
 }
 
 impl ClipsState {
@@ -560,6 +564,7 @@ impl ClipsState {
             hovered: false,
             focus: RefCell::new(None),
             picking: false,
+            engine: engine::Engine::default(),
         }
     }
 
@@ -570,6 +575,8 @@ impl ClipsState {
 
     fn save(&self) {
         storage::set(STORED, self.store.to_value());
+        // The recorder follows the settings (clipping on or off, the length it keeps).
+        self.engine.configure(&self.store.settings);
     }
 
     fn save_keybind(&self) {
@@ -592,6 +599,7 @@ impl ClipsState {
             hovered: false,
             focus: RefCell::new(None),
             picking: false,
+            engine: engine::Engine::default(),
         }
     }
 }
@@ -1560,7 +1568,7 @@ impl Root {
             let _ = this.update(cx, |this, cx| {
                 this.clips.picking = false;
                 if let Some(path) = chosen {
-                    this.clips_set_location(&path);
+                    this.clips_set_location(&path, cx);
                 }
                 cx.notify();
             });
@@ -1569,9 +1577,10 @@ impl Root {
     }
 
     /// `HU`: the new location is stored (the official action then reloads the clips found there).
-    fn clips_set_location(&mut self, path: &Path) {
+    fn clips_set_location(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.clips.store.settings.storage_location = path.to_string_lossy().into_owned();
         self.clips.save();
+        self.clips_reload_directory(cx);
     }
 
     /// The Enable Clipping and Enable Reminders switches (`yO`, `Mt`): a click on the generated switch row wrote
@@ -1592,6 +1601,8 @@ impl Root {
             self.clips.store.settings.reminders_enabled = on;
         }
         self.clips.save();
+        self.clips_sync_engine();
+        self.sync_clips_hook();
         true
     }
 
@@ -1601,6 +1612,7 @@ impl Root {
         }
         self.clips.recording = !self.clips.recording;
         self.clips.recording_held.clear();
+        self.sync_clips_hook();
     }
 
     /// Reset to default: the keybind is `alt+c` again.
@@ -1610,6 +1622,7 @@ impl Root {
         }
         self.clips.keybind = default_keybind();
         self.clips.save_keybind();
+        self.sync_clips_hook();
     }
 
     /// Whether the recorder listens now: it is shown, and Enable Clipping is on.
@@ -1633,6 +1646,7 @@ impl Root {
         if key == "escape" {
             self.clips.recording = false;
             self.clips.recording_held.clear();
+            self.sync_clips_hook();
         } else if let Some(code) = windows_code(key) {
             self.clips_record_part(KEYBOARD_KEY, code);
         }
@@ -1716,6 +1730,7 @@ impl Root {
             .map(|[kind, code]| [*kind, *code, super::voice::WINDOWS])
             .collect();
         self.clips.save_keybind();
+        self.sync_clips_hook();
     }
 
     /// The desktop recorder takes one combo and ends when the last of its keys is let go.
@@ -1726,12 +1741,13 @@ impl Root {
             .retain(|held| *held != [kind, code]);
         if before > 0 && self.clips.recording_held.is_empty() {
             self.clips.recording = false;
+            self.sync_clips_hook();
         }
     }
 
     /// The harness's `clips` steps: `clips get`, and `clips location <path>` for the answer a folder dialog would give.
     #[cfg(feature = "capture")]
-    pub(crate) fn script_clips(&mut self, words: &[&str]) -> String {
+    pub(crate) fn script_clips(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
             ["get"] => format!(
                 "{} keybind {} recording {}",
@@ -1744,10 +1760,30 @@ impl Root {
                     return "Edit Location is inert while Enable Clipping is off".to_owned();
                 }
                 let path = PathBuf::from(path.join(" "));
-                self.clips_set_location(&path);
+                self.clips_set_location(&path, cx);
                 format!("location = {}", path.display())
             }
-            _ => "usage: clips get | clips location <path>".to_owned(),
+            // Enable Clipping, as the switch does (the account must be Nitro: `premium 2`).
+            ["enable"] => {
+                self.clips.store.set_enabled(true);
+                self.clips.save();
+                self.clips_sync_engine();
+                "enabled".to_owned()
+            }
+            // The save keybind, as the hook would deliver it (the harness cannot press a global key).
+            ["save"] => {
+                let outcome = match self.clips_save(cx) {
+                    engine::SaveStart::Started => "started".to_owned(),
+                    engine::SaveStart::NoOp(reason) => format!("no-op {}", reason.code()),
+                };
+                format!("save {outcome}")
+            }
+            ["status"] => self.clips_status_line(),
+            ["list"] => self.clips_list_line(),
+            _ => {
+                "usage: clips get | clips location <path> | clips save | clips status | clips list"
+                    .to_owned()
+            }
         }
     }
 }

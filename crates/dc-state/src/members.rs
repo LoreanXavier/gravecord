@@ -16,6 +16,8 @@ pub struct Member {
     pub joined_at: Option<String>,
     /// `pending`: still in rules screening, so not mentionable (`isPending`).
     pub pending: bool,
+    /// The member's own `display_name_styles`, which wins over the user's (609425).
+    pub display_name_styles: Option<crate::display_name_styles::DisplayNameStyles>,
 }
 
 impl Member {
@@ -37,6 +39,9 @@ impl Member {
                 .collect(),
             joined_at: text(&member["joined_at"]),
             pending: member["pending"].as_bool().unwrap_or(false),
+            display_name_styles: crate::display_name_styles::DisplayNameStyles::from_value(
+                &member["display_name_styles"],
+            ),
         })
     }
 

@@ -10,5 +10,6 @@
   "messages": { "class": "messagesWrapper_8AE1Qq" },
   "screening-composer": { "class": "wrapper_ST_Y69" },
   "members": { "class": "membersWrap_86es0b" },
-  "presence-line": { "class": "container_HigqCD" }
+  "presence-line": { "class": "container_HigqCD" },
+  "member-name-styled": { "class": "dnsFont_OAgVZM", "ancestor": "membersWrap_86es0b" }
 }

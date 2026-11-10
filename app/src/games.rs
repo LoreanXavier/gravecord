@@ -229,7 +229,7 @@ impl Runtime {
 
     /// Starts the scan thread, once. A harness run never scans.
     pub fn start(&mut self) {
-        if self.started || crate::storage::is_capture_run() {
+        if self.started || (crate::storage::is_capture_run() && !live_presence_allowed()) {
             return;
         }
         self.started = true;
@@ -278,6 +278,8 @@ fn scan_once(shared: &Mutex<Shared>) -> GameScan {
 ///
 /// The custom status is one of `LocalActivityStore`'s activities and is not a detected activity: it goes out
 /// whatever that switch says. Left out, a presence update would take the account's custom status away.
+/// Only the tests build a presence without RPC activities now: the app calls `shared_local_activities`.
+#[cfg(test)]
 pub fn shared_activities(
     custom: Option<Value>,
     activity: Option<Value>,
@@ -291,6 +293,60 @@ pub fn shared_activities(
         .into_iter()
         .chain(activity.filter(|_| show_current_game))
         .collect()
+}
+
+/// `shared_activities` with the activities games set over RPC (`dc-rpc`): `LocalActivityStore.getActivities` lists
+/// the custom status, the RPC activities in socket order, then the detected game unless an RPC activity stands for it
+/// (module 491009 `B`); `SelfPresenceStore`'s filter (module 894768 `V`) then drops every one that names an
+/// application unless "Share my detected activities" is on, and nothing is shared when invisible. Of several
+/// `PLAYING` activities only the first goes out (`F`).
+pub fn shared_local_activities(
+    local: &dc_state::local_activity::LocalActivityStore,
+    custom: Option<Value>,
+    detected: Option<Value>,
+    show_current_game: bool,
+    status: &str,
+) -> Vec<Value> {
+    if status == "invisible" {
+        return Vec::new();
+    }
+    let mut playing = false;
+    local
+        .activities(custom, detected)
+        .into_iter()
+        .filter(|activity| activity["type"] == 4 || show_current_game)
+        .filter(|activity| {
+            if activity["type"] != 0 {
+                return true;
+            }
+            !std::mem::replace(&mut playing, true)
+        })
+        .collect()
+}
+
+/// What the account's own row and profile show (`SelfPresenceStore` `x`, module 894768): this session's activities,
+/// then another active session's (a game another client reports), without that session's custom status, one of each
+/// `type:application_id:name`. Only this session's go into the presence update.
+pub fn own_visible_activities(local: &[Value], remote: &[Value]) -> Vec<Value> {
+    let key = |activity: &Value| {
+        format!(
+            "{}:{}:{}",
+            activity["type"], activity["application_id"], activity["name"]
+        )
+    };
+    let mut seen = std::collections::HashSet::new();
+    local
+        .iter()
+        .chain(remote.iter().filter(|activity| activity["type"] != 4))
+        .filter(|activity| seen.insert(key(activity)))
+        .cloned()
+        .collect()
+}
+
+/// A harness run sends a game or scans for one only when it says so with `GRAVECORD_ALLOW_PRESENCE=1` (a live test
+/// the owner asked for).
+pub fn live_presence_allowed() -> bool {
+    std::env::var("GRAVECORD_ALLOW_PRESENCE").as_deref() == Ok("1")
 }
 
 /// The emoji of a custom status as its activity carries it: a custom emoji the account may use, or a Unicode one.
@@ -365,7 +421,7 @@ pub fn presence_body(status: &str, activities: &[Value]) -> Value {
 /// A harness run never sends a presence update, whatever it carries: the test account's visible status must not
 /// change (`account_write_refused` in `net.rs` is the same guard for REST writes).
 pub fn presence_refused(capture: bool) -> bool {
-    capture
+    capture && !live_presence_allowed()
 }
 
 /// Five updates in twenty seconds (module 225123): past that, the update waits for the next scan.
@@ -435,6 +491,24 @@ mod tests {
         );
         assert!(
             shared_activities(Some(custom), Some(game_activity()), true, "invisible").is_empty()
+        );
+    }
+
+    #[test]
+    fn the_own_row_shows_another_sessions_game_but_not_its_custom_status() {
+        let custom = custom_status_activity("brb", 0, None, 5).unwrap();
+        let rich = json!({"type": 0, "name": "P.T. Silent Hills", "application_id": "1559538474065993750",
+            "details": "In the menus", "state": "New Game+ 4/4"});
+        let other_custom = json!({"type": 4, "name": "Custom Status", "state": "elsewhere"});
+        let shown = own_visible_activities(
+            std::slice::from_ref(&custom),
+            &[other_custom, rich.clone(), rich.clone()],
+        );
+        assert_eq!(shown, vec![custom, rich.clone()]);
+        // The same game from both sessions shows once.
+        assert_eq!(
+            own_visible_activities(std::slice::from_ref(&rich), std::slice::from_ref(&rich)).len(),
+            1
         );
     }
 
@@ -533,5 +607,44 @@ mod tests {
         // The stored games reach the scanner's lists.
         let lists = runtime.shared.lock().unwrap().lists.clone();
         assert_eq!(lists.games.len(), 1);
+    }
+
+    fn rpc_game(app: &str, name: &str) -> Value {
+        json!({"type": 0, "name": name, "application_id": app, "platform": "desktop", "metadata": {}})
+    }
+
+    #[test]
+    fn a_games_rpc_activity_joins_the_presence_under_the_same_sharing_rule() {
+        let mut local = dc_state::local_activity::LocalActivityStore::default();
+        local.update(4, Some(40), Some(rpc_game("1", "P.T. Silent Hills")), None);
+        let custom = json!({"type": 4, "name": "Custom Status", "state": "hi"});
+        // On: the custom status, then the game.
+        let on = shared_local_activities(&local, Some(custom.clone()), None, true, "online");
+        assert_eq!(on.len(), 2);
+        assert_eq!(on[0]["type"], 4);
+        assert_eq!(on[1]["name"], "P.T. Silent Hills");
+        // Off: the game is a detected activity and is held back, the custom status is not.
+        assert_eq!(
+            shared_local_activities(&local, Some(custom.clone()), None, false, "online"),
+            vec![custom]
+        );
+        // Invisible shares nothing.
+        assert!(shared_local_activities(&local, None, None, true, "invisible").is_empty());
+    }
+
+    #[test]
+    fn the_detected_copy_of_an_rpc_game_is_not_sent_twice_and_one_game_plays_at_a_time() {
+        let mut local = dc_state::local_activity::LocalActivityStore::default();
+        local.update(1, Some(10), Some(rpc_game("1", "P.T. Silent Hills")), None);
+        let detected = json!({"type": 0, "name": "P.T. Silent Hills", "timestamps": {"start": 5}});
+        let list = shared_local_activities(&local, None, Some(detected), true, "online");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["application_id"], "1");
+        // Another, different game: only the first PLAYING activity goes out.
+        local.update(2, Some(20), Some(rpc_game("2", "Other")), None);
+        let other = json!({"type": 0, "name": "Third"});
+        let list = shared_local_activities(&local, None, Some(other), true, "online");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "P.T. Silent Hills");
     }
 }

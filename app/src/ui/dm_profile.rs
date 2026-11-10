@@ -224,7 +224,12 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(text)
-                    .child(self.dm_display_name(&user)),
+                    .child(super::name_styles::name(
+                        format!("dm-profile-name-{}", user.id),
+                        self.dm_display_name(&user),
+                        self.name_styles(&user, None).as_ref(),
+                        super::name_styles::Display::Animated,
+                    )),
             )
             .child(
                 div()

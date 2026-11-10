@@ -14,6 +14,7 @@ base64.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+dc-clips.workspace = true
 dc-gateway.workspace = true
 dc-hotkey.workspace = true
 dc-auth.workspace = true
@@ -21,6 +22,7 @@ dc-http.workspace = true
 dc-markdown.workspace = true
 dc-media.workspace = true
 dc-proto.workspace = true
+dc-rpc.workspace = true
 dc-detect.workspace = true
 dc-state.workspace = true
 dc-tokens.workspace = true
@@ -40,6 +42,10 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tts = "0.26"
+# Styled display names (Nitro name effects) are drawn from glyph outlines: ttf-parser (MIT OR Apache-2.0, already pulled in by
+# gpui) reads the outlines, tiny-skia (BSD-3-Clause, already pulled in by rasterlottie) fills and strokes them.
+ttf-parser = { version = "=0.25.1", default-features = false, features = ["std"] }
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
 wuff = "0.2"
 
 [target.'cfg(windows)'.dependencies]

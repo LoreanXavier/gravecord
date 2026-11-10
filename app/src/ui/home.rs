@@ -20,9 +20,13 @@ impl Root {
                 guild_guide: false,
                 channel_browser: false,
                 discover: None,
+                quests: false,
+                shop: false,
             },
         );
         self.discover.open = false;
+        self.shop.open = false;
+        self.quests.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
@@ -157,10 +161,11 @@ impl Root {
                     .items_center()
                     .gap(px(12.))
                     .when(selected, |this| {
-                        this.parity(if id == "nitro" {
-                            "nitro-link"
-                        } else {
-                            "friends-link"
+                        this.parity(match id {
+                            "nitro" => "nitro-link",
+                            "shop" => "shop-link",
+                            "quests" => "quests-link",
+                            _ => "friends-link",
                         })
                         .bg(color("--background-mod-strong"))
                     })
@@ -278,7 +283,22 @@ impl Root {
                                                 .text_size(px(16.))
                                                 .line_height(px(20.))
                                                 .font_weight(FontWeight(500.))
-                                                .child(self.private_channel_name(channel)),
+                                                .child(super::name_styles::name(
+                                                    format!("dm-name-{id}"),
+                                                    self.private_channel_name(channel),
+                                                    // 110574: a 1:1 DM's row shows the effect, animated under the pointer.
+                                                    if channel.kind == 1 {
+                                                        self.name_styles(&recipient, None)
+                                                    } else {
+                                                        None
+                                                    }
+                                                    .as_ref(),
+                                                    if self.hovered_dm == Some(id) {
+                                                        super::name_styles::Display::Animated
+                                                    } else {
+                                                        super::name_styles::Display::Static
+                                                    },
+                                                )),
                                         )
                                         .children(
                                             recipient
@@ -371,7 +391,13 @@ impl Root {
     }
 
     pub(super) fn home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let friends_selected = self.guild.is_none() && self.channel.is_none() && !self.nitro_open;
+        let shop_selected = self.shop_active();
+        let quests_selected = self.quests_active();
+        let friends_selected = self.guild.is_none()
+            && self.channel.is_none()
+            && !self.nitro_open
+            && !shop_selected
+            && !quests_selected;
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         let rows: Vec<AnyElement> = self
             .stores
@@ -442,27 +468,35 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
             )
             .child(
-                self.home_link("shop", "home_shop", "Shop", false)
+                self.home_link("shop", "home_shop", "Shop", shop_selected)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.open_shop(cx)))
                     .relative()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(236.))
-                            .top(px(12.))
-                            .h(px(16.))
-                            .px(px(8.))
-                            .rounded(px(8.))
-                            .bg(color("--white"))
-                            .flex()
-                            .items_center()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--background-surface-highest"))
-                            .child("NEW"),
-                    ),
+                    // The NEW pill is gone once the page is open (the Shop capture has none).
+                    .when(!shop_selected && !quests_selected, |row| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .left(px(236.))
+                                .top(px(12.))
+                                .h(px(16.))
+                                .px(px(8.))
+                                .rounded(px(8.))
+                                .bg(color("--white"))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--background-surface-highest"))
+                                .child("NEW"),
+                        )
+                    }),
             )
-            .child(self.home_link("quests", "home_quests", "Quests", false))
+            .child(
+                self.home_link("quests", "home_quests", "Quests", quests_selected)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
+            )
             .child(
                 div()
                     .flex_none()

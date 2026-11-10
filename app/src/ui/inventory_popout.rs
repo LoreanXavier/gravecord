@@ -663,7 +663,12 @@ impl Root {
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-default"))
-                                .child(self.guild_display_name(user)),
+                                .child(super::name_styles::name(
+                                    format!("inventory-popout-name-{id}"),
+                                    self.guild_display_name(user),
+                                    self.name_styles(user, self.guild).as_ref(),
+                                    super::name_styles::Display::Font,
+                                )),
                             true,
                             cx,
                         ),

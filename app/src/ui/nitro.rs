@@ -491,6 +491,8 @@ impl Root {
                 guild_guide: false,
                 channel_browser: false,
                 discover: None,
+                quests: false,
+                shop: false,
             },
         );
         self.discover.open = false;

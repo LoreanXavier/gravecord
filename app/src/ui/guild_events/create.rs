@@ -10,11 +10,14 @@ use super::schedule::{
     self, Frequency, ScheduleError, date_label, default_start, filter_times, frequency_options,
     iso_utc, parse_time, relative_label, time_label, time_options,
 };
-use super::{CREATE_EVENTS, CREATE_KEY, MANAGE_EVENTS, field_label, layer, modal_shadow, pickers};
+use super::{
+    CREATE_EVENTS, CREATE_KEY, EDIT_KEY, MANAGE_EVENTS, field_label, layer, modal_shadow, pickers,
+};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
+use dc_state::scheduled_events::ScheduledEvent;
 use dc_state::{
     ChannelKind, Id, permissions,
     scheduled_events::{ENTITY_EXTERNAL, ENTITY_NONE, ENTITY_VOICE},
@@ -58,7 +61,31 @@ pub(in super::super) struct Create {
     typed: bool,
     error: Option<String>,
     sending: bool,
+    /// The event being edited, and the form as it was opened: Next waits for a change.
+    editing: Option<EditedEvent>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// An event opened for editing: what it was, so a change can be seen and an untouched repeat rule kept.
+struct EditedEvent {
+    id: Id,
+    privacy_level: u64,
+    form: Snapshot,
+    rule: Value,
+}
+
+/// The fields of the form that a save would change.
+#[derive(Clone, Debug, PartialEq)]
+struct Snapshot {
+    entity: u64,
+    channel: Option<Id>,
+    location: String,
+    topic: String,
+    description: String,
+    start: NaiveDateTime,
+    end: Option<NaiveDateTime>,
+    frequency: Frequency,
+    image: Option<String>,
 }
 
 impl Create {
@@ -77,6 +104,38 @@ impl Create {
         self.entity == ENTITY_EXTERNAL
     }
 
+    /// The form of an event being edited.
+    fn fill_from(&mut self, event: &ScheduledEvent, cx: &mut App) {
+        let start = schedule::local_time(&event.scheduled_start_time).unwrap_or(self.start);
+        self.entity = event.entity_type;
+        self.channel = event.channel_id;
+        self.start = start;
+        self.end = event
+            .scheduled_end_time
+            .as_deref()
+            .and_then(schedule::local_time);
+        self.month = start.date().with_day(1).unwrap_or(start.date());
+        // A rule the dropdown cannot say is kept as it is until the repeat field is touched.
+        self.frequency =
+            schedule::frequency_of(&event.recurrence_rule, start).unwrap_or(Frequency::None);
+        for (editor, text) in [
+            (&self.topic, event.name.as_str()),
+            (&self.location, event.location.as_deref().unwrap_or("")),
+            (
+                &self.description,
+                event.description.as_deref().unwrap_or(""),
+            ),
+        ] {
+            editor.update(cx, |editor, _| editor.set_text(text));
+        }
+        self.editing = Some(EditedEvent {
+            id: event.id,
+            privacy_level: event.privacy_level,
+            form: self.snapshot(cx),
+            rule: event.recurrence_rule.clone(),
+        });
+    }
+
     /// Whether the end date and time are in the form: always for an outside location, else once added.
     fn has_end(&self) -> bool {
         self.external() || self.end.is_some()
@@ -91,7 +150,34 @@ impl Create {
     }
 
     fn schedule_error(&self, now: NaiveDateTime) -> Option<ScheduleError> {
-        schedule::schedule_error(Some(self.start), self.end, self.external(), now)
+        schedule::schedule_error_of(
+            Some(self.start),
+            self.end,
+            self.external(),
+            now,
+            self.editing.is_some(),
+        )
+    }
+
+    fn snapshot(&self, cx: &App) -> Snapshot {
+        Snapshot {
+            entity: self.entity,
+            channel: self.channel,
+            location: self.location.read(cx).text().to_owned(),
+            topic: self.topic.read(cx).text().to_owned(),
+            description: self.description.read(cx).text().to_owned(),
+            start: self.start,
+            end: self.end,
+            frequency: self.frequency,
+            image: self.image.clone(),
+        }
+    }
+
+    /// An edit moves on from Event Info only once something changed (`!isEqual` of module 688218).
+    fn changed(&self, cx: &App) -> bool {
+        self.editing
+            .as_ref()
+            .is_none_or(|edited| edited.form != self.snapshot(cx))
     }
 
     fn topic_ok(&self, cx: &App) -> bool {
@@ -101,7 +187,7 @@ impl Create {
     fn step_valid(&self, step: usize, now: NaiveDateTime, cx: &App) -> bool {
         match step {
             0 => self.entity_ok(cx),
-            1 => self.schedule_error(now).is_none() && self.topic_ok(cx),
+            1 => self.schedule_error(now).is_none() && self.topic_ok(cx) && self.changed(cx),
             _ => true,
         }
     }
@@ -137,7 +223,7 @@ impl Create {
 }
 
 /// The local time. Capture runs may fix it (`GRAVECORD_NOW=2026-11-10T13:10:00`) so the date fields match a recorded frame.
-fn now() -> NaiveDateTime {
+pub(super) fn now() -> NaiveDateTime {
     #[cfg(feature = "capture")]
     if let Some(fixed) = std::env::var("GRAVECORD_NOW")
         .ok()
@@ -344,10 +430,53 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(open) = self.guild_events.as_ref() else {
+        if self.guild_events.is_none() {
+            return;
+        }
+        let create = self.new_create_form(cx);
+        if let Some(open) = self.guild_events.as_mut() {
+            open.create = Some(create);
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// `Edit Event`: the flow opened on the event, its fields filled in. It starts at the Location step, or at Event
+    /// Info for an event that is running.
+    pub(super) fn open_edit_event(
+        &mut self,
+        event: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(event) = self
+            .stores
+            .scheduled_events
+            .get_guild_scheduled_event(event)
+            .cloned()
+        else {
             return;
         };
-        let _ = open;
+        if self.guild_events.is_none() {
+            return;
+        }
+        let mut create = self.new_create_form(cx);
+        create.fill_from(&event, cx);
+        let step = usize::from(event.is_active());
+        let topic = create.topic.clone();
+        create.step = step;
+        if let Some(open) = self.guild_events.as_mut() {
+            open.create = Some(create);
+        }
+        if step == 1 {
+            focus(&topic, window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn new_create_form(&mut self, cx: &mut Context<Self>) -> Create {
         let location = field_editor("Add a location, link, or something.", 20., false, 100, cx);
         let topic = field_editor("What's your event?", 20., false, 100, cx);
         let description = field_editor(
@@ -381,7 +510,7 @@ impl Root {
             ));
         }
         let start = default_start(now());
-        let create = Create {
+        Create {
             step: 0,
             entity: ENTITY_NONE,
             channel: None,
@@ -401,13 +530,9 @@ impl Root {
             typed: false,
             error: None,
             sending: false,
+            editing: None,
             _subscriptions: subscriptions,
-        };
-        if let Some(open) = self.guild_events.as_mut() {
-            open.create = Some(create);
         }
-        window.focus(&self.focus, cx);
-        cx.notify();
     }
 
     /// What was typed in a time field: the first typing replaces the shown time, as selecting it first would.
@@ -637,6 +762,75 @@ impl Root {
         Some(body)
     }
 
+    /// `saveEvent`: the same body as a create, less the image when it is the one the event has.
+    fn edit_event_body(&self, cx: &App) -> Option<Value> {
+        let create = self.guild_events.as_ref()?.create.as_ref()?;
+        let edited = create.editing.as_ref()?;
+        let mut body = self.create_event_body(cx)?;
+        body["privacy_level"] = json!(edited.privacy_level);
+        // A repeat the dropdown could not say, left alone, is sent back as it was.
+        if create.frequency == edited.form.frequency && !edited.rule.is_null() {
+            body["recurrence_rule"] = edited.rule.clone();
+        }
+        Some(body)
+    }
+
+    /// `saveEvent`: `PATCH` the event, then back to what was under the flow.
+    fn submit_edit_event(&mut self, cx: &mut Context<Self>) {
+        let now = now();
+        let Some(open) = self.guild_events.as_ref() else {
+            return;
+        };
+        let guild = open.guild;
+        let Some(create) = open.create.as_ref() else {
+            return;
+        };
+        let Some(edited) = create.editing.as_ref() else {
+            return;
+        };
+        if create.sending || !(0..=2).all(|step| create.step_valid(step, now, cx)) {
+            return;
+        }
+        let event = edited.id;
+        let Some(body) = self.edit_event_body(cx) else {
+            return;
+        };
+        if let Some(create) = self.event_create_mut() {
+            create.sending = true;
+            create.error = None;
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{EDIT_KEY}{guild}:{event}")),
+            method: reqwest::Method::PATCH,
+            route: format!("/guilds/{guild}/scheduled-events/{event}"),
+            body: Some(body),
+        });
+        cx.notify();
+    }
+
+    /// The answer to the save request: the flow closes on success and the event is the server's.
+    pub(super) fn finish_edit_event(&mut self, body: &Value, cx: &mut Context<Self>) {
+        if body["ok"].as_bool() == Some(true) {
+            if let Some(event) = body.get("body").filter(|event| event.is_object()) {
+                self.stores
+                    .scheduled_events
+                    .dispatch("GUILD_SCHEDULED_EVENT_UPDATE", event);
+            }
+            if let Some(open) = self.guild_events.as_mut() {
+                open.create = None;
+            }
+        } else if let Some(create) = self.event_create_mut() {
+            create.sending = false;
+            create.error = Some(
+                body["body"]["message"]
+                    .as_str()
+                    .unwrap_or("Something went wrong. Please try again.")
+                    .to_owned(),
+            );
+        }
+        cx.notify();
+    }
+
     fn submit_create_event(&mut self, cx: &mut Context<Self>) {
         let now = now();
         let Some(open) = self.guild_events.as_ref() else {
@@ -848,6 +1042,7 @@ impl Root {
     ) -> AnyElement {
         let step = create.step;
         let last = step == 2;
+        let editing = create.editing.is_some();
         let enabled = create.can_advance(now, cx) && !create.sending;
         div()
             .flex_none()
@@ -894,11 +1089,17 @@ impl Root {
                     ))
                     .child(footer_button(
                         "event-next",
-                        if last { "Create Event" } else { "Next" },
+                        match (last, editing) {
+                            (true, true) => "Save Event",
+                            (true, false) => "Create Event",
+                            _ => "Next",
+                        },
                         true,
                         !enabled,
                         move |this, window, cx| {
-                            if last {
+                            if last && editing {
+                                this.submit_edit_event(cx);
+                            } else if last {
                                 this.submit_create_event(cx);
                             } else {
                                 this.event_goto(step + 1, window, cx);

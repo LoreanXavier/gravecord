@@ -16,6 +16,10 @@ pub(crate) struct Route {
     pub channel_browser: bool,
     /// The Discover page and the part of it shown.
     pub discover: Option<super::discover::Place>,
+    /// Quest Home (`/quest-home`).
+    pub quests: bool,
+    /// The Shop page on Home (`/shop`).
+    pub shop: bool,
 }
 
 #[derive(Default)]
@@ -58,6 +62,8 @@ impl Root {
             guild_guide: self.guild_guide_open,
             channel_browser: self.channel_browser_open,
             discover: self.discover_place(),
+            quests: self.quests_active(),
+            shop: self.shop_active(),
         }
     }
 
@@ -75,6 +81,8 @@ impl Root {
                     self.set_discover_place(place, cx);
                 }
             }
+            None if route.quests => self.set_quests_open(cx),
+            None if route.shop => self.set_shop_open(cx),
             None => {
                 self.select_home(route.channel);
                 if route.nitro {
@@ -170,6 +178,8 @@ mod tests {
             guild_guide: false,
             channel_browser: false,
             discover: None,
+            quests: false,
+            shop: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());

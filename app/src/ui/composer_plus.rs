@@ -6,6 +6,7 @@ use super::modal::{self, Tone};
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
+use crate::parity::Parity;
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, MouseButton, SharedString,
     Subscription, Window, deferred, div, prelude::*, px,
@@ -33,6 +34,12 @@ pub(super) enum Plus {
     Upload,
     Thread,
     Poll,
+    /// "Use Apps": the composer holds a slash, which lists the commands.
+    Apps,
+    /// "Schedule Message": opens its submenu of times.
+    Schedule,
+    /// "Record Voice Message": voice messages are not built, the row only closes the menu.
+    RecordVoice,
 }
 
 pub(super) struct PollForm {
@@ -81,15 +88,31 @@ fn clipped(text: &str, max: usize) -> Option<String> {
 impl Root {
     pub(super) fn toggle_plus_menu(&mut self, cx: &mut Context<Self>) {
         self.plus_menu = !self.plus_menu;
+        self.schedule.submenu = false;
         cx.notify();
     }
 
     pub(super) fn run_plus(&mut self, entry: Plus, window: &mut Window, cx: &mut Context<Self>) {
+        // A row with a submenu opens it (a click after the hover keeps it open) and keeps the menu.
+        if entry == Plus::Schedule {
+            self.schedule.submenu = true;
+            cx.notify();
+            return;
+        }
         self.plus_menu = false;
         match entry {
             Plus::Upload => self.pick_files(cx),
             Plus::Thread => self.open_new_thread(window, cx),
             Plus::Poll => self.open_poll(window, cx),
+            Plus::Apps => {
+                // `setValue("/")`: the field takes a slash, which opens the command list.
+                self.composer.update(cx, |composer, cx| {
+                    composer.set_text("");
+                    composer.insert("/", cx);
+                });
+                window.focus(&self.composer.read(cx).focus_handle(cx), cx);
+            }
+            Plus::Schedule | Plus::RecordVoice => {}
         }
         cx.notify();
     }
@@ -225,8 +248,12 @@ impl Root {
         cx.notify();
     }
 
-    /// The menu above the "+" button: 201 wide, its bottom 61px above the window's, left edge on the composer's.
-    pub(super) fn plus_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The menu above the "+" button: 201.44 wide, its bottom 61px above the window's, left edge on the composer's.
+    pub(super) fn plus_menu_layer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.plus_menu {
             return None;
         }
@@ -253,8 +280,16 @@ impl Root {
                 .child(icon(glyph, 20., "--interactive-icon-default"))
                 .child(div().flex_1().child(label))
                 .when(caret, |this| {
-                    this.child(icon("pm_chevron", 16., "--interactive-icon-default"))
+                    this.child(icon("pm_chevron", 20., "--interactive-icon-default"))
                 })
+                // The submenu follows the pointer: the Schedule Message row opens it, any other row closes it.
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    let open = entry == Some(Plus::Schedule);
+                    if *hovered && this.schedule.submenu != open {
+                        this.schedule.submenu = open;
+                        cx.notify();
+                    }
+                }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     match entry {
                         Some(entry) => this.run_plus(entry, window, cx),
@@ -264,12 +299,13 @@ impl Root {
                 }))
         };
         let menu = div()
+            .parity_with_border("plus-menu", 1.)
             .id("composer-plus-menu")
             .occlude()
             .absolute()
             .left(px(395.))
             .bottom(px(61.))
-            .w(px(201.))
+            .w(px(201.44))
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
@@ -300,6 +336,33 @@ impl Root {
                 Some(Plus::Poll),
                 false,
                 cx,
+            ))
+            .child(row(
+                "plus-apps",
+                "cp_apps",
+                "Use Apps",
+                Some(Plus::Apps),
+                false,
+                cx,
+            ))
+            .children(self.schedule_offered().then(|| {
+                row(
+                    "plus-schedule",
+                    "cp_schedule",
+                    "Schedule Message",
+                    Some(Plus::Schedule),
+                    true,
+                    cx,
+                )
+                .child(self.anchor_probe("plus-schedule-row"))
+            }))
+            .child(row(
+                "plus-record",
+                "cp_mic",
+                "Record Voice Message",
+                Some(Plus::RecordVoice),
+                false,
+                cx,
             ));
         let layer = div()
             .id("composer-plus-layer")
@@ -314,7 +377,8 @@ impl Root {
                     cx.notify();
                 }),
             )
-            .child(menu);
+            .child(menu)
+            .children(self.schedule_submenu(window, cx));
         Some(deferred(layer).with_priority(1).into_any_element())
     }
 

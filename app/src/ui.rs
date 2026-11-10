@@ -76,6 +76,7 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod presence;
+mod schedule_message;
 mod stickers;
 mod tray;
 mod unread_badges;
@@ -94,6 +95,7 @@ mod member_avatars;
 mod menu;
 mod modal;
 mod mosaic;
+mod name_styles;
 mod nameplate_animation;
 mod nameplates;
 mod nitro;
@@ -109,8 +111,10 @@ mod pins;
 mod plaintext_extensions;
 mod profile;
 mod profile_art;
+mod profile_effects;
 mod profile_menu;
 mod profile_other;
+mod quests;
 mod quickswitcher;
 mod reactions_modal;
 mod remediation;
@@ -127,6 +131,7 @@ mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_discovery;
+mod shop;
 mod slash;
 mod slowmode;
 mod splash;
@@ -276,6 +281,7 @@ pub struct Root {
     slowmode_ticking: bool,
     presence_ticking: bool,
     nameplates: Rc<RefCell<nameplates::Cache>>,
+    profile_effects: Rc<RefCell<profile_effects::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     /// When each failed `Request::Fetch` key failed (`fetch_failures`).
@@ -433,6 +439,8 @@ pub struct Root {
     /// The Log Out confirmation of the settings sidebar.
     logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
+    /// The Schedule Message modal, the "+" menu's submenu and the create request in flight.
+    schedule: schedule_message::State,
     /// The window's size as of the last frame, for the viewer's room.
     viewport: (f32, f32),
     /// The open channel and the ack its unread messages started after, for the NEW divider.
@@ -499,6 +507,8 @@ pub struct Root {
     nitro: nitro::NitroState,
     nitro_open: bool,
     discover: discover::State,
+    shop: shop::State,
+    quests: quests::State,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
@@ -565,6 +575,7 @@ impl Root {
             slowmode_ticking: false,
             presence_ticking: false,
             nameplates: Default::default(),
+            profile_effects: Default::default(),
             member_avatars: Default::default(),
             inline_videos: Default::default(),
             fetch_failures: HashMap::new(),
@@ -686,6 +697,7 @@ impl Root {
             status_popout: None,
             custom_status: None,
             plus_menu: false,
+            schedule: Default::default(),
             modify_attachment: None,
             snooze_menu: None,
             click_at: gpui::Point::default(),
@@ -731,6 +743,8 @@ impl Root {
             nitro: nitro::NitroState::default(),
             nitro_open: false,
             discover: discover::State::default(),
+            shop: shop::State::default(),
+            quests: quests::State::default(),
             tip_anchors: Rc::default(),
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
@@ -756,6 +770,7 @@ impl Root {
                 self.detect_connection_changed(connected, cx);
             }
             Update::Games(scan) => self.detect_scanned(*scan, cx),
+            Update::Rpc(event) => self.rpc_event(event, cx),
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Slowmode {
@@ -783,9 +798,10 @@ impl Root {
                 if name == "READY" {
                     self.inventory_connection_open();
                     self.detect_ready();
+                    self.clips_connection_open(cx);
                 }
                 // Another session changed the status or the custom status: the account's own presence follows.
-                if name == "USER_SETTINGS_PROTO_UPDATE" {
+                if name == "USER_SETTINGS_PROTO_UPDATE" || name == "SESSIONS_REPLACE" {
                     self.refresh_own_presence();
                 }
                 // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
@@ -922,9 +938,13 @@ impl Root {
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
+            Update::ClipSaveKey => self.clips_save_key(cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.profile_effect_fetched(&key, &body, cx) {
+                    return;
+                }
                 if self.detect_lists_fetched(&key, &body) {
                     return;
                 }
@@ -934,6 +954,9 @@ impl Root {
                     return;
                 }
                 if self.guild_events_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.schedule_fetched(&key, &body, cx) {
                     return;
                 }
                 if self.inventory_games_fetched(&key, &body) {
@@ -1019,6 +1042,16 @@ impl Root {
                 if key.starts_with(discover::FETCH_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.discover_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(quests::FETCH_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.quests_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(shop::FETCH_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.shop_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(nitro::NITRO_PREFIX) {
@@ -1244,10 +1277,16 @@ impl Root {
                 cx.notify();
             }
             Update::ImageFailed { key } => {
+                if key.starts_with(profile_effects::ART_PREFIX) {
+                    self.profile_effect_art_failed(&key, cx);
+                }
                 if key.starts_with(inline_video::PREFIX) {
                     self.inline_video_failed(&key);
                     cx.notify();
                 }
+            }
+            Update::Image { key, bytes } if key.starts_with(profile_effects::ART_PREFIX) => {
+                self.profile_effect_art_fetched(&key, bytes, cx);
             }
             Update::Image { key, bytes } if key.starts_with(nameplates::ANIMATION_PREFIX) => {
                 self.nameplate_animation_fetched(&key, bytes, cx);
@@ -1328,6 +1367,8 @@ impl Root {
                 guild_guide: false,
                 channel_browser: false,
                 discover: None,
+                quests: false,
+                shop: false,
             },
         );
         self.discover.open = false;
@@ -1509,6 +1550,22 @@ impl Root {
             .map_or_else(|| color(fallback), gpui::rgb)
     }
 
+    /// A message author's name with their display name style (315934): in a server the font alone; in a DM or group
+    /// DM the effect too when the pointer is on the name.
+    fn author_name(&self, key: String, user: &User) -> impl IntoElement {
+        let in_dm = self.current_guild().is_none() && self.current_dm().is_some();
+        name_styles::name(
+            key,
+            self.guild_display_name(user),
+            self.name_styles(user, self.guild).as_ref(),
+            if in_dm {
+                name_styles::Display::FontOnHover
+            } else {
+                name_styles::Display::Font
+            },
+        )
+    }
+
     fn guild_display_name(&self, user: &User) -> String {
         if self.current_guild().is_none() && self.current_dm().is_some() {
             return self.dm_display_name(user);
@@ -1539,6 +1596,14 @@ impl Root {
         let first_nameplate = list.and_then(|list| {
             list.rows.iter().find_map(|row| match row {
                 MemberRow::Member { user, .. } if user.nameplate.is_some() => Some(user.id),
+                _ => None,
+            })
+        });
+        let first_styled = list.and_then(|list| {
+            list.rows.iter().find_map(|row| match row {
+                MemberRow::Member { user, .. } if self.name_styles(user, self.guild).is_some() => {
+                    Some(user.id)
+                }
                 _ => None,
             })
         });
@@ -1625,6 +1690,9 @@ impl Root {
                                         .child(
                                             div()
                                                 .min_w(px(0.))
+                                                .when(first_styled == Some(user.id), |this| {
+                                                    this.parity("member-name-styled")
+                                                })
                                                 .text_ellipsis()
                                                 .line_height(px(20.))
                                                 .font_weight(FontWeight(500.))
@@ -1632,7 +1700,12 @@ impl Root {
                                                     user.id,
                                                     "--channels-default",
                                                 ))
-                                                .child(name),
+                                                .child(name_styles::name(
+                                                    format!("member-{}", user.id),
+                                                    name,
+                                                    self.name_styles(user, self.guild).as_ref(),
+                                                    name_styles::Display::Font,
+                                                )),
                                         )
                                         .children(user.tag.as_ref().map(|tag| {
                                             self.server_tag_chip(tag).ml(px(4.)).flex_none()
@@ -2113,6 +2186,18 @@ impl Root {
             .map(|pending| pending.upload())
             .collect();
         if let Some(channel) = self.channel {
+            // With a time set for the channel the message is scheduled instead of sent.
+            if let Some(timestamp) = self.scheduled_timestamp(channel) {
+                self.send_scheduled(
+                    channel,
+                    timestamp,
+                    content,
+                    files,
+                    reply,
+                    staged.into_iter().collect(),
+                );
+                return;
+            }
             if let Some(sticker) = staged {
                 // `STICKER_TRACK_USAGE` follows the send.
                 self.stores.stickers.track(&[sticker], picker::now_ms());
@@ -2185,7 +2270,9 @@ impl Root {
                     .opacity(0.64)
                     .font_weight(FontWeight(500.))
                     .text_color(self.guild_author_color(referenced.author.id, "--text-strong"))
-                    .child(self.guild_display_name(&referenced.author)),
+                    .child(
+                        self.author_name(format!("reply-{}", referenced.id), &referenced.author),
+                    ),
             )
             .child(
                 div()
@@ -2365,8 +2452,10 @@ impl Root {
         list.extend(self.sticker_ui.search());
         list.extend(self.create_channel.as_ref().map(|form| form.name.clone()));
         list.extend(self.guild_events_editors());
+        list.extend(self.schedule_editors());
         list.extend(self.search.as_ref().map(|search| search.field.clone()));
         list.extend(self.search_editors());
+        list.extend(self.shop_search_editors());
         list.push(self.active_editor());
         list
     }
@@ -2397,6 +2486,8 @@ impl Root {
             (Some(guild), _) => guild.name.clone(),
             (None, None) if self.discover_active() => "Discover".to_owned(),
             (None, None) if self.nitro_open => "Nitro".to_owned(),
+            (None, None) if self.quests_active() => "Quests".to_owned(),
+            (None, None) if self.shop_active() => "Shop".to_owned(),
             (None, None) => "Friends".to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
             (None, Some(_)) => "Direct Messages".to_owned(),
@@ -2443,6 +2534,10 @@ impl Root {
                         icon("discover", 18., "--text-default").into_any_element()
                     } else if self.nitro_open {
                         icon("home_nitro", 16., "--text-default").into_any_element()
+                    } else if self.quests_active() {
+                        icon("home_quests", 18., "--text-default").into_any_element()
+                    } else if self.shop_active() {
+                        icon("home_shop", 18., "--text-default").into_any_element()
                     } else {
                         icon("home_friends", 16., "--text-default").into_any_element()
                     })
@@ -3318,8 +3413,18 @@ impl Root {
                             .font_weight(FontWeight(500.))
                             .text_color(color("--interactive-text-default"))
                             // `activityStatus`: in voice, this replaces the status line.
+                            // Out of voice it is the account's activity or custom status, or else its status.
                             .when(!in_voice, |this| {
-                                this.child(status_label(&self.stores.status))
+                                match self.presence_line_with(
+                                    &user,
+                                    None,
+                                    true,
+                                    13.,
+                                    "--interactive-text-default",
+                                ) {
+                                    Some(line) => this.child(line),
+                                    None => this.child(status_label(&self.stores.status)),
+                                }
                             })
                             .when(in_voice, |this| {
                                 let sharing = self.own_stream().is_some();
@@ -3546,7 +3651,20 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child(name),
+                    // 181254: a DM's title draws the other person's name style, the effect only under the pointer, and
+                    // the bold fonts at 0.9 opacity.
+                    .child(
+                        name_styles::name(
+                            "dm-title",
+                            name,
+                            dm_user
+                                .as_ref()
+                                .and_then(|user| self.name_styles(user, None))
+                                .as_ref(),
+                            name_styles::Display::FontOnHover,
+                        )
+                        .bold_opacity(0.9),
+                    ),
             )
             .child(div().flex_1())
             .when(dm_user.is_some(), |this| {
@@ -3823,6 +3941,16 @@ impl Root {
         } else {
             FontStyle::Normal
         };
+        // 447215: in a server a user mention takes the mentioned user's display name font.
+        if let Kind::User(id) = &span.kind
+            && self.current_guild().is_some()
+            && let Some(user) = self.stores.users.get(id)
+            && let Some(styles) = self.name_styles(user, self.guild)
+            && let Some((family, weight)) = name_styles::run_font(&styles)
+        {
+            run_font.family = family;
+            run_font.weight = FontWeight(weight);
+        }
         let tint = match span.kind {
             Kind::Link(_) => hsla("--text-link"),
             _ if mention => hsla("--mention-foreground"),
@@ -4725,7 +4853,10 @@ impl Root {
                                                     "--text-strong",
                                                 ))
                                                 .line_height(px(22.))
-                                                .child(self.guild_display_name(&message.author)),
+                                                .child(self.author_name(
+                                                    format!("author-{id}"),
+                                                    &message.author,
+                                                )),
                                             cx,
                                         ),
                                     )
@@ -5166,6 +5297,7 @@ impl Root {
                     .flex_col()
                     .children(self.upload_area(cx))
                     .children(reply_bar)
+                    .children(self.schedule_bar(cx))
                     .child(
                         div()
                             .flex()
@@ -5524,6 +5656,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
+        self.profile_effects_sweep(window, cx);
         let avatars = (
             self.data_revision,
             self.guild,
@@ -5546,6 +5679,12 @@ impl Render for Root {
         settings::prefs::set_clock_24(
             self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
         );
+        // The name styles read the accessibility switches from here.
+        name_styles::set_preferences(
+            self.pref_on("display_name_styles", true),
+            self.pref_on("reduced_motion", false),
+        );
+        name_styles::pump(cx);
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
@@ -5713,6 +5852,11 @@ impl Render for Root {
                         this.leave_guild = None;
                     }
                     cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.schedule.modal.is_some() {
+                    this.schedule_escape(cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -6026,6 +6170,7 @@ impl Render for Root {
             .children(self.security_actions_select(cx))
             .children(self.inventory_popout_layer(window, cx))
             .children(self.profile_layer(window, cx))
+            .children(self.shop_modal(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .child(self.titlebar(cx))
@@ -6042,6 +6187,10 @@ impl Render for Root {
                     self.discover_page(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
                     self.nitro_page(window, cx)
+                } else if self.quests_active() {
+                    self.quests_page(window, cx)
+                } else if self.shop_active() {
+                    self.shop_page(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(window, cx).into_any_element()
                 } else if self
@@ -6206,12 +6355,13 @@ impl Render for Root {
             .children(self.custom_reminder_modal(cx))
             .children(self.status_popout_layer(cx))
             .children(self.custom_status_modal(cx))
-            .children(self.plus_menu_layer(cx))
+            .children(self.plus_menu_layer(window, cx))
             .children(self.leave_modal(cx))
             .children(self.logout_modal(cx))
             .children(self.modify_attachment_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))
+            .children(self.schedule_modal_layer(window, cx))
             .children(self.lightbox_layer(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())

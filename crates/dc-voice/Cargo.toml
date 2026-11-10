@@ -11,6 +11,7 @@ chacha20poly1305.workspace = true
 cpal.workspace = true
 davey.workspace = true
 deep_filter.workspace = true
+dc-clips.workspace = true
 dc-media.workspace = true
 dc-proto.workspace = true
 dc-winaudio.workspace = true

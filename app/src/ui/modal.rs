@@ -21,6 +21,8 @@ pub(super) enum Tone {
     Critical,
     /// `critical-secondary` (Revoke Ban).
     CriticalSecondary,
+    /// The `active` button variant (Start Event): the green connected control.
+    Active,
 }
 
 pub(super) type Handler = Box<dyn Fn(&mut Root, &mut Window, &mut Context<Root>)>;
@@ -76,6 +78,11 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
             color("--control-primary-background-default"),
             color("--control-primary-border-default"),
             color("--white"),
+        ),
+        Tone::Active => (
+            color("--control-connected-background-default"),
+            color("--control-connected-border-default"),
+            color("--control-connected-text-default"),
         ),
         Tone::Critical => (
             color("--control-critical-primary-background-default"),

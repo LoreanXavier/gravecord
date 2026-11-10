@@ -173,6 +173,10 @@ impl Root {
         if tab == InboxTab::Mentions {
             self.fetch_mentions();
         }
+        // The Scheduled list is read when its tab opens (`sy` in module 713024).
+        if tab == InboxTab::Scheduled {
+            self.fetch_scheduled_messages();
+        }
         cx.notify();
     }
 

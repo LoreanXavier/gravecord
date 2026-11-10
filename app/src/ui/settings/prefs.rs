@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Preferences kept on this machine: the row key and whether it is a radio (an index) rather than a switch.
 pub(super) const LOCAL: &[(&str, bool)] = &[
     ("underline_links", false),
+    ("display_name_styles", false),
     ("reduced_motion", false),
     ("enable_switch_icons", false),
     ("os_minimize_to_tray", false),

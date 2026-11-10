@@ -570,7 +570,12 @@ impl Root {
                     .line_height(px(32.))
                     .font_weight(FontWeight(600.))
                     .text_color(strong)
-                    .child(user.display_name().to_owned()),
+                    .child(super::name_styles::name(
+                        format!("full-profile-name-{}", user.id),
+                        user.display_name().to_owned(),
+                        self.name_styles(&user, self.guild).as_ref(),
+                        super::name_styles::Display::Animated,
+                    )),
             )
             .child(
                 div()
@@ -753,7 +758,23 @@ impl Root {
             .py(px(1.))
             .rounded(px(8.))
             .child(open.note.clone());
+        // `<ProfileEffects>` is the last child of `main.profile` (module 927071, `u8`): the identity column.
+        let effect = self.profile_effect_sku(id).and_then(|sku| {
+            let hovering = self.profile_effect_hovered("full-profile");
+            self.profile_effect_layer(
+                "full-profile",
+                sku,
+                super::profile_effects::Surface::profile(400., hovering),
+                window,
+                cx,
+            )
+        });
         let identity = div()
+            .id("full-profile-identity")
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.profile_effect_hover("full-profile", *inside, cx);
+            }))
+            .relative()
             .w(px(400.))
             .h_full()
             .flex_none()
@@ -827,7 +848,8 @@ impl Root {
                                 )
                             }),
                     ),
-            );
+            )
+            .children(effect);
         // `top_6zZYhF`: the tabs over a 1px line, 24px apart, the chosen one underlined.
         let tab_item = |which: Tab, label: String| {
             let selected = which == tab;

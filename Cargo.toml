@@ -60,6 +60,7 @@ zeroize = "1.8"
 dc-auth = { path = "crates/dc-auth" }
 dc-detect = { path = "crates/dc-detect" }
 dc-gateway = { path = "crates/dc-gateway" }
+dc-clips = { path = "crates/dc-clips" }
 dc-hotkey = { path = "crates/dc-hotkey" }
 dc-markdown = { path = "crates/dc-markdown" }
 dc-state = { path = "crates/dc-state" }
@@ -67,6 +68,7 @@ dc-tokens = { path = "crates/dc-tokens" }
 dc-http = { path = "crates/dc-http" }
 dc-media = { path = "crates/dc-media" }
 dc-proto = { path = "crates/dc-proto" }
+dc-rpc = { path = "crates/dc-rpc" }
 dc-voice = { path = "crates/dc-voice" }
 dc-webhost = { path = "crates/dc-webhost" }
 dc-winaudio = { path = "crates/dc-winaudio" }

@@ -244,18 +244,29 @@ impl Root {
                             .child(self.profile_avatar(&user, &presence)),
                     ),
             )
-            .child(
-                div()
-                    .parity("profile-actions")
-                    .absolute()
-                    .top(px(14.))
-                    .right(px(10.))
-                    .flex()
-                    .gap(px(8.))
-                    .child(self.profile_friend_button_at(id, "popout-friend", cx))
-                    .child(self.profile_more_button_at(id, "popout-more", cx)),
-            )
             .into_any_element();
+        // The buttons on the banner sit on the top layer, above the profile effect (z-index 3 against its 2), so they
+        // are drawn after it as children of the card body: 32px down when the private heading precedes the header.
+        let actions: AnyElement = div()
+            .parity("profile-actions")
+            .absolute()
+            .top(px(if private { 46. } else { 14. }))
+            .right(px(10.))
+            .flex()
+            .gap(px(8.))
+            .child(self.profile_friend_button_at(id, "popout-friend", cx))
+            .child(self.profile_more_button_at(id, "popout-more", cx))
+            .into_any_element();
+        let effect = self.profile_effect_sku(id).and_then(|sku| {
+            let hovering = self.profile_effect_hovered("popout");
+            self.profile_effect_layer(
+                "popout",
+                sku,
+                super::profile_effects::Surface::profile(300., hovering),
+                window,
+                cx,
+            )
+        });
         let names: AnyElement = div()
             .flex()
             .flex_col()
@@ -266,7 +277,15 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(strong)
-                    .child(display_name.clone()),
+                    .child(super::name_styles::probed(
+                        super::name_styles::name(
+                            format!("popout-name-{id}"),
+                            display_name.clone(),
+                            self.name_styles(&user, self.guild).as_ref(),
+                            super::name_styles::Display::Animated,
+                        ),
+                        "profile-name-styled",
+                    )),
             )
             .child(
                 div()
@@ -417,6 +436,9 @@ impl Root {
         let card = div()
             .parity("user-popout")
             .id("profile-popout")
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.profile_effect_hover("popout", *inside, cx);
+            }))
             .occlude()
             .w(px(304.))
             .max_h(window.viewport_size().height - px(20.))
@@ -445,6 +467,7 @@ impl Root {
             ])
             .child(
                 div()
+                    .relative()
                     .rounded(px(6.))
                     .max_h(window.viewport_size().height - px(24.))
                     .bg(palette.overlay)
@@ -482,7 +505,9 @@ impl Root {
                             .overflow_y_scroll()
                             .child(content),
                     )
-                    .children(message.map(|message| div().flex_none().child(message))),
+                    .children(message.map(|message| div().flex_none().child(message)))
+                    .children(effect)
+                    .child(actions),
             );
         let at: Point<Pixels> = if popout.left {
             point(popout.anchor.left() - px(320.), popout.anchor.top())

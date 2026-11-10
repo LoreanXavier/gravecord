@@ -392,6 +392,14 @@ impl Root {
         Some((me, session))
     }
 
+    /// Whether we are sending a stream (`getCurrentUserActiveStream() != null`).
+    pub(in crate::ui) fn own_stream_active(&self) -> bool {
+        self.video
+            .streams
+            .values()
+            .any(|live| live.last.role == Role::Send)
+    }
+
     /// Whether anyone but us is in the call's channel.
     #[cfg(feature = "capture")]
     fn others_present(&self) -> bool {
@@ -419,6 +427,7 @@ impl Root {
         };
         let (guild, channel) = (call.guild, call.channel);
         let guild = (guild != 0).then_some(guild);
+        self.clips_stream_starting(&started.name);
         let key = match guild {
             Some(guild) => StreamKey::Guild {
                 guild,
@@ -451,6 +460,33 @@ impl Root {
         });
         self.stream_watchdog(key, cx);
         cx.notify();
+    }
+
+    /// The harness's `voice` steps. They only ever name the fixture guild's General voice channel, so a script cannot
+    /// join anything else: `voice join`, `voice leave`, `voice state`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_voice(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        const FIXTURE_GUILD: u64 = 1_568_692_564_637_524_109;
+        const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
+        match words {
+            ["join"] => {
+                self.join_voice(FIXTURE_GUILD, FIXTURE_VOICE, cx);
+                "joining the fixture voice channel".to_owned()
+            }
+            ["leave"] => {
+                self.leave_voice(cx);
+                "left".to_owned()
+            }
+            ["state"] => match &self.call {
+                Some(call) => format!(
+                    "in call, connected {}, others present {}",
+                    call.connected,
+                    self.others_present()
+                ),
+                None => "not in a call".to_owned(),
+            },
+            _ => "usage: voice join | voice leave | voice state".to_owned(),
+        }
     }
 
     #[cfg(feature = "capture")]

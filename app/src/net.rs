@@ -13,6 +13,8 @@ use tracing::warn;
 
 pub enum Update {
     GatewayConnected(bool),
+    /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
+    Rpc(dc_rpc::Event),
     /// One pass of the game scan (`games`).
     Games(Box<crate::games::GameScan>),
     NotificationClicked(u64),
@@ -48,6 +50,8 @@ pub enum Update {
     Voice(dc_voice::Event),
     /// The system-wide push to talk keybind went down or up.
     PushToTalk(bool),
+    /// The system-wide `SAVE_CLIP` keybind went down.
+    ClipSaveKey,
     /// An event of a Go Live stream's own voice connection.
     Stream {
         key: dc_voice::streams::StreamKey,
@@ -113,6 +117,18 @@ pub enum Request {
     UploadLogs {
         files: Vec<std::path::PathBuf>,
         state: Value,
+    },
+    /// `POST /users/@me/scheduled-messages` (`createScheduledMessage` in module 151282): the message the composer
+    /// holds, scheduled instead of sent. Files are uploaded first, as for a sent message. The outcome comes back under
+    /// `scheduled-create` shaped like `Rest`'s.
+    Schedule {
+        channel: u64,
+        content: String,
+        files: Vec<Upload>,
+        reply: Option<(Option<u64>, u64, bool)>,
+        sticker_ids: Vec<u64>,
+        /// ISO 8601 UTC with milliseconds, as `toISOString()` writes it.
+        timestamp: String,
     },
     /// GET a route and hand its JSON back under `key`.
     Fetch {
@@ -400,6 +416,72 @@ async fn upload_all(
     Ok(attachments)
 }
 
+/// The request of `Request::Schedule`: the uploads, then the create (`pr`/`_sendMessage` of modules 151282 and 138399).
+/// The outcome is `Request::Rest`'s report shape; a harness run refuses it unless the run allows account writes.
+async fn schedule_message(
+    client: &dc_http::Client,
+    channel: u64,
+    content: &str,
+    files: &[Upload],
+    reply: Option<(Option<u64>, u64, bool)>,
+    sticker_ids: &[u64],
+    timestamp: &str,
+) -> Value {
+    const ROUTE: &str = "/users/@me/scheduled-messages";
+    let (message_reference, allowed_mentions) = match reply {
+        Some((guild, message, ping)) => {
+            let mut reference =
+                json!({"channel_id": channel.to_string(), "message_id": message.to_string()});
+            if let Some(guild) = guild {
+                reference["guild_id"] = json!(guild.to_string());
+            }
+            (
+                Some(reference),
+                Some(json!({"parse": ["users", "roles", "everyone"], "replied_user": ping})),
+            )
+        }
+        None => (None, None),
+    };
+    let build = |attachments: Vec<Value>| {
+        dc_state::scheduled_message::create_body(dc_state::scheduled_message::CreateRequest {
+            channel,
+            content,
+            scheduled_timestamp: timestamp,
+            flags: None,
+            message_reference: message_reference.clone(),
+            allowed_mentions: allowed_mentions.clone(),
+            sticker_ids,
+            attachments,
+        })
+    };
+    if refuses_account_write(&reqwest::Method::POST, ROUTE, Some(&build(Vec::new()))) {
+        warn!("account write refused in this run");
+        return json!({"ok": false, "status": 0, "body": null, "refused": true});
+    }
+    let attachments = if files.is_empty() {
+        Vec::new()
+    } else {
+        match upload_all(client, channel, files).await {
+            Ok(attachments) => attachments,
+            Err(error) => {
+                warn!("upload failed: {error}");
+                return json!({"ok": false, "status": 0, "body": {"message": error}});
+            }
+        }
+    };
+    match client.post(ROUTE, &build(attachments)).await {
+        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+        Err(dc_http::Error::Status { status, body, .. }) => {
+            warn!("{ROUTE} failed: {status}");
+            json!({"ok": false, "status": status.as_u16(), "body": body})
+        }
+        Err(error) => {
+            warn!("{ROUTE} failed: {error}");
+            json!({"ok": false, "status": 0, "body": null})
+        }
+    }
+}
+
 /// A file to upload with a message: where it is, the name it goes by (the composer's Modify and spoiler actions rename
 /// it) and its alt text.
 #[derive(Clone, Debug, PartialEq)]
@@ -526,6 +608,8 @@ pub async fn run(
             return;
         }
     };
+    // The RPC pipe lives as long as this task, that is as long as the login.
+    let _rpc = crate::rpc::start(client.clone(), updates.clone());
     let (commands, mut events) = spawn(Config {
         token,
         identity,
@@ -783,6 +867,31 @@ pub async fn run(
                     {
                         warn!("guild settings failed: {error}");
                     }
+                });
+            }
+            Request::Schedule {
+                channel,
+                content,
+                files,
+                reply,
+                sticker_ids,
+                timestamp,
+            } => {
+                tokio::spawn(async move {
+                    let report = schedule_message(
+                        &client,
+                        channel,
+                        &content,
+                        &files,
+                        reply,
+                        &sticker_ids,
+                        &timestamp,
+                    )
+                    .await;
+                    let _ = updates.send(Update::Fetched {
+                        key: "scheduled-create".to_owned(),
+                        body: report,
+                    });
                 });
             }
             Request::Rest {

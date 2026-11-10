@@ -21,7 +21,7 @@ pub(crate) enum ToastIcon {
 }
 
 pub(crate) struct Toast {
-    pub message: &'static str,
+    pub message: SharedString,
     pub icon: ToastIcon,
     pub until: Instant,
 }
@@ -114,12 +114,12 @@ impl Root {
 
     pub(super) fn show_toast(
         &mut self,
-        message: &'static str,
+        message: impl Into<SharedString>,
         icon: ToastIcon,
         cx: &mut Context<Self>,
     ) {
         self.toast = Some(Toast {
-            message,
+            message: message.into(),
             icon,
             until: Instant::now() + std::time::Duration::from_secs(5),
         });
@@ -451,7 +451,7 @@ impl Root {
                                         .text_size(px(14.))
                                         .line_height(px(18.))
                                         .text_color(color("--text-default"))
-                                        .child(toast.message),
+                                        .child(toast.message.clone()),
                                 )
                                 .child(
                                     svg()

@@ -8,5 +8,6 @@
   "search": { "class": "searchBar_i16Ad0" },
   "screening-composer": { "class": "wrapper_ST_Y69" },
   "members": { "class": "membersWrap_86es0b" },
-  "inventory-header": { "class": "headerContainer_HxSvbL" }
+  "inventory-header": { "class": "headerContainer_HxSvbL" },
+  "member-name-styled": { "class": "dnsFont_OAgVZM", "ancestor": "membersWrap_86es0b" }
 }

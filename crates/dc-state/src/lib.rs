@@ -6,11 +6,13 @@ pub mod collectibles;
 pub mod confusables;
 pub mod content_inventory;
 pub mod content_inventory_manager;
+pub mod display_name_styles;
 pub mod experiments;
 pub mod frecency;
 pub mod grouping;
 pub mod guild_member_counts;
 pub mod guild_settings;
+pub mod local_activity;
 pub mod member_list;
 pub mod members;
 pub mod notifications;
@@ -18,9 +20,12 @@ pub mod permissions;
 pub mod premium;
 pub mod presence;
 pub mod private_channels;
+pub mod profile_effects;
+pub mod quests;
 pub mod read_state;
 pub mod running_games;
 pub mod scheduled_events;
+pub mod scheduled_message;
 pub mod slowmode;
 pub mod stickers;
 pub mod unread;
@@ -56,6 +61,8 @@ pub struct User {
     /// `flags` and `public_flags` of the user object; 619019's `hasFlag` reads both.
     pub flags: u64,
     pub public_flags: u64,
+    /// `display_name_styles`: the Nitro font, colours and effect of the name (see `display_name_styles`).
+    pub display_name_styles: Option<Box<display_name_styles::DisplayNameStyles>>,
 }
 
 /// `UserFlags.STAFF` and `UserFlags.SPAMMER` (652215).
@@ -109,6 +116,10 @@ impl User {
             .map(Box::new),
             flags: value["flags"].as_u64().unwrap_or(0),
             public_flags: value["public_flags"].as_u64().unwrap_or(0),
+            display_name_styles: display_name_styles::DisplayNameStyles::from_value(
+                &value["display_name_styles"],
+            )
+            .map(Box::new),
         })
     }
 
@@ -1151,6 +1162,32 @@ impl Account {
     }
 }
 
+/// One of the account's sessions, as READY's `sessions` and `SESSIONS_REPLACE` list them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Session {
+    pub session_id: String,
+    pub active: bool,
+    pub activities: Vec<Value>,
+}
+
+impl Session {
+    fn list(value: &Value) -> Vec<Self> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|session| Self {
+                session_id: text(&session["session_id"]).unwrap_or_default(),
+                active: session["active"].as_bool().unwrap_or(false),
+                activities: session["activities"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+}
+
 /// One member's place in voice, from READY's `voice_states` and `VOICE_STATE_UPDATE`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoiceState {
@@ -1230,12 +1267,17 @@ pub struct Stores {
     pub presence: presence::PresenceStore,
     pub member_counts: guild_member_counts::GuildMemberCountStore,
     pub scheduled_events: scheduled_events::GuildScheduledEventStore,
+    /// The user's scheduled messages and each channel's scheduled-message draft (`scheduledMessageStore`, `DraftStore`).
+    pub scheduled_messages: scheduled_message::ScheduledMessageStore,
+    pub scheduled_drafts: scheduled_message::ScheduledDrafts,
     pub content_inventory: content_inventory::ContentInventoryStore,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
     /// READY's `session_id`, which interactions carry.
     pub session_id: Option<String>,
+    /// The account's sessions (`SessionsStore`, module 528767): READY's `sessions`, then `SESSIONS_REPLACE`.
+    pub sessions: Vec<Session>,
     pub guild_order: Vec<Id>,
     /// Client preferences kept in the account's proto settings (`settings::PROTO_PREFS`), by row key: the varint as
     /// stored. A key that is absent was never set, and the preference keeps its default.
@@ -1275,6 +1317,8 @@ impl Stores {
         self.scheduled_events.dispatch(name, data);
         if name == "READY" {
             self.content_inventory.connection_open();
+            // `CONNECTION_OPEN` empties the scheduled-message list.
+            self.scheduled_messages.reset();
         }
         self.members.dispatch(name, data);
         self.stickers.dispatch(name, data);
@@ -1391,6 +1435,7 @@ impl Stores {
                     self.lurking_guilds.remove(&guild);
                 }
             }
+            "SESSIONS_REPLACE" => self.sessions = Session::list(data),
             "NOTIFICATION_SETTINGS_UPDATE" => {
                 // 225123 forwards `flags`; 543465 `Y` rereads USE_NEW_NOTIFICATIONS and MENTION_ON_ALL_MESSAGES.
                 if let Some(flags) = data["flags"].as_u64() {
@@ -1818,6 +1863,16 @@ impl Stores {
         }
     }
 
+    /// `SessionsStore.getRemoteActivities`: the activities of the first active session that is not this one.
+    pub fn remote_activities(&self) -> &[Value] {
+        self.sessions
+            .iter()
+            .find(|session| {
+                session.active && Some(session.session_id.as_str()) != self.session_id.as_deref()
+            })
+            .map_or(&[], |session| session.activities.as_slice())
+    }
+
     pub fn clear_relationship_request_flags(&mut self, user: Id) {
         self.spam_relationships.remove(&user);
         self.ignored_pending_relationships.remove(&user);
@@ -2005,6 +2060,7 @@ impl Stores {
             self.read_prefs(proto, false);
         }
         self.session_id = text(&data["session_id"]);
+        self.sessions = Session::list(&data["sessions"]);
         self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
         for user in data["users"].as_array().into_iter().flatten() {
             if let Some(user) = User::from_value(user) {

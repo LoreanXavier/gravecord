@@ -36,6 +36,25 @@ impl Root {
         guild: Option<Id>,
         compact: bool,
     ) -> Option<AnyElement> {
+        self.presence_line_with(
+            user,
+            guild,
+            compact,
+            if compact { 16. } else { 18. },
+            "--channels-default",
+        )
+    }
+
+    /// The same line at another line height and colour: the user panel draws it 13px high in its own text colour
+    /// (`activityStatusText` under `panels_pog62O`).
+    pub(super) fn presence_line_with(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        compact: bool,
+        line: f32,
+        tint: &'static str,
+    ) -> Option<AnyElement> {
         if self.is_blocked(user.id) || self.stores.is_ignored(user.id) {
             return None;
         }
@@ -56,11 +75,11 @@ impl Root {
             .flex()
             .items_center()
             .gap(px(4.))
-            .h(px(if compact { 16. } else { 18. }))
+            .h(px(line))
             .text_size(px(if compact { 12. } else { 14. }))
-            .line_height(px(if compact { 16. } else { 18. }))
+            .line_height(px(line))
             .font_weight(FontWeight(500.))
-            .text_color(color("--channels-default"));
+            .text_color(color(tint));
         if let Some(activity) = first {
             let glyph = match activity["type"].as_u64() {
                 Some(0 | 5) => Some("activity_game"),

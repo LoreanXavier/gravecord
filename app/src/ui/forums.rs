@@ -843,18 +843,52 @@ impl Root {
                             }))
                             .children(message.map(|m| {
                                 let name = self.guild_display_name(&m.author);
-                                let text = format!("{name}: {}", m.content.replace('\n', " "));
-                                gpui::StyledText::new(text).with_highlights([(
-                                    0..name.len(),
-                                    gpui::HighlightStyle {
-                                        color: Some(
-                                            self.guild_author_color(m.author.id, "--text-muted")
+                                let content = m.content.replace('\n', " ");
+                                // A name with a display name style keeps its font, so the name and the rest are
+                                // separate runs then.
+                                if let Some(styles) = self.name_styles(&m.author, self.guild) {
+                                    return div()
+                                        .flex()
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(self.guild_author_color(
+                                                    m.author.id,
+                                                    "--text-muted",
+                                                ))
+                                                .child(super::name_styles::name(
+                                                    format!("post-preview-{}", m.id),
+                                                    name,
+                                                    Some(&styles),
+                                                    super::name_styles::Display::Font,
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .text_ellipsis()
+                                                .child(format!(": {content}")),
+                                        )
+                                        .into_any_element();
+                                }
+                                let text = format!("{name}: {content}");
+                                gpui::StyledText::new(text)
+                                    .with_highlights([(
+                                        0..name.len(),
+                                        gpui::HighlightStyle {
+                                            color: Some(
+                                                self.guild_author_color(
+                                                    m.author.id,
+                                                    "--text-muted",
+                                                )
                                                 .into(),
-                                        ),
-                                        font_weight: Some(FontWeight(500.)),
-                                        ..Default::default()
-                                    },
-                                )])
+                                            ),
+                                            font_weight: Some(FontWeight(500.)),
+                                            ..Default::default()
+                                        },
+                                    )])
+                                    .into_any_element()
                             })),
                     )
                     .child(
@@ -950,7 +984,12 @@ impl Root {
                                     .text_color(
                                         self.guild_author_color(m.author.id, "--text-default"),
                                     )
-                                    .child(self.guild_display_name(&m.author))
+                                    .child(super::name_styles::name(
+                                        format!("post-author-{}", m.id),
+                                        self.guild_display_name(&m.author),
+                                        self.name_styles(&m.author, self.guild).as_ref(),
+                                        super::name_styles::Display::Font,
+                                    ))
                             }))
                             .child(div().text_size(px(12.)).child(ago)),
                     )
