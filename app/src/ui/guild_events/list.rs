@@ -636,6 +636,7 @@ impl Root {
                                     div()
                                         .mt(px(8.))
                                         .line_clamp(2)
+                                        .text_ellipsis()
                                         .text_size(px(14.))
                                         .line_height(px(18.))
                                         .text_color(color("--text-default"))

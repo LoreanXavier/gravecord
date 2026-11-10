@@ -54,7 +54,7 @@ def main():
         if needle in attrs(node).get('class', ''):
             parent = parents[node]
             show(node, 0, styles(parent) if parent >= 0 else {})
-            break
+            if "ALL" not in sys.argv: break
 
 
 main()

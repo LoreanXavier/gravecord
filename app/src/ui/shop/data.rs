@@ -961,22 +961,122 @@ pub const GENERIC_CLAIM_ERROR: &str =
 /// The legal line of the Orbs checkout (`IP93kX` of module 854461, `OrbsRedemption`).
 pub const ORB_LEGAL: &str = "By clicking 'Claim with Orbs', you agree to the Paid Services Terms. Claiming an item from the Shop means you're claiming a limited license to use this item on Discord, learn more here. Orbs redemptions are non-refundable.";
 
+/// "Bundle includes: ..." (`q` of module 355735): a decoration, a profile effect and a nameplate by name with their type
+/// as the label, profile frames left out; joined with " & ", or with commas and a last " & " once a nameplate is in.
+pub fn bundle_includes(bundled: &[Product]) -> String {
+    let mut parts = Vec::new();
+    let mut nameplate = false;
+    for part in bundled {
+        match part.kind {
+            KIND_AVATAR_DECORATION => parts.push(format!("{} Decoration", part.name)),
+            KIND_PROFILE_EFFECT => parts.push(format!("{} Profile Effect", part.name)),
+            KIND_NAMEPLATE => {
+                parts.push(format!("{} Nameplate", part.name));
+                nameplate = true;
+            }
+            _ => {}
+        }
+    }
+    let joined = if nameplate {
+        let all = parts.join(", ");
+        match all.rfind(", ") {
+            Some(at) => format!("{} & {}", &all[..at], &all[at + 2..]),
+            None => all,
+        }
+    } else {
+        parts.join(" & ")
+    };
+    format!("Bundle includes: {joined}")
+}
+
+/// The line under a product's name (`Z` of module 355735): the server's summary, a bundle's `{joinedItems}` replaced by
+/// the list above, or the type's own line when the server sent none.
+pub fn product_summary(product: &Product) -> String {
+    if !product.summary.is_empty() {
+        if product.kind == KIND_BUNDLE && product.summary.contains("{joinedItems}") {
+            return product.summary.replacen(
+                "{joinedItems}",
+                &bundle_includes(&product.bundled),
+                1,
+            );
+        }
+        return product.summary.clone();
+    }
+    match product.kind {
+        KIND_AVATAR_DECORATION => "Give your avatar a new look.".to_owned(),
+        KIND_PROFILE_EFFECT => "Show this effect when others view your profile.".to_owned(),
+        KIND_NAMEPLATE => "Make your name stand out in servers and chats.".to_owned(),
+        KIND_PROFILE_FRAME => "Elevate and wrap your profile with a frame.".to_owned(),
+        KIND_BUNDLE => bundle_includes(&product.bundled),
+        _ => String::new(),
+    }
+}
+
+/// The link the share button copies (`f` of module 760429): the Shop route, `?tab=orbs` on the Orbs tab, and the sku.
+pub fn share_link(sku: &str, orbs_tab: bool) -> String {
+    let tab = if orbs_tab { "?tab=orbs" } else { "" };
+    format!("https://discord.com/shop{tab}#itemSkuId={sku}")
+}
+
+/// What a button of the celebration modal does (`aG` of module 184264).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectedAction {
+    /// Closes the modal and nothing else ("Close").
+    Close,
+    /// Closes it and opens Quest Home ("Earn More Orbs").
+    EarnMoreOrbs,
+    /// Closes it and opens the account popout of the user panel ("View My Badge").
+    ViewBadge,
+    /// Closes it and opens the Nitro page ("Explore Perks").
+    ExplorePerks,
+    /// Closes it and opens Settings on Subscriptions ("View Credits").
+    ViewCredits,
+    /// Closes it and opens the profile editor ("Edit User Profile").
+    EditProfile,
+    /// Wears the collected item (`handleUseNow` of module 450481).
+    UseNow,
+}
+
 /// What the celebration modal says after a claim (`$k`, `v8` and `aG` of module 184264).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Collected {
     pub title: String,
     pub subtitle: String,
-    /// The buttons left to right: the label and whether it is the primary one.
-    pub buttons: Vec<(&'static str, bool)>,
+    /// The buttons left to right: the label, whether it is the primary one and what it does.
+    pub buttons: Vec<(&'static str, bool, CollectedAction)>,
 }
 
-pub fn collected_copy(sku: &str, name: &str, consumed: bool) -> Collected {
+/// Whether "Use Now" is offered (`canUseNow` of module 450481): never for the special skus, and a bundle only when no
+/// two of its items are of one type.
+pub fn can_use_now(product: &Product) -> bool {
+    if product.sku_id == ORB_BADGE || product.sku_id == NITRO_3_DAY || product.sku_id == NITRO_1_DAY
+    {
+        return false;
+    }
+    if product.kind != KIND_BUNDLE {
+        return true;
+    }
+    let mut seen = Vec::new();
+    for item in &product.items {
+        if seen.contains(&item.kind) {
+            return false;
+        }
+        seen.push(item.kind);
+    }
+    true
+}
+
+pub fn collected_copy(product: &Product, consumed: bool) -> Collected {
+    let (sku, name) = (product.sku_id.as_str(), product.name.as_str());
     let credit = sku == NITRO_3_DAY || sku == NITRO_1_DAY;
     if sku == ORB_BADGE {
         return Collected {
             title: "You Collected the Orbs Profile Badge!".to_owned(),
             subtitle: "The badge has been added to your profile.".to_owned(),
-            buttons: vec![("Earn More Orbs", false), ("View My Badge", true)],
+            buttons: vec![
+                ("Earn More Orbs", false, CollectedAction::EarnMoreOrbs),
+                ("View My Badge", true, CollectedAction::ViewBadge),
+            ],
         };
     }
     if credit {
@@ -987,7 +1087,10 @@ pub fn collected_copy(sku: &str, name: &str, consumed: bool) -> Collected {
                 subtitle: format!(
                     "Your {days}-day Nitro credit begins now! Enjoy your premium perks. Learn more."
                 ),
-                buttons: vec![("Close", false), ("Explore Perks", true)],
+                buttons: vec![
+                    ("Close", false, CollectedAction::Close),
+                    ("Explore Perks", true, CollectedAction::ExplorePerks),
+                ],
             }
         } else {
             Collected {
@@ -995,15 +1098,58 @@ pub fn collected_copy(sku: &str, name: &str, consumed: bool) -> Collected {
                 subtitle: format!(
                     "Your {days}-day Nitro credit will be used automatically at the end of your current billing cycle. Learn more."
                 ),
-                buttons: vec![("Close", false), ("View Credits", true)],
+                buttons: vec![
+                    ("Close", false, CollectedAction::Close),
+                    ("View Credits", true, CollectedAction::ViewCredits),
+                ],
             }
         };
+    }
+    let can_use = can_use_now(product);
+    let mut buttons = vec![("Edit User Profile", !can_use, CollectedAction::EditProfile)];
+    if can_use {
+        buttons.push(("Use Now", true, CollectedAction::UseNow));
     }
     Collected {
         title: "You did it! Put it on!".to_owned(),
         subtitle: format!("{name} has been added to your collection."),
-        buttons: vec![("Edit User Profile", true)],
+        buttons,
     }
+}
+
+/// The toast "Use Now" shows once the writes went through (`getToastText` of module 450481).
+pub fn use_now_toast(product: &Product) -> &'static str {
+    match product.kind {
+        KIND_AVATAR_DECORATION => "Your Avatar Decoration is updated!",
+        KIND_NAMEPLATE => "Your Nameplate is updated!",
+        KIND_PROFILE_FRAME => "Your Profile Frame is updated!",
+        KIND_PROFILE_EFFECT => "Your Profile Effect is updated!",
+        _ => "Your profile is updated!",
+    }
+}
+
+/// The requests "Use Now" sends: the first item of each type goes on (`firstAvatarDecoration`, `firstNameplate`,
+/// `firstProfileEffect` and `firstProfileFrame` of module 442759), the profile write before the account write the way
+/// `handleUseNow` awaits them.
+pub fn use_now_writes(product: &Product) -> Vec<super::super::profile_editor::save::Write> {
+    use super::super::profile_editor::save::{Equipped, Pending};
+    let first = |kind: i64| -> Option<dc_state::Id> {
+        product
+            .items
+            .iter()
+            .find(|item| item.kind == kind)
+            .and_then(|item| item.sku_id.parse().ok())
+    };
+    let mut pending = Pending::new(None);
+    pending.avatar_decoration = first(KIND_AVATAR_DECORATION).map(Some);
+    pending.nameplate = first(KIND_NAMEPLATE).map(Some);
+    pending.profile_effect = first(KIND_PROFILE_EFFECT).map(Some);
+    pending.profile_frame = first(KIND_PROFILE_FRAME).map(Some);
+    let writes = pending.writes(&Equipped::default());
+    let (account, profile): (Vec<_>, Vec<_>) = writes
+        .into_iter()
+        .partition(|write| write.route == "/users/@me");
+    profile.into_iter().chain(account).collect()
 }
 
 /// The notice when no entitlement shows up after every wait (`j2` in module 158317).
@@ -1073,6 +1219,17 @@ pub fn wishlist_ids(profile: &serde_json::Value) -> Vec<String> {
 /// `GET /wishlists/<id>?source=user_profile` (`fetchWishlist` of module 808247).
 pub fn wishlist_route(id: &str) -> String {
     format!("/wishlists/{id}?source=user_profile")
+}
+
+/// The icons of the profile's `badges` as the image urls the preview card draws in front of the product's own badge.
+pub fn profile_badge_urls(profile: &serde_json::Value) -> Vec<String> {
+    profile["badges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|badge| badge["icon"].as_str())
+        .map(|icon| format!("https://cdn.discordapp.com/badge-icons/{icon}.png"))
+        .collect()
 }
 
 /// `GET /users/<id>/profile`: where the wishlist ids come from (`fetchProfile` of module 803306).
@@ -1512,15 +1669,34 @@ mod tests {
         );
     }
 
+    fn sample(sku: &str, name: &str, kind: i64) -> Product {
+        Product {
+            sku_id: sku.to_owned(),
+            name: name.to_owned(),
+            kind,
+            ..Product::default()
+        }
+    }
+
     #[test]
     fn the_collected_modal_says_what_the_official_one_says() {
-        let badge = collected_copy(ORB_BADGE, "Orbs Apprentice Badge", true);
+        use CollectedAction::*;
+        let badge = collected_copy(
+            &sample(ORB_BADGE, "Orbs Apprentice Badge", KIND_AVATAR_DECORATION),
+            true,
+        );
         assert_eq!(badge.title, "You Collected the Orbs Profile Badge!");
         assert_eq!(
             badge.buttons,
-            vec![("Earn More Orbs", false), ("View My Badge", true)]
+            vec![
+                ("Earn More Orbs", false, EarnMoreOrbs),
+                ("View My Badge", true, ViewBadge)
+            ]
         );
-        let credit = collected_copy(NITRO_3_DAY, "3-Day Nitro Credit", false);
+        let credit = collected_copy(
+            &sample(NITRO_3_DAY, "3-Day Nitro Credit", KIND_BUNDLE),
+            false,
+        );
         assert_eq!(credit.title, "Nitro Credit Acquired");
         assert!(
             credit
@@ -1528,14 +1704,134 @@ mod tests {
                 .starts_with("Your 3-day Nitro credit will be used")
         );
         assert_eq!(
-            collected_copy(NITRO_1_DAY, "x", true).title,
-            "Nitro Activated"
+            credit.buttons,
+            vec![("Close", false, Close), ("View Credits", true, ViewCredits)]
         );
-        let deco = collected_copy("9", "Deadpool", false);
+        let used = collected_copy(&sample(NITRO_1_DAY, "x", KIND_BUNDLE), true);
+        assert_eq!(used.title, "Nitro Activated");
+        assert_eq!(
+            used.buttons,
+            vec![
+                ("Close", false, Close),
+                ("Explore Perks", true, ExplorePerks)
+            ]
+        );
+        let deco = collected_copy(&sample("9", "Deadpool", KIND_AVATAR_DECORATION), false);
         assert_eq!(deco.title, "You did it! Put it on!");
         assert_eq!(deco.subtitle, "Deadpool has been added to your collection.");
+        assert_eq!(
+            deco.buttons,
+            vec![
+                ("Edit User Profile", false, EditProfile),
+                ("Use Now", true, UseNow)
+            ]
+        );
     }
 
+    #[test]
+    fn use_now_needs_one_item_of_each_type() {
+        let item = |kind: i64, sku: &str| Item {
+            kind,
+            sku_id: sku.to_owned(),
+            ..Item::default()
+        };
+        let mut bundle = sample("5", "Pair", KIND_BUNDLE);
+        bundle.items = vec![
+            item(KIND_AVATAR_DECORATION, "11"),
+            item(KIND_NAMEPLATE, "12"),
+        ];
+        assert!(can_use_now(&bundle));
+        bundle.items.push(item(KIND_NAMEPLATE, "13"));
+        assert!(!can_use_now(&bundle));
+        // A refused bundle offers only the editor, as the primary button.
+        assert_eq!(
+            collected_copy(&bundle, false).buttons,
+            vec![("Edit User Profile", true, CollectedAction::EditProfile)]
+        );
+        assert!(!can_use_now(&sample(
+            ORB_BADGE,
+            "badge",
+            KIND_AVATAR_DECORATION
+        )));
+    }
+
+    #[test]
+    fn use_now_writes_the_first_item_of_each_type() {
+        let item = |kind: i64, sku: &str| Item {
+            kind,
+            sku_id: sku.to_owned(),
+            ..Item::default()
+        };
+        let mut bundle = sample("5", "Pair", KIND_BUNDLE);
+        bundle.items = vec![
+            item(KIND_AVATAR_DECORATION, "11"),
+            item(KIND_PROFILE_EFFECT, "14"),
+            item(KIND_PROFILE_EFFECT, "15"),
+        ];
+        let writes = use_now_writes(&bundle);
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].route, "/users/@me/profile");
+        assert_eq!(
+            writes[0].body["collectibles_sku_ids"],
+            serde_json::json!(["14"])
+        );
+        assert_eq!(writes[1].route, "/users/@me");
+        assert_eq!(writes[1].body["avatar_decoration_sku_id"], "11");
+        assert_eq!(
+            use_now_toast(&sample("1", "x", KIND_NAMEPLATE)),
+            "Your Nameplate is updated!"
+        );
+        assert_eq!(use_now_toast(&bundle), "Your profile is updated!");
+    }
+
+    #[test]
+    fn bundle_summary_names_the_parts_like_the_official_one() {
+        let part = |kind: i64, name: &str| sample("1", name, kind);
+        let mut bundle = sample("9", "Pair", KIND_BUNDLE);
+        bundle.summary = "{joinedItems}".to_owned();
+        bundle.bundled = vec![
+            part(KIND_AVATAR_DECORATION, "Deadpool"),
+            part(KIND_PROFILE_EFFECT, "Hearts"),
+            part(KIND_PROFILE_FRAME, "Frame"),
+        ];
+        assert_eq!(
+            product_summary(&bundle),
+            "Bundle includes: Deadpool Decoration & Hearts Profile Effect"
+        );
+        bundle.bundled.push(part(KIND_NAMEPLATE, "Plate"));
+        assert_eq!(
+            product_summary(&bundle),
+            "Bundle includes: Deadpool Decoration, Hearts Profile Effect & Plate Nameplate"
+        );
+        // The server's own line wins when it has no placeholder; a missing one falls back to the type's line.
+        bundle.summary = "Two for one".to_owned();
+        assert_eq!(product_summary(&bundle), "Two for one");
+        let mut deco = sample("2", "x", KIND_AVATAR_DECORATION);
+        assert_eq!(product_summary(&deco), "Give your avatar a new look.");
+        deco.kind = KIND_NAMEPLATE;
+        assert_eq!(
+            product_summary(&deco),
+            "Make your name stand out in servers and chats."
+        );
+    }
+
+    #[test]
+    fn the_share_link_and_the_preview_badges_follow_the_official_rules() {
+        assert_eq!(
+            share_link("12", false),
+            "https://discord.com/shop#itemSkuId=12"
+        );
+        assert_eq!(
+            share_link("12", true),
+            "https://discord.com/shop?tab=orbs#itemSkuId=12"
+        );
+        let profile = serde_json::json!({"badges":[{"id":"a","icon":"73d2"},{"id":"b"}]});
+        assert_eq!(
+            profile_badge_urls(&profile),
+            vec!["https://cdn.discordapp.com/badge-icons/73d2.png".to_owned()]
+        );
+        assert!(profile_badge_urls(&serde_json::Value::Null).is_empty());
+    }
     #[test]
     fn the_header_reads_storefronts_applications_and_wishlists() {
         use serde_json::json;

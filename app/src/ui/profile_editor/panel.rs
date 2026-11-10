@@ -2,9 +2,9 @@
 //! (`group_Z5MObs`, `tile_HhFoZE`) that open the pickers, and the locked Nitro block with "Preview Nitro". In the
 //! Nitro preview the same panel holds the try-it-out groups (module 927071 and the `premiumTryItOut` components).
 
-use super::{Kind, Mode, Open, label, picker, styles, text};
+use super::{Kind, Mode, Open, label, picker, servers, styles, text};
 use crate::parity::Parity;
-use crate::ui::{Root, avatar_source, color, icon, name_styles};
+use crate::ui::{Root, color, icon, name_styles};
 use dc_state::User;
 use gpui::{
     AnyElement, Context, Div, FontWeight, IntoElement, SharedString, Window, div, img,
@@ -28,20 +28,17 @@ pub(super) fn tile(id: impl Into<SharedString>, width: f32, height: f32) -> gpui
 
 /// `overlayIcon_HhFoZE`: the white 24px plus that marks an empty tile.
 pub(super) fn plus_badge() -> Div {
-    div()
-        .size(px(24.))
-        .rounded_full()
-        .bg(rgba(0xffffffff))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            svg()
-                .path("icons/plus_small.svg")
-                .size(px(16.))
-                .text_color(rgba(0x000000ff)),
-        )
+    // `overlayIcon_HhFoZE`: a white disc with the plus cut out of it.
+    div().size(px(24.)).child(
+        svg()
+            .path("icons/plus_overlay.svg")
+            .size(px(24.))
+            .text_color(rgba(0xffffffff)),
+    )
 }
+
+/// `profileSkeletonImage_ywx4Ps` of the capture: the skeleton profile behind an equipped effect or frame.
+const SKELETON_PROFILE: &str = "https://cdn.discordapp.com/assets/content/6ccc97f30d0e11f23e116bb2534831ca573533a9dd726f5859ae527e82cdf37a.png";
 
 fn group(title: &'static str) -> Div {
     div().flex().flex_col().gap(px(8.)).child(label(title))
@@ -88,6 +85,20 @@ impl Root {
                 .map(|known| known.name.clone())
                 .unwrap_or_default(),
         };
+        let guild = self.profile_editor.as_ref().and_then(|open| open.guild);
+        let leading = guild.map(|id| {
+            let image = self.images.get(&format!("guild:{id}")).cloned();
+            let tile = div()
+                .size(px(24.))
+                .flex_none()
+                .rounded(px(4.))
+                .overflow_hidden()
+                .bg(color("--background-surface-highest"));
+            match image {
+                Some(image) => tile.child(img(image).size(px(24.))),
+                None => tile,
+            }
+        });
         div()
             .h(px(49.))
             .flex_none()
@@ -108,6 +119,7 @@ impl Root {
                     .gap(px(4.))
                     .cursor_pointer()
                     .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .children(leading)
                     .child(text(name, 16., 20., 500., "--text-strong"))
                     .child(icon("chevron_down", 18., "--text-strong"))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -132,7 +144,7 @@ impl Root {
 
     fn profile_editor_main_panel(&mut self, user: &User, cx: &mut Context<Self>) -> AnyElement {
         let open = self.profile_editor.as_ref().expect("editor is open");
-        let avatar_image = self.images.get(&avatar_source(user).0).cloned();
+        let avatar_image = self.profile_editor_avatar_image(user);
         let decoration_image = user
             .avatar_decoration
             .as_deref()
@@ -151,6 +163,13 @@ impl Root {
             .profile_frame
             .unwrap_or(open.saved.equipped.profile_frame);
         let premium = self.profile_editor_premium();
+        let guild_mode = open.guild.is_some();
+        let theme_pending = open
+            .pending
+            .theme_colors
+            .flatten()
+            .or(open.saved.theme_colors);
+        let banner_image = open.banner_image.clone();
 
         let nameplate =
             tile("profile-editor-tile-nameplate", 208., 42.)
@@ -195,24 +214,42 @@ impl Root {
             .justify_center()
             .child(avatar(false))
             .on_click(cx.listener(|this, _, _, cx| {
-                // The avatar upload is not built: it needs the picture dialog and the crop (BLOCKED.md).
-                cx.notify();
-                let _ = this;
+                this.profile_editor_pick_image(super::upload::Target::Avatar, cx);
             }));
         let decoration_tile = tile("profile-editor-tile-decoration", 100., 100.)
             .flex()
             .items_center()
             .justify_center()
             .child(if user.avatar_decoration.is_some() {
-                avatar(true)
+                avatar(true).into_any_element()
             } else {
+                // `emptyPreview_-9W-th`: the avatar dimmed to gray inside a dotted ring 8px outside it.
                 div()
+                    .relative()
                     .size(px(72.))
                     .rounded_full()
-                    .border_2()
-                    .border_dashed()
-                    .border_color(color("--border-strong"))
-                    .bg(color("--background-mod-subtle"))
+                    .bg(rgba(0x46494fff))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path("icons/sb_discord.svg")
+                            .size(px(44.))
+                            .text_color(rgba(0x6f7073ff)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(-8.))
+                            .left(px(-8.))
+                            .size(px(88.))
+                            .rounded_full()
+                            .border_2()
+                            .border_dashed()
+                            .border_color(rgba(0x97979f33)),
+                    )
+                    .into_any_element()
             })
             .children(user.avatar_decoration.is_none().then(|| {
                 div()
@@ -227,17 +264,25 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.profile_editor_open_banner_color(cx);
             }));
+        // `profilePreviewContainer_ywx4Ps` / `_3nEv4C`: the skeleton profile picture, 60x88 pinned to the tile's bottom
+        // for an effect and 60x60 with a dotted outline for a frame.
+        let skeleton = self.shop_img(SKELETON_PROFILE);
         let effect_tile = tile("profile-editor-tile-effect", 100., 100.)
-            .flex()
-            .items_center()
-            .justify_center()
             .child(
                 div()
+                    .absolute()
+                    .left(px(20.))
+                    .top(px(12.))
                     .w(px(60.))
                     .h(px(88.))
                     .rounded(px(4.))
                     .bg(color("--background-base-low"))
                     .overflow_hidden()
+                    .children(
+                        skeleton
+                            .clone()
+                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    )
                     .children(self.profile_editor_art(effect, Kind::Effect, 60., 88.)),
             )
             .children(effect.is_none().then(|| {
@@ -249,17 +294,32 @@ impl Root {
             }))
             .on_click(cx.listener(|this, _, _, cx| this.profile_editor_pick(Kind::Effect, cx)));
         let frame_tile = tile("profile-editor-tile-frame", 100., 100.)
-            .flex()
-            .items_center()
-            .justify_center()
             .child(
                 div()
+                    .absolute()
+                    .left(px(20.))
+                    .top(px(20.))
                     .size(px(60.))
                     .rounded(px(4.))
                     .bg(color("--background-base-low"))
                     .overflow_hidden()
+                    .children(
+                        skeleton
+                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    )
                     .children(self.profile_editor_art(frame, Kind::Frame, 60., 60.)),
             )
+            .children(frame.is_none().then(|| {
+                div()
+                    .absolute()
+                    .left(px(20.))
+                    .top(px(20.))
+                    .size(px(60.))
+                    .rounded(px(4.))
+                    .border_2()
+                    .border_dashed()
+                    .border_color(rgba(0x97979f33))
+            }))
             .children(frame.is_none().then(|| {
                 div()
                     .absolute()
@@ -269,30 +329,104 @@ impl Root {
             }))
             .on_click(cx.listener(|this, _, _, cx| this.profile_editor_pick(Kind::Frame, cx)));
 
-        let groups = div()
+        // `h = m && !p` of module 927071: a server profile without Nitro shows its groups locked.
+        let locked = guild_mode && !premium;
+        let nitro_groups = premium || guild_mode;
+        let display_styles = user.display_name_styles.as_deref().cloned();
+        let name_bar = tile("profile-editor-tile-name-style", 208., 42.)
             .flex()
-            .flex_col()
-            .gap(px(24.))
-            .child(group("Nameplate").child(nameplate))
+            .items_center()
+            .justify_center()
             .child(
-                group("Avatar & Decoration").child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(avatar_tile)
-                        .child(decoration_tile),
-                ),
+                div()
+                    .text_size(px(24.))
+                    .line_height(px(32.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-default"))
+                    .child(name_styles::name(
+                        "profile-editor-tile-name-style",
+                        user.display_name().to_owned(),
+                        display_styles.as_ref(),
+                        name_styles::Display::Animated,
+                    )),
             )
-            .child(group("Banner Color").child(banner_tile))
-            .child(
-                group("Profile Effect & Frame").child(
+            .on_click(cx.listener(|this, _, _, cx| this.profile_editor_open_styles(cx)));
+        let theme_colors = theme_pending.unwrap_or([banner, banner]);
+        let theme_tile = tile("profile-editor-tile-theme", 100., 100.).bg(linear_gradient(
+            180.,
+            linear_color_stop(rgba((theme_colors[0] << 8) | 0xff), 0.),
+            linear_color_stop(rgba((theme_colors[1] << 8) | 0xff), 1.),
+        ));
+        let banner_picture = tile("profile-editor-tile-banner-image", 100., 100.)
+            .flex()
+            .items_center()
+            .justify_center()
+            .children(banner_image.clone().map(|image| {
+                img(image)
+                    .w(px(100.))
+                    .h(px(100.))
+                    .object_fit(gpui::ObjectFit::Cover)
+            }))
+            .children(banner_image.is_none().then(plus_badge))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.profile_editor_pick_image(super::upload::Target::Banner, cx);
+            }));
+        let section = |heading: Div, content: Div, locked: bool| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(heading)
+                .child(servers::locked(content, locked))
+        };
+        let mut groups = div().flex().flex_col().gap(px(24.));
+        if guild_mode {
+            let intro = self.profile_editor_server_intro(premium, cx);
+            groups = groups.child(div().when(!premium, |this| this.mb(px(-12.))).child(intro));
+        }
+        groups = groups
+            .child(section(
+                servers::group_label("Nameplate", locked),
+                div().child(nameplate),
+                locked,
+            ))
+            .child(section(
+                servers::group_label("Avatar & Decoration", locked),
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(avatar_tile)
+                    .child(decoration_tile),
+                locked,
+            ));
+        if nitro_groups {
+            groups = groups
+                .child(section(
+                    servers::nitro_label("Display Name Style", locked),
+                    div().child(name_bar),
+                    locked,
+                ))
+                .child(section(
+                    servers::nitro_label("Theme & Banner", locked),
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(effect_tile)
-                        .child(frame_tile),
-                ),
-            );
+                        .child(theme_tile)
+                        .child(banner_picture),
+                    locked,
+                ));
+        } else {
+            groups = groups.child(group("Banner Color").child(banner_tile));
+        }
+        groups = groups.child(section(
+            servers::group_label("Profile Effect & Frame", locked),
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(effect_tile)
+                .child(frame_tile),
+            locked,
+        ));
 
         let scroller = div()
             .id("profile-editor-panel-scroll")
@@ -301,7 +435,7 @@ impl Root {
             .overflow_y_scroll()
             .p(px(16.))
             .child(groups);
-        let nitro_block = (!premium).then(|| self.profile_editor_nitro_block(cx));
+        let nitro_block = (!premium && !guild_mode).then(|| self.profile_editor_nitro_block(cx));
         div()
             .flex_1()
             .min_h(px(0.))
@@ -401,20 +535,21 @@ impl Root {
         let header = div()
             .h(px(49.))
             .flex_none()
-            .px(px(16.))
+            .px(px(8.))
             .pt(px(4.))
             .flex()
             .items_center()
-            .gap(px(16.))
+            .gap(px(8.))
             .child(
+                // `backButtonWrapper_F5GIU2`: a 32px icon button with a 16px arrow, 8px left of the 16px gutter.
                 div()
                     .id("profile-editor-nitro-back")
-                    .size(px(24.))
+                    .size(px(32.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child(icon("shop_arrow_left", 20., "--icon-default"))
+                    .child(icon("shop_arrow_left", 16., "--icon-default"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(open) = this.profile_editor.as_mut() {
                             open.mode = Mode::Main;
@@ -423,7 +558,7 @@ impl Root {
                         cx.notify();
                     })),
             )
-            .child(text("Preview Nitro", 16., 20., 600., "--text-strong"));
+            .child(text("Preview Nitro", 16., 20., 500., "--text-default"));
         let name_preview = tile("profile-editor-try-name", 208., 42.)
             .flex()
             .items_center()
@@ -480,7 +615,7 @@ impl Root {
                     .object_fit(gpui::ObjectFit::Cover)
             }))
             .child(div().absolute().inset_0().bg(rgba(0x00000066)));
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let avatar = self.profile_editor_avatar_image(user);
         let animated = tile("profile-editor-try-avatar", 208., 100.)
             .flex()
             .items_center()
@@ -534,6 +669,7 @@ impl Root {
                     .gap(px(8.))
                     .child(
                         div()
+                            .w(px(208.))
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-default"))

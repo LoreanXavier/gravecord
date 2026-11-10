@@ -1429,7 +1429,10 @@ impl Root {
                                         .flex_col()
                                         .children(body),
                                 ),
-                            ),
+                            )
+                            // `bottomMarker` (`data-panel-bottom`): a 1px block after the panel that every page ends
+                            // with, which adds that pixel to the scrollable height.
+                            .child(div().w_full().h(px(1.))),
                     )
                     .child(auto_scrollbar(open.content.clone()))
                     .child(scroll_spy(

@@ -44,6 +44,8 @@ pub(in crate::ui) struct Apps {
     pub covers: HashMap<Id, Option<String>>,
     pub carousel: usize,
     pub overview_open: bool,
+    /// The two colors of a banner-less application's page header, made once from its icon.
+    pub banner_colors: HashMap<Id, ([u8; 3], [u8; 3])>,
     pub seq: u64,
 }
 
@@ -62,6 +64,7 @@ impl Default for Apps {
             covers: HashMap::new(),
             carousel: 0,
             overview_open: false,
+            banner_colors: HashMap::new(),
             seq: 0,
         }
     }
@@ -493,6 +496,7 @@ impl Root {
                                     .max_h(px(if sub { 36. } else { 54. }))
                                     .overflow_hidden()
                                     .line_clamp(if sub { 2 } else { 3 })
+                                    .text_ellipsis()
                                     .child(app.description.clone()),
                             ),
                     ),
@@ -957,6 +961,9 @@ impl Root {
                             .filter(|app| app.embedded)
                             .map(|_| {
                                 self.app_button("discover-head-launch", "Launch", None, true, cx)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.launch_activity(&id.to_string(), cx)
+                                    }))
                             }),
                     )
                     .child(
@@ -969,8 +976,29 @@ impl Root {
                                 cx.write_to_clipboard(ClipboardItem::new_string(app_link(id)));
                             })),
                     )
+                    .child(
+                        self.app_icon_button("discover-head-more", "discover_more", 32.)
+                            .relative()
+                            .child(self.anchor_probe("discover-head-more"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.app_more_menu("discover-head-more", id, cx)
+                            })),
+                    )
                 }),
         )
+    }
+
+    /// The "..." button: the menu opens to the left of the button with its top edge on the button's (module 586193
+    /// `l4`: `position: left, align: top`, 8px apart).
+    fn app_more_menu(&mut self, key: &'static str, id: u64, cx: &mut Context<Self>) {
+        let bounds = self.tip_anchors.borrow().get(key).copied();
+        if let Some(bounds) = bounds {
+            self.open_context_menu(
+                super::super::context_menu::Target::AppDirectory(id),
+                gpui::point(bounds.left() - px(8.), bounds.top()),
+                cx,
+            );
+        }
     }
 
     /// The Add App button: starts the application's install through the OAuth consent flow (`oauth_begin`).
@@ -1025,6 +1053,21 @@ impl Root {
             .banner_url()
             .and_then(|url| self.images.get(&format!("discover:img:{url}")).cloned());
         let banner_height = width * 72. / 325.;
+        // `eC` (module 586193): without a banner picture the header is `linear-gradient(45deg, first, second)`, the
+        // icon's main color and the first of its complements.
+        let gradient = if banner.is_none() && icon_image.is_some() {
+            let colors = self.discover.apps.banner_colors.get(&id).copied();
+            colors.or_else(|| {
+                let picture = icon_image.as_ref()?;
+                let decoded = image::load_from_memory(picture.bytes()).ok()?;
+                let first = crate::palette::avatar_palette(decoded.to_rgba8().as_raw())[0];
+                let pair = banner_gradient_colors(first);
+                self.discover.apps.banner_colors.insert(id, pair);
+                Some(pair)
+            })
+        } else {
+            None
+        };
         let entry = &body["directory_entry"];
         let items: Vec<String> = entry["carousel_items"]
             .as_array()
@@ -1049,20 +1092,14 @@ impl Root {
             .to_owned();
         let long = overview.chars().count() > 600;
         let open = self.discover.apps.overview_open;
-        let paragraphs: Vec<AnyElement> = overview
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let plain = line.replace("**", "").replace("__", "");
-                let plain = match plain.trim_start().strip_prefix("- ") {
-                    Some(rest) => format!("\u{2022} {rest}"),
-                    None => plain,
-                };
-                text(16., 20., 400., "--text-default")
-                    .child(plain)
-                    .into_any_element()
-            })
-            .collect();
+        let paragraphs = self.app_markdown(&overview, cx);
+        let commands = app_data::popular_commands(&body);
+        let permissions = app_data::install_permissions(&body);
+        let data_intents = app_data::intents(&body);
+        let privacy_url = body["privacy_policy_url"]
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned);
         let languages: Vec<String> = entry["supported_locales"]
             .as_array()
             .into_iter()
@@ -1198,29 +1235,40 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        self.app_icon_button("discover-carousel-prev", "discover_arrow_left", 40.)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                    .child(div().px(px(12.)).child(
+                        carousel_arrow("discover-carousel-prev", "discover_arrow_left").on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 let apps = &mut this.discover.apps;
                                 apps.carousel = (apps.carousel + total - 1) % total;
                                 cx.notify();
-                            })),
-                    )
+                            }),
+                        ),
+                    ))
                     .child(div().flex().gap(px(8.)).children((0..total).map(|index| {
                         div()
+                            .id(("discover-carousel-dot", index))
                             .size(px(8.))
                             .rounded_full()
                             .bg(color("--white"))
-                            .opacity(if index == current { 1. } else { 0.3 })
-                    })))
-                    .child(
-                        self.app_icon_button("discover-carousel-next", "discover_arrow_right", 40.)
+                            .cursor_pointer()
+                            .opacity(if index == current { 1. } else { 0.6 })
+                            .when(index != current, |dot| {
+                                dot.hover(|style| style.opacity(0.8))
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                this.discover.apps.carousel = index;
+                                cx.notify();
+                            }))
+                    })))
+                    .child(div().px(px(12.)).child(
+                        carousel_arrow("discover-carousel-next", "discover_arrow_right").on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 let apps = &mut this.discover.apps;
                                 apps.carousel = (apps.carousel + 1) % total;
                                 cx.notify();
-                            })),
-                    ),
+                            }),
+                        ),
+                    )),
             )
         });
         let similar = self
@@ -1241,6 +1289,20 @@ impl Root {
                     .flex_none()
                     .overflow_hidden()
                     .bg(color("--background-mod-normal"))
+                    .when_some(gradient, |this, (from, to)| {
+                        let stop = |rgb: [u8; 3]| {
+                            gpui::rgb(
+                                (u32::from(rgb[0]) << 16)
+                                    | (u32::from(rgb[1]) << 8)
+                                    | u32::from(rgb[2]),
+                            )
+                        };
+                        this.bg(gpui::linear_gradient(
+                            45.,
+                            gpui::linear_color_stop(stop(from), 0.),
+                            gpui::linear_color_stop(stop(to), 1.),
+                        ))
+                    })
                     .children(
                         banner.map(|image| img(image).size_full().object_fit(ObjectFit::Cover)),
                     ),
@@ -1279,15 +1341,21 @@ impl Root {
                         div()
                             .flex()
                             .gap(px(8.))
-                            // Launch starts an embedded activity in a channel; that needs a voice or text target and is not wired.
                             .when(app.embedded, |this| {
-                                this.child(self.app_button(
-                                    "discover-launch",
-                                    "Launch",
-                                    Some(40.),
-                                    true,
-                                    cx,
-                                ))
+                                this.child(
+                                    self.app_button(
+                                        "discover-launch",
+                                        "Launch",
+                                        Some(40.),
+                                        true,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.launch_activity(&id.to_string(), cx)
+                                        },
+                                    )),
+                                )
                             })
                             .child(
                                 self.app_button("discover-add", "Add App", Some(40.), false, cx)
@@ -1303,7 +1371,14 @@ impl Root {
                                         )));
                                     })),
                             )
-                            .child(self.app_icon_button("discover-more", "discover_more", 40.)),
+                            .child(
+                                self.app_icon_button("discover-more", "discover_more", 40.)
+                                    .relative()
+                                    .child(self.anchor_probe("discover-more"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.app_more_menu("discover-more", id, cx)
+                                    })),
+                            ),
                     ),
             )
             .child(
@@ -1336,7 +1411,7 @@ impl Root {
                                             .when(long && !open, |this| {
                                                 this.max_h(px(272.)).overflow_hidden()
                                             })
-                                            .children(paragraphs),
+                                            .child(paragraphs),
                                     )
                                     .when(long, |this| {
                                         this.child(
@@ -1376,6 +1451,65 @@ impl Root {
                                         )
                                     }),
                             )
+                            .when(!commands.is_empty(), |this| {
+                                this.child(app_section(
+                                    "Popular Slash Commands",
+                                    div().flex().flex_col().gap(px(16.)).children(
+                                        commands.iter().map(|(name, description)| {
+                                            div()
+                                                .flex()
+                                                .items_baseline()
+                                                .gap(px(16.))
+                                                .child(
+                                                    text(14., 18.667, 400., "--text-strong")
+                                                        .flex_none()
+                                                        .px(px(4.))
+                                                        .py(px(2.))
+                                                        .rounded(px(4.))
+                                                        .border_1()
+                                                        .border_color(color("--border-subtle"))
+                                                        .bg(color("--background-base-lowest"))
+                                                        .font_family(crate::ui::MONO)
+                                                        .child(format!("/{name}")),
+                                                )
+                                                .child(
+                                                    text(16., 20., 400., "--text-default")
+                                                        .min_w(px(0.))
+                                                        .child(description.clone()),
+                                                )
+                                        }),
+                                    ),
+                                ))
+                            })
+                            .when(!permissions.is_empty(), |this| {
+                                this.child(app_section(
+                                    "Permissions",
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(12.))
+                                        .child(
+                                            text(12., 16., 600., "--text-strong")
+                                                .child("Required Permissions"),
+                                        )
+                                        .child(div().grid().grid_cols(3).gap(px(10.)).children(
+                                            permissions.iter().map(|label| {
+                                                div()
+                                                    .flex()
+                                                    .child(icon(
+                                                        "discover_permission_check",
+                                                        16.,
+                                                        "--status-positive",
+                                                    ))
+                                                    .child(
+                                                        text(14., 18., 400., "--text-default")
+                                                            .child(*label),
+                                                    )
+                                            }),
+                                        )),
+                                ))
+                            })
+                            .child(self.app_data_access(data_intents, privacy_url, cx))
                             .when(!similar.is_empty(), |this| {
                                 this.child(
                                     div()
@@ -1400,6 +1534,137 @@ impl Root {
                     .child(sidebar),
             )
             .into_any_element()
+    }
+
+    /// Markdown at the body size of the page (16/20): paragraphs, headings, list rows, bold, links followed.
+    fn app_markdown(&self, source: &str, cx: &mut Context<Self>) -> gpui::Div {
+        let blocks = dc_markdown::parse(source);
+        let tint: gpui::Hsla = color("--text-default").into();
+        div().flex().flex_col().gap(px(8.)).children(
+            blocks
+                .iter()
+                .filter(|block| !crate::ui::block_text(block).trim().is_empty())
+                .map(|block| {
+                    let spans = crate::ui::block_spans(block).to_vec();
+                    let weight = if matches!(block, dc_markdown::Block::Heading { .. }) {
+                        600.
+                    } else {
+                        400.
+                    };
+                    let pieces = spans
+                        .iter()
+                        .map(|span| self.piece(span, tint, 16., weight, 20.))
+                        .collect();
+                    let links = crate::ui::link_runs(&spans);
+                    let root = cx.weak_entity();
+                    let line = crate::inline::inline(pieces, px(20.)).on_piece_click(
+                        move |piece, _, cx| {
+                            if let Some(Some((url, label))) = links.get(piece).cloned() {
+                                let _ =
+                                    root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
+                            }
+                        },
+                    );
+                    match block {
+                        dc_markdown::Block::ListItem { depth, number, .. } => div()
+                            .flex()
+                            .pl(px(26. + f32::from(*depth) * 18.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(18.))
+                                    .child(match number {
+                                        Some(number) => format!("{number}."),
+                                        None => "\u{2022}".to_owned(),
+                                    })
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default")),
+                            )
+                            .child(div().flex_1().min_w(px(0.)).child(line))
+                            .into_any_element(),
+                        _ => div().child(line).into_any_element(),
+                    }
+                }),
+        )
+    }
+
+    /// Data Access (module 586193 `tD`): the privileged intents the application holds, then the baseline note and the
+    /// developer's privacy policy.
+    fn app_data_access(
+        &self,
+        intents: app_data::Intents,
+        privacy: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = |glyph: &'static str, heading: &'static str, body: &'static str| {
+            div()
+                .flex()
+                .gap(px(16.))
+                .text_color(color("--text-default"))
+                .child(icon(glyph, 24., "--text-default"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(text(14., 18., 600., "--text-default").child(heading))
+                        .child(text(16., 20., 400., "--text-default").child(body)),
+                )
+        };
+        let mut content = div().flex().flex_col();
+        if intents.any() {
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .pb(px(16.))
+                    .mb(px(16.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+                    .child(
+                        text(14., 18., 600., "--text-default")
+                            .child("This app can access the following data in the server:"),
+                    )
+                    .when(intents.message_content, |this| {
+                        this.child(row(
+                            "discover_intent_chat",
+                            "Read Messages",
+                            "Can access messages in the server and read their contents.",
+                        ))
+                    })
+                    .when(intents.presences, |this| {
+                        this.child(row(
+                            "discover_intent_presence",
+                            "Presence",
+                            "Can see online status of server members and what they are playing, watching, or listening to.",
+                        ))
+                    })
+                    .when(intents.members, |this| {
+                        this.child(row(
+                            "discover_intent_members",
+                            "Members",
+                            "Can see who's in the server and their roles, nicknames, and permission changes.",
+                        ))
+                    }),
+            );
+        }
+        content = content.child(self.app_markdown(
+            &format!(
+                "All apps can access a set of baseline data. Please visit the [Help Center]({DATA_ACCESS_HELP}) to learn more."
+            ),
+            cx,
+        ));
+        if let Some(url) = privacy {
+            content = content.child(div().mt(px(8.)).child(self.app_markdown(
+                &format!(
+                    "For more information about this app's privacy practices, see the developer's [privacy policy]({url})."
+                ),
+                cx,
+            )));
+        }
+        app_section("Data Access", content)
     }
 
     /// `appContainer_T6XJeD`: a related application, 48px icon, name, category and description.
@@ -1457,6 +1722,7 @@ impl Root {
                     .max_h(px(36.))
                     .overflow_hidden()
                     .line_clamp(2)
+                    .text_ellipsis()
                     .child(app.description.clone()),
             )
             .into_any_element()
@@ -1466,6 +1732,58 @@ impl Root {
 /// `https://discord.com/discovery/applications/{id}`: what the copy-link button puts on the clipboard.
 pub(super) fn app_link(id: u64) -> String {
     format!("https://discord.com/discovery/applications/{id}")
+}
+
+/// `getArticleURL(BOT_DATA_ACCESS)` (modules 652215, 975571).
+const DATA_ACCESS_HELP: &str = "https://support.discord.com/hc/en-us/articles/7933951485975";
+
+/// A page section with its 20/24 heading over the framed box (`sectionContainer` / `contentContainer`).
+fn app_section(title: &'static str, content: impl IntoElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(text(20., 24., 600., "--text-strong").child(title))
+        .child(
+            div()
+                .p(px(16.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lower"))
+                .child(content),
+        )
+        .into_any_element()
+}
+
+/// The two ends of the header gradient: the icon's main color and the first complement of it.
+fn banner_gradient_colors(first: [u8; 3]) -> ([u8; 3], [u8; 3]) {
+    (first, crate::palette::complementary_colors(first)[0])
+}
+
+/// `button_F7qvhY` icon-only in the carousel's pagination: 40px, no fill, the icon in the icon-only grey.
+fn carousel_arrow(id: &'static str, glyph: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(40.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|style| style.bg(color("--control-icon-only-background-hover")))
+        .group(id)
+        .child(
+            gpui::svg()
+                .path(format!("icons/{glyph}.svg"))
+                .size(px(20.))
+                .flex_none()
+                .text_color(color("--control-icon-only-icon-default"))
+                .group_hover(id, |style| {
+                    style.text_color(color("--control-icon-only-icon-hover"))
+                }),
+        )
 }
 
 /// A carousel item that is a picture (`type` image); videos and embeds have no still here.

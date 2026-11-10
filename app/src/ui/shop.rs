@@ -6,6 +6,7 @@
 mod browse;
 mod cards;
 pub(super) mod data;
+mod editor_wishlist;
 mod featured;
 mod modal;
 
@@ -217,6 +218,10 @@ impl Root {
         let Some(body) = self.fetched.get(key).cloned() else {
             return;
         };
+        if key.starts_with("shop:usenow:") {
+            self.shop_use_now_answered(key, &body, cx);
+            return;
+        }
         if key.starts_with("shop:order:") {
             self.shop_order_fetched(key, &body, cx);
             return;
@@ -573,9 +578,13 @@ impl Root {
             .flex()
             .items_center()
             .child(
+                // The shop mark is a button that goes to the Featured tab (`onClick: () => s(G2.HOME)` of module 685491).
                 div()
+                    .id("shop-mark")
                     .size(px(24.))
                     .flex_none()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.shop_set_tab(Tab::Featured, cx)))
                     .child(icon("shop_header", 24., "--text-strong")),
             )
             .child(nav)
@@ -618,6 +627,8 @@ impl Root {
             _ => None,
         };
         let beta = id == "game-servers";
+        // Game Servers leads to a tab that is not built (BLOCKED.md): it neither takes a click nor underlines on hover.
+        let live = tab.is_some() || menu.is_some();
         div()
             .id(SharedString::from(format!("shop-nav-{id}")))
             .group(SharedString::from(format!("shop-nav-{id}")))
@@ -626,7 +637,7 @@ impl Root {
             .h_full()
             .flex()
             .items_center()
-            .cursor_pointer()
+            .when(live, |item| item.cursor_pointer())
             .child(
                 text(16., 20., 500., "--text-default")
                     .flex()
@@ -656,7 +667,7 @@ impl Root {
                     .bottom_0()
                     .h(px(2.))
                     .when(active, |bar| bar.bg(color("--text-strong")))
-                    .when(!active, |bar| {
+                    .when(!active && live, |bar| {
                         bar.group_hover(SharedString::from(format!("shop-nav-{id}")), |bar| {
                             bar.bg(color("--background-brand"))
                         })
@@ -928,11 +939,15 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .cursor_pointer()
-                    .hover(|row| row.bg(color("--background-mod-subtle")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shop_menu_choose(menu, &label, tab, cx);
-                    }))
+                    // A Game Shops row opens that game's storefront page and Game Servers its own tab; neither page
+                    // is built (BLOCKED.md), so those rows neither highlight nor take a click.
+                    .when(tab.is_some(), |row| {
+                        row.cursor_pointer()
+                            .hover(|row| row.bg(color("--background-mod-subtle")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.shop_menu_choose(menu, &label, tab, cx);
+                            }))
+                    })
                     .children(art.map(|art| {
                         img(art)
                             .size(px(18.))

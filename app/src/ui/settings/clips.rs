@@ -495,6 +495,9 @@ impl ClipSelect {
     }
 }
 
+/// `getKeyboardPageStep`: a tenth of the range, (100 - 10) / 10.
+const PAGE_STEP: i32 = (QUALITY_MAX as i32 - QUALITY_MIN as i32) / 10;
+
 /// The slider's range: `minValue` and `maxValue` of `CLIPS_BITRATE`.
 const QUALITY_MIN: f32 = 10.;
 const QUALITY_MAX: f32 = 100.;
@@ -1268,10 +1271,15 @@ impl Root {
             .track_focus(&focus)
             .when(!disabled, |this| {
                 this.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    // One step per press: left/down toward the start, right/up toward the end.
+                    // Module 205513 `handleKeyDown`: one step per press (left/down toward the start, right/up
+                    // toward the end), a page step of a tenth of the range, Home and End to the ends.
                     let direction: i32 = match event.keystroke.key.as_str() {
                         "left" | "down" => -1,
                         "right" | "up" => 1,
+                        "pagedown" => -PAGE_STEP,
+                        "pageup" => PAGE_STEP,
+                        "home" => -(QUALITY_MAX as i32),
+                        "end" => QUALITY_MAX as i32,
                         _ => return,
                     };
                     this.clips_nudge(direction, cx);
@@ -1919,6 +1927,11 @@ mod tests {
         assert_eq!(keybind_from_value(&json!(keybind)), Some(keybind));
         assert_eq!(keybind_from_value(&json!("alt+c")), None);
         assert_eq!(keybind_from_value(&json!([[0, 1]])), None);
+    }
+
+    #[test]
+    fn the_page_step_is_a_tenth_of_the_range() {
+        assert_eq!(PAGE_STEP, 9);
     }
 
     #[test]

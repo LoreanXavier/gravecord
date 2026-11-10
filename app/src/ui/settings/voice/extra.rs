@@ -984,6 +984,7 @@ impl Root {
             label: "Okay".into(),
             tone,
             run,
+            icon: None,
         };
         Some(match dialog {
             Dialog::PreviewCamera => self.camera_preview_dialog(cx),

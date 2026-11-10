@@ -34,6 +34,12 @@ const CLAIMED_ART_LIGHT: &str = "https://discord.com/assets/a09cfd7678b20f8c.svg
 /// `PAID_TERMS_ORBS` of module 652215 (`MARKETING_ENDPOINT` is `https://discord.com`).
 const ORBS_TERMS: &str = "https://discord.com/terms/paid-services-terms#14";
 
+/// The hero's still picture (`lk`, module 635668): the client draws this PNG instead of the looping video where the
+/// video is not played. The video itself is not played here (its MP4 is HEVC, its WebM is VP9).
+const HERO_VIDEO: &str = "https://cdn.discordapp.com/assets/content/fff9144c814ffc3126fdcaf5ec5bc68eff6d09e23ac8af5a3fbe61b05970cda0.png";
+pub(super) const HERO_VIDEO_KEY: &str = "quests:hero-video";
+const HERO_FRAME: &str = "quests:hero-frame";
+
 /// The page area starts 375px from the left: the rail and the 303px sidebar.
 const GUTTER: f32 = 8.;
 const HEADER: f32 = 49.;
@@ -65,6 +71,9 @@ pub(super) struct State {
     pub scroll: ScrollHandle,
     pub store: QuestStore,
     pub currency: VirtualCurrencyStore,
+    /// The hero video was asked for, and the size of its first frame once decoded.
+    pub hero_requested: bool,
+    pub hero_size: Option<(u32, u32)>,
 }
 
 impl Default for State {
@@ -78,6 +87,8 @@ impl Default for State {
             scroll: ScrollHandle::new(),
             store: QuestStore::default(),
             currency: VirtualCurrencyStore::default(),
+            hero_requested: false,
+            hero_size: None,
         }
     }
 }
@@ -89,6 +100,20 @@ fn filters_label(selected: usize) -> String {
     } else {
         format!("Filters: {selected}")
     }
+}
+
+/// `object-fit: cover` with an `object-position`: where a picture of `size` lands in a box, as left, top, width and
+/// height in pixels. The picture scales until it covers the box; the overflow is shifted by the position's fractions.
+fn cover_at(size: (u32, u32), area: (f32, f32), position: (f32, f32)) -> (f32, f32, f32, f32) {
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let scale = (area.0 / width).max(area.1 / height);
+    let (scaled_width, scaled_height) = (width * scale, height * scale);
+    (
+        -(scaled_width - area.0) * position.0,
+        -(scaled_height - area.1) * position.1,
+        scaled_width,
+        scaled_height,
+    )
 }
 
 /// A popout opens below its button when the page has room for it and above otherwise (module 265872's auto flip).
@@ -149,6 +174,13 @@ impl Root {
         // `Qh` fetches with the "cache-and-network" policy: the quests are asked for on every visit.
         self.quests_fetch(CURRENT_KEY, dc_state::quests::CURRENT_ROUTE);
         self.quests.store.begin_current();
+        if !self.quests.hero_requested {
+            self.quests.hero_requested = true;
+            let _ = self.requests.send(Request::Image {
+                key: HERO_VIDEO_KEY.to_owned(),
+                url: HERO_VIDEO.to_owned(),
+            });
+        }
         if self.quests.currency.should_fetch() {
             self.quests_fetch(BALANCE_KEY, dc_state::quests::BALANCE_ROUTE);
             self.quests.currency.begin();
@@ -207,6 +239,41 @@ impl Root {
     /// "Explore Orbs Shop": the official client opens the Shop on its Orbs tab (`Cz` with `tab: ORBS`).
     pub(super) fn quests_open_orbs_shop(&mut self, cx: &mut Context<Self>) {
         self.open_shop(cx);
+        self.shop_set_tab(super::shop::Tab::Orbs, cx);
+    }
+
+    /// The hero picture arrived: its size is read off the interface thread and the bytes are kept as the hero picture.
+    pub(super) fn quests_hero_video_fetched(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let frame = cx
+                .background_executor()
+                .spawn(async move {
+                    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+                        .with_guessed_format()
+                        .map_err(|error| error.to_string())?
+                        .into_dimensions()
+                        .map_err(|error| error.to_string())?;
+                    Ok::<_, String>((bytes, width, height))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match frame {
+                    Ok((png, width, height)) => {
+                        this.images.insert(
+                            HERO_FRAME.to_owned(),
+                            std::sync::Arc::new(gpui::Image::from_bytes(
+                                gpui::ImageFormat::Png,
+                                png,
+                            )),
+                        );
+                        this.quests.hero_size = Some((width, height));
+                    }
+                    Err(error) => tracing::warn!("quest hero picture not decoded: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The quests the All Quests list shows: filtered and sorted as `Qh` does, expired ones dropped unless they wait
@@ -456,15 +523,37 @@ impl Root {
     /// `ev` and `lw`: 857 by 500, a 24px radius and a 1px rule; the picture, the fade at the left, the blue glow at the
     /// foot and the text and buttons over them (`heroBackgroundOrbs`, `backgroundOverlay`, `heroGradientOrbs`).
     fn quests_hero(&self, cx: &mut Context<Self>) -> AnyElement {
-        // The picture is a looping video (a .webm) in the official client and no frame of it is an asset: the hero
-        // draws its black ground, fades and text until a decoder for it exists.
+        // The picture is a looping video in the official client; the first frame of its MP4 stands in for it (what a
+        // paused video shows), laid out as `object-fit: cover; object-position: 75% 50%` (`heroBannerAssetOrbs`).
         let black = |alpha: f32| gpui::hsla(0., 0., 0., alpha);
+        let width = self
+            .tip_anchors
+            .borrow()
+            .get("quests-hero")
+            .map_or(857., |bounds| f32::from(bounds.size.width))
+            - 2.;
+        let picture = self
+            .images
+            .get(HERO_FRAME)
+            .cloned()
+            .zip(self.quests.hero_size)
+            .map(|(image, size)| {
+                let (left, top, picture_width, picture_height) =
+                    cover_at(size, (width, HERO_HEIGHT - 2.), (0.75, 0.5));
+                img(image)
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(picture_width))
+                    .h(px(picture_height))
+            });
         let background = div()
             .absolute()
             .inset_0()
             .rounded(px(23.))
             .overflow_hidden()
             .bg(gpui::black())
+            .children(picture)
             // `backgroundOverlay_-l8fcd:after`: the page colour (black in this scope) fading out over 600px.
             .child(
                 div()
@@ -551,6 +640,7 @@ impl Root {
             );
         div()
             .parity_with_border("quests-hero", 1.)
+            .child(self.anchor_probe("quests-hero"))
             .flex_none()
             .relative()
             .w_full()
@@ -937,6 +1027,19 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hero_picture_covers_its_box_and_sits_at_three_quarters() {
+        // 16:9 into 855 by 498: the height decides, 885.33 wide, and the overflow shifts by 75%.
+        let (left, top, width, height) = cover_at((1920, 1080), (855., 498.), (0.75, 0.5));
+        assert!((height - 498.).abs() < 0.01 && (top).abs() < 0.01);
+        assert!((width - 885.333).abs() < 0.01);
+        assert!((left + 22.75).abs() < 0.01);
+        // A box wider than the picture scales it to the width instead.
+        let (left, top, width, height) = cover_at((100, 100), (200., 100.), (0.75, 0.5));
+        assert_eq!((left, width, height), (0., 200., 200.));
+        assert!((top + 50.).abs() < 0.01);
+    }
 
     #[test]
     fn the_filters_button_counts_its_choices() {

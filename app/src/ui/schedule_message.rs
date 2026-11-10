@@ -142,6 +142,21 @@ impl Root {
         }
     }
 
+    /// `canRecordVoiceMessage` (module 87207): the row is left out of the "+" menu in a forum channel, while files
+    /// are waiting in the composer, and where the user lacks "Send Voice Messages"; a private channel always has it.
+    pub(super) fn record_voice_offered(&self) -> bool {
+        if !self.pending_files.is_empty() {
+            return false;
+        }
+        match self.current_channel() {
+            Some(channel) => {
+                !channel.is_forum()
+                    && self.can_in_channel(channel, dc_state::permissions::SEND_VOICE_MESSAGES)
+            }
+            None => self.channel.is_some(),
+        }
+    }
+
     /// The time the next message of this channel is scheduled for (the draft), as ISO text.
     pub(super) fn scheduled_timestamp(&self, channel: Id) -> Option<String> {
         self.stores

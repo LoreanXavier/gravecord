@@ -4,7 +4,7 @@
 //!
 //! The list shows one card per upcoming event (module 327241, in `list.rs`); a card opens the detail view
 //! (`detail.rs`) and its "..." button the menu with Add to Calendar, Start, Edit, Cancel and Copy Event Link
-//! (`menu.rs`). Report Event is drawn but does nothing: the app has no event report flow yet.
+//! (`menu.rs`). Report Event opens the report modal (`report.rs`).
 
 mod create;
 mod detail;

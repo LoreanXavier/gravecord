@@ -214,6 +214,140 @@ pub fn short_count(count: u64) -> String {
     }
 }
 
+/// Application flag bits of the gateway intents (module 652215 `gfo`: `1 << n`).
+const GATEWAY_PRESENCE: u64 = 1 << 12;
+const GATEWAY_PRESENCE_LIMITED: u64 = 1 << 13;
+const GATEWAY_GUILD_MEMBERS: u64 = 1 << 14;
+const GATEWAY_GUILD_MEMBERS_LIMITED: u64 = 1 << 15;
+const GATEWAY_MESSAGE_CONTENT: u64 = 1 << 18;
+const GATEWAY_MESSAGE_CONTENT_LIMITED: u64 = 1 << 19;
+
+/// What the Data Access section lists (module 152249): the privileged intents the application holds, limited or not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Intents {
+    pub message_content: bool,
+    pub presences: bool,
+    pub members: bool,
+}
+
+impl Intents {
+    pub fn any(self) -> bool {
+        self.message_content || self.presences || self.members
+    }
+}
+
+/// `(0, i.K)(e)`: \`flags_new\` before \`flags\`, a string or a number.
+pub fn intents(body: &Value) -> Intents {
+    let flags = [&body["flags_new"], &body["flags"]]
+        .into_iter()
+        .find_map(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
+        .unwrap_or(0);
+    Intents {
+        message_content: flags & (GATEWAY_MESSAGE_CONTENT | GATEWAY_MESSAGE_CONTENT_LIMITED) != 0,
+        presences: flags & (GATEWAY_PRESENCE | GATEWAY_PRESENCE_LIMITED) != 0,
+        members: flags & (GATEWAY_GUILD_MEMBERS | GATEWAY_GUILD_MEMBERS_LIMITED) != 0,
+    }
+}
+
+/// Popular Slash Commands (module 586193 `tb`): each command's localized name and description when the entry has them.
+pub fn popular_commands(body: &Value) -> Vec<(String, String)> {
+    body["directory_entry"]["popular_application_commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|command| {
+            let pick = |localized: &str, plain: &str| {
+                command[localized]
+                    .as_str()
+                    .or_else(|| command[plain].as_str())
+                    .map(str::to_owned)
+            };
+            Some((
+                pick("name_localized", "name")?,
+                pick("description_localized", "description").unwrap_or_default(),
+            ))
+        })
+        .collect()
+}
+
+/// `install_params.permissions` as the checked rows of the Permissions section (module 586193 `lL`): the bits the
+/// application asks for, in the official list order, with their labels (module 376092).
+pub fn install_permissions(body: &Value) -> Vec<&'static str> {
+    let bits = &body["install_params"]["permissions"];
+    let Some(mask) = bits
+        .as_u64()
+        .or_else(|| bits.as_str().and_then(|text| text.parse().ok()))
+    else {
+        return Vec::new();
+    };
+    PERMISSION_LABELS
+        .iter()
+        .filter(|(bit, _)| mask & (1u64 << bit) != 0)
+        .map(|(_, label)| *label)
+        .collect()
+}
+
+/// \`(bit, label)\` in the order \`lP.Q\` lists them (module 376092).
+const PERMISSION_LABELS: [(u32, &str); 53] = [
+    (3, "Administrator"),
+    (5, "Manage Server"),
+    (28, "Manage Roles"),
+    (4, "Manage Channels"),
+    (1, "Kick Members"),
+    (2, "Ban Members"),
+    (0, "Create Invite"),
+    (27, "Manage Nicknames"),
+    (26, "Change Nickname"),
+    (30, "Manage Expressions"),
+    (43, "Create Expressions"),
+    (29, "Manage Webhooks"),
+    (7, "View Audit Log"),
+    (10, "View Channels"),
+    (33, "Manage Events"),
+    (44, "Create Events"),
+    (40, "Moderate Members"),
+    (19, "View Server Insights"),
+    (41, "View Server Subscription Insights"),
+    (50, "Use External Apps"),
+    (11, "Send Messages"),
+    (38, "Send Messages in Threads"),
+    (35, "Create Public Threads"),
+    (36, "Create Private Threads"),
+    (12, "Send TTS Messages"),
+    (13, "Manage Messages"),
+    (34, "Manage Threads"),
+    (14, "Embed Links"),
+    (15, "Attach Files"),
+    (16, "Read Message History"),
+    (17, "Mention @everyone, @here, and All Roles"),
+    (6, "Add Reactions"),
+    (18, "Use External Emoji"),
+    (37, "Use External Stickers"),
+    (31, "Use Application Commands"),
+    (46, "Send Voice Message"),
+    (49, "Create Polls"),
+    (51, "Pin Messages"),
+    (52, "Bypass Slowmode"),
+    (53, "Manage Official Messages"),
+    (20, "Connect"),
+    (21, "Speak"),
+    (22, "Mute Members"),
+    (23, "Deafen Members"),
+    (24, "Move Members"),
+    (25, "Use Voice Activity"),
+    (8, "Priority Speaker"),
+    (32, "Request to Speak"),
+    (9, "Video"),
+    (39, "Use Activities"),
+    (42, "Use Soundboard"),
+    (45, "Use External Sounds"),
+    (48, "Set Voice Channel Status"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +417,48 @@ mod tests {
         assert_eq!(page.apps.len(), 1);
         assert_eq!(page.counts, vec![(6, 4), (8, 1)]);
         assert_eq!((page.total, page.pages), (5, 1));
+    }
+
+    #[test]
+    fn data_access_follows_the_intent_flags() {
+        let none = intents(&json!({"flags": 0}));
+        assert!(!none.any());
+        let all = intents(&json!({"flags_new": "262144", "flags": 0}));
+        assert_eq!(
+            (all.message_content, all.presences, all.members),
+            (true, false, false)
+        );
+        let limited = intents(&json!({"flags": (1u64 << 13) | (1u64 << 15)}));
+        assert_eq!(
+            (limited.message_content, limited.presences, limited.members),
+            (false, true, true)
+        );
+    }
+
+    #[test]
+    fn popular_commands_prefer_the_localized_text() {
+        let body = json!({"directory_entry": {"popular_application_commands": [
+            {"name": "wordle", "description": "Play", "description_localized": "Jouer"},
+            {"name": "share", "name_localized": "partager", "description": "Share"}
+        ]}});
+        assert_eq!(
+            popular_commands(&body),
+            vec![
+                ("wordle".to_owned(), "Jouer".to_owned()),
+                ("partager".to_owned(), "Share".to_owned())
+            ]
+        );
+        assert!(popular_commands(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn install_permissions_list_the_asked_bits_in_the_official_order() {
+        let mask = (1u64 << 11) | (1u64 << 3) | (1u64 << 10);
+        let body = json!({"install_params": {"permissions": mask.to_string()}});
+        assert_eq!(
+            install_permissions(&body),
+            vec!["Administrator", "View Channels", "Send Messages"]
+        );
+        assert!(install_permissions(&json!({"install_params": {}})).is_empty());
     }
 }

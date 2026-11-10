@@ -356,14 +356,16 @@ impl Root {
                 )
                 .child(self.anchor_probe("plus-schedule-row"))
             }))
-            .child(row(
-                "plus-record",
-                "cp_mic",
-                "Record Voice Message",
-                Some(Plus::RecordVoice),
-                false,
-                cx,
-            ));
+            .children(self.record_voice_offered().then(|| {
+                row(
+                    "plus-record",
+                    "cp_mic",
+                    "Record Voice Message",
+                    Some(Plus::RecordVoice),
+                    false,
+                    cx,
+                )
+            }));
         let layer = div()
             .id("composer-plus-layer")
             .absolute()

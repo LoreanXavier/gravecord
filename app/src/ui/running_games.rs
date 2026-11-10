@@ -927,6 +927,21 @@ impl Root {
             }],
             now,
         );
+        // Two windows still unregistered, so the "Add it!" list has rows to show over the popout.
+        store.set_candidates(vec![
+            Game {
+                name: Some("Notepad Game".into()),
+                exe_path: "d:/notepad-game.exe".into(),
+                pid: Some(10),
+                ..Game::default()
+            },
+            Game {
+                name: Some("Sandbox".into()),
+                exe_path: "d:/sandbox.exe".into(),
+                pid: Some(11),
+                ..Game::default()
+            },
+        ]);
         self.detect.store = store;
         cx.notify();
     }

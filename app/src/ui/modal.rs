@@ -33,6 +33,16 @@ pub(super) struct Button {
     pub tone: Tone,
     pub run: Handler,
     pub focus: Option<gpui::FocusHandle>,
+    /// A leading icon (asset name, size in px, colour token), as the design system button's `icon` prop.
+    pub icon: Option<(&'static str, f32, &'static str)>,
+}
+
+impl Button {
+    /// The button with a leading icon; the icon and the label sit 4px apart (`buttonChildren`).
+    pub(super) fn with_icon(mut self, name: &'static str, size: f32, token: &'static str) -> Self {
+        self.icon = Some((name, size, token));
+        self
+    }
 }
 
 pub(super) fn button(
@@ -47,6 +57,7 @@ pub(super) fn button(
         tone,
         run: Box::new(run),
         focus: None,
+        icon: None,
     }
 }
 
@@ -122,6 +133,14 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .line_height(px(20.))
         .font_weight(FontWeight(500.))
         .text_color(text)
+        .when_some(spec.icon, |this, (name, size, token)| {
+            this.gap(px(4.)).child(
+                gpui::svg()
+                    .path(format!("icons/{name}.svg"))
+                    .size(px(size))
+                    .text_color(color(token)),
+            )
+        })
         .child(spec.label)
         .on_key_down(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {

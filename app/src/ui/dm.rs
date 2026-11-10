@@ -109,6 +109,13 @@ impl Root {
             div().pt(px(16.)).child(
             div()
                 .parity("dm-welcome")
+                .id("dm-welcome")
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    if this.hovered_welcome != *inside {
+                        this.hovered_welcome = *inside;
+                        cx.notify();
+                    }
+                }))
                 .ml(px(16.))
                 .mr(px(32.))
                 .flex()
@@ -126,7 +133,17 @@ impl Root {
                         .line_height(px(40.))
                         .font_weight(FontWeight(700.))
                         .text_color(color("--text-strong"))
-                        .child(name.clone()),
+                        // 891522: a 1:1 DM's heading takes the recipient's display name style, animated while hovered.
+                        .child(super::name_styles::name(
+                            format!("dm-welcome-{}", user.id),
+                            name.clone(),
+                            self.name_styles(&user, None).as_ref(),
+                            if self.hovered_welcome {
+                                super::name_styles::Display::Animated
+                            } else {
+                                super::name_styles::Display::Static
+                            },
+                        )),
                 )
                 .child(
                     div()

@@ -3,7 +3,9 @@
 //! member row), each at the position the official capture has it (Chromium puts a half-pixel position on the next
 //! whole pixel, so the sheet does the same), on plain backgrounds. Nothing is stored or sent.
 //!
-//! `name-sheet <font id> <effect id> <rrggbb[,rrggbb...]> [at <ms>] [bg <card> <message> <row>]`, `name-sheet off`.
+//! `name-sheet <font id> <effect id> <rrggbb[,rrggbb...]> [at <ms>] [bg <card> <message> <row>] [dy <card> <message> <row>]`,
+//! `name-sheet off`. `dy` moves each name down by whole pixels: the official line box follows the font's own metrics,
+//! so a font such as Journal puts its name a pixel higher than the others.
 //! The official preview draws the card and the row animated (module 927071 `shouldAnimate`, 839964 `ANIMATED`) and
 //! the message header with the font alone (315934 `PLAIN` while the pointer is elsewhere); `at <ms>` stops the
 //! animation clock at that many milliseconds so a captured frame can be matched.
@@ -22,6 +24,7 @@ const TEXT: &str = "onugeccen";
 struct Sheet {
     styles: DisplayNameStyles,
     backgrounds: [u32; 3],
+    dy: [f32; 3],
 }
 
 fn sheet() -> &'static Mutex<Option<Sheet>> {
@@ -75,6 +78,7 @@ pub(in crate::ui) fn layer() -> Option<AnyElement> {
     let sheet = sheet.as_ref()?;
     let styles = Some(&sheet.styles);
     let [card, message, row] = sheet.backgrounds;
+    let [dy_card, dy_message, dy_row] = sheet.dy;
     Some(
         div()
             .absolute()
@@ -85,21 +89,21 @@ pub(in crate::ui) fn layer() -> Option<AnyElement> {
             .bg(color("--background-base-lowest"))
             .child(place(
                 (660., 280., 240., 80.),
-                (702., 314.),
+                (702., 314. + dy_card),
                 (20., 24., 600.),
                 card,
                 name("sheet-card", TEXT, styles, Display::Animated),
             ))
             .child(place(
                 (740., 360., 240., 70.),
-                (780., 387.),
+                (780., 387. + dy_message),
                 (16., 22., 500.),
                 message,
                 name("sheet-message", TEXT, styles, Display::Font),
             ))
             .child(place(
                 (690., 430., 240., 70.),
-                (737., 459.),
+                (737., 459. + dy_row),
                 (16., 20., 500.),
                 row,
                 name("sheet-row", TEXT, styles, Display::Animated),
@@ -127,6 +131,7 @@ impl Root {
         };
         let colors: Vec<u32> = colors.split(',').filter_map(hex).collect();
         let mut backgrounds = [0x1e1f22; 3];
+        let mut dy = [0.; 3];
         let mut frozen = None;
         let mut rest = rest.iter();
         while let Some(word) = rest.next() {
@@ -135,6 +140,13 @@ impl Root {
                 "bg" => {
                     for slot in &mut backgrounds {
                         if let Some(value) = rest.next().and_then(|word| hex(word)) {
+                            *slot = value;
+                        }
+                    }
+                }
+                "dy" => {
+                    for slot in &mut dy {
+                        if let Some(value) = rest.next().and_then(|word| word.parse::<f32>().ok()) {
                             *slot = value;
                         }
                     }
@@ -150,6 +162,7 @@ impl Root {
                 colors,
             },
             backgrounds,
+            dy,
         });
         cx.notify();
         format!("name sheet: font {font_id} effect {effect_id} frozen={frozen:?}")

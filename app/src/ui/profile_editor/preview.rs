@@ -4,7 +4,7 @@
 
 use super::{Mode, Tab, text};
 use crate::parity::Parity;
-use crate::ui::{Root, avatar_source, color, dm_profile, icon, name_styles};
+use crate::ui::{Root, color, dm_profile, icon, name_styles};
 use dc_state::User;
 use gpui::{
     AnyElement, Context, Div, FontWeight, IntoElement, Window, div, img, linear_color_stop,
@@ -55,7 +55,7 @@ impl Root {
             .w(px(861.))
             .h(px(640.))
             .child(card)
-            .child(self.profile_editor_widgets(cx));
+            .child(self.profile_editor_widgets(window, cx));
         let mut stage = div()
             .parity("profile-editor-stage")
             .relative()
@@ -81,12 +81,19 @@ impl Root {
             .profile_editor
             .as_ref()
             .is_some_and(|open| open.mode == Mode::Nitro);
-        let banner_image = nitro.then(|| self.profile_editor_preset_banner()).flatten();
+        let banner_image = nitro
+            .then(|| self.profile_editor_preset_banner())
+            .flatten()
+            .or_else(|| {
+                self.profile_editor
+                    .as_ref()
+                    .and_then(|open| open.banner_image.clone())
+            });
         let open = self.profile_editor.as_ref().expect("editor is open");
         let premium = self.profile_editor_premium();
         let theme = nitro.then(|| open.trying.theme_colors());
         let banner = super::panel::banner_color(open, user);
-        let avatar_image = self.images.get(&avatar_source(user).0).cloned();
+        let avatar_image = self.profile_editor_avatar_image(user);
         let decoration = user
             .avatar_decoration
             .as_deref()
@@ -247,7 +254,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(icon("msg_edit", 16., "--control-primary-text-default"))
+                    .child(icon("chat_bubble", 16., "--control-primary-text-default"))
                     .child(text(
                         "Message",
                         14.,

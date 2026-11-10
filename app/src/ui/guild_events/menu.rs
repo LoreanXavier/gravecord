@@ -543,8 +543,14 @@ impl Root {
             Item::Cancel => self.set_event_confirm(Confirm::Cancel(event)),
             Item::Edit => self.open_edit_event(event, window, cx),
             Item::CopyLink => self.copy_event_link(event, cx),
-            // The app has no event report flow yet: the row is drawn, and does nothing.
-            Item::Report => {}
+            // Report Event (module 928658 `uA`): the report modal over the page, the menu closed first.
+            Item::Report => {
+                if let Some(guild) = self.guild_events.as_ref().map(|open| open.guild) {
+                    self.close_event_menu(cx);
+                    self.open_report_event(guild, event, cx);
+                    return;
+                }
+            }
         }
         self.close_event_menu(cx);
     }

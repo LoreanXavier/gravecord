@@ -77,7 +77,11 @@ fn widget_tile(name: &'static str, glyph: &'static str) -> Div {
 }
 
 impl Root {
-    pub(super) fn profile_editor_widgets(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn profile_editor_widgets(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let open = self.profile_editor.as_ref().expect("editor is open");
         let (tab, nitro) = (open.tab, open.mode == Mode::Nitro);
         let tabs: &[(Tab, &'static str)] = if nitro {
@@ -158,20 +162,10 @@ impl Root {
                         })),
                 )
                 .into_any_element(),
-            Tab::Activity => div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(text("Recent activity", 12., 16., 600., "--text-strong"))
-                .child(text(
-                    "You'll see your activity from the last 30 days here.",
-                    12.,
-                    16.,
-                    400.,
-                    "--text-default",
-                ))
+            Tab::Activity => self.profile_editor_activity_tab().into_any_element(),
+            Tab::Wishlist => self
+                .profile_editor_wishlist_tab(window, cx)
                 .into_any_element(),
-            Tab::Wishlist => div().into_any_element(),
         };
         div()
             .parity("profile-editor-widgets")

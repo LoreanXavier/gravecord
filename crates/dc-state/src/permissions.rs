@@ -18,6 +18,8 @@ pub const MANAGE_MESSAGES: u64 = 1 << 13;
 pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
 pub const CHANGE_NICKNAME: u64 = 1 << 26;
 pub const MANAGE_NICKNAMES: u64 = 1 << 27;
+/// `SEND_VOICE_MESSAGES` (module 375389, bit 46).
+pub const SEND_VOICE_MESSAGES: u64 = 1 << 46;
 pub const MANAGE_ROLES: u64 = 1 << 28;
 pub const MANAGE_GUILD_EXPRESSIONS: u64 = 1 << 30;
 pub const MANAGE_THREADS: u64 = 1 << 34;

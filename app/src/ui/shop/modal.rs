@@ -576,11 +576,15 @@ impl Root {
                 this.shop_toggle_wishlist(&sku, cx);
             }))
         };
+        // The share button copies the item's link and says so in a toast (module 760429: `Link Copied!`). The official
+        // button opens the forward picker with this copy as one of its actions; that picker is in BLOCKED.md.
+        let share_sku = sku.clone();
         let share = round("shop-modal-share", "shop_share", "--text-strong").on_click(cx.listener(
-            |this, _, _, cx| {
+            move |this, _, _, cx| {
                 cx.stop_propagation();
-                this.shop.notice = Some("Link copied".to_owned());
-                cx.notify();
+                let link = data::share_link(&share_sku, this.shop.tab == super::Tab::Orbs);
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                this.show_success_toast("Link Copied!".to_owned(), cx);
             },
         ));
         let user = self
@@ -663,9 +667,20 @@ impl Root {
                     ),
             );
         let orb_badge_shown = product.sku_id == data::ORB_BADGE;
-        let orb_badge = orb_badge_shown
-            .then(|| self.shop_img(data::ORB_BADGE_PNG))
-            .flatten();
+        // The preview card lists the account's own badges (the profile read of the Shop), then the Orbs badge when the
+        // product is that badge (`badge_IqWmhA`: 20px images in a 22px pill, 3px padding and a 2px gap).
+        let badge_urls = data::profile_badge_urls(
+            self.fetched
+                .get("shop:profile")
+                .unwrap_or(&serde_json::Value::Null),
+        );
+        let mut badge_art: Vec<std::sync::Arc<gpui::Image>> = badge_urls
+            .iter()
+            .filter_map(|url| self.shop_img(url))
+            .collect();
+        if orb_badge_shown {
+            badge_art.extend(self.shop_img(data::ORB_BADGE_PNG));
+        }
         let frame_art: Vec<_> = if kind == data::KIND_PROFILE_FRAME {
             view.items
                 .first()
@@ -728,15 +743,18 @@ impl Root {
                             .items_center()
                             .gap(px(8.))
                             .child(text(14., 18., 500., "--text-strong").child(user.clone()))
-                            .children(orb_badge.map(|art| {
+                            .children((!badge_art.is_empty()).then(|| {
                                 div()
-                                    .h(px(21.))
-                                    .px(px(5.))
+                                    .h(px(22.))
+                                    .px(px(3.))
                                     .rounded(px(6.))
                                     .bg(color("--background-mod-subtle"))
                                     .flex()
                                     .items_center()
-                                    .child(img(art).size(px(16.)).object_fit(ObjectFit::Contain))
+                                    .gap(px(2.))
+                                    .children(badge_art.into_iter().map(|art| {
+                                        img(art).size(px(20.)).object_fit(ObjectFit::Contain)
+                                    }))
                             })),
                     ),
             )
@@ -1122,24 +1140,9 @@ impl Root {
             .children(art.map(|art| img(art).size_full().object_fit(ObjectFit::Contain)))
     }
 
-    /// The summary line: bundles list their parts (`{joinedItems}` is the server's placeholder for that list).
+    /// The summary line (`Z` of module 355735): see `data::product_summary`.
     fn shop_summary(&self, product: &Product) -> String {
-        if product.summary.contains("{joinedItems}") {
-            let names: Vec<&str> = product
-                .items
-                .iter()
-                .map(|item| item.label.as_str())
-                .collect();
-            let joined: Vec<&str> = product
-                .bundled
-                .iter()
-                .map(|part| part.name.as_str())
-                .collect();
-            let list = if joined.is_empty() { names } else { joined };
-            product.summary.replace("{joinedItems}", &list.join(", "))
-        } else {
-            product.summary.clone()
-        }
+        data::product_summary(product)
     }
 
     /// The checkout summary (`payment-modal` / `gift-payment-modal`): what is bought, for whom and the total. The
@@ -1443,6 +1446,68 @@ impl Root {
             .into_any_element()
     }
 
+    /// What a button of the celebration modal does (`aG` of module 184264): every button but "Use Now" closes the
+    /// modal first, then goes where its label says.
+    fn shop_collected_act(
+        &mut self,
+        action: data::CollectedAction,
+        product: &Product,
+        cx: &mut Context<Self>,
+    ) {
+        use data::CollectedAction::*;
+        if action == UseNow {
+            // The writes go out one after the other; the toast and the close wait for the last answer.
+            let writes = data::use_now_writes(product);
+            let last = writes.len().saturating_sub(1);
+            for (index, write) in writes.into_iter().enumerate() {
+                let _ = self.requests.send(crate::net::Request::Rest {
+                    key: (index == last)
+                        .then(|| format!("{}usenow:{}", super::FETCH_PREFIX, product.sku_id)),
+                    method: write.method,
+                    route: write.route,
+                    body: Some(write.body),
+                });
+            }
+            return;
+        }
+        self.shop.checkout = None;
+        self.shop.modal = None;
+        match action {
+            Close | UseNow => {}
+            EarnMoreOrbs => self.open_quests(cx),
+            ViewBadge => {
+                if self.status_popout.is_none() {
+                    self.toggle_status_popout(cx);
+                }
+            }
+            ExplorePerks => self.open_nitro(cx),
+            ViewCredits => self.open_settings_page("subscriptions", cx),
+            EditProfile => self.open_profile_editor(cx),
+        }
+        cx.notify();
+    }
+
+    /// The answer to "Use Now": the toast of module 450481 and the modal closing, or the modal closing alone.
+    pub(super) fn shop_use_now_answered(
+        &mut self,
+        key: &str,
+        body: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let sku = key
+            .trim_start_matches(super::FETCH_PREFIX)
+            .trim_start_matches("usenow:");
+        if body["ok"] == true
+            && let Some(product) = self.shop.products.get(sku)
+        {
+            let text = data::use_now_toast(product);
+            self.show_success_toast(text.to_owned(), cx);
+        }
+        self.shop.checkout = None;
+        self.shop.modal = None;
+        cx.notify();
+    }
+
     /// The celebration modal after a claim (`COLLECTIBLES_COLLECTED_MODAL`, modules 393870 and 328064): the
     /// item, a title, the line under it and the buttons. The product modal closes behind it.
     fn shop_collected(
@@ -1452,51 +1517,49 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let copy = data::collected_copy(&product.sku_id, &product.name, consumed);
-        let close_modal = |this: &mut Root, cx: &mut Context<Self>| {
-            this.shop.checkout = None;
-            this.shop.modal = None;
-            cx.notify();
-        };
-        let button =
-            |id: &'static str, label: &'static str, primary: bool, cx: &mut Context<Self>| {
-                let (base, hover) = if primary {
-                    ("--background-brand", "--brand-560")
-                } else {
-                    (
-                        "--button-secondary-background",
-                        "--button-secondary-background-hover",
-                    )
-                };
-                div()
-                    .id(id)
-                    .h(px(40.))
-                    .px(px(16.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .bg(color(base))
-                    .hover(move |button| button.bg(color(hover)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        close_modal(this, cx);
-                    }))
-                    .child(text(16., 20., 500., "--white").child(label))
+        let copy = data::collected_copy(product, consumed);
+        let shown_product = product.clone();
+        let button = |id: &'static str,
+                      label: &'static str,
+                      primary: bool,
+                      action: data::CollectedAction,
+                      cx: &mut Context<Self>| {
+            let product = shown_product.clone();
+            let (base, hover) = if primary {
+                ("--background-brand", "--brand-560")
+            } else {
+                (
+                    "--button-secondary-background",
+                    "--button-secondary-background-hover",
+                )
             };
+            div()
+                .id(id)
+                .h(px(40.))
+                .px(px(16.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .bg(color(base))
+                .hover(move |button| button.bg(color(hover)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.shop_collected_act(action, &product, cx);
+                }))
+                .child(text(16., 20., 500., "--white").child(label))
+        };
         let actions: Vec<AnyElement> = copy
             .buttons
             .iter()
-            .enumerate()
-            .map(|(at, (label, primary))| {
+            .map(|(label, primary, action)| {
                 let id = if *primary {
                     "shop-collected-primary"
                 } else {
                     "shop-collected-secondary"
                 };
-                let _ = at;
-                button(id, label, *primary, cx).into_any_element()
+                button(id, label, *primary, *action, cx).into_any_element()
             })
             .collect();
         let wide = matches!(

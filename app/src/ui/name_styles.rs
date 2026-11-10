@@ -441,6 +441,13 @@ fn direct_layout(
     Some(out)
 }
 
+/// Whether every letter of `text` has a glyph in the face's file.
+fn covers(text: &str, face: &Loaded) -> bool {
+    ttf_parser::Face::parse(&face.data, 0)
+        .map(|parsed| text.chars().all(|c| parsed.glyph_index(c).is_some()))
+        .unwrap_or(false)
+}
+
 fn plan(
     text: &str,
     font: Font,
@@ -496,16 +503,17 @@ fn plan(
     }
 }
 
-/// How far the text system's own baseline for `line` sits below the browser's for a line box of `line_height`.
+/// How far the text system's own baseline for `line` sits from the browser's for a line box of `line_height`. The
+/// text system rounds the ascent and descent of its own measurement and floors the half-leading (the browser's rule);
+/// the browser applies it to the face file's metrics, so the two differ only when the measurements differ.
 fn baseline_shift(plan: &Plan, line: &ShapedLine, line_height: Pixels) -> Pixels {
     let Some((ascent, descent)) = plan.metrics else {
         return px(0.);
     };
-    let browser = px(f32::from((line_height - ascent - descent) / 2.).floor()) + ascent;
-    let ours = (line_height - line.ascent - line.descent) / 2. + line.ascent;
-    // Half a pixel further down: the text system rounds the baseline a whole pixel up where the browser rounds half
-    // up, measured against the style editor's message line (16px in a 22px line).
-    browser - ours + px(0.5)
+    let baseline = |ascent: Pixels, descent: Pixels| {
+        px(f32::from((line_height - ascent - descent) / 2.).floor()) + ascent
+    };
+    baseline(ascent, descent) - baseline(line.ascent.round(), line.descent.round())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -672,6 +680,7 @@ pub(in crate::ui) struct StyledName {
     styles: Option<DisplayNameStyles>,
     display: Display,
     opacity: f32,
+    light: bool,
 }
 
 /// `text` drawn with `styles`. `key` tells names apart for the hover animation.
@@ -687,6 +696,7 @@ pub(in crate::ui) fn name(
         styles: styles.cloned(),
         display,
         opacity: 1.,
+        light: false,
     }
 }
 
@@ -702,6 +712,13 @@ pub(in crate::ui) fn probed(name: StyledName, id: &'static str) -> gpui::Div {
 }
 
 impl StyledName {
+    /// The name sits on the light theme's panel (the style editor's light preview): its colours are adjusted for
+    /// that background rather than the app theme's.
+    pub(in crate::ui) fn light(mut self, light: bool) -> Self {
+        self.light = light;
+        self
+    }
+
     /// `boldFontOpacity`: how opaque the Cherry Bomb and Chicle fonts draw when no effect shows.
     pub(in crate::ui) fn bold_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
@@ -720,6 +737,7 @@ impl IntoElement for StyledName {
                 styles,
                 display: self.display,
                 opacity: self.opacity,
+                light: self.light,
                 plan: Rc::default(),
             }
             .into_any_element(),
@@ -734,6 +752,7 @@ struct NameText {
     styles: DisplayNameStyles,
     display: Display,
     opacity: f32,
+    light: bool,
     plan: Rc<RefCell<Option<Plan>>>,
 }
 
@@ -773,8 +792,12 @@ impl NameText {
     }
 }
 
-fn background() -> Rgb {
-    let token = color("--background-base-low");
+fn background(light: bool) -> Rgb {
+    let token = if light {
+        gpui::rgba(dc_tokens::Theme::Light.color("--background-base-low"))
+    } else {
+        color("--background-base-low")
+    };
     let channel = |value: f32| (value * 255.).round().clamp(0., 255.) as u8;
     Rgb(channel(token.r), channel(token.g), channel(token.b))
 }
@@ -823,7 +846,16 @@ impl Element for NameText {
                     family: loaded.family.clone(),
                     features: FontFeatures::default(),
                     fallbacks: None,
-                    weight: FontWeight(f32::from(loaded.face.weight)),
+                    // A letter the face lacks comes from a fallback face, which the browser draws at the
+                    // requested weight rather than the face's own.
+                    // A face lighter than semibold asked for at semibold or more is emboldened by the browser.
+                    weight: if covers(&self.text, loaded)
+                        && !(inherited.font_weight.0 >= 600. && loaded.face.weight < 600)
+                    {
+                        FontWeight(f32::from(loaded.face.weight))
+                    } else {
+                        inherited.font_weight
+                    },
                     style: FontStyle::Normal,
                 },
                 font_size * loaded.face.letter_spacing_em,
@@ -894,7 +926,7 @@ impl Element for NameText {
         }
 
         let effect = self.styles.effect();
-        let colors = adjusted_colors(&self.styles, background(), 1.);
+        let colors = adjusted_colors(&self.styles, background(self.light), 1.);
         let main = colors.first().copied();
         let palette = main.map(Palette::of);
         let font = self.styles.font();
@@ -1143,6 +1175,7 @@ mod tests {
             styles: DisplayNameStyles::default(),
             display,
             opacity: 1.,
+            light: false,
             plan: Rc::default(),
         };
         assert!(name(Display::Font).shown(true) == Shown::Plain);

@@ -6,7 +6,7 @@
 use super::{Kind, Mode, Open, text};
 use crate::parity::Parity;
 use crate::ui::modal::{self, Tone};
-use crate::ui::{Root, avatar_source, color, icon};
+use crate::ui::{Root, color, icon};
 use dc_state::User;
 use gpui::{
     AnyElement, Context, Div, FontWeight, IntoElement, ObjectFit, ScrollHandle, SharedString,
@@ -131,6 +131,9 @@ fn badge(nitro: bool) -> Div {
         )
 }
 
+/// `presetEffectBackground_bYuL-p` of the capture: the profile mock behind an effect's or a frame's tile art.
+const PRESET_BACKGROUND: &str = "https://cdn.discordapp.com/assets/content/a859611882903f1102a796c08c68278917821af3e87eb9191df74bf78426971d.png";
+
 impl Root {
     fn picker_title(kind: Kind) -> (&'static str, &'static str) {
         match kind {
@@ -185,8 +188,22 @@ impl Root {
                 }
                 cx.notify();
             }));
-        if matches!(kind, Kind::Effect | Kind::Frame) {
-            // Skeleton profile card the art is drawn over.
+        // `presetEffectBackground_bYuL-p`: the profile mock the effect or frame art is drawn over.
+        let mock = matches!(kind, Kind::Effect | Kind::Frame)
+            .then(|| self.picker_image(PRESET_BACKGROUND))
+            .flatten();
+        if let Some(mock) = mock {
+            tile = tile.child(
+                img(mock)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .rounded(px(4.))
+                    .object_fit(ObjectFit::Cover),
+            );
+        } else if matches!(kind, Kind::Effect | Kind::Frame) {
+            // Skeleton profile card the art is drawn over while the mock loads.
             tile = tile.child(
                 div()
                     .absolute()
@@ -605,7 +622,7 @@ impl Root {
                         decoration.static_url(),
                     );
                 }
-                let avatar = self.images.get(&avatar_source(&user).0).cloned();
+                let avatar = self.profile_editor_avatar_image(&user);
                 let deco = user.avatar_decoration.as_deref().and_then(|d| {
                     self.images
                         .get(&format!("avatar-decoration:{}", d.sku_id))
@@ -684,7 +701,7 @@ impl Root {
                     .into_any_element()
             }
             Kind::Effect | Kind::Frame => {
-                let avatar = self.images.get(&avatar_source(&user).0).cloned();
+                let avatar = self.profile_editor_avatar_image(&user);
                 let name = user.display_name().to_owned();
                 let handle = user.username.clone();
                 let effect = (kind == Kind::Effect).then_some(choice).flatten();
@@ -773,7 +790,7 @@ impl Root {
         width: f32,
         _choice: Option<u64>,
     ) -> AnyElement {
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let avatar = self.profile_editor_avatar_image(user);
         let art = user
             .nameplate
             .as_ref()

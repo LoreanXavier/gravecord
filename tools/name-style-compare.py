@@ -126,7 +126,11 @@ def step(name):
     # Plain panel colours sampled beside each name: left of the card name's line, right of the other two.
     backgrounds = [hexpixel(golden, 850, 326), hexpixel(golden, 960, 396), hexpixel(golden, 900, 468)]
     moment = 3000 if name.startswith('font-') else CAPTURE_MS
-    return f'name-sheet {font} {effect} {colors} at {moment} bg {" ".join(backgrounds)}'
+    # Chromium puts a half-pixel position on the next whole pixel; the sheet's default tops are 314, 387 and 459.
+    tops = (314, 387, 459)
+    found = places(name)
+    dy = [int(place[1] + 0.5) - top for place, top in zip(found, tops)] if name.startswith('font-') and len(found) == 3 else [0, 0, 0]
+    return f'name-sheet {font} {effect} {colors} at {moment} bg {" ".join(backgrounds)} dy {" ".join(map(str, dy))}'
 
 
 def frame_path(name):
@@ -144,19 +148,33 @@ def ink(image):
     """The picture minus its panel: the colour in the crop's top left corner (plain panel beside the name) is taken as
     the panel and subtracted from every pixel."""
     pixels = image.load()
-    base = pixels[1, 1]
     out = Image.new('RGB', image.size)
     target = out.load()
     for y in range(image.height):
+        # The panel of the profile card is a vertical gradient: each row subtracts its own left edge.
+        base = pixels[1, y]
         for x in range(image.width):
             target[x, y] = tuple(int(max(0, min(255, 128 + pixels[x, y][c] - base[c]))) for c in range(3))
     return out
 
 
+def mass(image):
+    """The ink's total strength and its centre (x, y) in pixels: what the picture adds to its panel."""
+    pixels = image.load()
+    total = cx = cy = 0.0
+    for y in range(image.height):
+        for x in range(image.width):
+            weight = sum(abs(pixels[x, y][c] - 128) for c in range(3))
+            total += weight
+            cx += weight * x
+            cy += weight * y
+    return total, (cx / total if total else 0.0), (cy / total if total else 0.0)
+
+
 def compare(name):
     golden = Image.open(os.path.join(GOLDEN, f'name-style-{name}-darker-cozy@1.png')).convert('RGB')
     ours = Image.open(frame_path(name)).convert('RGB')
-    rows, report = [], []
+    rows, report, offsets = [], [], []
     for index, place in enumerate(all_places(name)):
         box = box_for(place)
         a, b = golden.crop(box), ours.crop(box)
@@ -168,7 +186,9 @@ def compare(name):
         over = sum(1 for p in data if max(p) > 24) / len(data) * 100
         total = sum(sum(abs(v - 128) for v in p) for p in (ia.getdata() if not hasattr(ia, 'get_flattened_data') else ia.get_flattened_data()))
         relative = sum(sum(p) for p in data) / max(1, total) * 100
+        (ma, ax, ay), (mb, bx, by) = mass(ia), mass(ib)
         report.append((PLACES[index], round(mean, 2), round(over, 1), round(relative)))
+        offsets.append(f'{PLACES[index]}: ours/official ink {mb / ma:.2f}, centre dx {bx - ax:+.2f} dy {by - ay:+.2f} px')
         size = (a.width * SCALE, a.height * SCALE)
         amplified = diff.point(lambda v: min(255, v * 3))
         row = Image.new('RGB', (size[0] * 3 + 20, size[1] + 14), (0, 0, 0))
@@ -185,7 +205,7 @@ def compare(name):
     os.makedirs(OUT, exist_ok=True)
     sheet.save(os.path.join(OUT, f'{name}.png'))
     text = NL.join(f'{where}: mean ink difference {mean} of 255, pixels over 24: {over}%, relative to the ink: {rel}%'
-                     for where, mean, over, rel in report)
+                     for where, mean, over, rel in report) + NL + NL.join(offsets)
     open(os.path.join(OUT, f'{name}.txt'), 'w').write(text + NL)
     print(name, report)
 

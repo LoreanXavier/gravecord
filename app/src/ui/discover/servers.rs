@@ -47,6 +47,8 @@ pub(in crate::ui) struct Servers {
     pub results: Option<Results>,
     pub mode: SearchMode,
     pub menu: Menu,
+    /// The language list's scroll, for its thumb.
+    pub language_scroll: gpui::ScrollHandle,
     pub seq: u64,
     pub pending: Vec<u64>,
     /// Servers this run opened as a preview and has not left yet.
@@ -655,6 +657,10 @@ impl Root {
                     ),
             )
             .when(menu == Menu::Language, |this| {
+                // `selectDropdown_vWC4bk`: 180 by 210, a 1px border, and 4px of padding around the `auto` scroller (a
+                // 16px gutter, so the rows are 154 wide and the thumb sits at the right edge of the list).
+                let list = self.discover.servers.language_scroll.clone();
+                let thumb = super::super::settings::auto_scrollbar(list.clone());
                 this.child(gpui::deferred(
                     div()
                         .id("discover-language-menu")
@@ -668,48 +674,74 @@ impl Root {
                         .left_0()
                         .w(px(180.))
                         .h(px(210.))
-                        .overflow_y_scroll()
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
                         .shadow(vec![gpui::BoxShadow {
-                            color: gpui::rgba(0x0000003d).into(),
-                            offset: point(px(0.), px(12.)),
-                            blur_radius: px(24.),
+                            color: gpui::rgba(0x00000029).into(),
+                            offset: point(px(0.), px(2.)),
+                            blur_radius: px(8.),
                             spread_radius: px(0.),
                             inset: false,
                         }])
                         .p(px(4.))
-                        .flex()
-                        .flex_col()
-                        .children(data::LANGUAGES.iter().map(|(code, name)| {
-                            let code = *code;
-                            let selected = code == language;
+                        .child(
                             div()
-                                .id(SharedString::from(format!("discover-lang-{code}")))
-                                .flex_none()
-                                .h(px(40.))
-                                .pl(px(8.))
-                                .pr(px(8.))
-                                .rounded(px(4.))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .hover(|style| style.bg(color("--background-mod-subtle")))
+                                .relative()
+                                .size_full()
                                 .child(
-                                    text(16., 20., 500., "--text-strong")
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .truncate()
-                                        .child(*name),
+                                    div()
+                                        .id("discover-language-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&list)
+                                        .pr(px(16.))
+                                        .flex()
+                                        .flex_col()
+                                        .children(data::LANGUAGES.iter().map(|(code, name)| {
+                                            let code = *code;
+                                            let selected = code == language;
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "discover-lang-{code}"
+                                                )))
+                                                .flex_none()
+                                                .h(px(40.))
+                                                .pl(px(8.))
+                                                .pr(px(4.))
+                                                .rounded(px(4.))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(color("--background-mod-subtle"))
+                                                })
+                                                .child(
+                                                    text(16., 20., 500., "--text-strong")
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .truncate()
+                                                        .child(*name),
+                                                )
+                                                .when(selected, |row| {
+                                                    row.child(icon(
+                                                        "discover_check",
+                                                        20.,
+                                                        "--text-strong",
+                                                    ))
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.servers_refilter(
+                                                        None,
+                                                        Some(Some(code.to_owned())),
+                                                    );
+                                                    cx.notify();
+                                                }))
+                                        })),
                                 )
-                                .when(selected, |row| {
-                                    row.child(icon("discover_check", 20., "--text-strong"))
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.servers_refilter(None, Some(Some(code.to_owned())));
-                                    cx.notify();
-                                }))
-                        })),
+                                .child(thumb),
+                        ),
                 ))
             });
         let mut page = div().relative().w_full().flex().flex_col().child(
@@ -847,26 +879,8 @@ impl Root {
                                 banner.map(|image| {
                                     img(image).size_full().object_fit(ObjectFit::Cover)
                                 }),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(8.))
-                                    .right(px(8.))
-                                    .size(px(32.))
-                                    .rounded(px(4.))
-                                    .bg(gpui::rgba(0x000000b8))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .opacity(0.)
-                                    .group_hover(group.clone(), |style| style.opacity(1.))
-                                    .child(icon(
-                                        "discover_maximize",
-                                        16.,
-                                        "--interactive-text-default",
-                                    )),
-                            ),
+                            ), // The corner button that opens the server's profile popout (`eA` of module 300290) is left
+                               // out: that popout is not built (BLOCKED.md), and a button that does nothing must not show.
                     )
                     .child(
                         div()
@@ -899,6 +913,7 @@ impl Root {
                                     .max_h(px(54.))
                                     .overflow_hidden()
                                     .line_clamp(3)
+                                    .text_ellipsis()
                                     .child(card.description.clone()),
                             )
                             .child(div().flex_1())

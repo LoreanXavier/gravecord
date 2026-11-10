@@ -35,12 +35,15 @@ pub(super) enum Target {
     },
     /// The composer's text area (`textarea-context`, module 194400).
     Composer,
+    /// The "..." of an application's page in the directory (module 586193 `l4`).
+    AppDirectory(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Act {
     InventoryAbout,
     InventoryHide,
+    ReportApp,
     MarkRead,
     Invite,
     Mute,
@@ -228,6 +231,25 @@ pub(super) struct ComposerMenu {
 /// Dictionary (or Remove from Dictionary when the click is on no misspelling and the text holds a learned word), the
 /// Spellcheck switch and Languages, then Cut and Copy with a selection, then Paste. The Suggestions submenu, the send
 /// button switch and the AI rows of the official menu are account features this client does not have yet.
+/// `m` in module 586193: Report App (danger, a flag), then Copy Application ID in its own group when developer mode is on
+/// (`devmode-copy-id`, module 50268). The page's Copy Link button covers the wide layout, so the menu has no such row.
+pub(super) fn app_directory_items(developer: bool) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::ReportApp, "Report App")
+            .icon("menu_flag")
+            .danger(),
+    )];
+    group(
+        &mut out,
+        if developer {
+            vec![Row::new(Act::CopyId, "Copy Application ID").icon("menu_id")]
+        } else {
+            Vec::new()
+        },
+    );
+    out
+}
+
 pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
     let mut out = Vec::new();
     group(
@@ -768,6 +790,7 @@ impl Root {
                 ),
             ],
             Target::Composer => composer_items(&self.context.composer.clone().unwrap_or_default()),
+            Target::AppDirectory(_) => app_directory_items(developer),
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -1035,6 +1058,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match (act, target) {
+            (Act::ReportApp, Target::AppDirectory(app)) => {
+                self.open_report_app(app, "app_directory", cx);
+            }
             (Act::InventoryAbout, Target::InventoryFeed | Target::InventoryFeedAtPointer) => {
                 self.inventory.about = true
             }
@@ -1117,6 +1143,7 @@ impl Root {
                     | Target::Thread(id)
                     | Target::Dm(id) => id,
                     Target::User { user, .. } | Target::InventoryAuthor { user } => user,
+                    Target::AppDirectory(id) => id,
                     Target::InventoryFeed | Target::InventoryFeedAtPointer | Target::Composer => {
                         return;
                     }
@@ -1533,11 +1560,13 @@ impl Root {
         }
         let menu = deferred(
             anchored()
-                .anchor(if target == Target::InventoryFeed {
-                    gpui::Anchor::TopRight
-                } else {
-                    gpui::Anchor::TopLeft
-                })
+                .anchor(
+                    if matches!(target, Target::InventoryFeed | Target::AppDirectory(_)) {
+                        gpui::Anchor::TopRight
+                    } else {
+                        gpui::Anchor::TopLeft
+                    },
+                )
                 .position(open.at)
                 .snap_to_window_with_margin(px(8.))
                 .child(

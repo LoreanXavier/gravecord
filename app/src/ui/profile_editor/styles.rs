@@ -6,7 +6,7 @@ use super::colour::{self, Target};
 use super::{Mode, text};
 use crate::parity::Parity;
 use crate::ui::modal::{self, Tone};
-use crate::ui::{Root, avatar_source, color, icon, name_styles};
+use crate::ui::{Root, color, icon, name_styles};
 use dc_state::User;
 use dc_state::display_name_styles::{DisplayNameStyles, Effect};
 use gpui::{
@@ -21,6 +21,28 @@ const PREMIUM_FONTS: [u32; 4] = [13, 14, 15, 16];
 /// Effects in the order of the grid (`re`): Solid, Gradient, Neon, Toon, Pop, Gummy, Prism.
 pub(super) const EFFECTS: [u32; 7] = [1, 2, 3, 4, 5, 8, 7];
 const PREMIUM_EFFECTS: [u32; 2] = [8, 7];
+/// `DisplayNameStylesSeenStore` (module 974591): a "new" dot stays on a tile until that font or effect was chosen once.
+const SEEN_KEY: &str = "DisplayNameStylesSeenStore";
+
+fn seen(list: &str) -> Vec<u32> {
+    crate::storage::get(SEEN_KEY)
+        .and_then(|value| value.get(list).cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// `DISPLAY_NAME_STYLES_MARK_FONT_SEEN` and `..._MARK_EFFECT_SEEN`: `list` is `seenFontIds` or `seenEffectIds`.
+pub(super) fn mark_seen(list: &str, id: u32) {
+    let mut saved = crate::storage::get(SEEN_KEY).unwrap_or_else(|| serde_json::json!({}));
+    let mut ids = seen(list);
+    if ids.contains(&id) {
+        return;
+    }
+    ids.push(id);
+    saved[list] = serde_json::json!(ids);
+    crate::storage::set(SEEN_KEY, saved);
+}
+
 /// The default swatch of the single-colour effects (the first colour after the custom swatch in the capture).
 const DEFAULT_COLOR: u32 = 0xf42098;
 
@@ -254,30 +276,41 @@ impl State {
     }
 }
 
+/// A tile of the font and effect grids: 88x66 content with a 1px border, so 90x68 on a grid track of 88
+/// (`fontButton` and `effectContainer`): the 8% muted background, the subtle border, and the brand border when chosen.
 fn tile_frame(id: impl Into<SharedString>, selected: bool) -> gpui::Stateful<Div> {
     div()
         .id(id.into())
         .relative()
-        .w(px(88.))
+        .w(px(90.))
         .h(px(68.))
         .flex_none()
         .rounded(px(8.))
-        .bg(color("--background-mod-subtle"))
-        .when(selected, |this| {
-            this.border_1().border_color(color("--border-focus"))
-        })
+        .bg(color("--background-mod-muted"))
+        .border_1()
+        .border_color(color(if selected {
+            "--brand-500"
+        } else {
+            "--border-subtle"
+        }))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
 }
 
+/// The grid track a tile sits in: 88 wide, with the tile overhanging it by the border.
+fn grid_cell(tile: gpui::Stateful<Div>) -> Div {
+    div().w(px(88.)).h(px(68.)).flex_none().child(tile)
+}
+
+/// `tileNewDot`: 4px, 80px from the tile's inner left edge and 4px below its inner top edge.
 fn dot() -> Div {
     div()
         .absolute()
-        .top(px(8.))
-        .right(px(8.))
-        .size(px(6.))
+        .top(px(4.))
+        .left(px(80.))
+        .size(px(4.))
         .rounded_full()
         .bg(color("--brand-500"))
 }
@@ -341,6 +374,7 @@ impl Root {
         let changed = state.changed();
         let user = self.profile_editor_user();
         let _ = window;
+        let (seen_fonts, seen_effects) = (seen("seenFontIds"), seen("seenEffectIds"));
 
         let mut fonts = div().flex().flex_wrap().gap(px(8.));
         for id in FONTS {
@@ -355,7 +389,11 @@ impl Root {
                         .text_size(px(22.))
                         .line_height(px(26.4))
                         .font_weight(FontWeight(600.))
-                        .text_color(color("--text-default"))
+                        .text_color(color(if id == font {
+                            "--text-strong"
+                        } else {
+                            "--text-default"
+                        }))
                         .child(name_styles::name(
                             format!("styles-font-{id}"),
                             "Gg",
@@ -371,12 +409,15 @@ impl Root {
                     {
                         state.font = id;
                     }
+                    if PREMIUM_FONTS.contains(&id) {
+                        mark_seen("seenFontIds", id);
+                    }
                     cx.notify();
                 }));
-            if PREMIUM_FONTS.contains(&id) && id != font {
+            if PREMIUM_FONTS.contains(&id) && id != font && !seen_fonts.contains(&id) {
                 tile = tile.child(dot());
             }
-            fonts = fonts.child(tile);
+            fonts = fonts.child(grid_cell(tile));
         }
 
         let mut effects = div().flex().flex_wrap().gap(px(8.));
@@ -395,7 +436,11 @@ impl Root {
             let mut tile = tile_frame(format!("styles-effect-{id}"), id == effect)
                 .child(
                     div()
-                        .text_size(px(14.))
+                        // The 16px line sits a pixel lower in the browser than the text system puts it
+                        // (measured against the effect tiles of `name-style-effect-*`).
+                        .relative()
+                        .top(px(1.))
+                        .text_size(px(16.))
                         .line_height(px(16.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-default"))
@@ -417,12 +462,15 @@ impl Root {
                         state.fit_colors();
                         state.picking = None;
                     }
+                    if PREMIUM_EFFECTS.contains(&id) {
+                        mark_seen("seenEffectIds", id);
+                    }
                     cx.notify();
                 }));
-            if PREMIUM_EFFECTS.contains(&id) {
+            if PREMIUM_EFFECTS.contains(&id) && id != effect && !seen_effects.contains(&id) {
                 tile = tile.child(dot());
             }
-            effects = effects.child(tile);
+            effects = effects.child(grid_cell(tile));
         }
 
         let colors_row = self.styles_color_row(effect, &colors, cx);
@@ -479,7 +527,8 @@ impl Root {
             |this, _, cx| {
                 this.profile_editor_styles_surprise(cx);
             },
-        );
+        )
+        .with_icon("profile_editor_dice", 20., "--icon-strong");
         let apply = modal::button(
             "styles-apply",
             "Apply",
@@ -680,7 +729,7 @@ impl Root {
         nitro: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let avatar = self.profile_editor_avatar_image(user);
         let banner = nitro.then(|| self.profile_editor_preset_banner()).flatten();
         let name = user.display_name().to_owned();
         let handle = user.username.clone();
@@ -694,13 +743,19 @@ impl Root {
             .as_ref()
             .and_then(|open| open.styles.as_ref())
             .is_some_and(|state| state.light);
+        // `ThemeContext` of module 974591: the cards, message and member row take the light theme's tokens while the
+        // preview's own panel and the toggle keep the app's.
+        let app_theme = crate::ui::theme();
+        if light {
+            crate::ui::set_theme(dc_tokens::Theme::Light);
+        }
         let styled = |key: &'static str, size: f32, weight: f32, display: name_styles::Display| {
             div()
                 .text_size(px(size))
                 .line_height(px(size * 1.2))
                 .font_weight(FontWeight(weight))
                 .text_color(color("--text-strong"))
-                .child(name_styles::name(key, name.clone(), Some(styles), display))
+                .child(name_styles::name(key, name.clone(), Some(styles), display).light(light))
         };
         let avatar_circle = |size: f32| {
             div()
@@ -860,6 +915,7 @@ impl Root {
                 500.,
                 name_styles::Display::Animated,
             ));
+        crate::ui::set_theme(app_theme);
         let toggle = |id: &'static str, glyph: &'static str, is_light: bool| {
             div()
                 .id(id)

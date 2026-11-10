@@ -302,6 +302,36 @@ mod tests {
     }
 
     #[test]
+    fn a_server_profile_sends_only_guild_routes_with_exact_bodies() {
+        let mut p = Pending::new(Some(42));
+        p.nickname = Some(Some("Nick".into()));
+        p.avatar = Some(Some(Picked {
+            image_uri: "data:image/png;base64,AQID".into(),
+            description: Some("my face".into()),
+        }));
+        p.banner = Some(Some(Picked {
+            image_uri: "data:image/gif;base64,AQID".into(),
+            description: Some("Banner image".into()),
+        }));
+        p.bio = Some("about".into());
+        p.pronouns = Some("he/him".into());
+        let writes = p.writes(&Equipped::default());
+        assert_eq!(writes.len(), 2, "no account write for a server profile");
+        assert_eq!(writes[0].method, Method::PATCH);
+        assert_eq!(writes[0].route, "/guilds/42/members/@me");
+        assert_eq!(
+            writes[0].body,
+            json!({"nick": "Nick", "avatar": "data:image/png;base64,AQID", "avatar_description": "my face"})
+        );
+        assert_eq!(writes[1].method, Method::PATCH);
+        assert_eq!(writes[1].route, "/guilds/42/profile/@me");
+        assert_eq!(
+            writes[1].body,
+            json!({"banner": "data:image/gif;base64,AQID", "bio": "about", "pronouns": "he/him"})
+        );
+    }
+
+    #[test]
     fn profile_body_main_and_guild() {
         let mut p = Pending::new(None);
         p.bio = Some("hello".into());

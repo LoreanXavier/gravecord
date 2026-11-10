@@ -36,6 +36,8 @@ pub(super) struct Report {
     /// What is reported besides a person: a message (`message`, or `first_dm` for a DM's spam report) as its channel,
     /// id, author's name and text.
     message: Option<ReportedMessage>,
+    /// A server event or an application when that is what is reported.
+    subject: Option<Subject>,
     menu: Option<Value>,
     node: u64,
     history: Vec<Step>,
@@ -43,6 +45,30 @@ pub(super) struct Report {
     checked: Vec<(String, String, String)>,
     submitting: bool,
     error: Option<String>,
+}
+
+/// What `h` in module 369053 builds a body for besides users and messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Subject {
+    Event {
+        guild: Id,
+        event: Id,
+    },
+    App {
+        app: Id,
+        guild: Option<Id>,
+        channel: Option<Id>,
+        entrypoint: &'static str,
+    },
+}
+
+impl Subject {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Event { .. } => "guild_scheduled_event",
+            Self::App { .. } => "application",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -74,15 +100,46 @@ impl Root {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.start_report(user, None, cx);
+        self.start_report(user, None, None, cx);
     }
 
-    fn start_report(&mut self, user: Id, message: Option<ReportedMessage>, cx: &mut Context<Self>) {
-        let name = message.as_ref().map_or("user", |message| message.name);
+    /// Report Event (module 928658 `uA`).
+    pub(super) fn open_report_event(&mut self, guild: Id, event: Id, cx: &mut Context<Self>) {
+        self.start_report(0, None, Some(Subject::Event { guild, event }), cx);
+    }
+
+    /// Report App (module 928658 `r3`): the guild and channel shown when the page was opened.
+    pub(super) fn open_report_app(
+        &mut self,
+        app: Id,
+        entrypoint: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let subject = Subject::App {
+            app,
+            guild: self.guild,
+            channel: None,
+            entrypoint,
+        };
+        self.start_report(0, None, Some(subject), cx);
+    }
+
+    fn start_report(
+        &mut self,
+        user: Id,
+        message: Option<ReportedMessage>,
+        subject: Option<Subject>,
+        cx: &mut Context<Self>,
+    ) {
+        let name = subject
+            .map(Subject::name)
+            .or_else(|| message.as_ref().map(|message| message.name))
+            .unwrap_or("user");
         self.report = Some(Report {
             user,
             guild: self.guild,
             message,
+            subject,
             menu: None,
             node: 0,
             history: Vec::new(),
@@ -122,6 +179,7 @@ impl Root {
                 author: message.author.display_name().to_owned(),
                 text: message.content.clone(),
             }),
+            None,
             cx,
         );
     }
@@ -229,14 +287,38 @@ impl Root {
             "breadcrumbs": steps.iter().map(|step| step.node).collect::<Vec<_>>(),
             "elements": elements,
         });
-        match open.message.as_ref() {
+        match (open.subject, open.message.as_ref()) {
+            (Some(Subject::Event { guild, event }), _) => {
+                body["name"] = json!("guild_scheduled_event");
+                body["guild_id"] = json!(guild.to_string());
+                body["guild_scheduled_event_id"] = json!(event.to_string());
+            }
+            (
+                Some(Subject::App {
+                    app,
+                    guild,
+                    channel,
+                    entrypoint,
+                }),
+                _,
+            ) => {
+                body["name"] = json!("application");
+                body["application_id"] = json!(app.to_string());
+                if let Some(guild) = guild {
+                    body["guild_id"] = json!(guild.to_string());
+                }
+                if let Some(channel) = channel {
+                    body["channel_id"] = json!(channel.to_string());
+                }
+                body["entrypoint"] = json!(entrypoint);
+            }
             // `h` in module 369053: a message report carries its channel and id, and no guild.
-            Some(message) => {
+            (None, Some(message)) => {
                 body["name"] = json!(message.name);
                 body["channel_id"] = json!(message.channel.to_string());
                 body["message_id"] = json!(message.id.to_string());
             }
-            None => {
+            (None, None) => {
                 body["name"] = json!("user");
                 body["user_id"] = json!(open.user.to_string());
                 if let Some(guild) = open.guild {
@@ -1079,6 +1161,7 @@ mod tests {
             user: 7,
             guild: None,
             message: None,
+            subject: None,
             menu: Some(menu()),
             node: 25,
             history: vec![
@@ -1127,6 +1210,7 @@ mod tests {
                 author: "a".into(),
                 text: "b".into(),
             }),
+            subject: None,
             menu: Some(menu()),
             node: 63,
             history: Vec::new(),
@@ -1139,6 +1223,49 @@ mod tests {
         assert_eq!(body["channel_id"], "11");
         assert_eq!(body["message_id"], "12");
         assert!(body.get("guild_id").is_none());
+        assert!(body.get("user_id").is_none());
+    }
+
+    fn subject_report(subject: Subject) -> Report {
+        Report {
+            user: 0,
+            guild: Some(3),
+            message: None,
+            subject: Some(subject),
+            menu: Some(menu()),
+            node: 63,
+            history: Vec::new(),
+            checked: Vec::new(),
+            submitting: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn an_event_report_names_its_guild_and_event() {
+        let open = subject_report(Subject::Event { guild: 3, event: 9 });
+        let body = Root::report_body(&open, &menu(), 69);
+        assert_eq!(body["name"], "guild_scheduled_event");
+        assert_eq!(body["guild_id"], "3");
+        assert_eq!(body["guild_scheduled_event_id"], "9");
+        assert!(body.get("user_id").is_none());
+        assert!(body.get("channel_id").is_none());
+    }
+
+    #[test]
+    fn an_app_report_carries_the_entrypoint_and_the_context_it_was_opened_from() {
+        let open = subject_report(Subject::App {
+            app: 5,
+            guild: Some(3),
+            channel: None,
+            entrypoint: "app_directory",
+        });
+        let body = Root::report_body(&open, &menu(), 69);
+        assert_eq!(body["name"], "application");
+        assert_eq!(body["application_id"], "5");
+        assert_eq!(body["guild_id"], "3");
+        assert_eq!(body["entrypoint"], "app_directory");
+        assert!(body.get("channel_id").is_none());
         assert!(body.get("user_id").is_none());
     }
 }

@@ -285,7 +285,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let handle = self.shop.shelves.entry(key.to_owned()).or_default().clone();
-        let mut row = div().flex().gap(px(24.)).flex_none();
+        // The row is as wide as its cards: the scroller measures its overflow from its direct child, so a row that only
+        // filled the viewport would leave the arrows and the sideways wheel nothing to move.
+        let row_width = skus.len() as f32 * CARD + skus.len().saturating_sub(1) as f32 * 24.;
+        let mut row = div().flex().gap(px(24.)).flex_none().w(px(row_width));
         for sku in skus {
             row = row.child(self.shop_card(sku, Some(CARD), window, cx));
         }

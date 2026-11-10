@@ -6,13 +6,17 @@
 //! Every change is held as a pending change of the open profile (`save.rs`), shown at once in the preview, and
 //! written when the save bar's button is pressed (module 631670, 159001 and 207803 build the requests).
 
+mod activity;
 mod colour;
 mod panel;
 mod picker;
 mod preview;
 pub(super) mod save;
+mod servers;
 mod styles;
+mod upload;
 mod widgets;
+mod wishlist;
 
 use super::shop::data::{self as shop_data, Product};
 use super::{Root, SANS, color, kerning};
@@ -97,6 +101,11 @@ pub(super) struct Open {
     error: Option<String>,
     owned: Vec<Product>,
     offers: Vec<Product>,
+    /// The pictures chosen for the avatar and the banner, decoded for the preview.
+    avatar_image: Option<std::sync::Arc<gpui::Image>>,
+    /// The other profiles' pending changes while one is open (`getPendingChanges(guildId)`).
+    stashed: std::collections::HashMap<Option<Id>, Pending>,
+    banner_image: Option<std::sync::Arc<gpui::Image>>,
     _events: Vec<Subscription>,
 }
 
@@ -201,6 +210,9 @@ impl Root {
             error: None,
             owned: Vec::new(),
             offers: Vec::new(),
+            avatar_image: None,
+            stashed: std::collections::HashMap::new(),
+            banner_image: None,
             _events: events,
         });
         for (key, route) in [
@@ -215,6 +227,18 @@ impl Root {
             (
                 format!("{FETCH_PREFIX}categories"),
                 CATEGORIES_ROUTE.to_owned(),
+            ),
+            (
+                format!("{FETCH_PREFIX}outbox"),
+                activity::outbox_route(user_id),
+            ),
+            (
+                format!("{FETCH_PREFIX}wishlistprofile"),
+                shop_data::own_profile_route(user_id),
+            ),
+            (
+                format!("{FETCH_PREFIX}gifts"),
+                wishlist::gifts_route(user_id),
             ),
         ] {
             let _ = self.requests.send(Request::Fetch { key, route });
@@ -271,10 +295,15 @@ impl Root {
         let Some(body) = self.fetched.get(key).cloned() else {
             return;
         };
+        let what = key.strip_prefix(FETCH_PREFIX).unwrap_or_default();
+        match what {
+            "outbox" | "apps" => self.profile_editor_activity_fetched(what),
+            "wishlistprofile" | "wishlist" | "gifts" => self.profile_editor_wishlist_fetched(what),
+            _ => {}
+        }
         let Some(open) = self.profile_editor.as_mut() else {
             return;
         };
-        let what = key.strip_prefix(FETCH_PREFIX).unwrap_or_default();
         match what {
             "profile" => {
                 let color = |value: &Value| value.as_u64().map(|number| number as u32);
@@ -451,7 +480,8 @@ impl Root {
             .child(self.profile_editor_panel(&user, window, cx))
             .child(self.profile_editor_stage(&user, window, cx))
             .child(close)
-            .children(self.profile_editor_banner_popout(cx));
+            .children(self.profile_editor_banner_popout(cx))
+            .children(self.profile_editor_server_list(cx));
         let layer = deferred(
             div()
                 .id("profile-editor-layer")
@@ -574,6 +604,15 @@ impl Root {
                     cx,
                 );
             }
+            ["tab", which] => {
+                if let Some(open) = self.profile_editor.as_mut() {
+                    open.tab = match *which {
+                        "activity" => Tab::Activity,
+                        "wishlist" => Tab::Wishlist,
+                        _ => Tab::Board,
+                    };
+                }
+            }
             ["banner-color"] => self.profile_editor_script_banner(cx),
             ["styles"] => self.profile_editor_script_styles(cx),
             ["font", id] => self.profile_editor_script_style(|state| {
@@ -583,6 +622,28 @@ impl Root {
                 state.effect = id.parse().unwrap_or(state.effect);
                 state.colors.clear();
             }),
+            // `server <id>` edits that server's profile, `server first` the first server of the rail, `server list`
+            // opens the select, `server main` goes back to the main profile.
+            ["server", which] => {
+                let guild = match *which {
+                    "main" => None,
+                    "list" => {
+                        if let Some(open) = self.profile_editor.as_mut() {
+                            open.select_open = true;
+                        }
+                        self.profile_editor.as_ref().and_then(|open| open.guild)
+                    }
+                    "first" => self.stores.guilds.first().map(|guild| guild.id),
+                    id => id.parse().ok(),
+                };
+                self.profile_editor_select_guild(guild, cx);
+                if *which == "list"
+                    && let Some(open) = self.profile_editor.as_mut()
+                {
+                    open.select_open = true;
+                }
+            }
+            ["light"] => self.profile_editor_script_style(|state| state.light = true),
             ["colors", hex @ ..] => {
                 let colors: Vec<u32> = hex
                     .iter()

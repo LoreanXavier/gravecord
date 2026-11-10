@@ -300,6 +300,8 @@ pub struct Root {
     channel_browser_open: bool,
     channel_browser: Option<channel_browser::Browser>,
     hovered_nameplate: Option<Id>,
+    /// The pointer is on a DM's welcome block (891522 animates the styled name then).
+    hovered_welcome: bool,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
@@ -597,6 +599,7 @@ impl Root {
             channel_browser_open: false,
             channel_browser: None,
             hovered_nameplate: None,
+            hovered_welcome: false,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
@@ -1317,6 +1320,9 @@ impl Root {
             Update::Image { key, bytes } if key.starts_with(inline_video::PREFIX) => {
                 self.inline_video_fetched(&key, bytes);
             }
+            Update::Image { key, bytes } if key == quests::HERO_VIDEO_KEY => {
+                self.quests_hero_video_fetched(bytes, cx);
+            }
             Update::Image { key, bytes } if key.starts_with("text:") => {
                 self.texts
                     .insert(key, String::from_utf8_lossy(&bytes).into_owned());
@@ -1727,7 +1733,17 @@ impl Root {
                                                     format!("member-{}", user.id),
                                                     name,
                                                     self.name_styles(user, self.guild).as_ref(),
-                                                    name_styles::Display::Font,
+                                                    // 110574: without a guild (a group DM's list) the full
+                                                    // effect shows, animated under the row's pointer.
+                                                    if self.guild.is_some() {
+                                                        name_styles::Display::Font
+                                                    } else if self.hovered_nameplate
+                                                        == Some(user.id)
+                                                    {
+                                                        name_styles::Display::Animated
+                                                    } else {
+                                                        name_styles::Display::Static
+                                                    },
                                                 )),
                                         )
                                         .children(user.tag.as_ref().map(|tag| {
@@ -3972,11 +3988,12 @@ impl Root {
         } else {
             FontStyle::Normal
         };
-        // 447215: in a server a user mention takes the mentioned user's display name font.
+        // 447215: a user mention takes the mentioned user's display name font only outside a guild (direct and
+        // group messages); with a guild id the mention keeps the plain role-coloured look.
         if let Kind::User(id) = &span.kind
-            && self.current_guild().is_some()
+            && self.current_guild().is_none()
             && let Some(user) = self.stores.users.get(id)
-            && let Some(styles) = self.name_styles(user, self.guild)
+            && let Some(styles) = self.name_styles(user, None)
             && let Some((family, weight)) = name_styles::run_font(&styles)
         {
             run_font.family = family;
