@@ -71,6 +71,7 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod presence;
+mod tray;
 pub use logout::RootEvent;
 mod channel_browser;
 mod forums;
@@ -257,6 +258,7 @@ pub struct Root {
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
+    tray_runtime: crate::tray::Runtime,
     notification_focused: bool,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
@@ -517,6 +519,7 @@ impl Root {
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
+            tray_runtime: crate::tray::Runtime::new(updates.clone()),
             notification_focused: false,
             notification_sounds: Default::default(),
             rows: Vec::new(),
@@ -663,11 +666,14 @@ impl Root {
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
         self.apply_update(update, cx);
         self.splash_check();
+        // Native indicators must update even while the window is hidden and not rendering.
+        self.refresh_notification_badge();
     }
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
+            Update::Tray(action) => self.tray_action(action, cx),
             Update::Slowmode {
                 channel,
                 kind,
@@ -5278,6 +5284,7 @@ impl Render for Root {
         self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
         self.refresh_notification_badge();
+        self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
@@ -5907,6 +5914,8 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
     root.update(cx, |this, cx| {
         this.notification_focused = window.is_window_active();
         this.notification_runtime.attach(window);
+        this.refresh_notification_badge();
+        this.tray_runtime.attach(window);
         cx.observe_window_activation(window, |this, window, cx| {
             this.notification_focus_changed(window.is_window_active(), cx);
             if !window.is_window_active() {

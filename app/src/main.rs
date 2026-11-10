@@ -18,6 +18,7 @@ mod speech;
 mod spinner;
 mod storage;
 mod text_buffer;
+mod tray;
 mod ui;
 mod video_clip;
 

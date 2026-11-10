@@ -13,6 +13,7 @@ use tracing::warn;
 
 pub enum Update {
     NotificationClicked(u64),
+    Tray(crate::tray::Action),
     /// The connecting screen's spinner, fetched and decoded.
     Spinner(Arc<crate::spinner::Clip>),
     /// `None` resets from the channel's interval; a value sets the server's remaining cooldown.

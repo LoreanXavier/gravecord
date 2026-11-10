@@ -144,6 +144,10 @@ pub async fn run(
             ["native", "state"] => {
                 let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }
+            ["tray", "preview"] => {
+                let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
+                let _ = writeln!(output, "{note}");
+            }
             // Positive `dy` scrolls the content up, as a wheel turned toward the user does.
             ["scroll", x, y, dy] => {
                 if let (Some(position), Ok(dy)) = (at(x, y), dy.parse::<f32>()) {

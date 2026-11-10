@@ -76,6 +76,12 @@ impl Root {
             disabled,
         );
         self.notification_runtime.badge(count);
+        self.refresh_tray(
+            !disabled
+                && (counts.unread
+                    || counts.mentions > 0
+                    || dc_state::unread::incoming_requests(&self.stores) > 0),
+        );
     }
     #[cfg(feature = "capture")]
     pub(crate) fn script_notification(&mut self, action: &str, cx: &mut Context<Self>) {

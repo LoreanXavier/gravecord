@@ -20,6 +20,7 @@ pub(super) const LOCAL: &[(&str, bool)] = &[
     ("underline_links", false),
     ("reduced_motion", false),
     ("enable_switch_icons", false),
+    ("os_minimize_to_tray", false),
 ];
 
 const STORAGE_KEY: &str = "settings.prefs";
@@ -223,11 +224,13 @@ mod tests {
 
     #[test]
     fn saved_local_preferences_come_back_as_choices() {
-        let saved = json!({"underline_links": true, "reduced_motion": false, "stranger": true});
+        let saved = json!({"underline_links": true, "reduced_motion": false,
+            "os_minimize_to_tray": false, "stranger": true});
         let choices = local_choices(&saved);
         assert_eq!(choices.get("underline_links"), Some(&Choice::On(true)));
         assert_eq!(choices.get("reduced_motion"), Some(&Choice::On(false)));
-        assert_eq!(choices.len(), 2);
+        assert_eq!(choices.get("os_minimize_to_tray"), Some(&Choice::On(false)));
+        assert_eq!(choices.len(), 3);
         assert!(local_choices(&Value::Null).is_empty());
     }
 

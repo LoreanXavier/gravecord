@@ -47,7 +47,7 @@ impl SoundThrottle {
 }
 
 #[cfg(windows)]
-mod native_icon;
+pub(crate) mod native_icon;
 #[cfg(windows)]
 mod taskbar;
 #[cfg(windows)]

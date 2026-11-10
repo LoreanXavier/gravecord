@@ -33,7 +33,7 @@ fn header(size: i32, depth: u16) -> BITMAPINFOHEADER {
 }
 
 /// Takes premultiplied RGBA rows ordered from top to bottom, as tiny-skia produces them.
-pub(super) fn create(size: i32, rgba: &[u8]) -> Result<HICON> {
+pub(crate) fn create(size: i32, rgba: &[u8]) -> Result<HICON> {
     let width = usize::try_from(size)
         .ok()
         .filter(|size| *size > 0)

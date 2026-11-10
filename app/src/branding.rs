@@ -123,6 +123,47 @@ fn decode_icon(path: &Path, size: u32) -> Option<Vec<u8>> {
 pub fn badge_pixels(set: IconSet, index: usize) -> Option<Vec<u8>> {
     badge_at(&crate::find_assets()?, set, index)
 }
+
+pub fn tray_pixels(set: IconSet, icon: crate::tray::Icon, size: u32) -> Option<(u32, Vec<u8>)> {
+    tray_at(&crate::find_assets()?, set, icon, size)
+}
+fn tray_at(
+    root: &Path,
+    set: IconSet,
+    icon: crate::tray::Icon,
+    size: u32,
+) -> Option<(u32, Vec<u8>)> {
+    // Native optical sizes supplied in both packs, matching the pinned Windows resources.
+    let variants = [
+        (16, ""),
+        (20, "@1.25x"),
+        (21, "@1.33x"),
+        (22, "@1.4x"),
+        (24, "@1.5x"),
+        (29, "@1.8x"),
+        (32, "@2x"),
+        (40, "@2.5x"),
+        (48, "@3x"),
+        (64, "@4x"),
+        (80, "@5x"),
+    ];
+    let (size, suffix) = variants
+        .iter()
+        .copied()
+        .find(|(width, _)| *width >= size)
+        .unwrap_or((80, "@5x"));
+    let path = root.join(format!(
+        "branding/{}/systemtray/win32/{}{}.png",
+        set.name(),
+        icon.file(),
+        suffix
+    ));
+    let image = image::open(path).ok()?.into_rgba8();
+    if image.dimensions() != (size, size) {
+        return None;
+    }
+    Some((size, premultiplied(image)))
+}
 fn badge_at(root: &Path, set: IconSet, index: usize) -> Option<Vec<u8>> {
     if index >= 11 {
         return None;
@@ -140,6 +181,21 @@ fn badge_at(root: &Path, set: IconSet, index: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn both_tray_sets_supply_all_states_at_each_optical_size() {
+        use crate::tray::Icon::*;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        for set in [IconSet::Gravecord, IconSet::Original] {
+            for icon in [Default, Unread, Connected, Speaking, Muted, Deafened] {
+                for width in [16, 20, 21, 22, 24, 29, 32, 40, 48, 64, 80] {
+                    let (size, pixels) = tray_at(&root, set, icon, width).unwrap();
+                    assert_eq!(size, width);
+                    assert_eq!(pixels.len(), (size * size * 4) as usize);
+                    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0));
+                }
+            }
+        }
+    }
     #[test]
     fn unset_or_unknown_icon_choice_defaults_to_gravecord() {
         assert_eq!(IconSet::from_name(None), IconSet::Gravecord);
