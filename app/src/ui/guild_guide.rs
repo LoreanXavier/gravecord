@@ -92,6 +92,45 @@ fn welcome_text(template: &str, name: &str) -> (String, Vec<std::ops::Range<usiz
 }
 
 impl Root {
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_channel_target(
+        &self,
+        id: Id,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Option<gpui::Point<gpui::Pixels>> {
+        let guild = self.current_guild()?;
+        let channel = guild.channels.iter().find(|channel| channel.id == id)?;
+        if channel.kind != dc_state::ChannelKind::Text
+            || guild.rules_channel_id == Some(id)
+            || self.settings.is_some()
+        {
+            return None;
+        }
+        if self.has_guild_guide() {
+            let home = self.guide_home()?;
+            if home.tasks.as_ref().is_some_and(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| task.channel_id.parse::<Id>() == Ok(id))
+            }) {
+                return None;
+            }
+        }
+        let anchors = self.tip_anchors.borrow();
+        let bounds = anchors.get(format!("capture-channel-{id}").as_str())?;
+        let panel_top = viewport.height - self.user_panel_height.unwrap_or(px(58.)) - px(8.);
+        (bounds.top() >= px(82.)
+            && bounds.bottom() <= panel_top
+            && bounds.left() >= px(72.)
+            && bounds.right() <= px(375.))
+        .then(|| bounds.center())
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_channel_selected(&self, id: Id) -> bool {
+        self.channel == Some(id)
+    }
+
     fn guide_home(&self) -> Option<Home> {
         let guild = self.current_guild()?;
         let value = self.fetched.get(&format!("{HOME}{}", guild.id))?;

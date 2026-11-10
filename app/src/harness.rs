@@ -176,6 +176,37 @@ pub async fn run(
                 let state = cx.update(|cx| root.read(cx).inventory_status());
                 let _ = writeln!(output, "inventory: {state}");
             }
+            ["channel", "click", id] => {
+                let Ok(id) = id.parse::<u64>() else {
+                    break;
+                };
+                let target = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.read(cx)
+                                .capture_channel_target(id, window.viewport_size())
+                        })
+                        .ok()
+                        .flatten()
+                });
+                let Some(position) = target else {
+                    let _ = writeln!(
+                        output,
+                        "channel click: row unavailable or excluded; script stopped"
+                    );
+                    break;
+                };
+                cx.update(|cx| {
+                    dispatch(cx, window, moved(position, None));
+                    dispatch(cx, window, down(position));
+                    dispatch(cx, window, up(position));
+                });
+                let selected = cx.update(|cx| root.read(cx).capture_channel_selected(id));
+                let _ = writeln!(output, "channel click: selected={selected} at {position:?}");
+                if !selected {
+                    break;
+                }
+            }
             ["member-profile", "mobile"] => {
                 let target = cx.update(|cx| {
                     window

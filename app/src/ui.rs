@@ -2737,6 +2737,10 @@ impl Root {
             .child(
                 div()
                     .id(SharedString::from(format!("channel-row-{}", channel.id)))
+                    .when(cfg!(feature = "capture"), |d| {
+                        d.relative()
+                            .child(self.anchor_probe(format!("capture-channel-{}", channel.id)))
+                    })
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Right,
