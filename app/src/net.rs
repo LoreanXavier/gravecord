@@ -282,6 +282,7 @@ fn account_route(route: &str) -> bool {
     path == "/users/@me"
         || path.starts_with("/users/@me/")
         || path.ends_with("/members/@me")
+        || path.ends_with("/profile/@me")
         || path.starts_with("/oauth2/")
         || path.starts_with("/store/")
         || path.contains("/billing/")
@@ -1280,6 +1281,31 @@ pub async fn run(
             Request::Image { key, url } => {
                 tokio::spawn(async move {
                     match client.fetch_public(&url).await {
+                        Ok(bytes)
+                            if url
+                                .split(['?', '#'])
+                                .next()
+                                .is_some_and(|path| path.ends_with(".riv")) =>
+                        {
+                            // Rive art (the Shop's Nitro credit coins): the first frame of the artboard named after
+                            // the `#`, its spaces written as underscores, drawn off the UI thread.
+                            let artboard = url
+                                .split_once('#')
+                                .map_or(String::new(), |(_, name)| name.replace('_', " "));
+                            match tokio::task::spawn_blocking(move || {
+                                crate::rive::first_frame_png(&bytes, &artboard, 512)
+                            })
+                            .await
+                            {
+                                Ok(Some(bytes)) => {
+                                    let _ = updates.send(Update::Image { key, bytes });
+                                }
+                                _ => {
+                                    warn!("rive failed");
+                                    let _ = updates.send(Update::ImageFailed { key });
+                                }
+                            }
+                        }
                         Ok(bytes)
                             if url
                                 .split('?')

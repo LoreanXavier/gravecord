@@ -20,6 +20,12 @@ pub(crate) struct Checkout {
     /// The Orbs "Review" step instead of the money checkout.
     pub orbs: bool,
     pub stage: ClaimStage,
+    /// The critical notice at the top of the Orbs review (`orb-checkout-error-notice`).
+    pub error: Option<&'static str>,
+    /// Entitlement reads made since the order was signed.
+    pub reads: usize,
+    /// Whether the granted entitlement is already used up (Nitro credits start at once).
+    pub consumed: bool,
 }
 
 /// Where an Orbs claim is: the review, the three orders calls in flight, the end.
@@ -28,12 +34,12 @@ pub(crate) enum ClaimStage {
     Review,
     Working,
     Done,
-    Failed,
 }
 
 impl Root {
     pub(super) fn shop_open_product(&mut self, sku: &str, cx: &mut Context<Self>) {
         self.shop.modal = Some(sku.to_owned());
+        self.shop.bundle_slide = 0;
         self.shop.checkout = None;
         self.shop
             .modal_scroll
@@ -70,6 +76,9 @@ impl Root {
             gift,
             orbs,
             stage: ClaimStage::Review,
+            error: None,
+            reads: 0,
+            consumed: false,
         });
         if self.shop.modal.is_none() {
             self.shop.modal = Some(sku.to_owned());
@@ -131,52 +140,81 @@ impl Root {
         }
         if let Some(open) = self.shop.checkout.as_mut() {
             open.stage = ClaimStage::Working;
+            open.error = None;
+            open.reads = 0;
         }
         self.shop_send_keyed("shop:order:create", data::orb_order_create(&checkout.sku));
         cx.notify();
     }
 
-    /// The answers of the claim chain: each step starts the next, a missing id or a failure ends in `Failed`.
+    /// The answers of the claim chain: create, sign, then the entitlement reads (`redeemVirtualCurrency` of module
+    /// 715054). A refused signing or any failed step puts the official notice on the review; an order with no
+    /// entitlement after the last wait puts the "taking longer" notice.
     pub(super) fn shop_order_fetched(
         &mut self,
         key: &str,
         body: &serde_json::Value,
         cx: &mut Context<Self>,
     ) {
-        let answer = &body["body"];
-        let failed = body["fetch_failed"] == true || answer["code"].is_number();
-        let stage = |this: &mut Root, stage: ClaimStage| {
-            if let Some(open) = this.shop.checkout.as_mut() {
-                open.stage = stage;
-            }
-        };
-        match key {
-            "shop:order:create" => match answer["id"].as_str() {
-                Some(id) if !failed => {
-                    let write = data::order_sign(id, answer["revision"].as_i64());
-                    self.shop_send_keyed("shop:order:sign", write);
-                    self.shop.order = Some(id.to_owned());
-                }
-                _ => stage(self, ClaimStage::Failed),
-            },
-            "shop:order:sign" if !failed => {
-                if let Some(id) = self.shop.order.clone() {
-                    let _ = self.requests.send(crate::net::Request::Fetch {
-                        key: "shop:order:entitlements".to_owned(),
-                        route: data::order_entitlements_route(&id),
-                    });
+        let reads = self.shop.checkout.as_ref().map_or(0, |open| open.reads);
+        match data::claim_next(key, body, reads) {
+            data::ClaimNext::Refused => {
+                if let Some(open) = self.shop.checkout.as_mut() {
+                    open.stage = ClaimStage::Review;
                 }
             }
-            "shop:order:entitlements" if !failed => {
-                stage(self, ClaimStage::Done);
+            data::ClaimNext::Sign { order, revision } => {
+                self.shop_send_keyed("shop:order:sign", data::order_sign(&order, revision));
+                self.shop.order = Some(order);
+            }
+            data::ClaimNext::Entitlements { attempt } => self.shop_read_entitlements(attempt, cx),
+            data::ClaimNext::Done { consumed } => {
+                if let Some(open) = self.shop.checkout.as_mut() {
+                    open.stage = ClaimStage::Done;
+                    open.consumed = consumed;
+                }
                 let _ = self.requests.send(crate::net::Request::Fetch {
                     key: "shop:balance".to_owned(),
                     route: data::BALANCE_ROUTE.to_owned(),
                 });
             }
-            _ => stage(self, ClaimStage::Failed),
+            data::ClaimNext::Fail(text) => {
+                if let Some(open) = self.shop.checkout.as_mut() {
+                    open.stage = ClaimStage::Review;
+                    open.error = Some(text);
+                }
+            }
+            data::ClaimNext::Ignore => {}
         }
         cx.notify();
+    }
+
+    /// One read of the signed order's entitlements, after the wait that belongs to the attempt.
+    fn shop_read_entitlements(&mut self, attempt: usize, cx: &mut Context<Self>) {
+        let Some(id) = self.shop.order.clone() else {
+            return;
+        };
+        if let Some(open) = self.shop.checkout.as_mut() {
+            open.reads = attempt;
+        }
+        let delay = attempt
+            .checked_sub(1)
+            .and_then(|at| data::ENTITLEMENT_DELAYS_MS.get(at))
+            .copied()
+            .unwrap_or(0);
+        let requests = self.requests.clone();
+        cx.spawn(async move |_, cx| {
+            if delay > 0 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(delay))
+                    .await;
+            }
+            let _ = requests.send(crate::net::Request::Fetch {
+                key: "shop:order:entitlements".to_owned(),
+                route: data::order_entitlements_route(&id),
+            });
+        })
+        .detach();
     }
 
     fn shop_send_keyed(&mut self, key: &str, write: data::Write) {
@@ -222,7 +260,7 @@ impl Root {
             Some(product) => self.shop_modal_body(&product, window, cx),
             None => div().into_any_element(),
         };
-        let checkout = self.shop_checkout(cx);
+        let checkout = self.shop_checkout(window, cx);
         let modal = div()
             .parity("shop-modal")
             .occlude()
@@ -263,6 +301,12 @@ impl Root {
         let nitro = self.shop_has_nitro();
         let orbs_only = product.orbs_exclusive();
         let sku = product.sku_id.clone();
+        let slide = self
+            .shop
+            .bundle_slide
+            .min(product.items.len().saturating_sub(1));
+        let view = product.slide(slide);
+        let kind = view.kind;
         let category = self
             .shop
             .home
@@ -275,12 +319,7 @@ impl Root {
         let banner = category
             .as_ref()
             .filter(|_| !orbs_only)
-            .and_then(|category| {
-                category
-                    .hero_banner_url
-                    .clone()
-                    .or_else(|| category.catalog_banner_url.clone())
-            })
+            .and_then(|category| category.pdp_bg_url.clone())
             .and_then(|url| self.shop_img(&url));
         let collection = category.map(|category| category.name);
         let wished = self.shop.wishlist.contains(&sku);
@@ -291,7 +330,7 @@ impl Root {
         let nitro_price = (!nitro && !orbs_only)
             .then(|| product.fiat_price(true).cloned())
             .flatten();
-        let left_preview = self.shop_preview(product, 330., true, true, window, cx);
+        let left_preview = self.shop_preview(&view, 330., true, true, window, cx);
         let claimable = self.shop_claimable(&sku);
         let orb_state = self.shop_orb_state(product);
         let orb_amount = price.as_ref().map(|price| price.amount).unwrap_or_default();
@@ -434,6 +473,8 @@ impl Root {
                     .when(price.is_some(), |row| row.child(buy))
                     .when(!orbs_only && price.is_some(), |row| row.child(gift)),
             );
+        let bundle_strip = (product.kind == data::KIND_BUNDLE && !product.items.is_empty())
+            .then(|| self.shop_bundle_strip(product, slide, cx));
         let left = div()
             .parity("shop-modal-left")
             .relative()
@@ -484,7 +525,8 @@ impl Root {
                             .child(
                                 text(14., 18., 400., "--text-default")
                                     .child(self.shop_summary(product)),
-                            ),
+                            )
+                            .children(bundle_strip),
                     )
                     .child(pricing),
             );
@@ -547,12 +589,13 @@ impl Root {
             .as_ref()
             .map(|user| user.username.clone())
             .unwrap_or_default();
-        let deco_art = (product.kind == data::KIND_AVATAR_DECORATION)
+        let user_name = user.clone();
+        let deco_art = (kind == data::KIND_AVATAR_DECORATION)
             .then(|| {
-                let id = product
+                let id = view
                     .items
                     .first()
-                    .map_or(product.sku_id.clone(), |item| item.sku_id.clone());
+                    .map_or(view.sku_id.clone(), |item| item.sku_id.clone());
                 self.shop_img(&item_static(&id))
             })
             .flatten();
@@ -619,8 +662,33 @@ impl Root {
                             .bg(color("--white")),
                     ),
             );
-        let effect = (product.kind == data::KIND_PROFILE_EFFECT)
-            .then(|| product.sku_id.parse::<u64>().ok())
+        let orb_badge_shown = product.sku_id == data::ORB_BADGE;
+        let orb_badge = orb_badge_shown
+            .then(|| self.shop_img(data::ORB_BADGE_PNG))
+            .flatten();
+        let frame_art: Vec<_> = if kind == data::KIND_PROFILE_FRAME {
+            view.items
+                .first()
+                .map(|item| {
+                    item.layers
+                        .iter()
+                        .map(|layer| {
+                            format!(
+                                "https://cdn.discordapp.com/media/v1/collectibles-shop/{}/{layer}/static",
+                                item.sku_id
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|url| self.shop_img(url))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let effect = (kind == data::KIND_PROFILE_EFFECT)
+            .then(|| view.sku_id.parse::<u64>().ok())
             .flatten()
             .and_then(|sku| {
                 let surface = crate::ui::profile_effects::Surface::shop_preview(302., true, true);
@@ -654,10 +722,34 @@ impl Root {
                     .flex_col()
                     .child(text(20., 24., 700., "--text-strong").child(user.clone()))
                     .child(div().h(px(3.)))
-                    .child(text(14., 18., 500., "--text-strong").child(user.clone())),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(text(14., 18., 500., "--text-strong").child(user.clone()))
+                            .children(orb_badge.map(|art| {
+                                div()
+                                    .h(px(21.))
+                                    .px(px(5.))
+                                    .rounded(px(6.))
+                                    .bg(color("--background-mod-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .child(img(art).size(px(16.)).object_fit(ObjectFit::Contain))
+                            })),
+                    ),
             )
-            .children(effect);
-        let chat_shown = product.kind == data::KIND_AVATAR_DECORATION;
+            .children(effect)
+            .children(frame_art.into_iter().map(|art| {
+                img(art)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+            }));
+        let chat_shown = kind == data::KIND_AVATAR_DECORATION;
         let chat = chat_shown.then(|| {
             div()
                 .relative()
@@ -710,6 +802,23 @@ impl Root {
                         .child(icon("shop_mock_emoji", 24., "--interactive-text-default")),
                 )
         });
+        let external = product.kind == data::KIND_EXTERNAL;
+        let centre = if external && !orb_badge_shown && data::is_fractional_nitro(&product.sku_id) {
+            self.shop_nitro_perks().into_any_element()
+        } else if external && !orb_badge_shown {
+            self.shop_external_preview(product).into_any_element()
+        } else if kind == data::KIND_NAMEPLATE {
+            self.shop_nameplate_pane(&view, &user_name)
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .w(px(if chat_shown { 344. } else { 302. }))
+                .child(profile)
+                .children(chat)
+                .into_any_element()
+        };
         let right = div()
             .parity("shop-modal-preview")
             .relative()
@@ -719,13 +828,24 @@ impl Root {
             .overflow_hidden()
             .bg(color("--background-surface-highest"))
             .children(banner.map(|banner| {
-                img(banner)
+                // The preview container paints the art `cover` over its whole 650px; the art is blurred by the
+                // server and ends in the flat surface colour at 294px, so the top 294px of it show.
+                div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .w_full()
                     .h(px(294.))
-                    .object_fit(ObjectFit::Cover)
+                    .overflow_hidden()
+                    .child(
+                        img(banner)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(650.))
+                            .object_fit(ObjectFit::Cover),
+                    )
             }))
             .child(
                 div()
@@ -763,14 +883,7 @@ impl Root {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .w(px(if chat_shown { 344. } else { 302. }))
-                            .child(profile)
-                            .children(chat),
-                    ),
+                    .child(centre),
             );
         let content = div()
             .w(px(945.))
@@ -792,6 +905,221 @@ impl Root {
             )
             .child(classic_scrollbar(handle))
             .into_any_element()
+    }
+
+    /// The bundle's contents (`bundleContents_Sy_obt`): a row of 48px thumbnails with the selected one outlined, then the
+    /// selected item's name and type.
+    fn shop_bundle_strip(
+        &mut self,
+        product: &Product,
+        selected: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = div().flex().flex_row().flex_wrap().gap(px(10.));
+        for (at, item) in product.items.iter().enumerate() {
+            let inset = matches!(
+                item.kind,
+                data::KIND_AVATAR_DECORATION | data::KIND_PROFILE_FRAME
+            );
+            let url = match (&item.thumbnail, item.kind) {
+                (Some(thumb), data::KIND_PROFILE_EFFECT) => thumb.clone(),
+                _ => item_static(&item.sku_id),
+            };
+            let art = self.shop_img(&url);
+            let on = at == selected;
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("shop-bundle-item-{at}")))
+                    .relative()
+                    .size(px(48.))
+                    .flex_none()
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(color("--background-mod-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.shop.bundle_slide = at;
+                        cx.notify();
+                    }))
+                    .children(art.map(|art| {
+                        img(art)
+                            .size(px(48. * if inset { 0.75 } else { 0.93 }))
+                            .object_fit(ObjectFit::Contain)
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .rounded(px(8.))
+                            .border_2()
+                            .border_color(if on {
+                                color("--border-focus")
+                            } else {
+                                gpui::rgba(0x00000000)
+                            }),
+                    ),
+            );
+        }
+        let active = product.items.get(selected);
+        let name = product
+            .bundled
+            .get(selected)
+            .map(|part| part.name.clone())
+            .or_else(|| active.map(|item| item.label.clone()))
+            .unwrap_or_default();
+        let kind = active.and_then(|item| data::item_type_label(item.kind));
+        div()
+            .parity("shop-bundle-contents")
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .pt(px(12.))
+            .child(row)
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .min_w(px(0.))
+                    .child(text(14., 18., 500., "--text-default").child(name))
+                    .children(kind.map(|kind| {
+                        text(14., 18., 500., "--text-muted").child(format!(" - {kind}"))
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The nameplate's right pane (`eB` of module 355735): a member list of five other members with the shopper's own
+    /// row, wearing the nameplate, among them.
+    fn shop_nameplate_pane(&mut self, view: &Product, user: &str) -> impl IntoElement {
+        let plate = view
+            .items
+            .first()
+            .map_or(view.sku_id.clone(), |item| item.sku_id.clone());
+        let art = self.shop_img(&item_static(&plate));
+        let member = |name: &str, tint: &'static str| {
+            div()
+                .h(px(42.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .size(px(32.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(color("--background-mod-strong")),
+                )
+                .child(text(16., 20., 500., tint).child(name.to_owned()))
+        };
+        let group = |label: &str| {
+            div()
+                .mt(px(24.))
+                .mb(px(4.))
+                .pl(px(16.))
+                .child(text(12., 16., 500., "--channels-default").child(label.to_owned()))
+        };
+        let own = div()
+            .relative()
+            .h(px(42.))
+            .mx(px(8.))
+            .rounded(px(8.))
+            .overflow_hidden()
+            .children(art.map(|art| {
+                img(art)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(color("--background-brand"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("sb_discord", 20., "--white")),
+                    )
+                    .child(text(16., 20., 500., "--text-strong").child(user.to_owned())),
+            );
+        div()
+            .parity("shop-nameplate-pane")
+            .w(px(240.))
+            .pb(px(8.))
+            .rounded(px(8.))
+            .bg(color("--background-surface-high"))
+            .child(group("Admins - 3"))
+            .child(member("Mallow", "--role-sky-blue"))
+            .child(member("Phibi", "--role-magenta"))
+            .child(own)
+            .child(member("Locke", "--role-magenta"))
+            .child(group("Online - 12"))
+            .child(member("Boom", "--role-light-green"))
+            .child(member("Cherry", "--role-light-green"))
+    }
+
+    /// The Nitro credit's right pane (`eW` of module 355735): the Nitro artwork, the wordmark and the perks.
+    fn shop_nitro_perks(&mut self) -> impl IntoElement {
+        let header = self.shop_img(
+            "https://cdn.discordapp.com/assets/content/81644099db353c3ea7cefa334f8d298d06b768a68a349de663d2151fd01eddc7.png",
+        );
+        div()
+            .parity("shop-nitro-perks")
+            .p(px(24.))
+            .rounded(px(16.))
+            .bg(gpui::linear_gradient(
+                180.,
+                gpui::linear_color_stop(gpui::rgb(0x000000), 0.),
+                gpui::linear_color_stop(gpui::rgb(0x36266d), 1.),
+            ))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w(px(211.))
+                    .h(px(157.))
+                    .mb(px(24.))
+                    .children(header.map(|art| img(art).size_full().object_fit(ObjectFit::Cover))),
+            )
+            .child(icon("shop_nitro_wordmark", 106., "--white"))
+            .child(div().mt(px(16.)).flex().flex_col().gap(px(10.)).children(
+                data::NITRO_PERKS.iter().map(|perk| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("checkbox_check", 16., "--white"))
+                        .child(text(14., 18., 500., "--text-overlay-light").child(*perk))
+                }),
+            ))
+    }
+
+    /// The right pane of an external product that has no mock (`externalProductProfilePreview`): its art, 350px wide.
+    fn shop_external_preview(&mut self, product: &Product) -> impl IntoElement {
+        let art = data::external_art_url(&product.sku_id).and_then(|url| self.shop_img(&url));
+        div()
+            .w(px(350.))
+            .h(px(252.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .children(art.map(|art| img(art).size_full().object_fit(ObjectFit::Contain)))
     }
 
     /// The summary line: bundles list their parts (`{joinedItems}` is the server's placeholder for that list).
@@ -816,7 +1144,7 @@ impl Root {
 
     /// The checkout summary (`payment-modal` / `gift-payment-modal`): what is bought, for whom and the total. The
     /// payment step is not reached from here: nothing is sent.
-    fn shop_checkout(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn shop_checkout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let checkout = self.shop.checkout.clone()?;
         let product = self.shop_product(&checkout.sku)?;
         let nitro = self.shop_has_nitro();
@@ -826,7 +1154,10 @@ impl Root {
             .map(|price| price.text())
             .unwrap_or_default();
         if checkout.orbs {
-            return Some(self.shop_orb_checkout(&product, checkout.stage, cx));
+            if checkout.stage == ClaimStage::Done {
+                return Some(self.shop_collected(&product, checkout.consumed, window, cx));
+            }
+            return Some(self.shop_orb_checkout(&product, checkout.stage, window, cx));
         }
         let title = if checkout.gift {
             "Send a Gift"
@@ -895,35 +1226,55 @@ impl Root {
         )
     }
 
-    /// The Orbs "Review" step of the unified checkout (`ORB_CHECKOUT`): the item, the "Orbs Balance" payment row and
-    /// the "Claim with Orbs" button, disabled with its tooltip when the balance does not cover the price.
+    /// The Orbs "Review" step of the unified checkout (`ORB_CHECKOUT`, module 141393 `sc`): the "Checkout" header, the
+    /// critical notice of a failed claim, the item with its Orbs price, the "Payment method" field holding the
+    /// "Orbs Balance" row, the legal text and the "Claim with Orbs" button. Without enough Orbs the button is
+    /// disabled and its tooltip says "Not enough Orbs.".
     fn shop_orb_checkout(
         &mut self,
         product: &Product,
         stage: ClaimStage,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = self.shop_orb_state(product);
+        let error = self.shop.checkout.as_ref().and_then(|open| open.error);
         let price = product
             .price(data::PRICE_DEFAULT, Some(data::ORB))
             .map(|price| price.amount)
             .unwrap_or_default();
         let balance = self.shop.balance.unwrap_or_default();
-        let orbs = |amount: i64, tint: &'static str| {
+        let blocked = state != data::OrbButton::Ready;
+        let working = stage == ClaimStage::Working;
+        let art = match data::external_art_url(&product.sku_id) {
+            Some(url) => {
+                let art = self.shop_img(&url);
+                div()
+                    .size_full()
+                    .children(art.map(|art| img(art).size_full().object_fit(ObjectFit::Contain)))
+                    .into_any_element()
+            }
+            None => self.shop_preview(product, 64., false, false, window, cx),
+        };
+        let summary = self.shop_summary(product);
+        let notice = error.map(|message| {
             div()
                 .flex()
-                .items_center()
-                .gap(px(4.))
-                .child(icon("shop_orb_18", 18., tint))
-                .child(text(16., 20., 600., tint).child(amount.to_string()))
-        };
-        let blocked = state != data::OrbButton::Ready || stage != ClaimStage::Review;
-        let label = match stage {
-            ClaimStage::Review => "Claim with Orbs",
-            ClaimStage::Working => "Claiming...",
-            ClaimStage::Done => "Done",
-            ClaimStage::Failed => "Something went wrong",
-        };
+                .items_start()
+                .gap(px(8.))
+                .p(px(12.))
+                .rounded(px(4.))
+                .bg(color("--background-feedback-mod-critical"))
+                .border_1()
+                .border_color(color("--inlinenotice-border-critical"))
+                .child(icon("shop_circle_error", 16., "--icon-feedback-critical"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(text(14., 18., 400., "--text-strong").child(message)),
+                )
+        });
         let claim = div()
             .id("shop-orb-claim")
             .parity("shop-orb-claim")
@@ -934,8 +1285,10 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .when(blocked, |button| button.opacity(0.5).cursor_not_allowed())
-            .when(!blocked, |button| {
+            .when(blocked || working, |button| {
+                button.opacity(0.5).cursor_not_allowed()
+            })
+            .when(!blocked && !working, |button| {
                 button
                     .cursor_pointer()
                     .hover(|button| button.bg(color("--brand-560")))
@@ -944,8 +1297,8 @@ impl Root {
                         this.shop_claim_orbs(cx);
                     }))
             })
-            .child(text(16., 20., 500., "--white").child(label));
-        let claim = match state.checkout_tip().filter(|_| stage == ClaimStage::Review) {
+            .child(text(16., 20., 500., "--white").child("Claim with Orbs"));
+        let claim = match state.checkout_tip().filter(|_| !working) {
             Some(tip) => self
                 .with_tip(
                     "shop-orb-claim-tip",
@@ -956,57 +1309,289 @@ impl Root {
                 .into_any_element(),
             None => claim.into_any_element(),
         };
-        div()
+        let close = div()
+            .id("shop-checkout-close")
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.shop.checkout = None;
+                cx.notify();
+            }))
+            .child(icon("close", 24., "--interactive-icon-default"));
+        let item = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(64.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(color("--background-mod-subtle"))
+                    .child(div().absolute().inset_0().child(art)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(text(16., 22., 400., "--text-default").child(product.name.clone()))
+                    .child(text(14., 18., 400., "--text-muted").child(summary)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(icon("shop_orb_18", 16., "--text-default"))
+                    .child(text(16., 22., 500., "--text-default").child(price.to_string())),
+            );
+        let method = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(text(14., 18., 600., "--text-strong").child("Payment method"))
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(18.))
+                    .rounded(px(8.))
+                    .bg(color("--background-mod-subtle"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(text(16., 20., 400., "--text-default").child("Orbs Balance"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("shop_orb_18", 16., "--icon-subtle"))
+                            .child(
+                                text(16., 20., 400., "--text-default").child(balance.to_string()),
+                            ),
+                    ),
+            );
+        let panel = div()
             .id("shop-checkout")
             .parity("shop-checkout")
             .occlude()
-            .absolute()
             .w(px(480.))
             .rounded(px(8.))
             .bg(color("--modal-background"))
             .flex()
             .flex_col()
+            .pt(px(8.))
+            .pb(px(16.))
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .px(px(24.))
-                    .pt(px(24.))
+                    .pt(px(16.))
+                    .pb(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(text(20., 24., 600., "--text-strong").child("Checkout"))
+                    .child(close),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(24.))
+                    .children(notice)
+                    .child(item)
+                    .child(method)
+                    .child(text(12., 16., 400., "--text-muted").child(data::ORB_LEGAL)),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(16.))
+                    .pb(px(8.))
+                    .flex()
+                    .justify_end()
+                    .child(claim),
+            );
+        div()
+            .id("shop-checkout-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(color("--background-scrim"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.shop.checkout = None;
+                cx.notify();
+            }))
+            .child(panel)
+            .into_any_element()
+    }
+
+    /// The celebration modal after a claim (`COLLECTIBLES_COLLECTED_MODAL`, modules 393870 and 328064): the
+    /// item, a title, the line under it and the buttons. The product modal closes behind it.
+    fn shop_collected(
+        &mut self,
+        product: &Product,
+        consumed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let copy = data::collected_copy(&product.sku_id, &product.name, consumed);
+        let close_modal = |this: &mut Root, cx: &mut Context<Self>| {
+            this.shop.checkout = None;
+            this.shop.modal = None;
+            cx.notify();
+        };
+        let button =
+            |id: &'static str, label: &'static str, primary: bool, cx: &mut Context<Self>| {
+                let (base, hover) = if primary {
+                    ("--background-brand", "--brand-560")
+                } else {
+                    (
+                        "--button-secondary-background",
+                        "--button-secondary-background-hover",
+                    )
+                };
+                div()
+                    .id(id)
+                    .h(px(40.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(color(base))
+                    .hover(move |button| button.bg(color(hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        close_modal(this, cx);
+                    }))
+                    .child(text(16., 20., 500., "--white").child(label))
+            };
+        let actions: Vec<AnyElement> = copy
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(at, (label, primary))| {
+                let id = if *primary {
+                    "shop-collected-primary"
+                } else {
+                    "shop-collected-secondary"
+                };
+                let _ = at;
+                button(id, label, *primary, cx).into_any_element()
+            })
+            .collect();
+        let wide = matches!(
+            product.kind,
+            data::KIND_NAMEPLATE | data::KIND_AVATAR_DECORATION | data::KIND_BUNDLE
+        );
+        let height = if wide { 162. } else { 192. };
+        let art = self.shop_preview(product, 288., false, false, window, cx);
+        let panel = div()
+            .id("shop-collected")
+            .parity("shop-collected")
+            .occlude()
+            .w(px(480.))
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(color("--modal-background"))
+            .flex()
+            .flex_col()
+            .pt(px(8.))
+            .pb(px(16.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .relative()
+                    .px(px(32.))
+                    .pt(px(16.))
                     .pb(px(16.))
                     .flex()
-                    .justify_between()
-                    .child(text(16., 20., 500., "--text-default").child(product.name.clone()))
-                    .child(orbs(price, "--text-strong")),
-            )
-            .child(
-                div()
-                    .px(px(24.))
-                    .py(px(16.))
-                    .flex()
-                    .justify_between()
-                    .child(text(14., 18., 500., "--text-default").child("Orbs Balance"))
-                    .child(orbs(balance, "--text-default")),
-            )
-            .child(
-                div()
-                    .px(px(24.))
-                    .py(px(16.))
-                    .flex()
-                    .justify_between()
+                    .flex_col()
                     .items_center()
-                    .bg(color("--background-base-low"))
+                    .child(div().absolute().top_0().left_0().right_0().h_full().bg(
+                        gpui::linear_gradient(
+                            90.,
+                            gpui::linear_color_stop(gpui::rgba(0xa157f273), 0.),
+                            gpui::linear_color_stop(gpui::rgba(0x3d168a73), 1.),
+                        ),
+                    ))
+                    .child(div().absolute().top_0().left_0().right_0().h_full().bg(
+                        gpui::linear_gradient(
+                            180.,
+                            gpui::linear_color_stop(gpui::rgba(0x00000000), 0.),
+                            gpui::linear_color_stop(color("--modal-background"), 1.),
+                        ),
+                    ))
                     .child(
                         div()
-                            .id(SharedString::from("shop-checkout-back"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.shop.checkout = None;
-                                cx.notify();
-                            }))
-                            .child(text(14., 18., 600., "--text-strong").child("Back")),
+                            .relative()
+                            .pt(px(20.))
+                            .pb(px(16.))
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(288.))
+                                    .h(px(height))
+                                    .overflow_hidden()
+                                    .child(div().absolute().inset_0().child(art)),
+                            ),
                     )
-                    .child(claim),
+                    .child(
+                        div()
+                            .relative()
+                            .text_center()
+                            .child(text(24., 30., 600., "--text-strong").child(copy.title)),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .mt(px(8.))
+                            .text_center()
+                            .child(text(16., 20., 400., "--text-subtle").child(copy.subtitle)),
+                    ),
             )
+            .child(
+                div()
+                    .px(px(32.))
+                    .pt(px(16.))
+                    .pb(px(16.))
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .children(actions),
+            );
+        div()
+            .id("shop-collected-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(color("--background-scrim"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(panel)
             .into_any_element()
     }
 }

@@ -1010,7 +1010,12 @@ impl Root {
                             } else {
                                 "--channels-default"
                             }))
-                            .child(user.display_name().to_owned()),
+                            .child(super::name_styles::name(
+                                format!("voice-member-name-{}", user.id),
+                                user.display_name().to_owned(),
+                                self.name_styles(&user, Some(guild)).as_ref(),
+                                super::name_styles::Display::Font,
+                            )),
                     )
                     // `icons_YUoOxm`: 16px, the muted microphone or the deafened headphones.
                     .when(deaf, |this| {

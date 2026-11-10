@@ -6,8 +6,8 @@ use super::{Root, avatar_source, color, icon, status_dot_large};
 use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, Hsla, IntoElement, Rgba, div, hsla, img, linear_color_stop,
-    linear_gradient, prelude::*, px, rgba,
+    AnyElement, Context, FontWeight, Hsla, IntoElement, Rgba, Window, div, hsla, img,
+    linear_color_stop, linear_gradient, prelude::*, px, rgba,
 };
 
 /// Colors of the card: background stops, overlay, and the text it carries.
@@ -123,7 +123,7 @@ impl Root {
         }
     }
 
-    pub(super) fn dm_profile(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn dm_profile(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.show_dm_profile {
             return None;
         }
@@ -203,17 +203,27 @@ impl Root {
                                         .child(status_dot_large(&presence, "--black")),
                                 ),
                         ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(8.))
-                        .right(px(8.))
-                        .flex()
-                        .gap(px(8.))
-                        .child(self.profile_friend_button(user.id, cx))
-                        .child(self.profile_more_button(user.id, cx)),
                 );
+        // The banner buttons sit above the profile effect (z-index 3 against the effect's 2), so they are drawn after it.
+        let banner_buttons = div()
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .flex()
+            .gap(px(8.))
+            .child(self.profile_friend_button(user.id, cx))
+            .child(self.profile_more_button(user.id, cx));
+        // `ProfileEffects` is the last child of the sidebar card (module 289287).
+        let effect = self.profile_effect_sku(user.id).and_then(|sku| {
+            let hovering = self.profile_effect_hovered("dm-profile");
+            self.profile_effect_layer(
+                "dm-profile",
+                sku,
+                super::profile_effects::Surface::profile(300., hovering),
+                window,
+                cx,
+            )
+        });
         let names = div()
             .flex()
             .flex_col()
@@ -365,6 +375,10 @@ impl Root {
                 .child("View Full Profile"),
         );
         let card = div()
+            .id("dm-profile-card")
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.profile_effect_hover("dm-profile", *inside, cx);
+            }))
             .w(px(304.))
             .flex_1()
             .min_h(px(0.))
@@ -386,12 +400,15 @@ impl Root {
             .child(
                 div()
                     .size_full()
+                    .relative()
                     .rounded(px(6.))
                     .bg(palette.overlay)
                     .flex()
                     .flex_col()
                     .child(div().flex_1().child(header).child(sections))
-                    .child(footer),
+                    .child(footer)
+                    .children(effect)
+                    .child(banner_buttons),
             );
         // Blocked, or ignored while the speedbump is on: "Show Profile?" first.
         let ignored = !self.is_blocked(user.id) && self.stores.is_ignored(user.id);

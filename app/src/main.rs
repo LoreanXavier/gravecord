@@ -15,6 +15,7 @@ mod net;
 mod notifications;
 mod palette;
 mod parity;
+mod rive;
 mod rpc;
 mod shell;
 mod sounds;

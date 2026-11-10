@@ -159,15 +159,18 @@ impl Root {
             return "usage: pref get <key> | pref set <key> on|off|<index>".to_owned();
         };
         if *verb == "local" {
-            let Some(pref) = proto_spec(key) else {
-                return format!("{key} is not a proto preference");
+            let key_name = proto_spec(key)
+                .map(|pref| pref.key)
+                .or_else(|| local_spec(key).map(|(known, _)| known));
+            let Some(key_name) = key_name else {
+                return format!("{key} is not a preference");
             };
             let on = match rest.first().copied() {
                 Some("on") => true,
                 Some("off") => false,
                 _ => return "usage: pref local <key> on|off".to_owned(),
             };
-            self.setting_choices.insert(pref.key, Choice::On(on));
+            self.setting_choices.insert(key_name, Choice::On(on));
             return format!("{key} local = {on}");
         }
         if *key == "theme" {

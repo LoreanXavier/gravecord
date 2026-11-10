@@ -5,7 +5,7 @@
 //! page), 821816 (Browse), 987421 (the card), 110676 (the blocks).
 mod browse;
 mod cards;
-mod data;
+pub(super) mod data;
 mod featured;
 mod modal;
 
@@ -50,8 +50,18 @@ pub(super) struct State {
     pub open: bool,
     pub tab: Tab,
     /// Which header entry the pointer is on, and which menu it is on; a menu stays open while either holds.
-    pub hover_item: Option<Menu>,
-    pub hover_menu: Option<Menu>,
+    /// The menu that is open, and the menu the pointer is in (the header entry or its popout). A menu opens and
+    /// closes 100 ms after the pointer arrives or leaves (`useHoverDelay(100, 100)` of module 971458); the
+    /// balance popout opens by click.
+    pub menu_open: Option<Menu>,
+    pub pointer_in: Option<Menu>,
+    /// The Game Shops menu: the storefronts that list themselves in the navigation and their applications.
+    pub game_shops: Vec<data::GameShop>,
+    pub storefront_apps: Vec<String>,
+    /// The wishlist page behind the heart button of the header.
+    pub wishlist_open: bool,
+    /// The wishlist's skus in the order the server listed them.
+    pub wishlist_order: Vec<String>,
     pub scroll: ScrollHandle,
     pub search: Option<Entity<Editor>>,
     pub events: Option<Subscription>,
@@ -61,16 +71,20 @@ pub(super) struct State {
     pub collections_total: u64,
     pub products: HashMap<String, Product>,
     pub balance: Option<i64>,
-    /// Skus the account wishlisted in this session (the wishlist read itself is not fetched).
+    /// Skus on the account's wishlist: read when the Shop opens, changed by the hearts.
     pub wishlist: HashSet<String>,
     pub filters: Filters,
     pub sort: Sort,
+    /// Whether the shopper picked a sort: until then the filters choose it.
+    pub sort_chosen: bool,
     pub filters_open: bool,
     pub sort_open: bool,
     /// The search answer of the Browse page: sku ids and whether more pages exist.
     pub results: Option<(Vec<String>, bool)>,
     pub feed: Vec<String>,
     pub modal: Option<String>,
+    /// The slide of a bundle the modal previews (`selectedBundleSlide`).
+    pub bundle_slide: usize,
     pub shelves: HashMap<String, ScrollHandle>,
     pub notice: Option<String>,
     pub checkout: Option<modal::Checkout>,
@@ -144,6 +158,10 @@ impl Root {
         self.shop_request("shop:home", data::shop_home_route("home"));
         self.shop_request("shop:orbs", data::shop_home_route("orbs"));
         self.shop_request("shop:balance", data::BALANCE_ROUTE.to_owned());
+        self.shop_request("shop:storefronts", data::STOREFRONT_CONFIG_ROUTE.to_owned());
+        if let Some(user) = self.stores.current_user.as_ref().map(|user| user.id) {
+            self.shop_request("shop:profile", data::own_profile_route(user));
+        }
         cx.notify();
     }
 
@@ -158,8 +176,9 @@ impl Root {
 
     pub(super) fn shop_set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.shop.tab = tab;
-        self.shop.hover_item = None;
-        self.shop.hover_menu = None;
+        self.shop.wishlist_open = false;
+        self.shop.menu_open = None;
+        self.shop.pointer_in = None;
         self.shop.modal = None;
         self.shop.scroll.set_offset(point(px(0.), px(0.)));
         if tab == Tab::Browse {
@@ -217,14 +236,7 @@ impl Root {
         match key {
             "shop:wishlist" => {
                 // `{body: {id, wishlist_items: [{sku: {id}}]}}` (module 808247's answer to an add or a remove).
-                let list = &body["body"];
-                self.shop.wishlist_id = list["id"].as_str().map(str::to_owned);
-                if let Some(items) = list["wishlist_items"].as_array() {
-                    self.shop.wishlist = items
-                        .iter()
-                        .filter_map(|item| item["sku"]["id"].as_str().map(str::to_owned))
-                        .collect();
-                }
+                self.shop_take_wishlist(&body["body"]);
             }
             "shop:home" | "shop:orbs" => {
                 let home = data::parse_home(&body);
@@ -260,6 +272,27 @@ impl Root {
             "shop:balance" => {
                 self.shop.balance = body["balance"].as_i64();
             }
+            "shop:storefronts" => {
+                self.shop.storefront_apps = data::storefront_nav_apps(&body);
+                if !self.shop.storefront_apps.is_empty() {
+                    let route = data::applications_route(&self.shop.storefront_apps);
+                    self.shop_request("shop:apps", route);
+                }
+            }
+            "shop:apps" => {
+                self.shop.game_shops =
+                    data::parse_game_shops(&self.shop.storefront_apps.clone(), &body);
+            }
+            "shop:profile" => {
+                // The wishlist ids are the keys of `wishlist_settings`; the first one is read (`getFirstWishlistId`).
+                if let Some(id) = data::wishlist_ids(&body).into_iter().next() {
+                    self.shop.wishlist_id = Some(id.clone());
+                    self.shop_request("shop:wishlistread", data::wishlist_route(&id));
+                }
+            }
+            "shop:wishlistread" => {
+                self.shop_take_wishlist(&body);
+            }
             _ if key.starts_with("shop:collections:") => {
                 let (categories, total) = data::parse_collections(&body);
                 for category in &categories {
@@ -293,6 +326,22 @@ impl Root {
         cx.notify();
     }
 
+    /// The wishlist an answer carries: its id, its skus, and the products behind them.
+    fn shop_take_wishlist(&mut self, list: &serde_json::Value) {
+        if let Some(id) = list["id"].as_str() {
+            self.shop.wishlist_id = Some(id.to_owned());
+        }
+        if let Some(items) = list["wishlist_items"].as_array() {
+            let skus: Vec<String> = items
+                .iter()
+                .filter_map(|item| item["sku"]["id"].as_str().map(str::to_owned))
+                .collect();
+            self.shop.wishlist = skus.iter().cloned().collect();
+            self.shop.wishlist_order = skus.clone();
+            self.shop_need_products(&skus);
+        }
+    }
+
     /// Asks for a read again after an error.
     fn shop_forget(&mut self, key: &str) {
         self.requested.remove(key);
@@ -316,6 +365,46 @@ impl Root {
         }
         written.sort();
         format!("shop dump: {}", written.join(", "))
+    }
+
+    /// A harness step: opens the product modal and the Orbs checkout for a sku in memory, in a chosen state. Nothing is
+    /// sent: `review` is the review step; `done` and `done-consumed` the collected modal; `owned`, `funds`, `bundle`,
+    /// `expired`, `late` and `generic` the review with the notice a failed claim shows.
+    #[cfg(feature = "capture")]
+    pub fn script_shop_checkout(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        let Some(sku) = words.first() else {
+            return "shop checkout: no sku".to_owned();
+        };
+        let state = words.get(1).copied().unwrap_or("review");
+        self.shop_open_product(sku, cx);
+        if state == "open" {
+            return format!("shop checkout: {sku} open");
+        }
+        let error = match state {
+            "owned" => Some("Item already owned."),
+            "funds" => Some("Not enough Orbs."),
+            "bundle" => Some("You already own one or more items in this bundle."),
+            "expired" => Some("Your checkout session expired. Reopen checkout to continue."),
+            "late" => Some(data::ENTITLEMENTS_LATE),
+            "generic" => Some(data::GENERIC_CLAIM_ERROR),
+            _ => None,
+        };
+        let stage = if state.starts_with("done") {
+            modal::ClaimStage::Done
+        } else {
+            modal::ClaimStage::Review
+        };
+        self.shop.checkout = Some(modal::Checkout {
+            sku: (*sku).to_owned(),
+            gift: false,
+            orbs: true,
+            stage,
+            error,
+            reads: 0,
+            consumed: state == "done-consumed",
+        });
+        cx.notify();
+        format!("shop checkout: {sku} {state}")
     }
 
     #[cfg(feature = "capture")]
@@ -361,9 +450,17 @@ impl Root {
         self.shop.events = Some(events);
     }
 
+    /// Lets the filters pick the sort while the shopper has not (`userHasSelectedSort`).
+    pub(super) fn shop_default_sort(&mut self) {
+        if !self.shop.sort_chosen {
+            self.shop.sort = self.shop.filters.default_sort();
+        }
+    }
+
     /// Runs a search on the Browse page, or clears it.
     pub(super) fn shop_search(&mut self, text: &str, cx: &mut Context<Self>) {
         self.shop.filters.search = text.chars().take(256).collect();
+        self.shop_default_sort();
         if self.shop.tab != Tab::Browse {
             self.shop_set_tab(Tab::Browse, cx);
         } else {
@@ -378,6 +475,7 @@ impl Root {
         let header = self.shop_header(window, cx);
         let scroll = self.shop.scroll.clone();
         let body = match self.shop.tab {
+            _ if self.shop.wishlist_open => self.shop_wishlist_page(window, cx),
             Tab::Featured => self.shop_featured(false, window, cx),
             Tab::Orbs => self.shop_featured(true, window, cx),
             Tab::Browse => self.shop_browse(window, cx),
@@ -439,30 +537,31 @@ impl Root {
     /// `headerBar_ViLURN`: 49px tall (the 1px rule included), the shop mark, the tabs, and the search, wishlist and Orbs
     /// balance at the right.
     fn shop_header(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let tab = self.shop.tab;
-        let open = self.shop.hover_item.or(self.shop.hover_menu);
-        let nav = div()
+        let open = self.shop.menu_open;
+        let (visible, overflow) = self.shop_nav_split(window);
+        let mut nav = div()
             .parity("shop-nav")
             .h(px(48.))
             .ml(px(44.))
             .flex()
             .items_center()
-            .gap(px(32.))
-            .child(self.shop_nav_item("featured", "Featured", tab == Tab::Featured, None, cx))
-            .child(self.shop_nav_item(
-                "browse",
-                "Browse",
-                tab == Tab::Browse,
-                Some(Menu::Browse),
+            .gap(px(32.));
+        for option in &visible {
+            nav = nav.child(self.shop_nav_item(
+                option.id,
+                option.label,
+                option.tab.is_some_and(|tab| tab == self.shop.tab),
+                option.menu,
                 cx,
-            ))
-            .child(self.shop_nav_item("orbs", "Orbs Shop", tab == Tab::Orbs, None, cx))
-            .child(self.shop_nav_item("game-shops", "Game Shops", false, Some(Menu::GameShops), cx))
-            .child(self.shop_nav_item("more", "More", false, Some(Menu::More), cx));
+            ));
+        }
+        if !overflow.is_empty() {
+            nav = nav.child(self.shop_nav_item("more", "More", false, Some(Menu::More), cx));
+        }
         let search = self.shop_search_field(window, cx);
         let wishlist = self.shop_wishlist_button(cx);
         let balance = self.shop_balance_pill(cx);
-        let menu = open.and_then(|menu| self.shop_menu(menu, cx));
+        let menu = open.and_then(|menu| self.shop_menu(window, menu, cx));
         div()
             .parity("shop-header")
             .relative()
@@ -511,13 +610,14 @@ impl Root {
         menu: Option<Menu>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let open = menu.is_some() && (self.shop.hover_item == menu || self.shop.hover_menu == menu);
+        let open = menu.is_some() && self.shop.menu_open == menu;
         let tab = match id {
             "featured" => Some(Tab::Featured),
             "browse" => Some(Tab::Browse),
             "orbs" => Some(Tab::Orbs),
             _ => None,
         };
+        let beta = id == "game-servers";
         div()
             .id(SharedString::from(format!("shop-nav-{id}")))
             .group(SharedString::from(format!("shop-nav-{id}")))
@@ -533,6 +633,7 @@ impl Root {
                     .items_center()
                     .child(label),
             )
+            .when(beta, |item| item.child(div().w(px(8.))).child(beta_badge()))
             .when(menu.is_some(), |item| {
                 item.child(
                     div()
@@ -562,19 +663,14 @@ impl Root {
                     }),
             )
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if menu.is_some() {
-                    if *hovered {
-                        this.shop.hover_item = menu;
-                    } else if this.shop.hover_item == menu {
-                        this.shop.hover_item = None;
-                    }
-                    cx.notify();
+                if let Some(menu) = menu {
+                    this.shop_pointer(menu, *hovered, cx);
                 }
             }))
-            .on_click(cx.listener(move |this, _, _, cx| match (tab, menu) {
-                (Some(tab), _) => this.shop_set_tab(tab, cx),
-                (None, Some(Menu::GameShops | Menu::More)) => {}
-                _ => {}
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(tab) = tab {
+                    this.shop_set_tab(tab, cx);
+                }
             }))
     }
 
@@ -684,12 +780,12 @@ impl Root {
             .gap(px(2.))
             .cursor_pointer()
             .hover(|pill| pill.bg(color("--background-mod-strong")))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.shop.hover_item = Some(Menu::Balance);
-                } else if this.shop.hover_item == Some(Menu::Balance) {
-                    this.shop.hover_item = None;
-                }
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.shop.menu_open = if this.shop.menu_open == Some(Menu::Balance) {
+                    None
+                } else {
+                    Some(Menu::Balance)
+                };
                 cx.notify();
             }))
             .child(icon("shop_orb_18", 20., "--text-default"))
@@ -697,38 +793,133 @@ impl Root {
             .into_any_element()
     }
 
+    /// The header options in order (`useCollectiblesShopNavigationMenuOptions` of module 685491): Featured, Browse, the
+    /// Orbs Shop, the Game Shops menu once a storefront lists itself, and Game Servers.
+    fn shop_nav_options(&self) -> Vec<NavOption> {
+        let mut options = vec![
+            NavOption::page("featured", "Featured", Tab::Featured, 62.17),
+            NavOption::menu("browse", "Browse", Menu::Browse, 72.95, Some(Tab::Browse)),
+            NavOption::page("orbs", "Orbs Shop", Tab::Orbs, 71.97),
+        ];
+        if !self.shop.game_shops.is_empty() {
+            options.push(NavOption::menu(
+                "game-shops",
+                "Game Shops",
+                Menu::GameShops,
+                108.23,
+                None,
+            ));
+        }
+        options.push(NavOption {
+            id: "game-servers",
+            label: "Game Servers",
+            tab: None,
+            menu: None,
+            width: 148.70,
+        });
+        options
+    }
+
+    /// The options that stay in the row and the ones that moved into More: the row is as wide as the window minus
+    /// the sidebars and the toolbar (513.5 at 1280), the gap between options 32.
+    fn shop_nav_split(&self, window: &Window) -> (Vec<NavOption>, Vec<NavOption>) {
+        let options = self.shop_nav_options();
+        let row = f32::from(window.viewport_size().width) - 766.5;
+        let widths: Vec<f32> = options.iter().map(|option| option.width).collect();
+        let last = data::last_visible(&widths, NAV_MORE_WIDTH, 32., row);
+        if last + 1 >= options.len() {
+            return (options, Vec::new());
+        }
+        let overflow = options[last + 1..].to_vec();
+        (options[..=last].to_vec(), overflow)
+    }
+
+    /// The pointer arrives in or leaves a menu's entry or popout: 100 ms later the menu opens or closes if the
+    /// pointer is still there or still gone.
+    fn shop_pointer(&mut self, menu: Menu, inside: bool, cx: &mut Context<Self>) {
+        if inside {
+            self.shop.pointer_in = Some(menu);
+        } else if self.shop.pointer_in == Some(menu) {
+            self.shop.pointer_in = None;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if inside {
+                    if this.shop.pointer_in == Some(menu) && this.shop.menu_open != Some(menu) {
+                        this.shop.menu_open = Some(menu);
+                        cx.notify();
+                    }
+                } else if this.shop.pointer_in.is_none() && this.shop.menu_open == Some(menu) {
+                    this.shop.menu_open = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// The popout under a header entry: 4px below it, left-aligned with it.
-    fn shop_menu(&mut self, menu: Menu, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (left, entries): (f32, Vec<(&'static str, Option<Tab>)>) = match menu {
+    fn shop_menu(
+        &mut self,
+        window: &Window,
+        menu: Menu,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        // What a row shows and does: its label, the icon in front of it, a beta badge, the tab it opens.
+        type Row = (String, Option<String>, bool, Option<Tab>);
+        let (left, entries): (f32, Vec<Row>) = match menu {
             Menu::Browse => (
                 179.,
-                vec![
-                    ("Avatar Decorations", Some(Tab::Browse)),
-                    ("Nameplates", Some(Tab::Browse)),
-                    ("Profile Effects", Some(Tab::Browse)),
-                    ("Profile Frames", Some(Tab::Browse)),
-                    ("Bundles", Some(Tab::Browse)),
-                    ("Collabs", Some(Tab::Browse)),
-                    ("Shop All", Some(Tab::Browse)),
-                ],
+                [
+                    "Avatar Decorations",
+                    "Nameplates",
+                    "Profile Effects",
+                    "Profile Frames",
+                    "Bundles",
+                    "Collabs",
+                    "Shop All",
+                ]
+                .into_iter()
+                .map(|label| (label.to_owned(), None, false, Some(Tab::Browse)))
+                .collect(),
             ),
-            Menu::GameShops => (
-                337.,
-                vec![
-                    ("Marvel Rivals", None),
-                    ("Rust", None),
-                    ("Bloons TD 6", None),
-                ],
-            ),
-            Menu::More => (
-                538.,
-                vec![("Game Servers", None), ("Collection Index", None)],
-            ),
+            Menu::GameShops => {
+                let games = self.shop.game_shops.clone();
+                (
+                    self.shop_nav_left(window, "game-shops"),
+                    games
+                        .into_iter()
+                        .map(|game| (game.name, game.icon, false, None))
+                        .collect(),
+                )
+            }
+            Menu::More => {
+                let (_, overflow) = self.shop_nav_split(window);
+                (
+                    self.shop_nav_left(window, "more"),
+                    overflow
+                        .into_iter()
+                        .map(|option| {
+                            (
+                                option.label.to_owned(),
+                                None,
+                                option.id == "game-servers",
+                                option.tab,
+                            )
+                        })
+                        .collect(),
+                )
+            }
             Menu::Balance => return Some(self.shop_balance_popout(cx)),
         };
         let rows: Vec<AnyElement> = entries
             .into_iter()
-            .map(|(label, tab)| {
+            .map(|(label, icon_url, beta, tab)| {
+                let art = icon_url.and_then(|url| self.shop_img(&url));
+                let shown = label.clone();
                 div()
                     .id(SharedString::from(format!("shop-menu-{label}")))
                     .h(px(34.))
@@ -736,12 +927,21 @@ impl Root {
                     .rounded(px(2.))
                     .flex()
                     .items_center()
+                    .gap(px(8.))
                     .cursor_pointer()
                     .hover(|row| row.bg(color("--background-mod-subtle")))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shop_menu_choose(menu, label, tab, cx);
+                        this.shop_menu_choose(menu, &label, tab, cx);
                     }))
-                    .child(text(14., 18., 600., "--text-strong").child(label))
+                    .children(art.map(|art| {
+                        img(art)
+                            .size(px(18.))
+                            .flex_none()
+                            .rounded(px(4.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
+                    .child(text(14., 18., 600., "--text-strong").child(shown))
+                    .when(beta, |row| row.child(beta_badge()))
                     .into_any_element()
             })
             .collect();
@@ -754,12 +954,7 @@ impl Root {
                     .left(px(left))
                     .pt(px(4.))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered {
-                            this.shop.hover_menu = Some(menu);
-                        } else if this.shop.hover_menu == Some(menu) {
-                            this.shop.hover_menu = None;
-                        }
-                        cx.notify();
+                        this.shop_pointer(menu, *hovered, cx);
                     }))
                     .child(
                         div()
@@ -781,6 +976,21 @@ impl Root {
         )
     }
 
+    /// Where a header entry starts inside the header: the shop mark, the 44px margin, the options before it and
+    /// their gaps.
+    fn shop_nav_left(&self, window: &Window, id: &str) -> f32 {
+        let (visible, _) = self.shop_nav_split(window);
+        let mut left = 16. + 24. + 44.;
+        for option in &visible {
+            if option.id == id {
+                return left;
+            }
+            left += option.width + 32.;
+        }
+        // The More button follows the last visible option.
+        left
+    }
+
     fn shop_menu_choose(
         &mut self,
         menu: Menu,
@@ -788,8 +998,8 @@ impl Root {
         tab: Option<Tab>,
         cx: &mut Context<Self>,
     ) {
-        self.shop.hover_item = None;
-        self.shop.hover_menu = None;
+        self.shop.menu_open = None;
+        self.shop.pointer_in = None;
         if menu == Menu::Browse {
             let kind = match label {
                 "Avatar Decorations" => Some("AVATAR_DECORATION"),
@@ -804,6 +1014,7 @@ impl Root {
                 self.shop.filters.item_types.push(kind.to_owned());
             }
             self.shop.filters.collabs = label == "Collabs";
+            self.shop_default_sort();
         }
         if let Some(tab) = tab {
             self.shop_set_tab(tab, cx);
@@ -860,10 +1071,10 @@ impl Root {
                                 .justify_center()
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.shop.hover_item = None;
+                                    this.shop.menu_open = None;
                                     this.open_quests(cx);
                                 }))
-                                .child(text(14., 18., 500., "--white").child("Go to Quest Home")),
+                                .child(text(14., 18., 500., "--white").child("Open Quest Home")),
                         ),
                 ),
         )
@@ -871,9 +1082,15 @@ impl Root {
         .into_any_element()
     }
 
-    /// The heart button opens the profile modal on its Wishlist tab; the wishlist read is not part of the page.
+    /// The heart button opens the account's wishlist (the profile's Wishlist tab does not exist yet, so the Shop shows
+    /// the same products in a page of its own).
     fn shop_open_wishlist(&mut self, cx: &mut Context<Self>) {
-        self.shop.notice = Some("Your wishlist opens from your profile.".to_owned());
+        self.shop.wishlist_open = true;
+        self.shop.menu_open = None;
+        self.shop.modal = None;
+        self.shop.scroll.set_offset(point(px(0.), px(0.)));
+        let order = self.shop.wishlist_order.clone();
+        self.shop_need_products(&order);
         cx.notify();
     }
 
@@ -889,4 +1106,57 @@ impl Root {
                 .into_any_element(),
         )
     }
+}
+
+/// The width of the More button in the header row (measured in the official header).
+const NAV_MORE_WIDTH: f32 = 58.09;
+
+/// One option of the header row: where it goes, its menu if it has one and its measured width.
+#[derive(Clone, Debug)]
+struct NavOption {
+    id: &'static str,
+    label: &'static str,
+    tab: Option<Tab>,
+    menu: Option<Menu>,
+    width: f32,
+}
+
+impl NavOption {
+    fn page(id: &'static str, label: &'static str, tab: Tab, width: f32) -> Self {
+        Self {
+            id,
+            label,
+            tab: Some(tab),
+            menu: None,
+            width,
+        }
+    }
+
+    fn menu(
+        id: &'static str,
+        label: &'static str,
+        menu: Menu,
+        width: f32,
+        tab: Option<Tab>,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            tab,
+            menu: Some(menu),
+            width,
+        }
+    }
+}
+
+/// The BETA badge of the Game Servers option (`BadgeType.BETA`, the secondary variant).
+fn beta_badge() -> impl IntoElement {
+    div()
+        .h(px(16.))
+        .px(px(6.))
+        .rounded(px(8.))
+        .bg(color("--background-mod-strong"))
+        .flex()
+        .items_center()
+        .child(text(10., 12., 700., "--text-default").child("BETA"))
 }

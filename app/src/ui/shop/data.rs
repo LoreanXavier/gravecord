@@ -60,6 +60,15 @@ pub const KIND_PROFILE_EFFECT: i64 = 1;
 pub const KIND_NAMEPLATE: i64 = 2;
 pub const KIND_PROFILE_FRAME: i64 = 3;
 pub const KIND_BUNDLE: i64 = 1000;
+pub const KIND_EXTERNAL: i64 = 3000;
+
+/// External skus with their own art (`EXTERNAL_FRACTIONAL_NITRO` coins and `EXTERNAL_ORB_BADGE`).
+pub const NITRO_3_DAY: &str = "1333912750274904064";
+pub const ORB_BADGE: &str = "1342211853484429445";
+
+/// The animation file behind the coin cards; the artboard name selects the stack or the single coin.
+pub const COINS_RIV: &str = "https://cdn.discordapp.com/assets/content/fac02dd925a746a61291e1f604a8affff663e9d8a22cd9b21749991ff745f1f2.riv";
+pub const ORB_BADGE_PNG: &str = "https://cdn.discordapp.com/assets/content/615334270467aa3d5adc86cc67efee89f8380a87b945a96e89ec2eb37c27993d.png";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Price {
@@ -224,6 +233,23 @@ pub fn parse_product(value: &serde_json::Value) -> Option<Product> {
 }
 
 impl Product {
+    /// What the modal previews for the bundle's selected slide (`selectedBundleSlide` of module 355735): the item
+    /// alone, as a product of its own kind. Any other product previews itself.
+    pub fn slide(&self, index: usize) -> Product {
+        if self.kind != KIND_BUNDLE {
+            return self.clone();
+        }
+        match self.items.get(index) {
+            Some(item) => Product {
+                kind: item.kind,
+                sku_id: item.sku_id.clone(),
+                items: vec![item.clone()],
+                ..self.clone()
+            },
+            None => self.clone(),
+        }
+    }
+
     /// `R` of module 993408: the first price of a purchase type, or the one in a given currency.
     pub fn price(&self, purchase_type: &str, currency: Option<&str>) -> Option<&Price> {
         let list = &self
@@ -301,6 +327,8 @@ pub struct Category {
     pub hero_banner_url: Option<String>,
     pub hero_logo_url: Option<String>,
     pub catalog_banner_url: Option<String>,
+    /// `pdp_bg_url`: the already blurred art behind the product modal's preview (`pdpBgUrl`, module 212407).
+    pub pdp_bg_url: Option<String>,
     /// `unpublished_at`: when the collection leaves the shop (`YYYY-MM-DDTHH:MM:SS+00:00`).
     pub unpublished_at: Option<String>,
 }
@@ -336,6 +364,7 @@ pub fn parse_category(value: &serde_json::Value) -> Category {
             })
             .unwrap_or_default(),
         hero_banner_url: string(value, "hero_banner_url"),
+        pdp_bg_url: string(value, "pdp_bg_url"),
         unpublished_at: string(value, "unpublished_at"),
         hero_logo_url: string(value, "hero_logo_url"),
         catalog_banner_url: string(value, "catalog_banner_url").or_else(|| {
@@ -602,7 +631,7 @@ pub enum Sort {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filters {
     /// Item types by the enum name the query carries (`AVATAR_DECORATION`, `NAMEPLATE`, `PROFILE_EFFECT`,
-    /// `PROFILE_FRAME`, `BUNDLE`).
+    /// `PROFILE_FRAME`, `BUNDLE`); the numbers of `CollectiblesItemType` are answered with a 400.
     pub item_types: Vec<String>,
     pub orbs_eligible: bool,
     /// The "Collabs" checkbox (`thirdPartyOnly`): sends `is_first_party=false`.
@@ -615,6 +644,18 @@ pub struct Filters {
 }
 
 impl Filters {
+    /// The sort the Browse page picks until the shopper picks one (`h` of module 365491): relevance for colors, themes
+    /// or a search text, popularity for item types alone, recency otherwise.
+    pub fn default_sort(&self) -> Sort {
+        if !self.colors.is_empty() || !self.themes.is_empty() || !self.search.trim().is_empty() {
+            Sort::Relevance
+        } else if !self.item_types.is_empty() {
+            Sort::Popular
+        } else {
+            Sort::Recent
+        }
+    }
+
     /// `hasFilters`: anything chosen or typed.
     pub fn is_empty(&self) -> bool {
         *self == Filters::default()
@@ -632,18 +673,20 @@ impl Filters {
 }
 
 /// `GET /shop/search` (module 365491 builds the query, module 946716 sends it): the filters, the sort and one page.
-/// Arrays are written with brackets (`item_types[]=...`), which the bundle's query writer emits for lists. Answer:
+/// Arrays repeat the key without brackets (`item_types=A&item_types=B`): superagent's query writer (module 333405)
+/// recurses into an array with the same key. Checked against the live server in a harness run: repeated keys with names
+/// filter, bracketed keys are ignored and numbers answer 400. Answer:
 /// `{skus: [sku ids], pagination: {has_more, limit, offset}}`.
 pub fn search_route(filters: &Filters, sort: Sort, offset: u32, limit: u32) -> String {
     let mut query = Vec::new();
     for kind in &filters.item_types {
-        query.push(format!("item_types[]={kind}"));
+        query.push(format!("item_types={kind}"));
     }
     for color in &filters.colors {
-        query.push(format!("colors[]={color}"));
+        query.push(format!("colors={color}"));
     }
     for theme in &filters.themes {
-        query.push(format!("themes[]={theme}"));
+        query.push(format!("themes={theme}"));
     }
     if filters.orbs_eligible {
         query.push("orbs_eligible=true".to_owned());
@@ -779,6 +822,286 @@ pub fn order_entitlements_route(order: &str) -> String {
     format!("/billing/orders/{order}/entitlements")
 }
 
+/// Order status `SIGNED` (`Re` in module 26279).
+pub const ORDER_SIGNED: i64 = 2;
+
+/// The waits between the entitlement reads after an order is signed (`_` in module 158317): the first read is at
+/// once, a read that finds nothing is repeated after each of these.
+pub const ENTITLEMENT_DELAYS_MS: [u64; 6] = [250, 500, 1000, 1500, 2500, 4250];
+
+/// What the claim chain does after one answer (`redeemVirtualCurrency` of module 715054).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimNext {
+    /// A write was refused by the harness: back to the review without a notice.
+    Refused,
+    /// The order exists: sign it.
+    Sign {
+        order: String,
+        revision: Option<i64>,
+    },
+    /// The order is signed, or an entitlement read came back empty: read again after the wait of this attempt.
+    Entitlements { attempt: usize },
+    /// The entitlement exists.
+    Done { consumed: bool },
+    /// The review with this notice.
+    Fail(&'static str),
+    /// An answer that does not belong to the chain.
+    Ignore,
+}
+
+/// The step that follows an answer of the claim chain. `key` is the request key, `body` the fetch answer
+/// (`{body, fetch_failed, refused}`), `reads` the entitlement reads made so far.
+pub fn claim_next(key: &str, body: &serde_json::Value, reads: usize) -> ClaimNext {
+    let answer = &body["body"];
+    let failed = body["fetch_failed"] == true;
+    if body["refused"] == true {
+        return ClaimNext::Refused;
+    }
+    match key {
+        "shop:order:create" => match answer["id"].as_str() {
+            Some(id) if !failed => ClaimNext::Sign {
+                order: id.to_owned(),
+                revision: answer["revision"].as_i64(),
+            },
+            _ => ClaimNext::Fail(sign_failure_text(answer).unwrap_or(GENERIC_CLAIM_ERROR)),
+        },
+        "shop:order:sign" => match sign_failure_text(answer) {
+            Some(text) => ClaimNext::Fail(text),
+            None if failed => ClaimNext::Fail(GENERIC_CLAIM_ERROR),
+            None => ClaimNext::Entitlements { attempt: 0 },
+        },
+        "shop:order:entitlements" => match answer.as_array().filter(|list| !list.is_empty()) {
+            Some(list) => ClaimNext::Done {
+                consumed: list[0]["consumed"].as_bool().unwrap_or(false),
+            },
+            None if reads < ENTITLEMENT_DELAYS_MS.len() => {
+                ClaimNext::Entitlements { attempt: reads + 1 }
+            }
+            None => ClaimNext::Fail(ENTITLEMENTS_LATE),
+        },
+        _ => ClaimNext::Ignore,
+    }
+}
+
+/// What the checkout's critical notice says about an answer to the sign call (`$9` of module 80066). `None` is
+/// a signed order. An order body with `unsatisfied_constraints` is the 400 of a refused signing; any other body
+/// carries the API error `code`, or the order's own `error.billing_error_code`.
+pub fn sign_failure_text(answer: &serde_json::Value) -> Option<&'static str> {
+    const NOT_ENOUGH: &str = "Not enough Orbs.";
+    const OWNED: &str = "Item already owned.";
+    const GENERIC: &str = "There was an error claiming this item. Please try again later.";
+    let by_code = |code: i64| match code {
+        590001 => NOT_ENOUGH,
+        100011 | 100096 => OWNED,
+        100152 => "Your checkout session expired. Reopen checkout to continue.",
+        _ => GENERIC,
+    };
+    if answer["id"].is_string() && answer["status"].is_number() {
+        let reason = answer["unsatisfied_constraints"][0]["reason_code"].as_i64();
+        if answer["status"].as_i64() == Some(ORDER_SIGNED) {
+            return None;
+        }
+        return Some(match reason {
+            Some(1000) => NOT_ENOUGH,
+            Some(1003) => OWNED,
+            Some(1010) => "You already own one or more items in this bundle.",
+            Some(_) => GENERIC,
+            None => match answer["error"]["billing_error_code"].as_i64() {
+                Some(code) if answer["error"]["code"].as_i64() != Some(9999) => by_code(code),
+                _ => GENERIC,
+            },
+        });
+    }
+    Some(match answer["code"].as_i64() {
+        Some(code) => by_code(code),
+        None => GENERIC,
+    })
+}
+
+/// The static art of an external sku: the coin artboard of a Nitro credit, or the Orbs badge image.
+pub fn external_art_url(sku: &str) -> Option<String> {
+    match sku {
+        NITRO_3_DAY => Some(format!("{COINS_RIV}#STACKED_COINS")),
+        NITRO_1_DAY => Some(format!("{COINS_RIV}#SINGLE_COIN")),
+        ORB_BADGE => Some(ORB_BADGE_PNG.to_owned()),
+        _ => None,
+    }
+}
+
+/// The type label after an item's name in a bundle (`Dm` of module 993408).
+pub fn item_type_label(kind: i64) -> Option<&'static str> {
+    match kind {
+        KIND_AVATAR_DECORATION => Some("Avatar Decoration"),
+        KIND_PROFILE_EFFECT => Some("Profile Effect"),
+        KIND_NAMEPLATE => Some("Nameplate"),
+        KIND_PROFILE_FRAME => Some("Profile Frame"),
+        _ => None,
+    }
+}
+
+/// Whether an external sku is a fractional Nitro credit (`EZ` of module 758836): its modal lists the perks.
+pub fn is_fractional_nitro(sku: &str) -> bool {
+    sku == NITRO_1_DAY || sku == NITRO_3_DAY
+}
+
+/// The perks the Nitro credit modal lists (`eW` of module 355735, strings `E1NP2x`, `kpMomJ`, `IDAfOy`, `myyAEr`,
+/// `zTk8Ul`; the upload size of the second tier is 500 MB).
+pub const NITRO_PERKS: [&str; 5] = [
+    "Custom emoji anywhere",
+    "Custom profiles",
+    "500MB Uploads",
+    "HD video streaming",
+    "Color app themes and more!",
+];
+
+/// The notice for every failure that has no better text.
+pub const GENERIC_CLAIM_ERROR: &str =
+    "There was an error claiming this item. Please try again later.";
+
+/// The legal line of the Orbs checkout (`IP93kX` of module 854461, `OrbsRedemption`).
+pub const ORB_LEGAL: &str = "By clicking 'Claim with Orbs', you agree to the Paid Services Terms. Claiming an item from the Shop means you're claiming a limited license to use this item on Discord, learn more here. Orbs redemptions are non-refundable.";
+
+/// What the celebration modal says after a claim (`$k`, `v8` and `aG` of module 184264).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Collected {
+    pub title: String,
+    pub subtitle: String,
+    /// The buttons left to right: the label and whether it is the primary one.
+    pub buttons: Vec<(&'static str, bool)>,
+}
+
+pub fn collected_copy(sku: &str, name: &str, consumed: bool) -> Collected {
+    let credit = sku == NITRO_3_DAY || sku == NITRO_1_DAY;
+    if sku == ORB_BADGE {
+        return Collected {
+            title: "You Collected the Orbs Profile Badge!".to_owned(),
+            subtitle: "The badge has been added to your profile.".to_owned(),
+            buttons: vec![("Earn More Orbs", false), ("View My Badge", true)],
+        };
+    }
+    if credit {
+        let days = if sku == NITRO_1_DAY { 1 } else { 3 };
+        return if consumed {
+            Collected {
+                title: "Nitro Activated".to_owned(),
+                subtitle: format!(
+                    "Your {days}-day Nitro credit begins now! Enjoy your premium perks. Learn more."
+                ),
+                buttons: vec![("Close", false), ("Explore Perks", true)],
+            }
+        } else {
+            Collected {
+                title: "Nitro Credit Acquired".to_owned(),
+                subtitle: format!(
+                    "Your {days}-day Nitro credit will be used automatically at the end of your current billing cycle. Learn more."
+                ),
+                buttons: vec![("Close", false), ("View Credits", true)],
+            }
+        };
+    }
+    Collected {
+        title: "You did it! Put it on!".to_owned(),
+        subtitle: format!("{name} has been added to your collection."),
+        buttons: vec![("Edit User Profile", true)],
+    }
+}
+
+/// The notice when no entitlement shows up after every wait (`j2` in module 158317).
+pub const ENTITLEMENTS_LATE: &str =
+    "Your purchase is taking longer than expected to process, and will be available shortly.";
+
+/// `GET /partner-sdk/storefront-config` (`SOCIAL_LAYER_STOREFRONT_CONFIG`): the storefronts the header lists.
+pub const STOREFRONT_CONFIG_ROUTE: &str = "/partner-sdk/storefront-config";
+
+/// The applications whose storefront the navigation lists (`collectibles_shop_navigation_enabled`), in the order of
+/// the answer (module 685491).
+pub fn storefront_nav_apps(body: &serde_json::Value) -> Vec<String> {
+    body["storefronts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|store| store["collectibles_shop_navigation_enabled"] == true)
+        .filter_map(|store| store["application_id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `GET /applications/public?application_ids=a&application_ids=b` (`fetchApplications` of module 627363).
+pub fn applications_route(ids: &[String]) -> String {
+    let query: Vec<String> = ids
+        .iter()
+        .map(|id| format!("application_ids={id}"))
+        .collect();
+    format!("/applications/public?{}", query.join("&"))
+}
+
+/// One entry of the Game Shops menu: the application's name and its 32px icon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameShop {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+}
+
+/// The menu entries in the order of the storefront list, leaving out an application the answer does not name
+/// (`flatMap` in module 685491).
+pub fn parse_game_shops(ids: &[String], body: &serde_json::Value) -> Vec<GameShop> {
+    let apps = body.as_array().cloned().unwrap_or_default();
+    ids.iter()
+        .filter_map(|id| {
+            let app = apps.iter().find(|app| app["id"].as_str() == Some(id))?;
+            let name = app["name"].as_str()?.to_owned();
+            let icon = app["icon"].as_str().map(|icon| {
+                format!("https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=32")
+            });
+            Some(GameShop {
+                id: id.clone(),
+                name,
+                icon,
+            })
+        })
+        .collect()
+}
+
+/// The account's wishlist ids: the keys of `wishlist_settings` in the profile answer (`getWishlistIds`).
+pub fn wishlist_ids(profile: &serde_json::Value) -> Vec<String> {
+    profile["wishlist_settings"]
+        .as_object()
+        .map(|settings| settings.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// `GET /wishlists/<id>?source=user_profile` (`fetchWishlist` of module 808247).
+pub fn wishlist_route(id: &str) -> String {
+    format!("/wishlists/{id}?source=user_profile")
+}
+
+/// `GET /users/<id>/profile`: where the wishlist ids come from (`fetchProfile` of module 803306).
+pub fn own_profile_route(user: u64) -> String {
+    format!(
+        "/users/{user}/profile?with_mutual_guilds=false&with_mutual_friends=false&with_mutual_friends_count=false"
+    )
+}
+
+/// The last navigation option that stays visible when the row is `container` wide (`Wv` of module 3666 with one
+/// line): an option stays while it and the overflow button after it fit, the last option needs no overflow button.
+pub fn last_visible(widths: &[f32], overflow: f32, gap: f32, container: f32) -> usize {
+    let mut used = 0.0_f32;
+    let mut last = 0;
+    for (at, width) in widths.iter().enumerate() {
+        if width.is_nan() || *width > container {
+            continue;
+        }
+        let is_last = at == widths.len() - 1;
+        let reserve = if is_last { 0. } else { overflow + gap };
+        if (used + width + reserve).round() >= container.round() {
+            break;
+        }
+        last = at;
+        used += width + gap;
+    }
+    last
+}
+
 /// Claiming a premium collectible (module 987421): `PUT /users/@me/claim-premium-collectibles-product {sku_id}`.
 pub fn claim_premium(sku: &str) -> Write {
     Write {
@@ -790,6 +1113,57 @@ pub fn claim_premium(sku: &str) -> Write {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bundle_previews_the_selected_slide_as_its_own_product() {
+        let bundle = Product {
+            sku_id: "b".to_owned(),
+            kind: KIND_BUNDLE,
+            items: vec![
+                Item {
+                    kind: KIND_AVATAR_DECORATION,
+                    sku_id: "d".to_owned(),
+                    ..Item::default()
+                },
+                Item {
+                    kind: KIND_PROFILE_EFFECT,
+                    sku_id: "e".to_owned(),
+                    ..Item::default()
+                },
+            ],
+            ..Product::default()
+        };
+        let effect = bundle.slide(1);
+        assert_eq!(
+            (effect.kind, effect.sku_id.as_str()),
+            (KIND_PROFILE_EFFECT, "e")
+        );
+        assert_eq!(effect.items.len(), 1);
+        assert_eq!(bundle.slide(9).kind, KIND_BUNDLE);
+        let single = Product {
+            kind: KIND_NAMEPLATE,
+            ..Product::default()
+        };
+        assert_eq!(single.slide(0).kind, KIND_NAMEPLATE);
+        assert_eq!(item_type_label(KIND_PROFILE_FRAME), Some("Profile Frame"));
+        assert_eq!(item_type_label(KIND_BUNDLE), None);
+        assert!(is_fractional_nitro(NITRO_3_DAY) && !is_fractional_nitro(ORB_BADGE));
+    }
+
+    #[test]
+    fn the_default_sort_follows_the_filters() {
+        let mut filters = Filters::default();
+        assert_eq!(filters.default_sort(), Sort::Recent);
+        filters.item_types.push("NAMEPLATE".to_owned());
+        assert_eq!(filters.default_sort(), Sort::Popular);
+        filters.themes.push("COLLECTIBLES_THEME_ANIME".to_owned());
+        assert_eq!(filters.default_sort(), Sort::Relevance);
+        let search = Filters {
+            search: " x ".to_owned(),
+            ..Filters::default()
+        };
+        assert_eq!(search.default_sort(), Sort::Relevance);
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -896,7 +1270,7 @@ mod tests {
         };
         assert_eq!(
             search_route(&filters, Sort::PriceLow, 0, 24),
-            "/shop/search?item_types[]=AVATAR_DECORATION&item_types[]=NAMEPLATE&colors[]=COLLECTIBLES_COLOR_PURPLE&themes[]=COLLECTIBLES_THEME_ANIME&orbs_eligible=true&is_first_party=false&offset=0&limit=24&sort_type=price&sort_direction=asc&search=dead%20pool&published_collections_only=true"
+            "/shop/search?item_types=AVATAR_DECORATION&item_types=NAMEPLATE&colors=COLLECTIBLES_COLOR_PURPLE&themes=COLLECTIBLES_THEME_ANIME&orbs_eligible=true&is_first_party=false&offset=0&limit=24&sort_type=price&sort_direction=asc&search=dead%20pool&published_collections_only=true"
         );
         assert!(!filters.is_empty());
         assert!(Filters::default().is_empty());
@@ -988,6 +1362,93 @@ mod tests {
     }
 
     #[test]
+    fn claim_chain_follows_recorded_replies() {
+        // Recorded shapes: the created order, the signed order, the entitlement list.
+        let created = json!({"body":{"id":"900","status":1,"revision":4}});
+        assert_eq!(
+            claim_next("shop:order:create", &created, 0),
+            ClaimNext::Sign {
+                order: "900".to_owned(),
+                revision: Some(4)
+            }
+        );
+        let sign = order_sign("900", Some(4));
+        assert_eq!(
+            (sign.method, sign.route.as_str(), sign.body),
+            (
+                "POST",
+                "/billing/orders/900/sign",
+                Some(json!({"expected_revision":4}))
+            )
+        );
+        let signed = json!({"body":{"id":"900","status":2}});
+        assert_eq!(
+            claim_next("shop:order:sign", &signed, 0),
+            ClaimNext::Entitlements { attempt: 0 }
+        );
+        assert_eq!(
+            order_entitlements_route("900"),
+            "/billing/orders/900/entitlements"
+        );
+        let empty = json!({"body":[]});
+        for reads in 0..ENTITLEMENT_DELAYS_MS.len() {
+            assert_eq!(
+                claim_next("shop:order:entitlements", &empty, reads),
+                ClaimNext::Entitlements { attempt: reads + 1 }
+            );
+        }
+        assert_eq!(
+            claim_next(
+                "shop:order:entitlements",
+                &empty,
+                ENTITLEMENT_DELAYS_MS.len()
+            ),
+            ClaimNext::Fail(ENTITLEMENTS_LATE)
+        );
+        let granted = json!({"body":[{"id":"1","consumed":true}]});
+        assert_eq!(
+            claim_next("shop:order:entitlements", &granted, 2),
+            ClaimNext::Done { consumed: true }
+        );
+        let kept = json!({"body":[{"id":"1"}]});
+        assert_eq!(
+            claim_next("shop:order:entitlements", &kept, 0),
+            ClaimNext::Done { consumed: false }
+        );
+    }
+
+    #[test]
+    fn claim_chain_failures_show_the_official_notices() {
+        let poor =
+            json!({"body":{"id":"9","status":1,"unsatisfied_constraints":[{"reason_code":1000}]}});
+        assert_eq!(
+            claim_next("shop:order:sign", &poor, 0),
+            ClaimNext::Fail("Not enough Orbs.")
+        );
+        let owned =
+            json!({"body":{"id":"9","status":1,"unsatisfied_constraints":[{"reason_code":1003}]}});
+        assert_eq!(
+            claim_next("shop:order:sign", &owned, 0),
+            ClaimNext::Fail("Item already owned.")
+        );
+        let down = json!({"fetch_failed":true,"body":{}});
+        assert_eq!(
+            claim_next("shop:order:create", &down, 0),
+            ClaimNext::Fail(GENERIC_CLAIM_ERROR)
+        );
+        assert_eq!(
+            claim_next("shop:order:sign", &down, 0),
+            ClaimNext::Fail(GENERIC_CLAIM_ERROR)
+        );
+        let refused = json!({"refused":true});
+        assert_eq!(
+            claim_next("shop:order:create", &refused, 0),
+            ClaimNext::Refused
+        );
+        assert_eq!(claim_next("shop:balance", &json!({}), 0), ClaimNext::Ignore);
+    }
+
+    #[test]
     fn orb_button_follows_the_balance() {
         let price = Price {
             amount: 700,
@@ -1007,5 +1468,110 @@ mod tests {
             Some("Not enough Orbs.")
         );
         assert_eq!(OrbButton::Ready.modal_tip(), None);
+    }
+
+    #[test]
+    fn sign_answers_become_the_official_notices() {
+        use serde_json::json;
+        assert_eq!(sign_failure_text(&json!({"id":"1","status":2})), None);
+        let refused = |reason: i64| json!({"id":"1","status":1,"unsatisfied_constraints":[{"reason_code":reason}]});
+        assert_eq!(sign_failure_text(&refused(1000)), Some("Not enough Orbs."));
+        assert_eq!(
+            sign_failure_text(&refused(1003)),
+            Some("Item already owned.")
+        );
+        assert_eq!(
+            sign_failure_text(&refused(1010)),
+            Some("You already own one or more items in this bundle.")
+        );
+        assert_eq!(
+            sign_failure_text(&refused(1005)),
+            Some("There was an error claiming this item. Please try again later.")
+        );
+        assert_eq!(
+            sign_failure_text(&json!({"code":590001,"message":"x"})),
+            Some("Not enough Orbs.")
+        );
+        assert_eq!(
+            sign_failure_text(&json!({"code":100096})),
+            Some("Item already owned.")
+        );
+        assert_eq!(
+            sign_failure_text(&json!({"code":100152})),
+            Some("Your checkout session expired. Reopen checkout to continue.")
+        );
+        assert_eq!(
+            sign_failure_text(
+                &json!({"id":"1","status":5,"error":{"code":1,"billing_error_code":100011}})
+            ),
+            Some("Item already owned.")
+        );
+        assert_eq!(
+            sign_failure_text(&json!(null)),
+            Some("There was an error claiming this item. Please try again later.")
+        );
+    }
+
+    #[test]
+    fn the_collected_modal_says_what_the_official_one_says() {
+        let badge = collected_copy(ORB_BADGE, "Orbs Apprentice Badge", true);
+        assert_eq!(badge.title, "You Collected the Orbs Profile Badge!");
+        assert_eq!(
+            badge.buttons,
+            vec![("Earn More Orbs", false), ("View My Badge", true)]
+        );
+        let credit = collected_copy(NITRO_3_DAY, "3-Day Nitro Credit", false);
+        assert_eq!(credit.title, "Nitro Credit Acquired");
+        assert!(
+            credit
+                .subtitle
+                .starts_with("Your 3-day Nitro credit will be used")
+        );
+        assert_eq!(
+            collected_copy(NITRO_1_DAY, "x", true).title,
+            "Nitro Activated"
+        );
+        let deco = collected_copy("9", "Deadpool", false);
+        assert_eq!(deco.title, "You did it! Put it on!");
+        assert_eq!(deco.subtitle, "Deadpool has been added to your collection.");
+    }
+
+    #[test]
+    fn the_header_reads_storefronts_applications_and_wishlists() {
+        use serde_json::json;
+        let config = json!({"storefronts":[
+            {"application_id":"1","collectibles_shop_navigation_enabled":true},
+            {"application_id":"2","collectibles_shop_navigation_enabled":false},
+            {"application_id":"3","collectibles_shop_navigation_enabled":true}]});
+        let ids = storefront_nav_apps(&config);
+        assert_eq!(ids, vec!["1".to_owned(), "3".to_owned()]);
+        assert_eq!(
+            applications_route(&ids),
+            "/applications/public?application_ids=1&application_ids=3"
+        );
+        let apps = json!([{"id":"3","name":"Rust","icon":"abc"},{"id":"1","name":"Marvel Rivals","icon":null}]);
+        let shops = parse_game_shops(&ids, &apps);
+        assert_eq!(shops[0].name, "Marvel Rivals");
+        assert_eq!(shops[0].icon, None);
+        assert_eq!(
+            shops[1].icon.as_deref(),
+            Some("https://cdn.discordapp.com/app-icons/3/abc.png?size=32")
+        );
+        let profile = json!({"wishlist_settings":{"77":{"visibility":1}}});
+        assert_eq!(wishlist_ids(&profile), vec!["77".to_owned()]);
+        assert_eq!(wishlist_route("77"), "/wishlists/77?source=user_profile");
+    }
+
+    #[test]
+    fn the_nav_overflows_like_the_official_row() {
+        // The 1280 window: Featured, Browse, Orbs Shop, Game Shops and Game Servers in a 513.5 row, the overflow button
+        // 58.09 wide. Game Servers moves into More.
+        let widths = [62.17, 72.95, 71.97, 108.23, 148.70];
+        assert_eq!(last_visible(&widths, 58.09, 32., 513.5), 3);
+        // A wider row holds all five.
+        assert_eq!(last_visible(&widths, 58.09, 32., 700.), 4);
+        // Without Game Shops the rest fits.
+        let without = [62.17, 72.95, 71.97, 148.70];
+        assert_eq!(last_visible(&without, 58.09, 32., 513.5), 3);
     }
 }

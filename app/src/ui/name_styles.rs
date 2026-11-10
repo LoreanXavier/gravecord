@@ -6,7 +6,12 @@
 //! effect that gpui's flat-colour text cannot draw (gradient fill, stroke, shadow) are rasterised off the UI thread
 //! into a small image by [`raster`], one image per name, with frames for the animated effects.
 
+mod kerning;
 mod raster;
+#[cfg(feature = "capture")]
+mod sheet;
+#[cfg(feature = "capture")]
+pub(in crate::ui) use sheet::layer as sheet_layer;
 
 use super::color;
 use crate::parity::Parity;
@@ -54,6 +59,8 @@ pub(in crate::ui) enum Display {
     Animated,
     /// `PLAIN`, `ANIMATED` while the pointer is on the name.
     FontOnHover,
+    /// `STATIC` at rest, `ANIMATED` while the pointer is on the name (the account panel, 993382).
+    StaticOnHover,
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -63,6 +70,19 @@ struct Loaded {
     family: SharedString,
     data: Arc<Vec<u8>>,
     face: FontFace,
+    kerning: kerning::Kerning,
+}
+
+/// The `kern` pairs of a font file's GPOS table.
+fn kerning_of(data: &[u8]) -> kerning::Kerning {
+    ttf_parser::Face::parse(data, 0)
+        .ok()
+        .and_then(|face| {
+            face.raw_face()
+                .table(ttf_parser::Tag::from_bytes(b"GPOS"))
+                .map(kerning::Kerning::new)
+        })
+        .unwrap_or_else(|| kerning::Kerning::new(&[]))
 }
 
 enum FontState {
@@ -231,10 +251,79 @@ fn register(face: &FontFace, bytes: Vec<u8>, cx: &mut App) -> Option<Arc<Loaded>
     let family = names.into_iter().find(|name| known.contains(name))?;
     tracing::debug!(family = face.family, registered = %family, "display name font ready");
     Some(Arc::new(Loaded {
+        kerning: kerning_of(&data),
         family: family.into(),
         data,
         face: *face,
     }))
+}
+
+/// The normal font (gg sans) carrying an effect: the rasteriser needs its outlines, which the text system holds but does
+/// not hand out, so the file is read from the same disk cache the app's fonts come from, one weight at a time.
+fn default_hash(weight: f32) -> (&'static str, u16) {
+    match weight as u16 {
+        0..=449 => ("66d715454104d24e", 400),
+        450..=549 => ("b272b33815319bae", 500),
+        550..=649 => ("2df2c3ff74408972", 600),
+        650..=749 => ("189422196a4f8b53", 700),
+        _ => ("b2fdbe507d6ce9ef", 800),
+    }
+}
+
+fn default_faces() -> &'static Mutex<HashMap<u16, Option<Arc<Loaded>>>> {
+    static FACES: OnceLock<Mutex<HashMap<u16, Option<Arc<Loaded>>>>> = OnceLock::new();
+    FACES.get_or_init(Mutex::default)
+}
+
+/// gg sans at `weight` for an effect on the normal font; starts the read the first time and answers once it is done.
+fn default_face(weight: FontWeight, cx: &mut App) -> Option<Arc<Loaded>> {
+    let (hash, weight) = default_hash(weight.0);
+    {
+        let mut known = default_faces().lock().ok()?;
+        if let Some(state) = known.get(&weight) {
+            return state.clone();
+        }
+        known.insert(weight, None);
+    }
+    let slot: Arc<Mutex<Option<Option<Vec<u8>>>>> = Arc::default();
+    let worker = slot.clone();
+    std::thread::spawn(move || {
+        let bytes = fetch(hash);
+        if let Ok(mut slot) = worker.lock() {
+            *slot = Some(bytes);
+        }
+    });
+    cx.spawn(async move |cx| {
+        let bytes = loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            if let Some(done) = slot.lock().ok().and_then(|mut slot| slot.take()) {
+                break done;
+            }
+        };
+        cx.update(|cx| {
+            if let (Some(bytes), Ok(mut known)) = (bytes, default_faces().lock()) {
+                known.insert(
+                    weight,
+                    Some(Arc::new(Loaded {
+                        family: "gg sans".into(),
+                        kerning: kerning_of(&bytes),
+                        data: Arc::new(bytes),
+                        face: FontFace {
+                            family: "gg sans",
+                            weight,
+                            letter_spacing_em: 0.,
+                            hash,
+                        },
+                    })),
+                );
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+    None
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -275,6 +364,9 @@ struct Plan {
     width: Pixels,
     ascent: Pixels,
     descent: Pixels,
+    /// The line box's ascent and descent as the browser takes them from the face: each rounded from the `hhea` table.
+    /// `None` for the normal font, which the text system measures the same way.
+    metrics: Option<(Pixels, Pixels)>,
     font: Font,
     font_size: Pixels,
     spacing: Pixels,
@@ -298,37 +390,122 @@ fn shape(text: &str, font: &Font, font_size: Pixels, color: Hsla, window: &Windo
     )
 }
 
-fn plan(text: &str, font: Font, font_size: Pixels, spacing: Pixels, window: &Window) -> Plan {
-    let parts: Vec<&str> = if spacing == px(0.) {
+/// The face's ascent and descent for a line, rounded one by one the way the browser rounds them.
+fn face_metrics(face: &Loaded, font_size: Pixels) -> Option<(Pixels, Pixels)> {
+    let parsed = ttf_parser::Face::parse(&face.data, 0).ok()?;
+    let scale = f32::from(font_size) / f32::from(parsed.units_per_em());
+    Some((
+        px((f32::from(parsed.ascender()) * scale).round()),
+        px((-f32::from(parsed.descender()) * scale).round()),
+    ))
+}
+
+/// A name whose letters all have glyphs in the face, laid out from the font file: each glyph's advance, the pair
+/// kerning, then the letter-spacing after every glyph. `None` when some letter is missing or joins its neighbour.
+fn direct_layout(
+    text: &str,
+    face: &Loaded,
+    font_size: Pixels,
+    spacing: Pixels,
+) -> Option<Vec<Cluster>> {
+    let parsed = ttf_parser::Face::parse(&face.data, 0).ok()?;
+    let scale = f32::from(font_size) / f32::from(parsed.units_per_em());
+    let mut glyphs = Vec::new();
+    let mut previous = None;
+    for c in text.chars() {
+        if continues_cluster(c, previous) || c.is_control() {
+            return None;
+        }
+        let glyph = parsed.glyph_index(c)?;
+        glyphs.push((
+            c,
+            glyph.0,
+            f32::from(parsed.glyph_hor_advance(glyph)?) * scale,
+        ));
+        previous = Some(c);
+    }
+    let mut x = 0.;
+    let mut out = Vec::with_capacity(glyphs.len());
+    for (at, (c, glyph, advance)) in glyphs.iter().enumerate() {
+        let kern = glyphs
+            .get(at + 1)
+            .map_or(0., |next| face.kerning.pair(*glyph, next.1) as f32 * scale);
+        let total = advance + kern + f32::from(spacing);
+        out.push(Cluster {
+            text: SharedString::from(c.to_string()),
+            x: px(x),
+            advance: px(total),
+        });
+        x += total;
+    }
+    Some(out)
+}
+
+fn plan(
+    text: &str,
+    font: Font,
+    font_size: Pixels,
+    spacing: Pixels,
+    face: Option<&Loaded>,
+    window: &Window,
+) -> Plan {
+    let metrics = face.and_then(|face| face_metrics(face, font_size));
+    let direct = face.and_then(|face| direct_layout(text, face, font_size, spacing));
+    let parts: Vec<&str> = if direct.is_some() {
+        clusters(text)
+    } else if spacing == px(0.) {
         vec![text]
     } else {
         clusters(text)
     };
-    let mut x = px(0.);
-    let mut out = Vec::with_capacity(parts.len());
     let (mut ascent, mut descent) = (px(0.), px(0.));
-    for part in parts {
+    for part in &parts {
         let line = shape(part, &font, font_size, Hsla::black(), window);
         ascent = ascent.max(line.ascent);
         descent = descent.max(line.descent);
-        let advance = line.width + spacing;
-        out.push(Cluster {
-            text: SharedString::from(part.to_owned()),
-            x,
-            advance,
-        });
-        x += advance;
     }
+    let out = match direct {
+        Some(laid) => laid,
+        None => {
+            let mut x = px(0.);
+            let mut out = Vec::with_capacity(parts.len());
+            for part in parts {
+                let line = shape(part, &font, font_size, Hsla::black(), window);
+                let advance = line.width + spacing;
+                out.push(Cluster {
+                    text: SharedString::from(part.to_owned()),
+                    x,
+                    advance,
+                });
+                x += advance;
+            }
+            out
+        }
+    };
+    let width = out.last().map_or(px(0.), |last| last.x + last.advance);
     Plan {
         clusters: out,
-        width: x,
+        width,
         ascent,
         descent,
+        metrics,
         font_id: window.text_system().resolve_font(&font),
         font,
         font_size,
         spacing,
     }
+}
+
+/// How far the text system's own baseline for `line` sits below the browser's for a line box of `line_height`.
+fn baseline_shift(plan: &Plan, line: &ShapedLine, line_height: Pixels) -> Pixels {
+    let Some((ascent, descent)) = plan.metrics else {
+        return px(0.);
+    };
+    let browser = px(f32::from((line_height - ascent - descent) / 2.).floor()) + ascent;
+    let ours = (line_height - line.ascent - line.descent) / 2. + line.ascent;
+    // Half a pixel further down: the text system rounds the baseline a whole pixel up where the browser rounds half
+    // up, measured against the style editor's message line (16px in a 22px line).
+    browser - ours + px(0.5)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -354,6 +531,27 @@ fn hovers() -> &'static Mutex<HashMap<SharedString, Instant>> {
     HOVERS.get_or_init(Mutex::default)
 }
 
+/// Capture only: the animation clock held at this many seconds (the comparison sheet's `at`); NaN bits when running.
+#[cfg(feature = "capture")]
+static FROZEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+#[cfg(feature = "capture")]
+fn set_frozen(seconds: Option<f32>) {
+    FROZEN.store(seconds.map_or(u32::MAX, f32::to_bits), Ordering::Relaxed);
+}
+
+fn frozen_time() -> Option<f32> {
+    #[cfg(feature = "capture")]
+    {
+        let bits = FROZEN.load(Ordering::Relaxed);
+        (bits != u32::MAX).then(|| f32::from_bits(bits))
+    }
+    #[cfg(not(feature = "capture"))]
+    {
+        None
+    }
+}
+
 fn clock() -> Instant {
     static START: OnceLock<Instant> = OnceLock::new();
     *START.get_or_init(Instant::now)
@@ -362,7 +560,13 @@ fn clock() -> Instant {
 fn fingerprint(spec: &raster::Spec, text: &str, family: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (text, family).hash(&mut hasher);
-    for value in [spec.size, spec.line_height, spec.scale, spec.width] {
+    for value in [
+        spec.size,
+        spec.line_height,
+        spec.scale,
+        spec.width,
+        spec.shift_x,
+    ] {
         value.to_bits().hash(&mut hasher);
     }
     spec.effect.hash(&mut hasher);
@@ -402,7 +606,15 @@ fn evict_idle(window: &mut Window, cx: &mut App) {
 }
 
 /// The image of a name's effect, if it is ready; asks for it when it is not. `animated` asks for the whole loop.
-fn image(key: u64, animated: bool, spec: &raster::Spec, cx: &mut App) -> Option<Arc<RenderImage>> {
+fn image(
+    key: u64,
+    animated: bool,
+    held: Option<f32>,
+    spec: &raster::Spec,
+    cx: &mut App,
+) -> Option<Arc<RenderImage>> {
+    // A clock held at one moment (capture) renders only that frame, under its own key.
+    let key = held.map_or(key, |at| key ^ u64::from(at.to_bits()).rotate_left(32));
     let mut images = image_cache().lock().ok()?;
     let entry = images.entry((key, animated)).or_insert(Entry {
         image: None,
@@ -414,7 +626,9 @@ fn image(key: u64, animated: bool, spec: &raster::Spec, cx: &mut App) -> Option<
         entry.pending = true;
         let spec = spec.clone();
         let task = cx.background_executor().spawn(async move {
-            if animated {
+            if let Some(at) = held {
+                raster::render(&spec, Some(at)).into_iter().collect()
+            } else if animated {
                 let cycle = raster::cycle(spec.effect);
                 let count = (cycle * FRAMES_PER_SECOND).round() as usize;
                 (0..count)
@@ -553,6 +767,8 @@ impl NameText {
             Display::Animated => animated,
             Display::FontOnHover if hovered => animated,
             Display::FontOnHover => Shown::Plain,
+            Display::StaticOnHover if hovered => animated,
+            Display::StaticOnHover => Shown::Resting,
         }
     }
 }
@@ -600,7 +816,8 @@ impl Element for NameText {
         let rem = window.rem_size();
         let font_size = inherited.font_size.to_pixels(rem);
         let line_height = inherited.line_height_in_pixels(rem);
-        let (face_font, spacing) = match loaded(font) {
+        let face_loaded = loaded(font);
+        let (face_font, spacing) = match &face_loaded {
             Some(loaded) => (
                 Font {
                     family: loaded.family.clone(),
@@ -617,7 +834,14 @@ impl Element for NameText {
         let shared = self.plan.clone();
         let id =
             window.request_measured_layout(Style::default(), move |known, available, window, _| {
-                let planned = plan(&text, face_font.clone(), font_size, spacing, window);
+                let planned = plan(
+                    &text,
+                    face_font.clone(),
+                    font_size,
+                    spacing,
+                    face_loaded.as_deref(),
+                    window,
+                );
                 let limit = known.width.or(match available.width {
                     AvailableSpace::Definite(width) => Some(width),
                     _ => None,
@@ -674,7 +898,12 @@ impl Element for NameText {
         let main = colors.first().copied();
         let palette = main.map(Palette::of);
         let font = self.styles.font();
-        let face = loaded(font);
+        let wants_effect = shown != Shown::Plain && raster::needs_image(effect);
+        let face = loaded(font).or_else(|| {
+            (font.face().is_none() && wants_effect)
+                .then(|| default_face(inherited.font_weight, cx))
+                .flatten()
+        });
         let effect_shown = shown != Shown::Plain && face.is_some();
 
         // The ellipsis the parent asked for (`text-overflow: ellipsis`), when the name does not fit.
@@ -715,22 +944,31 @@ impl Element for NameText {
         let mut drawn = false;
         if raster_effect
             && let (Some(face), Some(palette)) = (face.as_ref(), palette)
-            && let Some(spec) = self.spec(plan, face, &colors, palette, line_height, window)
+            && let Some(mut spec) = self.spec(plan, face, &colors, palette, line_height, window)
         {
+            // Chromium puts a line's baseline on a whole device pixel but positions glyphs along it to a fraction;
+            // the picture is placed on whole pixels and carries the fraction in its glyph positions.
+            let scale = window.scale_factor();
+            let geometry = raster::geometry(&spec);
+            let want_x = f32::from(bounds.origin.x) + geometry.left;
+            let want_y = f32::from(bounds.origin.y) + geometry.top;
+            let snapped_x = (want_x * scale).floor() / scale;
+            let snapped_y = (want_y * scale).round() / scale;
+            spec.shift_x = want_x - snapped_x;
             let key = fingerprint(&spec, &self.text, &face.family);
             let animating = shown == Shown::Animated && raster::animates(effect);
-            let resting = image(key, false, &spec, cx);
-            let frames = if animating {
-                image(key, true, &spec, cx)
+            let held = frozen_time().filter(|_| animating);
+            let resting = image(key, false, held, &spec, cx);
+            let frames = if animating && held.is_none() {
+                image(key, true, None, &spec, cx)
             } else {
                 None
             };
-            let geometry = raster::geometry(&spec);
-            let origin = point(
-                bounds.origin.x + px(geometry.left),
-                bounds.origin.y + px(geometry.top),
+            let (pixels_w, pixels_h) = raster::image_size(&spec);
+            let target = Bounds::new(
+                point(px(snapped_x), px(snapped_y)),
+                size(px(pixels_w as f32 / scale), px(pixels_h as f32 / scale)),
             );
-            let target = Bounds::new(origin, size(px(geometry.width), px(geometry.height)));
             let picked = match (&frames, &resting) {
                 (Some(frames), _) => {
                     let start = hovers()
@@ -748,7 +986,7 @@ impl Element for NameText {
             if let Some((picked, at)) = picked {
                 let _ = window.paint_image(target, target, Corners::default(), picked, at, false);
                 drawn = true;
-                if animating {
+                if animating && held.is_none() {
                     window.request_animation_frame();
                 }
             }
@@ -768,8 +1006,9 @@ impl Element for NameText {
                 text_color,
                 window,
             );
+            let lift = baseline_shift(plan, &line, line_height);
             let _ = line.paint(
-                point(bounds.origin.x + cluster.x, bounds.origin.y),
+                point(bounds.origin.x + cluster.x, bounds.origin.y + lift),
                 line_height,
                 TextAlign::Left,
                 None,
@@ -780,8 +1019,9 @@ impl Element for NameText {
         if truncated {
             let x = visible.last().map_or(px(0.), |last| last.x + last.advance);
             let line = shape("\u{2026}", &plan.font, plan.font_size, text_color, window);
+            let lift = baseline_shift(plan, &line, line_height);
             let _ = line.paint(
-                point(bounds.origin.x + x, bounds.origin.y),
+                point(bounds.origin.x + x, bounds.origin.y + lift),
                 line_height,
                 TextAlign::Left,
                 None,
@@ -840,14 +1080,23 @@ impl NameText {
             glyphs,
             width: f32::from(plan.width),
             line_height: f32::from(line_height),
-            ascent: f32::from(plan.ascent.round()),
-            descent: f32::from(plan.descent.round()),
+            ascent: f32::from(
+                plan.metrics
+                    .map_or(plan.ascent, |metrics| metrics.0)
+                    .round(),
+            ),
+            descent: f32::from(
+                plan.metrics
+                    .map_or(plan.descent, |metrics| metrics.1)
+                    .round(),
+            ),
             effect: self.styles.effect(),
             palette,
             colors: colors.to_vec(),
             name_len: self.text.encode_utf16().count(),
             zero_width: f32::from(zero),
             scale: window.scale_factor(),
+            shift_x: 0.,
         })
     }
 }

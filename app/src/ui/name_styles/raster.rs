@@ -41,6 +41,9 @@ pub struct Spec {
     pub name_len: usize,
     pub zero_width: f32,
     pub scale: f32,
+    /// The fraction of a pixel the picture's origin sits left of where the name's box starts, in CSS px: the picture
+    /// is placed on whole device pixels and the glyphs are drawn this much further right.
+    pub shift_x: f32,
 }
 
 /// Where the image sits, in CSS px from the top left of the name's line box.
@@ -398,6 +401,10 @@ fn gradient(start: Point, end: Point, list: &[(Rgb, f32)], mode: SpreadMode) -> 
     }
 }
 
+/// Stroke width added to text that is drawn from its clipped outline (`background-clip: text`): the browser's text
+/// rasteriser gives such text a heavier stem than the plain outline fill, measured against the captured previews.
+const TEXT_BODY: f32 = 0.45;
+
 fn stroke(width: f32) -> Stroke {
     Stroke {
         width,
@@ -467,16 +474,24 @@ fn box_blur(data: &mut [u8], width: usize, height: usize, radius: usize, horizon
     }
 }
 
-fn pixmap(geometry: &Geometry, scale: f32) -> Option<Pixmap> {
-    Pixmap::new(
-        (geometry.width * scale).ceil().max(1.) as u32,
-        (geometry.height * scale).ceil().max(1.) as u32,
+/// The picture's size in device pixels: the effect's box plus a pixel for the glyphs' fractional shift.
+pub fn image_size(spec: &Spec) -> (u32, u32) {
+    let geometry = geometry(spec);
+    (
+        (geometry.width * spec.scale).ceil().max(1.) as u32 + 1,
+        (geometry.height * spec.scale).ceil().max(1.) as u32,
     )
 }
 
+fn pixmap(spec: &Spec) -> Option<Pixmap> {
+    let (width, height) = image_size(spec);
+    Pixmap::new(width, height)
+}
+
 /// The transform from the line box's CSS px to the image's device pixels.
-fn view(geometry: &Geometry, scale: f32) -> Transform {
-    Transform::from_scale(scale, scale).pre_translate(-geometry.left, -geometry.top)
+fn view(spec: &Spec, geometry: &Geometry) -> Transform {
+    Transform::from_scale(spec.scale, spec.scale)
+        .pre_translate(-geometry.left + spec.shift_x, -geometry.top)
 }
 
 fn into_frame(pixmap: Pixmap) -> Frame {
@@ -495,8 +510,8 @@ fn into_frame(pixmap: Pixmap) -> Frame {
 /// Paints the name with its effect, `time` seconds into the animation (`None`: the resting, not animated state).
 pub fn render(spec: &Spec, time: Option<f32>) -> Option<Frame> {
     let geometry = geometry(spec);
-    let mut target = pixmap(&geometry, spec.scale)?;
-    let transform = view(&geometry, spec.scale);
+    let mut target = pixmap(spec)?;
+    let transform = view(spec, &geometry);
     let t = time.unwrap_or(0.);
     let animated = time.is_some();
     let size = spec.size;
@@ -506,13 +521,9 @@ pub fn render(spec: &Spec, time: Option<f32>) -> Option<Frame> {
             let path = outlines(spec, 0.)?;
             let (start, end) = corner_line(0., 0., spec.width, spec.line_height, true);
             let list = dc_state::display_name_styles::gradient_stops(&spec.colors);
-            target.fill_path(
-                &path,
-                &gradient(start, end, &list, SpreadMode::Pad),
-                FillRule::Winding,
-                transform,
-                None,
-            );
+            let paint = gradient(start, end, &list, SpreadMode::Pad);
+            target.stroke_path(&path, &paint, &stroke(TEXT_BODY), transform, None);
+            target.fill_path(&path, &paint, FillRule::Winding, transform, None);
         }
         Effect::Prism => {
             let path = outlines(spec, 0.)?;
@@ -525,13 +536,9 @@ pub fn render(spec: &Spec, time: Option<f32>) -> Option<Frame> {
             let list = dc_state::display_name_styles::prism_stops(&spec.colors);
             let start = Point::from_xy(offset, 0.);
             let end = Point::from_xy(offset + cycle_width, 0.);
-            target.fill_path(
-                &path,
-                &gradient(start, end, &list, SpreadMode::Repeat),
-                FillRule::Winding,
-                transform,
-                None,
-            );
+            let paint = gradient(start, end, &list, SpreadMode::Repeat);
+            target.stroke_path(&path, &paint, &stroke(TEXT_BODY), transform, None);
+            target.fill_path(&path, &paint, FillRule::Winding, transform, None);
         }
         Effect::Toon => {
             let path = outlines(spec, 0.)?;
@@ -571,7 +578,7 @@ pub fn render(spec: &Spec, time: Option<f32>) -> Option<Frame> {
             let path = outlines(spec, 0.)?;
             let radius = neon_radius(size);
             let width = 1. + 0.04 * size;
-            let mut shadow = pixmap(&geometry, spec.scale)?;
+            let mut shadow = pixmap(spec)?;
             let paint = solid(spec.palette.main);
             shadow.stroke_path(&path, &paint, &stroke(width), transform, None);
             shadow.fill_path(&path, &paint, FillRule::Winding, transform, None);
@@ -663,6 +670,7 @@ pub fn render(spec: &Spec, time: Option<f32>) -> Option<Frame> {
                     .pre_translate(cx, cy)
                     .pre_scale(local.0, local.1)
                     .pre_translate(-cx, -cy);
+                target.stroke_path(&path, &solid(rgb), &stroke(TEXT_BODY), letter, None);
                 target.fill_path(&path, &solid(rgb), FillRule::Winding, letter, None);
             }
         }
@@ -812,6 +820,7 @@ mod tests {
                 name_len: text.len(),
                 zero_width: 12.,
                 scale: 4.,
+                shift_x: 0.,
             };
             let frame = render(&spec, None).expect("the name draws");
             assert!(frame.bgra.chunks(4).any(|pixel| pixel[3] > 200));
@@ -856,6 +865,7 @@ mod tests {
             name_len: 4,
             zero_width: 12.,
             scale: 1.,
+            shift_x: 0.,
         };
         // pt-profile-art: the neon span measured 66.81 x 36.78 around a 54.03 x 24 name.
         let neon = geometry(&spec);

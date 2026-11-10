@@ -152,6 +152,11 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.shop_dump()));
                 let _ = writeln!(output, "{note}");
             }
+            ["shop", "checkout", rest @ ..] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_shop_checkout(rest, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             ["tray", "preview"] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
@@ -529,6 +534,18 @@ pub async fn run(
             // product is read with a GET): `profile-effect <sku> [at <ms>]`, `profile-effect off`, `profile-effect state`.
             ["profile-effect", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_profile_effect(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: one styled name in the three places of the official style editor's preview, at their
+            // positions on plain panels: `name-sheet <font id> <effect id> <colours> [at <ms>] [bg a b c]`, `off`.
+            ["name-sheet", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_name_sheet(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // The profile editor: `profile-editor open`, `nitro`, `preset <name>`, `pick <kind> [sku]`, ... (see
+            // `script_profile_editor`).
+            ["profile-editor", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_profile_editor(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
             ["note", label @ ..] => {

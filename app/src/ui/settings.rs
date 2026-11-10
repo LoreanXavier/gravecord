@@ -904,7 +904,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn settings_profile(&self) -> AnyElement {
+    fn settings_profile(&self, cx: &mut Context<Self>) -> AnyElement {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         div()
@@ -938,12 +938,17 @@ impl Root {
                     )
                     .child(
                         div()
+                            .id("settings-edit-profiles")
                             .flex()
                             .items_center()
                             .gap(px(4.))
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-muted"))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_profile_editor(cx);
+                            }))
                             .child("Edit Profiles")
                             .child(mask_icon("settings_edit_pencil", 12., "--text-muted")),
                     ),
@@ -1039,6 +1044,7 @@ impl Root {
             .unwrap_or_default();
         let shadow = nav_scroll.offset().y < px(-12.);
         let base: gpui::Hsla = color("--background-base-lower").into();
+        let profile_card = self.settings_profile(cx);
         let sections = SECTIONS
             .iter()
             .enumerate()
@@ -1090,7 +1096,7 @@ impl Root {
                     .flex_none()
                     .pl(px(4.))
                     .pr(px(16.))
-                    .child(div().pb(px(8.)).child(self.settings_profile()))
+                    .child(div().pb(px(8.)).child(profile_card))
                     .child(self.settings_search()),
             )
             .child(

@@ -130,6 +130,7 @@ impl Root {
             &options,
             |this, sort, cx| {
                 this.shop.sort = sort;
+                this.shop.sort_chosen = true;
                 this.shop.sort_open = false;
                 this.shop_browse_enter();
                 cx.notify();
@@ -301,6 +302,39 @@ impl Root {
                     })),
             )
             .child(grid)
+            .into_any_element()
+    }
+
+    /// The wishlist page behind the heart button: the products of the account's wishlist in a grid.
+    pub(super) fn shop_wishlist_page(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let skus = self.shop.wishlist_order.clone();
+        let body = if skus.is_empty() {
+            div()
+                .h(px(200.))
+                .flex()
+                .items_center()
+                .child(
+                    text(16., 20., 400., "--text-muted")
+                        .child("Open any item and tap the heart to add to Wishlist"),
+                )
+                .into_any_element()
+        } else {
+            self.shop_grid(&skus, false, window, cx)
+        };
+        div()
+            .parity("shop-wishlist-page")
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .px(px(32.))
+            .pt(px(32.))
+            .pb(px(32.))
+            .child(text(32., 40., 700., "--text-strong").child("Wishlist"))
+            .child(body)
             .into_any_element()
     }
 
@@ -584,6 +618,7 @@ impl Root {
 
     fn shop_filters_changed(&mut self, cx: &mut Context<Self>) {
         self.shop.collection = None;
+        self.shop_default_sort();
         self.shop_browse_enter();
         cx.notify();
     }

@@ -111,6 +111,7 @@ mod pins;
 mod plaintext_extensions;
 mod profile;
 mod profile_art;
+mod profile_editor;
 mod profile_effects;
 mod profile_menu;
 mod profile_other;
@@ -400,6 +401,7 @@ pub struct Root {
     remediation: Option<(Id, remediation::Remedy)>,
     report: Option<report::Report>,
     full_profile: Option<full_profile::FullProfile>,
+    profile_editor: Option<profile_editor::Open>,
     /// Invite codes already resolved or on their way.
     requested_invites: HashSet<String>,
     /// Images this client draws itself (invite banners), by key.
@@ -676,6 +678,7 @@ impl Root {
             remediation: None,
             report: None,
             full_profile: None,
+            profile_editor: None,
             requested_invites: HashSet::new(),
             generated_images: std::cell::RefCell::new(HashMap::new()),
             pending_join: None,
@@ -1047,6 +1050,11 @@ impl Root {
                 if key.starts_with(quests::FETCH_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.quests_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(profile_editor::FETCH_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.profile_editor_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(shop::FETCH_PREFIX) {
@@ -3403,7 +3411,12 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child(user.display_name().to_owned()),
+                            .child(name_styles::name(
+                                "panel-name".to_owned(),
+                                user.display_name().to_owned(),
+                                self.name_styles(&user, None).as_ref(),
+                                name_styles::Display::StaticOnHover,
+                            )),
                     )
                     .child(
                         div()
@@ -6080,6 +6093,9 @@ impl Render for Root {
                     }
                     cx.notify();
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.profile_editor.is_some() {
+                    this.profile_editor_escape(cx);
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.profile.is_some() {
                     this.profile = None;
                     cx.notify();
@@ -6117,6 +6133,9 @@ impl Render for Root {
             .text_color(color("--text-default"))
             .bg(color("--background-base-lowest"))
             .children(self.settings_layer(window, cx))
+            .children(self.profile_editor_layer(window, cx))
+            .children(self.profile_editor_picker_layer(window, cx))
+            .children(self.profile_editor_styles_layer(window, cx))
             .children(self.channel_settings_layer(cx))
             .children(self.server_settings_layer(cx))
             .children(self.delete_server_modal(cx))
@@ -6296,7 +6315,7 @@ impl Render for Root {
                                                 .child(self.member_panel(cx))
                                             },
                                         )
-                                        .children(self.dm_profile(cx)),
+                                        .children(self.dm_profile(window, cx)),
                                 ),
                         )
                         .children(self.new_thread_panel(cx))
@@ -6367,6 +6386,9 @@ impl Render for Root {
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
             .children(self.splash_layer(window, cx));
+        // Capture only: the display name style comparison sheet (`name-sheet` step).
+        #[cfg(feature = "capture")]
+        let element = element.children(name_styles::sheet_layer());
         self.end_call_background_frame(cx);
         element
     }

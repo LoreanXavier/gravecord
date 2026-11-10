@@ -298,7 +298,15 @@ impl Root {
                         .line_height(px(24.))
                         .font_weight(FontWeight(600.))
                         .text_color(color("--text-default"))
-                        .child(user.display_name().to_owned()),
+                        .child(super::name_styles::probed(
+                            super::name_styles::name(
+                                format!("popout-name-{}", user.id),
+                                user.display_name().to_owned(),
+                                self.name_styles(&user, self.guild).as_ref(),
+                                super::name_styles::Display::Animated,
+                            ),
+                            "profile-name-styled",
+                        )),
                 ),
             )
             .child(

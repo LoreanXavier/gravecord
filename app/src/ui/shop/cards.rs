@@ -106,6 +106,46 @@ impl Root {
                     }))
                     .into_any_element()
             }
+            data::KIND_EXTERNAL => {
+                let url = data::external_art_url(&product.sku_id);
+                let badge = product.sku_id == data::ORB_BADGE;
+                let art = url.and_then(|url| self.shop_img(&url));
+                // `externalProductWrapper`: 252 high and centred, inside the card's bottom padding of 56.
+                div()
+                    .size_full()
+                    .pb(px(56.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .w_full()
+                            .h(px(252.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .children(art.map(|art| {
+                                if badge {
+                                    img(art)
+                                        .flex_none()
+                                        .size(px(120.))
+                                        .object_fit(ObjectFit::Contain)
+                                        .into_any_element()
+                                } else {
+                                    img(art)
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .size_full()
+                                        .object_fit(ObjectFit::Contain)
+                                        .into_any_element()
+                                }
+                            })),
+                    )
+                    .into_any_element()
+            }
             data::KIND_AVATAR_DECORATION => {
                 let id = item.map_or(product.sku_id.clone(), |item| item.sku_id.clone());
                 if brand {
@@ -291,6 +331,8 @@ impl Root {
         let limited = self.shop_limited_text(&product);
         let hovering = self.shop.hover_card.as_deref() == Some(sku);
         let preview = self.shop_preview(&product, 242., false, hovering, window, cx);
+        // `tb` of module 987421: a bundle with a static foreground does not lift on hover.
+        let lift = hovering && !(product.kind == data::KIND_BUNDLE && product.fg_static.is_some());
         let sku_owned = sku.to_owned();
         let wished = self.shop.wishlist.contains(sku);
         let name_row = |product: &Product| -> AnyElement {
@@ -362,7 +404,13 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.shop_open_product(&sku_owned, cx);
             }))
-            .child(div().absolute().inset_0().child(preview))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(lift, |wrap| wrap.top(px(-6.)))
+                    .child(preview),
+            )
             .child(
                 div()
                     .absolute()
@@ -515,12 +563,12 @@ pub(super) fn orbs_badge() -> AnyElement {
         .top(px(12.))
         .left(px(12.))
         .h(px(16.))
-        .px(px(4.))
+        .px(px(8.))
         .rounded(px(8.))
         .bg(color("--white"))
         .flex()
         .items_center()
-        .gap(px(2.))
+        .gap(px(4.))
         .child(icon("shop_orb_12", 12., "--black"))
         .child(text(12., 16., 600., "--black").child("ORBS EXCLUSIVE"))
         .into_any_element()
