@@ -1,0 +1,14 @@
+{
+  "event-create-content": {
+    "class": "content_WiFU02"
+  },
+  "event-stepper": {
+    "class": "container_HVkOMa"
+  },
+  "event-footer-buttons": {
+    "class": "inline_WiFU02"
+  },
+  "event-entity-voice": {
+    "class": "radioGroupOption_oJuRbG"
+  }
+}
