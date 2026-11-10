@@ -461,6 +461,7 @@ pub struct Root {
     nitro: nitro::NitroState,
     nitro_open: bool,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
+    user_panel_height: Option<Pixels>,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
@@ -682,6 +683,7 @@ impl Root {
             nitro: nitro::NitroState::default(),
             nitro_open: false,
             tip_anchors: Rc::default(),
+            user_panel_height: None,
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -2520,7 +2522,8 @@ impl Root {
                 tool("discover", 20.),
                 cx,
             ));
-        // The official rail ends where the user panel starts.
+        // wrapper_5dqHTG reserves the observed panel border-box height + 8px - 16px.
+        let reserved = self.user_panel_height.unwrap_or(px(58.)) - px(8.);
         div()
             .flex_none()
             .w(px(72.))
@@ -2528,7 +2531,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(list)
-            .child(div().flex_none().h(px(50.)))
+            .child(div().flex_none().h(reserved))
     }
 
     fn channel_row(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
@@ -3238,6 +3241,29 @@ impl Root {
                         cx,
                     )),
             );
+        let measured = self.user_panel_height;
+        let root = self.weak.clone();
+        let measure = gpui::canvas(
+            move |bounds, _, cx| {
+                let height = bounds.size.height;
+                if measured != Some(height) {
+                    cx.defer(move |cx| {
+                        let _ = root.update(cx, |this, cx| {
+                            if this.user_panel_height != Some(height) {
+                                this.user_panel_height = Some(height);
+                                cx.notify();
+                            }
+                        });
+                    });
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top(px(-1.))
+        .right(px(-1.))
+        .bottom(px(-1.))
+        .left(px(-1.));
         // `panels_pog62O`: one bordered box; while in voice the call panel sits above the user row.
         div()
             .parity_with_border("user-panel", 1.)
@@ -3253,6 +3279,7 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .flex_col()
+            .child(measure)
             .children(self.activity_panel(cx))
             .children(self.voice_panel(cx))
             .child(row)
