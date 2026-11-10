@@ -4,9 +4,12 @@
 pub mod autocomplete;
 pub mod collectibles;
 pub mod confusables;
+pub mod content_inventory;
+pub mod content_inventory_manager;
 pub mod experiments;
 pub mod frecency;
 pub mod grouping;
+pub mod guild_member_counts;
 pub mod guild_settings;
 pub mod member_list;
 pub mod members;
@@ -1149,6 +1152,8 @@ pub struct Stores {
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
     pub presence: presence::PresenceStore,
+    pub member_counts: guild_member_counts::GuildMemberCountStore,
+    pub content_inventory: content_inventory::ContentInventoryStore,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
     pub status: String,
@@ -1175,6 +1180,10 @@ pub struct Stores {
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
         self.presence.dispatch(name, data);
+        self.member_counts.dispatch(name, data);
+        if name == "READY" {
+            self.content_inventory.connection_open();
+        }
         self.members.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
