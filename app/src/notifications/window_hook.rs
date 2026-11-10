@@ -11,7 +11,8 @@ use windows::{
         UI::{
             Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                DestroyIcon, HICON, RegisterWindowMessageW, SendMessageW, WM_NCDESTROY, WM_SETICON,
+                DestroyIcon, HICON, IsIconic, PostMessageW, RegisterWindowMessageW, SW_RESTORE,
+                SW_SHOW, SendMessageW, SetForegroundWindow, ShowWindow, WM_NCDESTROY, WM_SETICON,
             },
         },
     },
@@ -92,6 +93,26 @@ pub(super) fn refresh_icons(window: &gpui::Window) {
 fn message() -> u32 {
     static MESSAGE: OnceLock<u32> = OnceLock::new();
     *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarButtonCreated")) })
+}
+fn restore_message() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("gravecord.RestoreWindow")) })
+}
+pub(super) fn restore(window: &gpui::Window) {
+    let Some(hwnd) = hwnd(window) else {
+        return;
+    };
+    let message = restore_message();
+    let mut pointer = 0;
+    if message != 0
+        && unsafe { GetWindowSubclass(hwnd, Some(callback), SUBCLASS_ID, Some(&mut pointer)) }
+            .as_bool()
+    {
+        // Post so ShowWindow's synchronous activation callbacks run after GPUI releases App's borrow.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 fn hwnd(window: &gpui::Window) -> Option<HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -187,6 +208,17 @@ unsafe extern "system" fn callback(
             let _ = RemoveWindowSubclass(hwnd, Some(callback), id);
             drop(Box::from_raw(data as *mut State));
         }
+    } else if msg == restore_message() {
+        unsafe {
+            let command = if IsIconic(hwnd).as_bool() {
+                SW_RESTORE
+            } else {
+                SW_SHOW
+            };
+            let _ = ShowWindow(hwnd, command);
+            let _ = SetForegroundWindow(hwnd);
+        }
+        return LRESULT(0);
     } else if msg == message() {
         let state = unsafe { &mut *(data as *mut State) };
         state.ready = true;

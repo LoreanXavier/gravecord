@@ -104,7 +104,7 @@ impl Shell {
             }
             (update, Screen::Main(root)) => {
                 if matches!(&update, Update::NotificationClicked(_)) {
-                    window.activate_window();
+                    crate::notifications::restore_window(window);
                 }
                 root.update(cx, |root, cx| root.update(update, cx));
             }

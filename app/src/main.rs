@@ -6,6 +6,7 @@ mod fonts;
 #[cfg(feature = "capture")]
 mod harness;
 mod inline;
+mod instance;
 mod logging;
 mod login_art;
 mod net;
@@ -212,8 +213,22 @@ fn main() -> Result<()> {
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
     }
+    let (mut instance, instance_error) = match instance::claim() {
+        Ok(instance::Launch::Forwarded) => return Ok(()),
+        Ok(instance::Launch::Primary(instance)) => (instance, None),
+        Err(error) => (None, Some(error)),
+    };
+    let restore_requests = instance
+        .as_mut()
+        .and_then(instance::Instance::take_requests);
     record_panics();
     record_log();
+    if let Some(error) = instance_error {
+        tracing::warn!(%error, "single-instance claim unavailable");
+    }
+    if storage::is_capture_run() {
+        tracing::info!("single instance (capture no-op)");
+    }
     notifications::configure_process();
     let assets_root = find_assets().context("app/assets not found")?;
     let capture = capture_args();
@@ -256,6 +271,20 @@ fn main() -> Result<()> {
                 .expect("the window must open");
             let shell = window.entity(cx).expect("the shell exists");
             cx.activate(true);
+
+            if let Some(mut requests) = restore_requests {
+                cx.spawn(async move |cx| {
+                    while requests.recv().await.is_some() {
+                        if window
+                            .update(cx, |_, window, _| notifications::restore_window(window))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
 
             if let Some(capture) = capture {
                 cx.spawn(async move |cx| {
@@ -323,6 +352,8 @@ fn main() -> Result<()> {
                 .detach();
             }
         });
+    // Release the claim before media teardown, which can wait for a device driver.
+    drop(instance);
     // The window closed: whatever Global Attenuation lowered goes back, and the call's recordings are written.
     dc_voice::shutdown();
     Ok(())

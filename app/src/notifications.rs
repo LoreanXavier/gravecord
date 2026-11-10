@@ -91,6 +91,16 @@ pub fn refresh_window_icons(window: &gpui::Window) {
     let _ = window;
 }
 
+pub fn restore_window(window: &gpui::Window) {
+    if storage::is_capture_run() {
+        return;
+    }
+    #[cfg(windows)]
+    window_hook::restore(window);
+    #[cfg(not(windows))]
+    window.activate_window();
+}
+
 pub struct Notice {
     pub channel: Id,
     pub message: Id,
