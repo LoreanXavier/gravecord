@@ -18,6 +18,8 @@ use serde_json::json;
 /// What was right-clicked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Target {
+    InventoryFeed,
+    InventoryFeedAtPointer,
     Guild(Id),
     Channel(Id),
     Category(Id),
@@ -28,6 +30,8 @@ pub(super) enum Target {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Act {
+    InventoryAbout,
+    InventoryHide,
     MarkRead,
     Invite,
     Mute,
@@ -661,6 +665,16 @@ impl Root {
     ) {
         let developer = self.developer_mode();
         let items = match target {
+            Target::InventoryFeed | Target::InventoryFeedAtPointer => vec![
+                Entry::Row(
+                    Row::new(Act::InventoryAbout, "About Recent Activity").icon("circle_info"),
+                ),
+                Entry::Row(
+                    Row::new(Act::InventoryHide, "Hide Activity Cards")
+                        .icon("eye_slash")
+                        .check(self.inventory_hidden()),
+                ),
+            ],
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -876,6 +890,12 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match (act, target) {
+            (Act::InventoryAbout, Target::InventoryFeed | Target::InventoryFeedAtPointer) => {
+                self.inventory.about = true
+            }
+            (Act::InventoryHide, Target::InventoryFeed | Target::InventoryFeedAtPointer) => {
+                self.toggle_inventory_hidden()
+            }
             (Act::MarkRead, Target::Guild(guild)) => {
                 let channels: Vec<Id> = self
                     .stores
@@ -952,6 +972,7 @@ impl Root {
                     | Target::Thread(id)
                     | Target::Dm(id) => id,
                     Target::User { user, .. } => user,
+                    Target::InventoryFeed | Target::InventoryFeedAtPointer => return,
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
             }
@@ -1295,6 +1316,11 @@ impl Root {
         }
         let menu = deferred(
             anchored()
+                .anchor(if target == Target::InventoryFeed {
+                    gpui::Anchor::TopRight
+                } else {
+                    gpui::Anchor::TopLeft
+                })
                 .position(open.at)
                 .snap_to_window_with_margin(px(8.))
                 .child(
@@ -1522,9 +1548,18 @@ impl Root {
                 cx.notify();
             }))
             .children(row.icon.map(|name| {
-                div()
-                    .mr(px(8.))
-                    .child(icon(name, 18., "--interactive-text-default"))
+                div().mr(px(8.)).child(icon(
+                    name,
+                    if matches!(
+                        target,
+                        Target::InventoryFeed | Target::InventoryFeedAtPointer
+                    ) {
+                        20.
+                    } else {
+                        18.
+                    },
+                    "--interactive-text-default",
+                ))
             }))
             .child(
                 div()
@@ -1551,7 +1586,16 @@ impl Root {
             )
             .children(row.check.map(|on| {
                 div()
-                    .ml(px(16.))
+                    .ml(px(
+                        if matches!(
+                            target,
+                            Target::InventoryFeed | Target::InventoryFeedAtPointer
+                        ) {
+                            8.
+                        } else {
+                            16.
+                        },
+                    ))
                     .size(px(20.))
                     .rounded(px(4.))
                     .border_1()

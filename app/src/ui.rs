@@ -65,6 +65,7 @@ mod guild_notifications;
 mod history;
 mod home;
 mod inbox;
+mod inventory_feed;
 mod invite;
 mod invite_embed;
 mod lightbox;
@@ -462,6 +463,7 @@ pub struct Root {
     nitro_open: bool,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
+    inventory: inventory_feed::State,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
@@ -684,6 +686,7 @@ impl Root {
             nitro_open: false,
             tip_anchors: Rc::default(),
             user_panel_height: None,
+            inventory: inventory_feed::State::restore(),
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -699,6 +702,7 @@ impl Root {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
+            Update::GatewayConnected(connected) => self.inventory_connection_changed(connected, cx),
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Slowmode {
@@ -723,6 +727,12 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                if name == "READY" {
+                    self.inventory_connection_open();
+                }
+                if name == "CONTENT_INVENTORY_INBOX_STALE" {
+                    self.inventory_stale(&data, cx);
+                }
                 self.sidebar_event_update(&name, &data);
                 if matches!(
                     name.as_str(),
@@ -845,6 +855,11 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.inventory_fetched(&key, &body) {
+                    self.schedule_inventory(cx);
+                    cx.notify();
+                    return;
+                }
                 if self.friend_nickname_fetched(&key, &body, cx) {
                     return;
                 }
@@ -1576,6 +1591,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
+                    .children(self.inventory_section(cx))
                     .children(rows),
             )
     }
@@ -5366,6 +5382,7 @@ impl Render for Root {
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
+        self.prepare_inventory_feed(cx);
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
             .current_dm()
@@ -5435,6 +5452,12 @@ impl Render for Root {
             ))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
+                if keys.key == "escape" && this.inventory.about {
+                    this.inventory.about = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if !event.is_held && this.voice_key_down(keys, cx) {
                     cx.stop_propagation();
                     return;
@@ -5956,6 +5979,7 @@ impl Render for Root {
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
+            .children(self.inventory_about_layer(cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
             .children(self.activity_shelf_layer(window, cx))
@@ -5997,11 +6021,13 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
     // Without the system-wide hook, push to talk is only seen while the window is active.
     root.update(cx, |this, cx| {
         this.notification_focused = window.is_window_active();
+        this.start_inventory_idle_timer(cx);
         this.notification_runtime.attach(window);
         this.refresh_notification_badge();
         this.tray_runtime.attach(window);
         cx.observe_window_activation(window, |this, window, cx| {
             this.notification_focus_changed(window.is_window_active(), cx);
+            this.schedule_inventory(cx);
             if !window.is_window_active() {
                 this.release_push_to_talk_on_blur();
             }

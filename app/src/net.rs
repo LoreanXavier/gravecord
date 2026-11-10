@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
+    GatewayConnected(bool),
     NotificationClicked(u64),
     Tray(crate::tray::Action),
     /// The connecting screen's spinner, fetched and decoded.
@@ -469,14 +470,24 @@ pub async fn run(
         while let Some(event) = events.recv().await {
             match event {
                 Event::Dispatch { name, data } => {
+                    let connected = matches!(name.as_str(), "READY" | "RESUMED");
                     let _ = forward.send(Update::Dispatch { name, data });
+                    if connected {
+                        let _ = forward.send(Update::GatewayConnected(true));
+                    }
                 }
                 Event::AuthenticationFailed => {
                     warn!("gateway rejected the token");
                     let _ = forward.send(Update::AuthFailed);
                 }
-                Event::Reconnecting { delay } => warn!("gateway reconnecting in {delay:?}"),
-                Event::Connected | Event::Closed { .. } => {}
+                Event::Reconnecting { delay } => {
+                    warn!("gateway reconnecting in {delay:?}");
+                    let _ = forward.send(Update::GatewayConnected(false));
+                }
+                Event::Connected => {}
+                Event::Closed { .. } => {
+                    let _ = forward.send(Update::GatewayConnected(false));
+                }
             }
         }
     });
@@ -1067,7 +1078,7 @@ fn fetch_failure(key: &str, error: &dc_http::Error) -> Option<Value> {
         // 970163 resolves failures to an absent invite, with a separate USER_BANNED marker.
         let banned = matches!(error, dc_http::Error::Status { body, .. } if body["code"] == 40007);
         Some(json!({"invite_resolve_failed": true, "banned": banned}))
-    } else if key.starts_with("activity-shelf:") {
+    } else if key.starts_with("activity-shelf:") || key == "content-inventory:feed" {
         Some(json!({"error": true}))
     } else {
         None

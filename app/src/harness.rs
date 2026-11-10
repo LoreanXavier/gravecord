@@ -172,6 +172,10 @@ pub async fn run(
                 let state = cx.update(|cx| root.read(cx).call_background_status());
                 let _ = writeln!(output, "call background: {state}");
             }
+            ["inventory", "state"] => {
+                let state = cx.update(|cx| root.read(cx).inventory_status());
+                let _ = writeln!(output, "inventory: {state}");
+            }
             ["member-profile", "mobile"] => {
                 let target = cx.update(|cx| {
                     window
