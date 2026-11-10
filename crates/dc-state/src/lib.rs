@@ -14,6 +14,7 @@ pub mod notifications;
 pub mod permissions;
 pub mod premium;
 pub mod presence;
+pub mod private_channels;
 pub mod read_state;
 pub mod slowmode;
 pub mod unread;
@@ -973,29 +974,74 @@ pub struct PrivateChannel {
     pub recipients: Vec<Id>,
     pub last_message_id: Id,
     pub name: Option<String>,
+    pub icon: Option<String>,
     pub application_id: Option<Id>,
+    pub flags: u64,
     pub message_request: bool,
+    pub spam: bool,
+    pub request_timestamp: Option<DateTime<Utc>>,
 }
 
 impl PrivateChannel {
     fn from_value(value: &Value) -> Option<Self> {
-        Some(Self {
+        let mut channel = Self {
             id: id(&value["id"])?,
             kind: value["type"].as_u64()?,
-            // READY lists `recipient_ids`; CHANNEL_CREATE and `POST /users/@me/channels` send `recipients` users.
-            recipients: match value["recipient_ids"].as_array() {
-                Some(ids) => ids.iter().filter_map(id).collect(),
-                None => value["recipients"]
-                    .as_array()
-                    .map(|users| users.iter().filter_map(|user| id(&user["id"])).collect())
-                    .unwrap_or_default(),
-            },
-            last_message_id: id(&value["last_message_id"]).unwrap_or(0),
-            name: text(&value["name"]),
-            application_id: id(&value["application_id"]),
-            message_request: value["is_message_request"].as_bool().unwrap_or(false)
-                || value["is_spam"].as_bool().unwrap_or(false),
-        })
+            recipients: Vec::new(),
+            last_message_id: 0,
+            name: None,
+            icon: None,
+            application_id: None,
+            flags: 0,
+            message_request: false,
+            spam: false,
+            request_timestamp: None,
+        };
+        channel.update(value);
+        Some(channel)
+    }
+
+    pub fn is_request(&self) -> bool {
+        self.message_request || self.spam
+    }
+
+    fn update(&mut self, value: &Value) {
+        if let Some(kind) = value["type"].as_u64() {
+            self.kind = kind;
+        }
+        // READY lists ids; channel events and REST answers carry user objects.
+        if let Some(ids) = value["recipient_ids"].as_array() {
+            self.recipients = ids.iter().filter_map(id).collect();
+        } else if let Some(users) = value["recipients"].as_array() {
+            self.recipients = users.iter().filter_map(|user| id(&user["id"])).collect();
+        }
+        if value.get("last_message_id").is_some() {
+            self.last_message_id = id(&value["last_message_id"]).unwrap_or(0);
+        }
+        if value.get("name").is_some() {
+            self.name = text(&value["name"]);
+        }
+        if value.get("icon").is_some() {
+            self.icon = text(&value["icon"]);
+        }
+        if value.get("application_id").is_some() {
+            self.application_id = id(&value["application_id"]);
+        }
+        if let Some(flags) = value.get("flags") {
+            self.flags = flags.as_u64().unwrap_or(0);
+        }
+        if let Some(request) = value["is_message_request"].as_bool() {
+            self.message_request = request;
+        }
+        if let Some(spam) = value["is_spam"].as_bool() {
+            self.spam = spam;
+        }
+        if value.get("is_message_request_timestamp").is_some() {
+            self.request_timestamp = value["is_message_request_timestamp"]
+                .as_str()
+                .and_then(|stamp| DateTime::parse_from_rfc3339(stamp).ok())
+                .map(|stamp| stamp.with_timezone(&Utc));
+        }
     }
 }
 
@@ -1444,6 +1490,33 @@ impl Stores {
                     }
                 }
             }
+            "CHANNEL_UPDATES" => {
+                for channel in data["channels"].as_array().into_iter().flatten() {
+                    self.dispatch("CHANNEL_UPDATE", channel);
+                }
+            }
+            "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
+                if let (Some(channel), Some(user)) =
+                    (id(&data["channel_id"]), id(&data["user"]["id"]))
+                {
+                    if let Some(known) = self
+                        .private_channels
+                        .iter_mut()
+                        .find(|known| known.id == channel)
+                    {
+                        if name == "CHANNEL_RECIPIENT_ADD" {
+                            if !known.recipients.contains(&user) {
+                                known.recipients.push(user);
+                            }
+                        } else {
+                            known.recipients.retain(|known| *known != user);
+                        }
+                    }
+                    if let Some(user) = User::from_value(&data["user"]) {
+                        self.users.entry(user.id).or_insert(user);
+                    }
+                }
+            }
             "MESSAGE_UPDATE" => self.update_message(data),
             "MESSAGE_REACTION_ADD" => self.react(data, 1),
             "MESSAGE_REACTION_REMOVE" => self.react(data, -1),
@@ -1490,20 +1563,29 @@ impl Stores {
     }
 
     pub fn add_private_channel(&mut self, data: &Value) {
-        if !matches!(data["type"].as_u64(), Some(1 | 3)) {
+        let existing = id(&data["id"]).and_then(|id| {
+            self.private_channels
+                .iter()
+                .position(|known| known.id == id)
+        });
+        let kind = data["type"]
+            .as_u64()
+            .or_else(|| existing.map(|index| self.private_channels[index].kind));
+        if !matches!(kind, Some(1 | 3)) {
             return;
+        }
+        if let (Some(channel), Some(message)) = (id(&data["id"]), id(&data["last_message_id"])) {
+            let latest = self.read_states.latest.entry(channel).or_default();
+            *latest = (*latest).max(message);
         }
         for user in data["recipients"].as_array().into_iter().flatten() {
             if let Some(user) = User::from_value(user) {
                 self.users.entry(user.id).or_insert(user);
             }
         }
-        if let Some(channel) = PrivateChannel::from_value(data)
-            && !self
-                .private_channels
-                .iter()
-                .any(|known| known.id == channel.id)
-        {
+        if let Some(index) = existing {
+            self.private_channels[index].update(data);
+        } else if let Some(channel) = PrivateChannel::from_value(data) {
             self.private_channels.insert(0, channel);
         }
     }

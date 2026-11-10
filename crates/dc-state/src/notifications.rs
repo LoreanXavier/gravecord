@@ -192,7 +192,7 @@ pub fn message_decision(
             (
                 level,
                 mentions_user(message, me.id, &[], false, false),
-                !private.message_request && !(private.kind == 3 && message_type == 2),
+                !private.is_request() && !(private.kind == 3 && message_type == 2),
                 true,
             )
         } else {
