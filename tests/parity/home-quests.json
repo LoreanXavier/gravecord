@@ -1,0 +1,40 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "sidebar": {
+    "class": "sidebarList_pog62O"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "quests-header": {
+    "class": "headerBar_tSk_LE",
+    "tag": "SECTION"
+  },
+  "quests-orbs": {
+    "class": "container_0XT54_",
+    "tag": "SPAN"
+  },
+  "quests-hero": {
+    "class": "heroWrapper_ZTJWQo"
+  },
+  "quests-hero-shop": {
+    "class": "overlay-primary_F7qvhY",
+    "tag": "BUTTON"
+  },
+  "quests-heading": {
+    "class": "headingWrapper_4L5sf6"
+  },
+  "quests-sort": {
+    "class": "button_F7qvhY",
+    "tag": "BUTTON",
+    "ancestor": "headingControls_4L5sf6"
+  },
+  "quests-empty": {
+    "class": "emptyStateContainer_e8rJ7m"
+  }
+}
