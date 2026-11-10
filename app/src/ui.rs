@@ -72,6 +72,7 @@ pub mod login;
 mod logout;
 mod presence;
 mod tray;
+mod unread_badges;
 pub use logout::RootEvent;
 mod channel_browser;
 mod forums;
@@ -259,6 +260,8 @@ pub struct Root {
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
     tray_runtime: crate::tray::Runtime,
+    #[cfg(feature = "capture")]
+    capture_badge: Option<(u64, bool)>,
     notification_focused: bool,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
@@ -520,6 +523,8 @@ impl Root {
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
+            #[cfg(feature = "capture")]
+            capture_badge: None,
             notification_focused: false,
             notification_sounds: Default::default(),
             rows: Vec::new(),
@@ -2312,6 +2317,7 @@ impl Root {
     fn rail_item(&self, guild: &Guild, cx: &mut Context<Self>) -> impl IntoElement {
         let id = guild.id;
         let selected = self.guild == Some(id);
+        let counts = self.guild_rail_counts(guild);
         let image = self.images.get(&format!("guild:{id}")).cloned();
         let group = SharedString::from(format!("guild-row-{id}"));
         let tile = div()
@@ -2378,7 +2384,7 @@ impl Root {
                     }),
             )
             // `item__o8_Xq` unread: an 8px pill while a channel in the guild is unread.
-            .when(!selected && self.stores.guild_unread(guild), |this| {
+            .when(!selected && counts.unread, |this| {
                 this.child(
                     div()
                         .absolute()
@@ -2391,6 +2397,13 @@ impl Root {
                 )
             })
             .child(self.with_tip(format!("guild-{id}"), Tip::rail(Body::Guild(id)), tile, cx))
+            .when(counts.mentions > 0, |row| {
+                row.child(unread_badges::rail_number(
+                    counts.mentions,
+                    counts.high_mentions == 0,
+                    selected,
+                ))
+            })
             // The server this client is in a call in carries a green speaker at the icon's top right.
             .when(
                 self.call.as_ref().is_some_and(|call| call.guild == id),
