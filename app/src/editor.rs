@@ -177,6 +177,14 @@ impl Editor {
         self.reports_all_edits = on;
     }
 
+    pub fn set_max_utf16(&mut self, limit: usize) {
+        self.buffer.set_max_utf16(limit);
+    }
+
+    pub fn set_single_line(&mut self, on: bool) {
+        self.buffer.set_single_line(on);
+    }
+
     pub fn set_text(&mut self, text: &str) {
         self.buffer.clear();
         self.buffer.insert(text);
@@ -251,7 +259,9 @@ impl Editor {
             }
         };
         match stroke.key.as_str() {
-            "enter" if shift || enter_inserts_newline => buffer.insert("\n"),
+            "enter" if !buffer.is_single_line() && (shift || enter_inserts_newline) => {
+                buffer.insert("\n");
+            }
             "enter" => self.submit(cx),
             "escape" => cx.emit(EditorEvent::Cancel),
             "backspace" => buffer.backspace(),
@@ -376,8 +386,13 @@ impl EntityInputHandler for Editor {
             .map(|range| self.buffer.range_to_utf16(&range))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let length = self.buffer.text().len();
         self.buffer.commit_composition();
+        if self.buffer.text().len() != length {
+            cx.emit(EditorEvent::Edited);
+            cx.notify();
+        }
     }
 
     fn replace_text_in_range(

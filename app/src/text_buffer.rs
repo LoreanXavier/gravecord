@@ -1,6 +1,7 @@
 //! The editor's text model, free of any UI: selection, IME marked text, undo, and the UTF-16 offsets operating systems use.
 //! Offsets are bytes into UTF-8 and always sit on a character boundary.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +27,8 @@ pub struct TextBuffer {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     last_edit: Edit,
+    max_utf16: Option<usize>,
+    single_line: bool,
 }
 
 impl Default for TextBuffer {
@@ -38,6 +41,8 @@ impl Default for TextBuffer {
             undo: Vec::new(),
             redo: Vec::new(),
             last_edit: Edit::Other,
+            max_utf16: None,
+            single_line: false,
         }
     }
 }
@@ -61,6 +66,46 @@ fn is_word(character: char) -> bool {
 }
 
 impl TextBuffer {
+    pub fn set_max_utf16(&mut self, limit: usize) {
+        self.max_utf16 = Some(limit);
+    }
+
+    pub fn set_single_line(&mut self, single_line: bool) {
+        self.single_line = single_line;
+    }
+
+    pub fn is_single_line(&self) -> bool {
+        self.single_line
+    }
+
+    fn sanitized_text<'a>(&self, text: &'a str, composing: bool) -> Cow<'a, str> {
+        if !self.single_line || !text.contains(['\r', '\n']) {
+            return Cow::Borrowed(text);
+        }
+        Cow::Owned(if composing {
+            text.replace(['\r', '\n'], "")
+        } else {
+            text.replace("\r\n", " ").replace(['\r', '\n'], " ")
+        })
+    }
+
+    fn bounded_text<'a>(&self, range: &Range<usize>, incoming: &'a str) -> &'a str {
+        let Some(limit) = self.max_utf16 else {
+            return incoming;
+        };
+        let retained = self.text[..range.start].encode_utf16().count()
+            + self.text[range.end..].encode_utf16().count();
+        let room = limit.saturating_sub(retained);
+        let mut units = 0;
+        for (index, character) in incoming.char_indices() {
+            units += character.len_utf16();
+            if units > room {
+                return &incoming[..index];
+            }
+        }
+        incoming
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -115,6 +160,8 @@ impl TextBuffer {
     /// Replaces the marked text, or the selection, as committed input.
     pub fn insert(&mut self, new_text: &str) {
         let range = self.marked.take().unwrap_or_else(|| self.selection());
+        let clean = self.sanitized_text(new_text, false);
+        let new_text = self.bounded_text(&range, &clean);
         let starts_word = new_text.chars().any(char::is_whitespace);
         self.record(Edit::Typing, starts_word);
         self.splice(range, new_text);
@@ -126,6 +173,8 @@ impl TextBuffer {
             .or_else(|| self.marked.take())
             .unwrap_or_else(|| self.selection());
         self.marked = None;
+        let clean = self.sanitized_text(new_text, false);
+        let new_text = self.bounded_text(&range, &clean);
         self.record(Edit::Typing, new_text.chars().any(char::is_whitespace));
         self.splice(range, new_text);
     }
@@ -137,6 +186,12 @@ impl TextBuffer {
         new_text: &str,
         caret: Option<Range<usize>>,
     ) {
+        let caret = caret.map(|inner| {
+            self.sanitized_text(&new_text[..inner.start], true).len()
+                ..self.sanitized_text(&new_text[..inner.end], true).len()
+        });
+        let clean = self.sanitized_text(new_text, true);
+        let new_text = clean.as_ref();
         let range = range
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selection());
@@ -157,7 +212,13 @@ impl TextBuffer {
     }
 
     pub fn commit_composition(&mut self) {
-        self.marked = None;
+        if let Some(range) = self.marked.take() {
+            let accepted = self.bounded_text(&range, &self.text[range.clone()]);
+            if accepted.len() != range.len() {
+                let accepted = accepted.to_owned();
+                self.splice(range, &accepted);
+            }
+        }
     }
 
     pub fn backspace(&mut self) {
@@ -291,7 +352,11 @@ impl TextBuffer {
     }
 
     pub fn clear(&mut self) {
+        let max_utf16 = self.max_utf16;
+        let single_line = self.single_line;
         *self = Self::default();
+        self.max_utf16 = max_utf16;
+        self.single_line = single_line;
     }
 
     pub fn offset_from_utf16(&self, utf16: usize) -> usize {
@@ -340,6 +405,66 @@ impl TextBuffer {
 #[cfg(test)]
 mod tests {
     use super::TextBuffer;
+
+    #[test]
+    fn single_line_edits_preserve_suffixes_and_composition_offsets() {
+        let mut buffer = TextBuffer::default();
+        buffer.set_single_line(true);
+        buffer.set_max_utf16(5);
+        buffer.insert("a\nb\r\nc");
+        assert_eq!(buffer.text(), "a b c");
+        buffer.clear();
+        buffer.insert("a\r\nbc");
+        assert_eq!(buffer.text(), "a bc");
+        buffer.replace(Some(1..3), "\r\nx");
+        assert_eq!(buffer.text(), "a xc");
+        buffer.clear();
+        buffer.insert("ab");
+        buffer.compose(None, "\n😀\r\nç", Some(7..9));
+        assert_eq!(buffer.text(), "ab😀ç");
+        assert_eq!(buffer.selected_text(), "ç");
+        buffer.commit_composition();
+        assert_eq!(buffer.marked(), None);
+        assert_eq!(buffer.text().encode_utf16().count(), 5);
+    }
+
+    #[test]
+    fn bounded_fields_count_utf16_and_keep_text_outside_the_replacement() {
+        let mut buffer = TextBuffer::default();
+        buffer.set_max_utf16(32);
+        buffer.insert(&format!("{}😀z", "a".repeat(31)));
+        assert_eq!(buffer.text(), "a".repeat(31));
+        buffer.clear();
+        buffer.insert(&"b".repeat(40));
+        assert_eq!(buffer.text().len(), 32);
+        buffer.replace(Some(0..1), "😀");
+        assert_eq!(buffer.text(), "b".repeat(31));
+        buffer.replace(Some(0..2), "😀z!");
+        assert_eq!(buffer.text(), format!("😀z{}", "b".repeat(29)));
+        buffer.undo();
+        assert_eq!(buffer.text(), "");
+        buffer.redo();
+        assert_eq!(buffer.text().encode_utf16().count(), 32);
+    }
+
+    #[test]
+    fn bounded_ime_can_exceed_the_limit_until_commit() {
+        for replace_commit in [false, true] {
+            let mut buffer = TextBuffer::default();
+            buffer.set_max_utf16(32);
+            buffer.insert(&"a".repeat(31));
+            buffer.compose(None, "😀z", None);
+            assert_eq!(buffer.text().encode_utf16().count(), 34);
+            assert!(buffer.marked().is_some());
+            if replace_commit {
+                buffer.replace(None, "😀z");
+            } else {
+                buffer.commit_composition();
+            }
+            assert_eq!(buffer.text(), "a".repeat(31));
+            assert_eq!(buffer.marked(), None);
+        }
+    }
 
     fn typed(text: &str) -> TextBuffer {
         let mut buffer = TextBuffer::default();
