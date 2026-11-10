@@ -337,7 +337,7 @@ pub struct Root {
     add_friend: Option<friends::AddFriend>,
     people_search: Option<friends::PeopleSearch>,
     friend_menu: Option<friends::FriendMenu>,
-    confirm_remove_friend: Option<Id>,
+    confirm_remove_friend: Option<friends::RemoveFriend>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
     activity_shelf: Option<activity_shelf::ActivityShelf>,
     activities: activity_launch::Activities,

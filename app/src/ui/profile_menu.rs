@@ -241,7 +241,8 @@ impl Root {
                         self.profile_row("remove-friend", "Remove Friend".into(), false, false)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.profile_menu = None;
-                                this.confirm_remove_friend = Some(user);
+                                this.confirm_remove_friend =
+                                    Some(super::friends::RemoveFriend::Menu(user));
                                 cx.notify();
                             }))
                             .into_any_element(),

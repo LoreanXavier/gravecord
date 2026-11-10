@@ -6,6 +6,7 @@
 
 use super::{Root, color, icon};
 use crate::net::Request;
+use crate::parity::Parity;
 use dc_state::permissions::{self, CREATE_INSTANT_INVITE, MANAGE_CHANNELS, MANAGE_THREADS};
 use dc_state::{Channel, ChannelKind, Id};
 use gpui::{
@@ -60,6 +61,7 @@ pub(super) enum Act {
     Note,
     Apps,
     AddFriend,
+    RemoveFriend,
     Ignore,
     Block,
     CloseDm,
@@ -408,6 +410,7 @@ pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
 pub(super) struct UserFacts {
     pub name: String,
     pub me: bool,
+    pub bot: bool,
     pub in_guild: bool,
     pub friend: bool,
     pub blocked: bool,
@@ -494,8 +497,12 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         mid.push(Row::new(Act::InviteToServer, "Invite to Server").caret());
     }
     if !facts.me {
-        if !facts.friend {
-            mid.push(Row::new(Act::AddFriend, "Add Friend"));
+        if !facts.bot {
+            mid.push(if facts.friend {
+                Row::new(Act::RemoveFriend, "Remove Friend")
+            } else {
+                Row::new(Act::AddFriend, "Add Friend").disabled(facts.blocked)
+            });
         }
         mid.push(Row::new(
             Act::Ignore,
@@ -744,7 +751,12 @@ impl Root {
                 };
                 let facts = UserFacts {
                     name: user.display_name().to_owned(),
-                    me: false,
+                    me: self
+                        .stores
+                        .current_user
+                        .as_ref()
+                        .is_some_and(|me| me.id == user.id),
+                    bot: user.bot,
                     in_guild: false,
                     friend: self.stores.relationships.get(&user.id) == Some(&1),
                     blocked: self.stores.relationships.get(&user.id) == Some(&2),
@@ -774,6 +786,7 @@ impl Root {
                 let facts = UserFacts {
                     name: known.username.clone(),
                     me,
+                    bot: known.bot,
                     in_guild: guild.is_some(),
                     friend: self.stores.relationships.get(&user) == Some(&1),
                     blocked: self.stores.relationships.get(&user) == Some(&2),
@@ -1071,6 +1084,14 @@ impl Root {
                     self.set_relationship(user, Some(4), cx);
                 }
             }
+            (Act::RemoveFriend, Target::User { user, .. }) => {
+                self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
+            }
+            (Act::RemoveFriend, Target::Dm(channel)) => {
+                if let Some(user) = self.dm_user(channel) {
+                    self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
+                }
+            }
             (Act::Ignore, Target::User { user, .. }) => {
                 if self.stores.is_ignored(user) {
                     self.unignore_user(user, cx);
@@ -1256,6 +1277,7 @@ impl Root {
                 .snap_to_window_with_margin(px(8.))
                 .child(
                     div()
+                        .parity_with_border("context-menu", 1.)
                         .id("context-menu-generic")
                         .occlude()
                         .rounded(px(8.))
@@ -1698,6 +1720,42 @@ mod tests {
             ..other
         };
         assert!(!labels(&user_items(&friend)).contains(&"Add Friend".to_owned()));
+    }
+
+    #[test]
+    fn relationship_menu_actions_respect_friend_bot_self_and_blocked_state() {
+        for dm in [None, Some(false)] {
+            let mut facts = UserFacts {
+                friend: true,
+                dm,
+                ..Default::default()
+            };
+            let items = user_items(&facts);
+            let remove = items
+                .iter()
+                .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::RemoveFriend))
+                .unwrap();
+            let ignore = items
+                .iter()
+                .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Ignore))
+                .unwrap();
+            assert!(remove < ignore);
+            assert!(
+                !items
+                    .iter()
+                    .any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::AddFriend))
+            );
+            facts.bot = true;
+            assert!(!user_items(&facts).iter().any(|entry| matches!(entry, Entry::Row(row) if matches!(row.act, Act::AddFriend | Act::RemoveFriend))));
+            facts.bot = false;
+            facts.me = true;
+            assert!(!labels(&user_items(&facts)).contains(&"Remove Friend".into()));
+            facts.me = false;
+            facts.friend = false;
+            facts.blocked = true;
+            assert!(user_items(&facts).iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::AddFriend && row.disabled)));
+            assert!(!labels(&user_items(&facts)).contains(&"Remove Friend".into()));
+        }
     }
 
     #[test]

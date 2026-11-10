@@ -1,0 +1,12 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "rail": { "class": "wrapper_5dqHTG" },
+  "sidebar": { "class": "sidebarList_pog62O" },
+  "user-panel": { "class": "panels_pog62O" },
+  "find-button": { "class": "button_F7qvhY", "tag": "BUTTON" },
+  "friends-link": { "class": "interactive_nl_k3a" },
+  "people-column": { "class": "peopleColumn_zrUwGA" },
+  "people-search": { "class": "wrapper_UcGqzv" },
+  "active-now": { "class": "nowPlayingColumn_zrUwGA" },
+  "remove-friend-modal": { "class": "container_dvN-MP" }
+}

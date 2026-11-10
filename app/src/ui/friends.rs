@@ -1147,7 +1147,7 @@ impl Root {
                             .child(row("friend-remove", "Remove Friend", true).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.friend_menu = None;
-                                    this.confirm_remove_friend = Some(user);
+                                    this.confirm_remove_friend = Some(RemoveFriend::Friends(user));
                                     cx.notify();
                                 }),
                             )),
@@ -1165,47 +1165,63 @@ impl Root {
 
     /// "Remove 'name'" (`fPLvZd`, `l5FFq6`).
     pub(super) fn remove_friend_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let user = self.confirm_remove_friend?;
+        let prompt = self.confirm_remove_friend?;
+        let (user, from_menu) = match prompt {
+            RemoveFriend::Menu(user) => (user, true),
+            RemoveFriend::Friends(user) => (user, false),
+        };
         let name = self
             .stores
             .users
             .get(&user)
-            .map(|known| known.display_name().to_owned())
+            .map(|known| {
+                if from_menu {
+                    known.username.clone()
+                } else {
+                    known.display_name().to_owned()
+                }
+            })
             .unwrap_or_default();
-        Some(super::modal::render(
-            super::modal::Spec {
-                id: "remove-friend-modal",
-                title: format!("Remove '{name}'").into(),
-                subtitle: Some(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .child("Are you sure you want to remove\u{a0}")
-                        .child(div().font_weight(FontWeight(600.)).child(name.clone()))
-                        .child("\u{a0}from your friends?")
-                        .into_any_element(),
+        let prefix = "Are you sure you want to remove ";
+        let subtitle = gpui::StyledText::new(format!("{prefix}{name} from your friends?"))
+            .with_highlights(from_menu.then_some((
+                prefix.len()..prefix.len() + name.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(FontWeight(600.)),
+                    ..Default::default()
+                },
+            )));
+        let spec = super::modal::Spec {
+            id: "remove-friend-modal",
+            title: format!("Remove '{name}'").into(),
+            subtitle: Some(div().child(subtitle).into_any_element()),
+            body: None,
+            buttons: vec![
+                super::modal::button(
+                    "remove-friend-cancel",
+                    "Cancel",
+                    super::modal::Tone::Secondary,
+                    |this, _, _| this.confirm_remove_friend = None,
                 ),
-                body: None,
-                buttons: vec![
-                    super::modal::button(
-                        "remove-friend-cancel",
-                        "Cancel",
-                        super::modal::Tone::Secondary,
-                        |this, _, _| this.confirm_remove_friend = None,
-                    ),
-                    super::modal::button(
-                        "remove-friend-confirm",
-                        "Remove Friend",
-                        super::modal::Tone::Critical,
-                        move |this, _, _| {
-                            this.confirm_remove_friend = None;
-                            this.relationship_action(user, false);
-                        },
-                    ),
-                ],
-                close: Box::new(|this, _, _| this.confirm_remove_friend = None),
-            },
-            cx,
-        ))
+                super::modal::button(
+                    "remove-friend-confirm",
+                    "Remove Friend",
+                    super::modal::Tone::Critical,
+                    move |this, _, _| {
+                        this.confirm_remove_friend = None;
+                        this.relationship_action(user, false);
+                    },
+                ),
+            ],
+            close: Box::new(|this, _, _| this.confirm_remove_friend = None),
+        };
+        Some(super::modal::render_small(spec, cx))
     }
+}
+
+/// Context/profile menus use 803664's username modal; Friends uses 596339's display-name alert.
+#[derive(Clone, Copy)]
+pub(super) enum RemoveFriend {
+    Menu(Id),
+    Friends(Id),
 }
