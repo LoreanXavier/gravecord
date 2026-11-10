@@ -658,9 +658,11 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match self.voice_join_block(guild, channel) {
-            // `locked`: the gateway drops a join without Connect, so the call would wait forever.
+            // `locked` (616740 `handleClick`): no connection is tried, since the gateway drops a join without
+            // Connect and the call would wait forever. The channel's page still opens, with Join Voice disabled.
             Some(VoiceBlock::Locked) => {
                 tracing::info!("voice join refused: no Connect permission");
+                self.open_voice_view(guild, channel, cx);
                 return;
             }
             Some(VoiceBlock::Full) => {

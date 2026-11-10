@@ -204,6 +204,43 @@ pub fn can_in_guild(guild: &Guild, me: Me, permission: u64) -> bool {
     guild_permissions(guild, me) & permission == permission
 }
 
+/// 488926 `MJ`: whether @everyone holds the permission in the channel: the role's own permissions with the channel's
+/// @everyone overwrite over them (deny, then allow). Administrator opens nothing here, as in the official.
+pub fn everyone_can(guild: &Guild, channel: &Channel, permission: u64) -> bool {
+    let mut total = guild.role_permissions.get(&guild.id).copied().unwrap_or(0);
+    if let Some(everyone) = channel
+        .overwrites
+        .iter()
+        .find(|entry| entry.kind == 0 && entry.id == guild.id)
+    {
+        total = (total & !everyone.deny) | everyone.allow;
+    }
+    total & permission == permission
+}
+
+/// 148719: a private channel. A voice or stage channel @everyone cannot connect to, or any channel whose @everyone
+/// overwrite denies View Channel.
+pub fn is_private(guild: &Guild, channel: &Channel) -> bool {
+    let vocal = matches!(
+        channel.kind,
+        crate::ChannelKind::Voice | crate::ChannelKind::Other(13)
+    );
+    (vocal && !everyone_can(guild, channel, CONNECT))
+        || channel
+            .overwrites
+            .iter()
+            .any(|entry| entry.kind == 0 && entry.id == guild.id && entry.deny & VIEW_CHANNEL != 0)
+}
+
+/// 51758 `V`: the account has not passed the membership gate of a guild that has one.
+pub fn pending_gate(guild: &Guild) -> bool {
+    guild.my_pending
+        && guild
+            .features
+            .iter()
+            .any(|feature| feature == "MEMBER_VERIFICATION_GATE_ENABLED")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

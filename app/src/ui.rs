@@ -41,6 +41,7 @@ mod autocomplete;
 mod badge_paths;
 mod blocked;
 mod call_background;
+mod channel_icon;
 mod channel_settings;
 mod channel_settings_pages;
 mod composer_plus;
@@ -2615,6 +2616,29 @@ impl Root {
             .child(div().flex_none().h(reserved))
     }
 
+    /// What the row's icon is chosen from (`ChannelItemIcon`, 166444).
+    fn channel_icon_facts(&self, channel: &Channel, rules: bool) -> channel_icon::Facts {
+        use dc_state::permissions;
+        let guild = self.current_guild();
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let vocal = matches!(channel.kind, ChannelKind::Voice | ChannelKind::Other(13));
+        channel_icon::Facts {
+            kind: channel.kind,
+            rules,
+            nsfw: channel.nsfw,
+            private: guild.is_some_and(|guild| permissions::is_private(guild, channel)),
+            pending: guild.is_some_and(permissions::pending_gate),
+            locked: vocal && !self.can_in_channel(channel, permissions::CONNECT),
+            active_threads: guild.is_some_and(|guild| {
+                guild.threads.iter().any(|thread| {
+                    thread.parent_id == channel.id
+                        && !thread.archived
+                        && (thread.joined || (thread.owner_id.is_some() && thread.owner_id == me))
+                })
+            }),
+        }
+    }
+
     fn channel_row(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
         if channel.kind == ChannelKind::Category {
             let collapsed = self.guild.is_some_and(|guild| {
@@ -2722,15 +2746,8 @@ impl Root {
             .current_guild()
             .and_then(|guild| guild.rules_channel_id)
             == Some(channel.id);
-        let name = if rules {
-            "ob_rules"
-        } else if channel.kind == ChannelKind::Voice {
-            "voice_channel"
-        } else if channel.is_forum() {
-            "forum_channel"
-        } else {
-            "text_channel"
-        };
+        let facts = self.channel_icon_facts(channel, rules);
+        let name = channel_icon::name(&facts);
         let group = SharedString::from(format!("channel-{}", channel.id));
         let voice = channel.kind == ChannelKind::Voice;
         let actions: &[&str] = if voice {
@@ -2770,16 +2787,20 @@ impl Root {
                 tint
             },
         ));
-        let glyph = if rules {
-            self.with_tip(
-                format!("rules-channel-icon-{target}"),
-                Tip::text("Rules", Side::Top),
-                glyph,
-                cx,
-            )
-            .into_any_element()
-        } else {
-            glyph.into_any_element()
+        let glyph = match channel_icon::label(&facts) {
+            Some(label) => self
+                .with_tip(
+                    if rules {
+                        format!("rules-channel-icon-{target}")
+                    } else {
+                        format!("channel-icon-{target}")
+                    },
+                    Tip::text(label, Side::Top),
+                    glyph,
+                    cx,
+                )
+                .into_any_element(),
+            None => glyph.into_any_element(),
         };
         div()
             .flex_none()
