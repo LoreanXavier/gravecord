@@ -594,7 +594,11 @@ impl Root {
         }
     }
 
-    pub(super) fn splash_layer(&mut self, window: &mut Window) -> Option<AnyElement> {
+    pub(super) fn splash_layer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Option<AnyElement> {
         if self.splash.done {
             return None;
         }
@@ -604,7 +608,14 @@ impl Root {
         if look.gone {
             self.splash.done = true;
             if !cfg!(feature = "capture") {
-                self.splash.frames = Vec::new();
+                // Dropping the Vec leaves the 64 frames in the GPU atlas for the session: release them there.
+                let frames = std::mem::take(&mut self.splash.frames);
+                // The window is back in App's window map when deferred effects run.
+                cx.defer(move |cx| {
+                    for image in frames {
+                        cx.drop_image(image, None);
+                    }
+                });
             }
             return None;
         }

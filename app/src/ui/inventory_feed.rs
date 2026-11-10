@@ -45,6 +45,11 @@ impl State {
     }
 }
 
+/// The entry kinds with a card: a game (1) and the weekly top artist (6 with range 1).
+fn card_kind(kind: u64, range: Option<u64>) -> bool {
+    kind == 1 || (kind == 6 && range == Some(1))
+}
+
 impl Root {
     #[cfg(feature = "capture")]
     pub(crate) fn inventory_status(&self) -> String {
@@ -320,8 +325,13 @@ impl Root {
         true
     }
 
-    pub(super) fn prepare_inventory_feed(&mut self, cx: &mut Context<Self>) {
+    /// `changed` is false when nothing the feed reads moved since the last render: the timers still run, the walk
+    /// over its entries does not.
+    pub(super) fn prepare_inventory_feed(&mut self, changed: bool, cx: &mut Context<Self>) {
         self.schedule_inventory(cx);
+        if !changed {
+            return;
+        }
         self.prepare_inventory_games();
         if !self.ready || self.stores.current_user.is_none() {
             return;
@@ -352,6 +362,10 @@ impl Root {
                 .filter(|id| id.parse::<u64>().is_ok())
             {
                 let key = format!("presence-app:{app}");
+                // A failed lookup left its placeholder; once it is due again the placeholder goes.
+                if self.retry_failed_fetch(&key) {
+                    self.fetched.remove(&key);
+                }
                 if !self.fetched.contains_key(&key) {
                     self.fetched.insert(key.clone(), Value::Null);
                     let _ = self.requests.send(Request::Fetch {
@@ -435,6 +449,14 @@ impl Root {
             .collect()
     }
 
+    /// Whether `inventory_card` draws this entry: the kinds it has a card for, with their author known.
+    fn inventory_renderable(&self, entry: &Entry) -> bool {
+        card_kind(
+            entry.kind,
+            entry.trait_value(4, "range").and_then(Value::as_u64),
+        ) && self.stores.users.contains_key(&entry.author)
+    }
+
     fn inventory_card(
         &self,
         entry: &Entry,
@@ -455,7 +477,7 @@ impl Root {
                     ),
                 )
             }
-            6 if entry.trait_value(4, "range").and_then(Value::as_u64) == Some(1) => {
+            6 if card_kind(6, entry.trait_value(4, "range").and_then(Value::as_u64)) => {
                 let url = entry.extra["media"]["image_url"]
                     .as_str()
                     .unwrap_or_default();
@@ -604,7 +626,12 @@ impl Root {
     }
 
     pub(super) fn inventory_section(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let entries = self.member_inventory_entries();
+        // The header counts, and the three-card limit applies to, the entries that draw a card.
+        let entries: Vec<&Entry> = self
+            .member_inventory_entries()
+            .into_iter()
+            .filter(|entry| self.inventory_renderable(entry))
+            .collect();
         if entries.is_empty() {
             return None;
         }
@@ -743,5 +770,21 @@ impl Root {
                 .children(cards)
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::card_kind;
+
+    #[test]
+    fn only_kinds_with_a_card_are_counted() {
+        assert!(card_kind(1, None));
+        assert!(card_kind(6, Some(1)));
+        assert!(!card_kind(6, Some(2)));
+        assert!(!card_kind(6, None));
+        for kind in [2, 3, 5, 8, 9] {
+            assert!(!card_kind(kind, Some(1)));
+        }
     }
 }

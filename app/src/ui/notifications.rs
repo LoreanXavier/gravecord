@@ -9,6 +9,35 @@ use gpui::Context;
 use serde_json::Value;
 use std::time::Instant;
 
+/// `Q` of module 411238: `name (#channel, parent)`, each part isolated.
+fn message_title(name: &str, channel: &str, parent: Option<&str>) -> String {
+    let parent = parent
+        .map(|parent| format!(", \u{2068}{parent}\u{2069}"))
+        .unwrap_or_default();
+    format!("\u{2068}{name}\u{2069} (\u{2068}#{channel}\u{2069}{parent})")
+}
+
+/// The channel and parent names of a channel line: a channel with its category; a thread or forum post with the
+/// channel it hangs under. A thread's starter message names the parent and the parent's own parent instead.
+fn channel_title_parts(
+    guild: &dc_state::Guild,
+    channel: Id,
+    starter: bool,
+) -> Option<(String, Option<String>)> {
+    let named = |id: Id| guild.channels.iter().find(|known| known.id == id);
+    if let Some(target) = named(channel) {
+        let parent = target.parent_id.and_then(named).map(|p| p.name.clone());
+        return Some((target.name.clone(), parent));
+    }
+    let thread = guild.threads.iter().find(|thread| thread.id == channel)?;
+    let parent = named(thread.parent_id);
+    if starter && let Some(parent) = parent {
+        let above = parent.parent_id.and_then(named).map(|p| p.name.clone());
+        return Some((parent.name.clone(), above));
+    }
+    Some((thread.name.clone(), parent.map(|p| p.name.clone())))
+}
+
 fn fallback_body(message: &Value) -> String {
     if let Some(sticker) = message["sticker_items"]
         .as_array()
@@ -154,32 +183,25 @@ impl Root {
         let Some(author) = dc_state::User::from_value(&message["author"]) else {
             return;
         };
-        let mut name = author.display_name().to_owned();
-        let title = if let Some((guild, target)) = self.stores.guilds.iter().find_map(|guild| {
-            guild
-                .channels
-                .iter()
-                .find(|known| known.id == channel)
-                .map(|target| (guild, target))
-        }) {
-            if let Some(nick) = self
+        // 411238 `J`: the author's name by channel kind (a server's nickname, a DM's friend nickname), then the
+        // channel line of `Q`.
+        let starter = message["type"].as_u64() == Some(21);
+        let guild_title = self.stores.guilds.iter().find_map(|guild| {
+            let (channel_name, parent_name) = channel_title_parts(guild, channel, starter)?;
+            let nick = self
                 .stores
                 .members
                 .get(guild.id, author.id)
-                .and_then(|member| member.nick.as_ref())
-            {
-                name = nick.clone();
-            }
-            let parent = target
-                .parent_id
-                .and_then(|id| guild.channels.iter().find(|known| known.id == id));
-            let category = parent
-                .map(|parent| format!(", \u{2068}{}\u{2069}", parent.name))
-                .unwrap_or_default();
-            format!(
-                "\u{2068}{name}\u{2069} (\u{2068}#{}\u{2069}{category})",
-                target.name
-            )
+                .and_then(|member| member.nick.clone());
+            Some(message_title(
+                nick.as_deref().unwrap_or(author.display_name()),
+                &channel_name,
+                parent_name.as_deref(),
+            ))
+        });
+        let name = self.dm_display_name(&author);
+        let title = if let Some(title) = guild_title {
+            title
         } else if let Some(group) = self
             .stores
             .private_channels
@@ -268,6 +290,44 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn threads_and_posts_are_titled_with_their_parent() {
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user":{"id":"1","username":"fixture"},
+                "guilds":[{"id":"100","name":"g","channels":[
+                    {"id":"1","type":4,"name":"Text"},
+                    {"id":"2","type":15,"name":"forum","parent_id":"1"},
+                    {"id":"3","type":0,"name":"chat"}
+                ],"threads":[{"id":"20","type":11,"parent_id":"2","name":"Bug report"}]}]
+            }),
+        );
+        let guild = &stores.guilds[0];
+        assert_eq!(
+            channel_title_parts(guild, 3, false),
+            Some(("chat".into(), None))
+        );
+        assert_eq!(
+            channel_title_parts(guild, 20, false),
+            Some(("Bug report".into(), Some("forum".into())))
+        );
+        // A thread's starter message names the parent and its category.
+        assert_eq!(
+            channel_title_parts(guild, 20, true),
+            Some(("forum".into(), Some("Text".into())))
+        );
+        assert_eq!(channel_title_parts(guild, 99, false), None);
+        assert_eq!(
+            message_title("Ann", "Bug report", Some("forum")),
+            "\u{2068}Ann\u{2069} (\u{2068}#Bug report\u{2069}, \u{2068}forum\u{2069})"
+        );
+        assert_eq!(
+            message_title("Ann", "chat", None),
+            "\u{2068}Ann\u{2069} (\u{2068}#chat\u{2069})"
+        );
+    }
     #[test]
     fn notification_fallbacks_use_the_pinned_strings() {
         assert_eq!(

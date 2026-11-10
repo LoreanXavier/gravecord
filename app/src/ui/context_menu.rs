@@ -881,6 +881,7 @@ impl Root {
             return;
         };
         self.stores.read_states.ack_local(channel, latest, false);
+        self.data_revision += 1;
         let _ = self.requests.send(Request::Ack {
             channel,
             message: latest,

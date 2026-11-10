@@ -171,6 +171,7 @@ impl Root {
                 continue;
             }
             let key = format!("{prefix}{id}");
+            self.retry_failed_fetch(&key);
             if self.requested.insert(key.clone()) {
                 let _ = self.requests.send(Request::Fetch {
                     key,

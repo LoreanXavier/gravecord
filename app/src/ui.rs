@@ -80,6 +80,7 @@ mod unread_badges;
 mod unread_dms;
 pub use logout::RootEvent;
 mod channel_browser;
+mod fetch_failures;
 mod forums;
 mod guild_guide;
 mod guild_navigation;
@@ -182,6 +183,23 @@ fn kerning() -> FontFeatures {
 /// `Midnight`, as the token sets are named.
 static THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
 
+/// The revision each per-render preparation step last ran at.
+#[derive(Default)]
+struct Prepared {
+    avatars: Option<(u64, Option<Id>, Option<Id>)>,
+    inventory: Option<(u64, Option<Id>, bool)>,
+    badge: Option<u64>,
+}
+
+/// Whether a step keyed by `now` has anything new to read since it last ran at `last`.
+fn changed<T: PartialEq>(last: &mut Option<T>, now: T) -> bool {
+    if last.as_ref() == Some(&now) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
 pub(crate) fn theme() -> Theme {
     match THEME.load(std::sync::atomic::Ordering::Relaxed) {
         0 => Theme::Dark,
@@ -255,6 +273,13 @@ pub struct Root {
     nameplates: Rc<RefCell<nameplates::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
+    /// When each failed `Request::Fetch` key failed (`fetch_failures`).
+    fetch_failures: HashMap<String, std::time::Instant>,
+    /// Counts the changes the per-render preparation reads: store data (every `update`), the selected place and
+    /// local read marks. `Prepared` remembers the count each step last ran at, so a render that follows no change
+    /// does not walk the member list or the feed again.
+    data_revision: u64,
+    prepared: Prepared,
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
@@ -530,6 +555,9 @@ impl Root {
             nameplates: Default::default(),
             member_avatars: Default::default(),
             inline_videos: Default::default(),
+            fetch_failures: HashMap::new(),
+            data_revision: 0,
+            prepared: Prepared::default(),
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
@@ -698,6 +726,7 @@ impl Root {
 
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
         self.apply_update(update, cx);
+        self.data_revision += 1;
         self.splash_check();
         // Native indicators must update even while the window is hidden and not rendering.
         self.refresh_notification_badge();
@@ -732,6 +761,18 @@ impl Root {
                 self.stores.dispatch(&name, &data);
                 if name == "READY" {
                     self.inventory_connection_open();
+                }
+                // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
+                // client goes. An outage keeps the server and the view.
+                if name == "GUILD_DELETE"
+                    && data["unavailable"] != true
+                    && let Some(guild) = data["id"].as_str().and_then(|id| id.parse::<Id>().ok())
+                {
+                    if self.guild == Some(guild) {
+                        self.select_home(None);
+                    } else {
+                        self.rebuild_rows();
+                    }
                 }
                 if name == "CONTENT_INVENTORY_INBOX_STALE" {
                     self.inventory_stale(&data, cx);
@@ -858,6 +899,11 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.fetch_failed(&key, &body, cx) {
+                    // Retrying is driven by each key's own request guard (`retry_failed_fetch`).
+                    cx.notify();
+                    return;
+                }
                 if self.inventory_games_fetched(&key, &body) {
                     cx.notify();
                     return;
@@ -1157,6 +1203,12 @@ impl Root {
                 }
                 cx.notify();
             }
+            Update::ImageFailed { key } => {
+                if key.starts_with(inline_video::PREFIX) {
+                    self.inline_video_failed(&key);
+                    cx.notify();
+                }
+            }
             Update::Image { key, bytes } if key.starts_with(nameplates::ANIMATION_PREFIX) => {
                 self.nameplate_animation_fetched(&key, bytes, cx);
             }
@@ -1244,8 +1296,10 @@ impl Root {
         self.channel = channel;
         self.member_view = None;
         self.unread_from = None;
+        self.data_revision += 1;
         if let Some(channel) = channel {
             self.remember_channel(channel);
+            self.forum_reopened(channel);
         }
         if let Some(channel) = channel {
             let _ = self.requests.send(Request::Subscribe { guild, channel });
@@ -5381,13 +5435,22 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
-        self.prepare_member_avatars(window, cx);
+        let avatars = (
+            self.data_revision,
+            self.guild,
+            self.profile.as_ref().map(|profile| profile.user),
+        );
+        if changed(&mut self.prepared.avatars, avatars) {
+            self.prepare_member_avatars(window, cx);
+        }
         self.prepare_inline_videos(window, cx);
         self.prepare_guild_guide();
         self.prepare_sidebar_events();
         self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
-        self.refresh_notification_badge();
+        if changed(&mut self.prepared.badge, self.data_revision) {
+            self.refresh_notification_badge();
+        }
         self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
         // The formatting functions without a `Root` read the Time format from here.
@@ -5397,7 +5460,9 @@ impl Render for Root {
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
-        self.prepare_inventory_feed(cx);
+        let feed = (self.data_revision, self.guild, self.ready);
+        let feed_changed = changed(&mut self.prepared.inventory, feed);
+        self.prepare_inventory_feed(feed_changed, cx);
         self.prepare_inventory_popout();
         // The header's search field keeps its own editor; its placeholder names the place.
         let place = match self
@@ -6053,7 +6118,7 @@ impl Render for Root {
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
-            .children(self.splash_layer(window));
+            .children(self.splash_layer(window, cx));
         self.end_call_background_frame(cx);
         element
     }

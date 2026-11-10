@@ -72,7 +72,7 @@ impl Root {
                         .pl(px(2.))
                         .pr(px(8.))
                         .border_1()
-                        .border_color(hsla(0., 0., 1., 0.08))
+                        .border_color(color("--opacity-white-8"))
                         .rounded(px(8.))
                         .flex()
                         .items_center()

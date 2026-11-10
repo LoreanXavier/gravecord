@@ -11,7 +11,7 @@ use gpui::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(super) struct Forum {
     field: Entity<Editor>,
@@ -31,7 +31,10 @@ pub(super) struct Forum {
     results: Option<Vec<Id>>,
     loading: bool,
     has_more: bool,
-    error: Option<String>,
+    /// `ArchivedThreadsStore` marks a failed page `failed`, and `getCanLoadMore` is false while it is set (module
+    /// 45494); nothing is drawn for it. A 429 lets the next scroll retry once `retry_at` has passed.
+    failed: bool,
+    retry_at: Option<Instant>,
     scroll: ScrollHandle,
     new_post: Option<NewPost>,
 }
@@ -71,6 +74,36 @@ fn search_route(channel: Id, query: &str, tags: &BTreeSet<Id>, all: bool, offset
         route.push_str(&tags.iter().map(Id::to_string).collect::<Vec<_>>().join(","));
     }
     route
+}
+
+/// A failed page blocks further loads until the user changes the filter or reopens the forum; a 429 only holds
+/// them back until its `retry_after` has passed.
+fn can_retry(failed: bool, retry_at: Option<Instant>, now: Instant) -> bool {
+    !failed || retry_at.is_some_and(|at| now >= at)
+}
+
+fn retry_deadline(report: &Value, now: Instant) -> Option<Instant> {
+    if report["status"].as_u64() != Some(429) {
+        return None;
+    }
+    let seconds = report["body"]["retry_after"].as_f64()?;
+    (seconds.is_finite() && seconds > 0.).then(|| now + Duration::from_secs_f64(seconds.min(3600.)))
+}
+
+/// Text for a failed post creation: the cases of module 971389's catch, each as its toast body.
+fn create_failure_text(report: &Value) -> String {
+    let body = &report["body"];
+    match body["code"].as_u64() {
+        Some(160006) => "This server has reached the maximum number of active posts. Free up space by archiving a post.".to_owned(),
+        Some(160007) => "This server has reached the maximum number of active announcement threads. Free up space by archiving a thread.".to_owned(),
+        _ if report["status"].as_u64() == Some(429) => "You are being rate limited.".to_owned(),
+        Some(50035) if body["errors"]["name"].is_object() => body["errors"]["name"]["_errors"][0]
+            ["message"]
+            .as_str()
+            .unwrap_or("An error occurred, please try again.")
+            .to_owned(),
+        _ => "An error occurred, please try again.".to_owned(),
+    }
 }
 
 fn matching(thread: &Thread, tags: &BTreeSet<Id>, all: bool) -> bool {
@@ -445,7 +478,8 @@ impl Root {
                 results: None,
                 loading: false,
                 has_more: true,
-                error: None,
+                failed: false,
+                retry_at: None,
                 scroll: ScrollHandle::new(),
                 new_post: None,
             });
@@ -475,6 +509,16 @@ impl Root {
         }
     }
 
+    /// Opening the forum again retries a failed page (the failed entry is dropped when the filter changes in 45494).
+    pub(super) fn forum_reopened(&mut self, channel: Id) {
+        if let Some(view) = self.forums.get_mut(&channel)
+            && view.failed
+        {
+            view.failed = false;
+            view.retry_at = None;
+        }
+    }
+
     fn reload_forum(&mut self, channel: Id) {
         if let Some(view) = self.forums.get_mut(&channel) {
             view.generation += 1;
@@ -482,7 +526,8 @@ impl Root {
             view.results = None;
             view.loading = false;
             view.has_more = true;
-            view.error = None;
+            view.failed = false;
+            view.retry_at = None;
             view.requested.clear();
             view.scroll.set_offset(gpui::point(px(0.), px(0.)));
         }
@@ -493,9 +538,12 @@ impl Root {
         let Some(view) = self.forums.get_mut(&channel) else {
             return;
         };
-        if view.loading || !view.has_more {
+        if view.loading || !view.has_more || !can_retry(view.failed, view.retry_at, Instant::now())
+        {
             return;
         }
+        view.failed = false;
+        view.retry_at = None;
         view.loading = true;
         let route = search_route(
             channel,
@@ -520,39 +568,36 @@ impl Root {
     ) -> bool {
         if let Some(id) = key.strip_prefix("forum-create:") {
             if let Ok(id) = id.parse::<Id>() {
-                if report["ok"].as_bool() == Some(true) {
-                    if let Some(mut thread) =
-                        Thread::from_value(&report["body"]).filter(|t| t.parent_id == id)
-                    {
-                        thread.joined = true;
-                        let post = thread.id;
-                        if let Some(guild) = self
-                            .stores
-                            .guilds
-                            .iter_mut()
-                            .find(|g| g.channels.iter().any(|c| c.id == id))
-                        {
-                            let guild_id = guild.id;
-                            guild.threads.retain(|t| t.id != post);
-                            guild.threads.push(thread);
-                            if let Some(view) = self.forums.get_mut(&id) {
-                                view.new_post = None;
-                            }
-                            if self.channel == Some(id) {
-                                self.select(guild_id, Some(post));
-                            }
-                        }
+                let created = if report["ok"].as_bool() == Some(true) {
+                    Thread::from_value(&report["body"]).filter(|t| t.parent_id == id)
+                } else {
+                    None
+                };
+                let guild_id = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .find(|g| g.channels.iter().any(|c| c.id == id))
+                    .map(|g| g.id);
+                if let (Some(mut thread), Some(guild_id)) = (created, guild_id) {
+                    thread.joined = true;
+                    let post = thread.id;
+                    if let Some(guild) = self.stores.guilds.iter_mut().find(|g| g.id == guild_id) {
+                        guild.threads.retain(|t| t.id != post);
+                        guild.threads.push(thread);
+                    }
+                    if let Some(view) = self.forums.get_mut(&id) {
+                        view.new_post = None;
+                    }
+                    if self.channel == Some(id) {
+                        self.select(guild_id, Some(post));
                     }
                 } else if let Some(form) =
                     self.forums.get_mut(&id).and_then(|v| v.new_post.as_mut())
                 {
+                    // A 2xx whose thread cannot be built is the same failure as an error status.
                     form.sending = false;
-                    form.error = Some(
-                        report["body"]["message"]
-                            .as_str()
-                            .unwrap_or("Something went wrong")
-                            .to_owned(),
-                    );
+                    form.error = Some(create_failure_text(report));
                 }
             }
             cx.notify();
@@ -580,12 +625,14 @@ impl Root {
             view.loading = false;
         }
         if report["ok"].as_bool() != Some(true) {
-            view.error = Some(
-                report["body"]["message"]
-                    .as_str()
-                    .unwrap_or("Something went wrong")
-                    .to_owned(),
-            );
+            if kind == "forum-page" {
+                view.failed = true;
+                view.retry_at = retry_deadline(report, Instant::now());
+                if !view.query.is_empty() {
+                    // FORUM_SEARCH_FAILURE: loading ends and the results become an empty list (768953).
+                    view.results = Some(Vec::new());
+                }
+            }
             cx.notify();
             return true;
         }
@@ -1037,16 +1084,15 @@ impl Root {
                     "{count} {} with \"{query}\"",
                     if count == 1 { "post" } else { "posts" }
                 ),
-                None => "Searching...".to_owned(),
+                None => "No matching posts".to_owned(),
             }
         };
         let composing = view.new_post.is_some();
         let can_post = self.can_in_channel(&channel, dc_state::permissions::SEND_MESSAGES);
         let guidelines = view.guidelines;
         let tags = view.tags.clone();
-        let error = view.error.clone();
         let scroll = view.scroll.clone();
-        let mut list = div()
+        let list = div()
             .id("forum-scroll")
             .parity("forum-list")
             .flex_1()
@@ -1312,20 +1358,6 @@ impl Root {
                     .when(gallery, |row| row.flex().flex_wrap().gap(px(16.)))
                     .children(cards),
             );
-        if let Some(error) = error {
-            list = list.child(
-                div().text_color(color("--text-danger")).child(error).child(
-                    div()
-                        .id("forum-retry")
-                        .cursor_pointer()
-                        .child("Retry")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.reload_forum(id);
-                            cx.notify();
-                        })),
-                ),
-            );
-        }
         let content = div()
             .flex()
             .flex_col()
@@ -1677,6 +1709,48 @@ mod tests {
         assert_eq!(
             active_threads(&list, 2, 0, &BTreeSet::from([4, 7]), false),
             [10, 11]
+        );
+    }
+    #[test]
+    fn a_failed_page_stops_scroll_loading_until_retried() {
+        let now = Instant::now();
+        assert!(can_retry(false, None, now));
+        assert!(!can_retry(true, None, now));
+        let report = json!({"ok":false,"status":429,"body":{"retry_after":2.5}});
+        let at = retry_deadline(&report, now).unwrap();
+        assert!(!can_retry(true, Some(at), now));
+        assert!(can_retry(true, Some(at), now + Duration::from_secs(3)));
+        assert!(
+            retry_deadline(
+                &json!({"ok":false,"status":403,"body":{"retry_after":2.5}}),
+                now
+            )
+            .is_none()
+        );
+        assert!(retry_deadline(&json!({"ok":false,"status":429,"body":{}}), now).is_none());
+    }
+    #[test]
+    fn create_failures_use_the_official_texts() {
+        let text = |status, body: Value| {
+            create_failure_text(&json!({"ok":false,"status":status,"body":body}))
+        };
+        assert!(
+            text(400, json!({"code":160006}))
+                .starts_with("This server has reached the maximum number of active posts")
+        );
+        assert_eq!(text(429, json!({})), "You are being rate limited.");
+        assert_eq!(
+            text(
+                400,
+                json!({"code":50035,"errors":{"name":{"_errors":[{"message":"Too long"}]}}})
+            ),
+            "Too long"
+        );
+        assert_eq!(text(500, json!({})), "An error occurred, please try again.");
+        // A 2xx that carries no thread is reported the same way.
+        assert_eq!(
+            create_failure_text(&json!({"ok":true,"status":200,"body":{}})),
+            "An error occurred, please try again."
         );
     }
     #[test]

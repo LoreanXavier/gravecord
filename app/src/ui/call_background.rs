@@ -1,12 +1,13 @@
 //! 715989/139327: the call's five blurred ellipses and their 4.5-second CSS animation.
 use super::Root;
-use dc_tokens::Theme;
 use gpui::{Context, DevicePixels, RenderImage, SvgSize, size};
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const RASTER_DIVISOR: u32 = 8;
+/// The glow drifts over 4.5 seconds under a 200px blur: 30 renders a second is more than it can show.
+const MIN_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Spec {
@@ -30,6 +31,8 @@ pub(super) struct State {
     desired: Option<Spec>,
     settled: Option<Spec>,
     started: Option<Instant>,
+    /// When the render in flight (or the last one) was requested.
+    last_start: Option<Instant>,
     generation: u64,
     pending: bool,
     seen: bool,
@@ -44,7 +47,13 @@ pub(super) struct State {
 }
 
 impl State {
-    fn request(&mut self, spec: Spec, now: Instant) -> Option<(u64, String)> {
+    /// How long until the next animated render may start; `None` when nothing is due (static, or no view).
+    fn wait(&self, now: Instant, active: bool) -> Option<Duration> {
+        self.desired.filter(|spec| spec.animate && active)?;
+        Some(MIN_INTERVAL.saturating_sub(now.duration_since(self.last_start?)))
+    }
+
+    fn request(&mut self, spec: Spec, now: Instant, active: bool) -> Option<(u64, String)> {
         self.seen = true;
         if self.desired != Some(spec) {
             if self.desired.is_none_or(|old| old.animate != spec.animate) {
@@ -57,7 +66,18 @@ impl State {
         if self.pending || self.failed || (!spec.animate && self.settled == Some(spec)) {
             return None;
         }
+        // A window that is not the active one keeps the frame it has; so does a render that is too soon.
+        if spec.animate
+            && self.settled == Some(spec)
+            && (!active
+                || self
+                    .last_start
+                    .is_some_and(|at| now.duration_since(at) < MIN_INTERVAL))
+        {
+            return None;
+        }
         self.pending = true;
+        self.last_start = Some(now);
         let seconds = spec.animate.then(|| {
             now.duration_since(self.started.unwrap_or(now))
                 .as_secs_f64()
@@ -182,7 +202,9 @@ fn ellipses_at(width: f64, height: f64, t: f64, animate: bool) -> [Ellipse; 5] {
 }
 
 fn svg(width: u32, height: u32, seconds: Option<f64>) -> String {
-    let color = |token| Theme::Midnight.color(token) >> 8;
+    // The three gradient tokens hold the same value in every theme.
+    let theme = super::theme();
+    let color = |token| theme.color(token) >> 8;
     let base = color("--bg-animated-gradient-background-not-black");
     let dark = color("--bg-animated-gradient-background-indigo-2");
     let light = color("--blurple-49");
@@ -219,7 +241,8 @@ impl Root {
             height: height.round().max(1.) as u32,
             animate: !self.pref_on("reduced_motion", false),
         };
-        if let Some((generation, svg)) = self.vv.background.request(spec, Instant::now()) {
+        let active = self.notification_focused;
+        if let Some((generation, svg)) = self.vv.background.request(spec, Instant::now(), active) {
             let renderer = cx.svg_renderer();
             cx.spawn(async move |this, cx| {
                 #[cfg(feature = "capture")]
@@ -247,7 +270,22 @@ impl Root {
                         }
                         cx.defer(move |cx| cx.drop_image(old, None));
                     }
-                    cx.notify();
+                    // The next animated render follows after the minimum interval, not at once.
+                    let wait = this
+                        .vv
+                        .background
+                        .wait(Instant::now(), this.notification_focused);
+                    match wait {
+                        Some(wait) if !wait.is_zero() => {
+                            cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(wait).await;
+                                let _ = this.update(cx, |_, cx| cx.notify());
+                            })
+                            .detach();
+                            cx.notify();
+                        }
+                        _ => cx.notify(),
+                    }
                 });
             })
             .detach();
@@ -312,8 +350,12 @@ mod tests {
             animate: true,
         };
         let mut state = State::default();
-        let (generation, _) = state.request(spec, now).unwrap();
-        assert!(state.request(Spec { width: 950, ..spec }, now).is_none());
+        let (generation, _) = state.request(spec, now, true).unwrap();
+        assert!(
+            state
+                .request(Spec { width: 950, ..spec }, now, true)
+                .is_none()
+        );
         assert!(state.end_frame().is_none());
         assert!(state.end_frame().is_none());
         assert!(state.desired.is_none());
@@ -324,7 +366,56 @@ mod tests {
         assert!(state.finish(generation, Some(image)).is_none());
         assert!(state.frame.is_none());
         assert!(!state.pending);
-        assert!(state.request(spec, now).is_some());
+        assert!(state.request(spec, now, true).is_some());
+    }
+
+    #[test]
+    fn animated_renders_are_spaced_stop_when_inactive_and_static_when_reduced() {
+        let start = Instant::now();
+        let spec = Spec {
+            width: 905,
+            height: 688,
+            animate: true,
+        };
+        let image = || {
+            Arc::new(RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::new(1, 1),
+            )]))
+        };
+        let mut state = State::default();
+        let (generation, _) = state.request(spec, start, true).unwrap();
+        state.finish(generation, Some(image()));
+        // Finished at once: the next render waits out the interval, then runs.
+        assert!(
+            state
+                .request(spec, start + Duration::from_millis(5), true)
+                .is_none()
+        );
+        assert_eq!(
+            state.wait(start + Duration::from_millis(5), true),
+            Some(Duration::from_millis(28))
+        );
+        let later = start + MIN_INTERVAL;
+        assert!(
+            state.request(spec, later, false).is_none(),
+            "inactive window"
+        );
+        assert_eq!(state.wait(later, false), None);
+        let (generation, _) = state.request(spec, later, true).unwrap();
+        state.finish(generation, Some(image()));
+        // Reduced motion renders once and then nothing is due.
+        let still = Spec {
+            animate: false,
+            ..spec
+        };
+        let (generation, _) = state.request(still, later, true).unwrap();
+        state.finish(generation, Some(image()));
+        assert!(
+            state
+                .request(still, later + Duration::from_secs(1), true)
+                .is_none()
+        );
+        assert_eq!(state.wait(later, true), None);
     }
 
     #[test]

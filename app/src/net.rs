@@ -51,7 +51,11 @@ pub enum Update {
         key: dc_voice::streams::StreamKey,
         event: dc_voice::StreamEvent,
     },
-    /// The body of a `Request::Fetch`.
+    /// A `Request::Image` that could not be downloaded.
+    ImageFailed {
+        key: String,
+    },
+    /// The body of a `Request::Fetch`. A failed fetch arrives here too, with the body `fetch_failure` builds.
     Fetched {
         key: String,
         body: Value,
@@ -973,9 +977,8 @@ pub async fn run(
                         }
                         Err(error) => {
                             warn!("fetch failed: {error}");
-                            if let Some(body) = fetch_failure(&key, &error) {
-                                let _ = updates.send(Update::Fetched { key, body });
-                            }
+                            let body = fetch_failure(&key, &error);
+                            let _ = updates.send(Update::Fetched { key, body });
                         }
                     }
                 });
@@ -1130,7 +1133,10 @@ pub async fn run(
                         Ok(bytes) => {
                             let _ = updates.send(Update::Image { key, bytes });
                         }
-                        Err(error) => warn!("image failed: {error}"),
+                        Err(error) => {
+                            warn!("image failed: {error}");
+                            let _ = updates.send(Update::ImageFailed { key });
+                        }
                     }
                 });
             }
@@ -1138,16 +1144,31 @@ pub async fn run(
     }
 }
 
-fn fetch_failure(key: &str, error: &dc_http::Error) -> Option<Value> {
+/// The body of an `Update::Fetched` for a failed `Request::Fetch`, one shape for every key: `fetch_failed` marks
+/// it, `status` is the HTTP status (0 for a transport error), `body` the response. The invite lookup and the two
+/// feeds that read their own flags keep them beside it.
+fn fetch_failure(key: &str, error: &dc_http::Error) -> Value {
+    let (status, body) = match error {
+        dc_http::Error::Status { status, body, .. } => (status.as_u16(), body.clone()),
+        dc_http::Error::RateLimited { .. } => (429, Value::Null),
+        _ => (0, Value::Null),
+    };
+    let mut out = json!({"ok": false, "fetch_failed": true, "status": status, "body": body});
     if key.starts_with("invite:") {
-        // 970163 resolves failures to an absent invite, with a separate USER_BANNED marker.
-        let banned = matches!(error, dc_http::Error::Status { body, .. } if body["code"] == 40007);
-        Some(json!({"invite_resolve_failed": true, "banned": banned}))
+        // 970163 resolves failures to an absent invite, with a separate USER_BANNED marker; the error body is not
+        // kept.
+        out["invite_resolve_failed"] = json!(true);
+        out["banned"] = json!(out["body"]["code"] == 40007);
+        out["body"] = Value::Null;
     } else if key.starts_with("activity-shelf:") || key == "content-inventory:feed" {
-        Some(json!({"error": true}))
-    } else {
-        None
+        out["error"] = json!(true);
     }
+    out
+}
+
+/// Whether a fetched body is the failure `fetch_failure` builds.
+pub fn is_fetch_failure(body: &Value) -> bool {
+    body["fetch_failed"] == true
 }
 
 /// Fetches `url` and writes it into the Downloads folder under a free name; whether it was saved.
@@ -1217,9 +1238,41 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 
 #[cfg(test)]
 mod tests {
-    use super::{account_write_refused, guild_member_requests, percent_encode, send_body};
+    use super::{
+        account_write_refused, fetch_failure, guild_member_requests, is_fetch_failure,
+        percent_encode, send_body,
+    };
     use reqwest::Method;
     use serde_json::json;
+
+    #[test]
+    fn every_failed_fetch_has_one_shape_and_keeps_the_flags_old_readers_use() {
+        let status = |code: u16, body| dc_http::Error::Status {
+            route: "/x".into(),
+            status: reqwest::StatusCode::from_u16(code).unwrap(),
+            body,
+        };
+        let plain = fetch_failure("guild-nav:events:1", &status(403, json!({"message":"no"})));
+        assert!(is_fetch_failure(&plain));
+        assert_eq!(plain["ok"], false);
+        assert_eq!(plain["status"], 403);
+        assert_eq!(plain["body"]["message"], "no");
+        let limited = fetch_failure(
+            "presence-app:1",
+            &dc_http::Error::RateLimited { route: "/x".into() },
+        );
+        assert_eq!(limited["status"], 429);
+        assert_eq!(
+            fetch_failure("content-inventory:feed", &status(500, json!(null)))["error"],
+            true
+        );
+        assert_eq!(
+            fetch_failure("activity-shelf:1", &status(500, json!(null)))["error"],
+            true
+        );
+        assert!(!is_fetch_failure(&json!([])));
+        assert!(!is_fetch_failure(&json!({"ok": false})));
+    }
 
     #[test]
     fn a_harness_run_cannot_write_to_the_account_unless_it_says_so() {
@@ -1391,27 +1444,40 @@ mod fetch_failure_tests {
             status: reqwest::StatusCode::FORBIDDEN,
             body: json!({"code": code, "message": "not rendered"}),
         };
+        let kept = |key, error| {
+            let out = fetch_failure(key, &error);
+            (
+                out["invite_resolve_failed"].clone(),
+                out["banned"].clone(),
+                out["body"].clone(),
+            )
+        };
         assert_eq!(
-            fetch_failure("invite:fixture", &error(40007)),
-            Some(json!({"invite_resolve_failed": true, "banned": true}))
+            kept("invite:fixture", error(40007)),
+            (json!(true), json!(true), json!(null))
         );
         assert_eq!(
-            fetch_failure("invite:fixture", &error(10006)),
-            Some(json!({"invite_resolve_failed": true, "banned": false}))
+            kept("invite:fixture", error(10006)),
+            (json!(true), json!(false), json!(null))
         );
         assert_eq!(
-            fetch_failure(
+            kept(
                 "invite:fixture",
-                &Error::RateLimited {
+                Error::RateLimited {
                     route: "/invites/fixture".into()
                 }
             ),
-            Some(json!({"invite_resolve_failed": true, "banned": false}))
+            (json!(true), json!(false), json!(null))
         );
-        assert_eq!(fetch_failure("profile:fixture", &error(40007)), None);
+        // Other keys have no invite flags; the shelf and the feed keep `error`.
+        assert!(fetch_failure("profile:fixture", &error(40007))["invite_resolve_failed"].is_null());
         assert_eq!(
-            fetch_failure("activity-shelf:fixture", &error(40007)),
-            Some(json!({"error": true}))
+            fetch_failure("activity-shelf:fixture", &error(40007))["error"],
+            true
+        );
+        assert_eq!(
+            fetch_failure("profile:fixture", &error(40007))["status"],
+            403
         );
     }
 }

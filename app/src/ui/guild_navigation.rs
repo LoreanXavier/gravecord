@@ -81,6 +81,7 @@ impl Root {
         };
         let id = guild.id;
         let key = format!("{EVENTS}{id}");
+        self.retry_failed_fetch(&key);
         if self.requested.insert(key.clone()) {
             let _ = self.requests.send(Request::Fetch {
                 key,

@@ -480,7 +480,20 @@ impl Root {
             .cloned()
             .unwrap_or_default();
         let legacy = legacy_selection(known, &settings);
-        let onboarding = self.fetched.get(&format!("{ONBOARDING}{guild}"));
+        let onboarding_key = format!("{ONBOARDING}{guild}");
+        if legacy
+            && !self.fetched.contains_key(&onboarding_key)
+            && self.fetch_failures.remove(&onboarding_key).is_some()
+        {
+            // The defaults never arrived: this click asks again, the next one follows.
+            self.requested.insert(onboarding_key.clone());
+            let _ = self.requests.send(Request::Fetch {
+                key: onboarding_key,
+                route: format!("/guilds/{guild}/onboarding"),
+            });
+            return;
+        }
+        let onboarding = self.fetched.get(&onboarding_key);
         if legacy && onboarding.is_none() {
             return;
         }

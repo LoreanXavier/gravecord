@@ -5,24 +5,54 @@ use dc_state::Id;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, ScrollHandle, div, prelude::*, px};
 use serde_json::{Value, json};
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct Screening {
     guild: Id,
     form: Option<Value>,
     accepted: BTreeSet<usize>,
+    /// Answers to the other field types, by field index: a string for TEXT_INPUT and PARAGRAPH, the chosen index
+    /// for MULTIPLE_CHOICE.
+    responses: BTreeMap<usize, Value>,
     scroll: ScrollHandle,
     sending: bool,
     error: Option<String>,
     measure_scroll: Cell<bool>,
 }
 
-fn submission(form: &Value, accepted: &BTreeSet<usize>) -> Option<Value> {
+/// Module 709977 `Ge`: whether a field has what it requires. TERMS need acceptance, the text types a non-blank
+/// string, MULTIPLE_CHOICE a chosen index; an optional field always passes and an unknown required type does not.
+fn answered(
+    field: &Value,
+    index: usize,
+    accepted: &BTreeSet<usize>,
+    responses: &BTreeMap<usize, Value>,
+) -> bool {
+    if !field["required"].as_bool().unwrap_or(false) {
+        return true;
+    }
+    match field["field_type"].as_str() {
+        Some("TERMS") => accepted.contains(&index),
+        Some("TEXT_INPUT" | "PARAGRAPH") => responses
+            .get(&index)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty()),
+        Some("MULTIPLE_CHOICE") => responses.get(&index).is_some_and(Value::is_u64),
+        _ => false,
+    }
+}
+
+fn submission(
+    form: &Value,
+    accepted: &BTreeSet<usize>,
+    responses: &BTreeMap<usize, Value>,
+) -> Option<Value> {
     let fields = form["form_fields"].as_array()?;
-    if fields.iter().enumerate().any(|(index, field)| {
-        field["field_type"] != "TERMS"
-            || (field["required"].as_bool().unwrap_or(false) && !accepted.contains(&index))
-    }) {
+    if !fields
+        .iter()
+        .enumerate()
+        .all(|(index, field)| answered(field, index, accepted, responses))
+    {
         return None;
     }
     let fields: Vec<_> = fields
@@ -30,7 +60,11 @@ fn submission(form: &Value, accepted: &BTreeSet<usize>) -> Option<Value> {
         .enumerate()
         .map(|(index, field)| {
             let mut field = field.clone();
-            field["response"] = json!(accepted.contains(&index));
+            if field["field_type"] == "TERMS" {
+                field["response"] = json!(accepted.contains(&index));
+            } else if let Some(response) = responses.get(&index) {
+                field["response"] = response.clone();
+            }
             field
         })
         .collect();
@@ -121,6 +155,7 @@ impl Root {
             guild,
             form: None,
             accepted: BTreeSet::new(),
+            responses: BTreeMap::new(),
             scroll: ScrollHandle::new(),
             sending: false,
             error: None,
@@ -153,7 +188,10 @@ impl Root {
             return false;
         }
         if key.starts_with("screening-preview:") {
-            self.fetched.insert(key.to_owned(), report.clone());
+            // A failed preview is not a preview: the card keeps what the guild list already knows.
+            if report["ok"].as_bool() == Some(true) {
+                self.fetched.insert(key.to_owned(), report.clone());
+            }
         } else if let Some(open) = self.screening.as_mut()
             && key.rsplit(':').next().and_then(|id| id.parse::<Id>().ok()) == Some(open.guild)
         {
@@ -281,7 +319,7 @@ impl Root {
         let fields = form.and_then(|form| form["form_fields"].as_array());
         let enabled = !open.sending
             && form
-                .and_then(|form| submission(form, &open.accepted))
+                .and_then(|form| submission(form, &open.accepted, &open.responses))
                 .is_some();
         let questions = fields
             .into_iter()
@@ -390,7 +428,7 @@ impl Root {
                     })
             });
         Some(gpui::deferred(div().id("screening-layer").absolute().inset_0().occlude()
-            .bg(gpui::rgba(0x000000b8)).flex().items_center().justify_center()
+            .bg(color("--background-scrim")).flex().items_center().justify_center()
             .on_click(cx.listener(|this, _, _, cx| { this.screening = None; cx.notify(); }))
             .child(div().id("screening-modal").parity_with_border("screening-modal", 1.)
                 .relative().w(px(1024.)).h(px(608.)).rounded(px(16.)).border_1()
@@ -422,7 +460,7 @@ impl Root {
                         if !enabled { return }
                         if let Some(open) = this.screening.as_mut()
                             && !open.sending
-                            && let Some(body) = open.form.as_ref().and_then(|form| submission(form, &open.accepted))
+                            && let Some(body) = open.form.as_ref().and_then(|form| submission(form, &open.accepted, &open.responses))
                         {
                             open.sending = true;
                             open.error = None;
@@ -447,17 +485,55 @@ mod tests {
             {"field_type":"TERMS", "required":true,"values":["Rule one"]},
             {"field_type":"TERMS", "required":true,"values":["Rule two"]}
         ]});
-        assert!(submission(&form, &BTreeSet::new()).is_none());
-        assert!(submission(&form, &BTreeSet::from([0])).is_none());
-        let sent = submission(&form, &BTreeSet::from([0, 1])).unwrap();
+        let none = BTreeMap::new();
+        assert!(submission(&form, &BTreeSet::new(), &none).is_none());
+        assert!(submission(&form, &BTreeSet::from([0]), &none).is_none());
+        let sent = submission(&form, &BTreeSet::from([0, 1]), &none).unwrap();
         assert_eq!(sent["version"], "v1");
         assert_eq!(sent["form_fields"][0]["response"], true);
         assert_eq!(sent["form_fields"][1]["values"][0], "Rule two");
     }
     #[test]
-    fn manual_questions_cannot_be_submitted_as_unanswered_terms() {
-        let form =
-            json!({"version":"v1","form_fields":[{"field_type":"TEXT_INPUT","required":true}]});
-        assert!(submission(&form, &BTreeSet::from([0])).is_none());
+    fn every_field_type_follows_the_official_answer_rule() {
+        let none = BTreeMap::new();
+        let accepted = BTreeSet::new();
+        let form = |field: Value| json!({"version":"v1","form_fields":[field]});
+        // TEXT_INPUT and PARAGRAPH need a non-blank string.
+        for kind in ["TEXT_INPUT", "PARAGRAPH"] {
+            let form = form(json!({"field_type":kind,"required":true}));
+            assert!(submission(&form, &accepted, &none).is_none());
+            assert!(submission(&form, &accepted, &BTreeMap::from([(0, json!("   "))])).is_none());
+            let sent =
+                submission(&form, &accepted, &BTreeMap::from([(0, json!("hello"))])).unwrap();
+            assert_eq!(sent["form_fields"][0]["response"], "hello");
+        }
+        // MULTIPLE_CHOICE needs a chosen index, zero included.
+        let choice =
+            form(json!({"field_type":"MULTIPLE_CHOICE","required":true,"values":["a","b"]}));
+        assert!(submission(&choice, &accepted, &none).is_none());
+        assert!(submission(&choice, &accepted, &BTreeMap::from([(0, json!("0"))])).is_none());
+        let sent = submission(&choice, &accepted, &BTreeMap::from([(0, json!(0))])).unwrap();
+        assert_eq!(sent["form_fields"][0]["response"], 0);
+        // Optional fields may stay empty and then carry no response.
+        let optional = form(json!({"field_type":"PARAGRAPH","required":false}));
+        let sent = submission(&optional, &accepted, &none).unwrap();
+        assert!(sent["form_fields"][0].get("response").is_none());
+        // A required type the client does not know cannot be answered.
+        let unknown = form(json!({"field_type":"SOMETHING_NEW","required":true}));
+        assert!(submission(&unknown, &accepted, &none).is_none());
+        // Mixed with terms, every required field must be answered.
+        let mixed = json!({"version":"v2","form_fields":[
+            {"field_type":"TERMS","required":true,"values":["Rule"]},
+            {"field_type":"TEXT_INPUT","required":true}
+        ]});
+        assert!(submission(&mixed, &BTreeSet::from([0]), &none).is_none());
+        let sent = submission(
+            &mixed,
+            &BTreeSet::from([0]),
+            &BTreeMap::from([(1, json!("x"))]),
+        )
+        .unwrap();
+        assert_eq!(sent["form_fields"][0]["response"], true);
+        assert_eq!(sent["form_fields"][1]["response"], "x");
     }
 }

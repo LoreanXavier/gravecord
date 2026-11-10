@@ -1206,6 +1206,7 @@ impl Root {
     /// Mark As Read on a card: ack its newest message, and drop the card.
     fn ack_channel(&mut self, channel: Id, message: Id) {
         self.stores.read_states.ack_local(channel, message, false);
+        self.data_revision += 1;
         self.inbox_read.insert(channel);
         let _ = self.requests.send(crate::net::Request::Ack {
             channel,

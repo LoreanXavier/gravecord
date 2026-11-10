@@ -35,6 +35,8 @@ pub(super) struct Cache {
     epoch: Instant,
     decoded: HashMap<Id, Option<Arc<RgbaImage>>>,
     frames: HashMap<Id, CachedFrame>,
+    /// When each cached frame was last painted.
+    touched: HashMap<Id, Instant>,
     encoded: HashMap<Id, Arc<Vec<u8>>>,
     animations: HashMap<Id, Option<Arc<Clip>>>,
     decoding: HashSet<Id>,
@@ -51,6 +53,7 @@ impl Default for Cache {
             epoch: Instant::now(),
             decoded: HashMap::new(),
             frames: HashMap::new(),
+            touched: HashMap::new(),
             encoded: HashMap::new(),
             animations: HashMap::new(),
             decoding: HashSet::new(),
@@ -130,14 +133,19 @@ impl Cache {
                 }
             }
         }
+        let idle: HashSet<_> = super::member_avatars::idle_keys(&self.touched, Instant::now())
+            .into_iter()
+            .collect();
         self.frames.retain(|user, frame| {
-            if member_users.contains(user) {
+            if member_users.contains(user) && !idle.contains(user) {
                 true
             } else {
                 preparation.retired.push(frame.image.clone());
                 false
             }
         });
+        self.touched
+            .retain(|user, _| self.frames.contains_key(user));
         self.retired_frames += preparation.retired.len() as u64;
         self.encoded.retain(|sku, _| {
             if member_skus.contains(sku) || self.decoding.contains(sku) {
@@ -162,6 +170,7 @@ impl Cache {
     }
 
     fn frame(&mut self, user: Id, sku: Id, encoded: &[u8], spec: Spec) -> Option<Frame> {
+        self.touched.insert(user, Instant::now());
         let frozen = self.frozen.get(&user).filter(|(known, _, _)| *known == sku);
         let index = frozen.map(|(_, index, _)| *index);
         if let Some(known) = self.frames.get(&user)

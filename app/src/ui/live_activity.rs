@@ -4,7 +4,7 @@ use crate::{net::Request, parity::Parity};
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, IntoElement, SharedString, div, img, prelude::*, px,
-    relative, rgba,
+    relative,
 };
 use serde_json::Value;
 use std::time::Duration;
@@ -228,6 +228,10 @@ impl Root {
             }
             if let Some(app) = field(activity, "application_id") {
                 let key = format!("presence-app:{app}");
+                // A failed lookup left its placeholder; once it is due again the placeholder goes.
+                if self.retry_failed_fetch(&key) {
+                    self.fetched.remove(&key);
+                }
                 if !self.fetched.contains_key(&key) {
                     self.fetched.insert(key.clone(), Value::Null);
                     let _ = self.requests.send(Request::Fetch {
@@ -432,7 +436,7 @@ impl Root {
                                     .flex_1()
                                     .h(px(2.))
                                     .rounded_full()
-                                    .bg(rgba(0x97979f29))
+                                    .bg(color("--opacity-16"))
                                     .child(
                                         div()
                                             .w(relative(progress))

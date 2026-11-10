@@ -42,6 +42,7 @@ impl Root {
             .map_or(0, dc_state::Guild::joined_snowflake);
         self.unread_from = Some((channel, self.stores.read_states.acked(channel, joined)));
         self.stores.read_states.ack_local(channel, latest, false);
+        self.data_revision += 1;
         let _ = self.requests.send(Request::Ack {
             channel,
             message: latest,
@@ -60,6 +61,7 @@ impl Root {
             .and_then(|list| list.iter().rev().find(|known| known.id < message))
             .map_or(message.saturating_sub(1), |known| known.id);
         self.stores.read_states.ack_local(channel, before, true);
+        self.data_revision += 1;
         self.unread_from = Some((channel, before));
         let _ = self.requests.send(Request::Ack {
             channel,
@@ -82,6 +84,7 @@ impl Root {
         let latest = self.stores.read_states.latest.get(&channel).copied();
         if let Some(latest) = latest {
             self.stores.read_states.ack_local(channel, latest, false);
+            self.data_revision += 1;
             let _ = self.requests.send(Request::Ack {
                 channel,
                 message: latest,

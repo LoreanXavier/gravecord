@@ -565,31 +565,14 @@ impl Root {
             .get(&format!("screening-preview:{guild}"))
             .filter(|report| report["ok"].as_bool() == Some(true))
             .map(|report| &report["body"]);
-        let members = preview
-            .and_then(|body| body["approximate_member_count"].as_u64())
-            .unwrap_or_else(|| {
-                self.stores.member_lists.get(&guild).map_or(1, |list| {
-                    list.rows
-                        .iter()
-                        .filter(|row| matches!(row, dc_state::member_list::Row::Member { .. }))
-                        .count()
-                        .max(1) as u64
-                })
-            });
-        let online = preview
-            .and_then(|body| body["approximate_presence_count"].as_u64())
-            .unwrap_or_else(|| {
-                self.stores
-                    .member_lists
-                    .get(&guild)
-                    .and_then(|list| {
-                        list.groups
-                            .iter()
-                            .find(|(id, _)| id != "offline")
-                            .map(|(_, count)| *count)
-                    })
-                    .unwrap_or(1)
-            });
+        // 93895: the member count store first, the preview's approximate counts after it; neither means no number.
+        let counts = &self.stores.member_counts;
+        let members = counts
+            .get_member_count(guild)
+            .or_else(|| preview.and_then(|body| body["approximate_member_count"].as_u64()));
+        let online = counts
+            .get_online_count(guild)
+            .or_else(|| preview.and_then(|body| body["approximate_presence_count"].as_u64()));
         let founded =
             chrono::DateTime::from_timestamp_millis((guild >> 22) as i64 + 1_420_070_400_000)
                 .map(|time| {
@@ -664,14 +647,15 @@ impl Root {
                             div()
                                 .flex()
                                 .gap(px(8.))
-                                .child(stat(
-                                    "--icon-status-online",
-                                    count(online, "Online", "Online"),
-                                ))
-                                .child(stat(
-                                    "--icon-status-offline",
-                                    count(members, "Member", "Members"),
-                                )),
+                                .children(online.map(|online| {
+                                    stat("--icon-status-online", count(online, "Online", "Online"))
+                                }))
+                                .children(members.map(|members| {
+                                    stat(
+                                        "--icon-status-offline",
+                                        count(members, "Member", "Members"),
+                                    )
+                                })),
                         )
                         .child(
                             div()

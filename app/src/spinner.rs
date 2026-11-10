@@ -38,25 +38,56 @@ fn cache_path() -> Option<PathBuf> {
     Some(dir.join(CLIP))
 }
 
-async fn file(client: &dc_http::Client) -> Option<Vec<u8>> {
+/// Writes through a temporary file in the same folder and renames it over `path`, so a crash or a full disk leaves
+/// the old file or none, never half of one.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = path.with_extension("part");
+    let written = std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// What the decode says about the cache: a download that decoded is kept, a cached file that did not is deleted.
+fn settle_cache(path: &std::path::Path, decoded: bool, cached: bool, bytes: &[u8]) {
+    match (decoded, cached) {
+        (true, false) => {
+            if let Err(error) = write_atomic(path, bytes) {
+                tracing::debug!("keeping spinner: {error}");
+            }
+        }
+        (false, true) => {
+            let _ = std::fs::remove_file(path);
+        }
+        _ => {}
+    }
+}
+
+/// The clip's bytes, and whether they came from the cache. The cache is only trusted once it decoded: see `load`.
+async fn file(client: &dc_http::Client) -> Option<(Vec<u8>, bool)> {
     let cached = cache_path()?;
     if let Ok(bytes) = std::fs::read(&cached)
         && !bytes.is_empty()
     {
-        return Some(bytes);
+        return Some((bytes, true));
     }
     let url = format!("{}/assets/{CLIP}", pin::WEBAPP_ORIGIN);
     let bytes = client.fetch_public(&url).await.ok()?;
-    let _ = std::fs::write(&cached, &bytes);
-    Some(bytes)
+    Some((bytes, false))
 }
 
 /// The spinner, fetched or read from disk and decoded. None when the file or the decode is not to be had: the screen
-/// shows without the mark then, as the official page does while its video loads.
+/// shows without the mark then, as the official page does while its video loads. A download is kept on disk only
+/// once it decoded; a cached file that no longer decodes is deleted so the next start downloads it again.
 pub async fn load(client: &dc_http::Client) -> Option<Clip> {
-    let bytes = file(client).await?;
+    let (bytes, cached) = file(client).await?;
     tokio::task::spawn_blocking(move || {
-        decode(&bytes)
+        let decoded = decode(&bytes);
+        if let Some(path) = cache_path() {
+            settle_cache(&path, decoded.is_ok(), cached, &bytes);
+        }
+        decoded
             .map_err(|error| tracing::debug!("loading spinner: {error}"))
             .ok()
     })
@@ -561,5 +592,37 @@ mod tests {
         assert_eq!(config.length_size, 4);
         assert_eq!(config.sps, vec![vec![0x67, 0x64]]);
         assert_eq!(config.pps, vec![vec![0x68, 0xEE, 0x3C]]);
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::{settle_cache, write_atomic};
+
+    #[test]
+    fn a_cache_write_replaces_the_file_whole_and_leaves_no_temporary() {
+        let dir = std::env::temp_dir().join(format!("gravecord-spinner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mp4");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert!(!path.with_extension("part").exists());
+        // A target that cannot be written (a folder is in the way) fails and still leaves no temporary.
+        let blocked = dir.join("blocked.mp4");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(write_atomic(&blocked, b"x").is_err());
+        assert!(!blocked.with_extension("part").exists());
+        // A download that decoded is kept; one that did not is not; a cached file that stopped decoding goes.
+        let fresh = dir.join("fresh.mp4");
+        settle_cache(&fresh, false, false, b"bad");
+        assert!(!fresh.exists());
+        settle_cache(&fresh, true, false, b"good");
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"good");
+        settle_cache(&fresh, true, true, b"other");
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"good");
+        settle_cache(&fresh, false, true, b"");
+        assert!(!fresh.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

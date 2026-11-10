@@ -7,7 +7,7 @@ use image::{Rgba, RgbaImage};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,6 +79,26 @@ struct Spec {
     tint: [u8; 4],
 }
 
+/// Rows painted in the last `IDLE_AFTER` stay cached, and so do the `KEEP_RECENT` most recently painted ones, so
+/// scrolling back over a screenful of rows does not rebuild them.
+pub(super) const KEEP_RECENT: usize = 64;
+pub(super) const IDLE_AFTER: Duration = Duration::from_secs(30);
+
+/// The keys to evict: those not painted for `IDLE_AFTER` that are not among the `KEEP_RECENT` newest.
+pub(super) fn idle_keys<K: Clone + Eq + std::hash::Hash>(
+    touched: &HashMap<K, Instant>,
+    now: Instant,
+) -> Vec<K> {
+    let mut by_age: Vec<(&K, Instant)> = touched.iter().map(|(key, at)| (key, *at)).collect();
+    by_age.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    by_age
+        .into_iter()
+        .skip(KEEP_RECENT)
+        .filter(|(_, at)| now.duration_since(*at) >= IDLE_AFTER)
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 struct CachedFrame {
     avatar: u64,
     decoration: Option<u64>,
@@ -92,6 +112,8 @@ type PaintedFrame = (Arc<RenderImage>, Option<Arc<RenderImage>>);
 pub(super) struct Cache {
     decoded: HashMap<u64, Option<Arc<RgbaImage>>>,
     frames: HashMap<(Id, Size), CachedFrame>,
+    /// When each cached frame was last painted.
+    touched: HashMap<(Id, Size), Instant>,
     expiry: Option<f64>,
     generation: u64,
 }
@@ -109,15 +131,22 @@ impl Cache {
     }
 
     fn retain(&mut self, users: &HashSet<(Id, Size)>) -> Vec<Arc<RenderImage>> {
+        self.retain_at(users, Instant::now())
+    }
+
+    fn retain_at(&mut self, users: &HashSet<(Id, Size)>, now: Instant) -> Vec<Arc<RenderImage>> {
         let mut retired = Vec::new();
+        let idle: HashSet<_> = idle_keys(&self.touched, now).into_iter().collect();
         self.frames.retain(|user, frame| {
-            if users.contains(user) {
+            if users.contains(user) && !idle.contains(user) {
                 true
             } else {
                 retired.push(frame.image.clone());
                 false
             }
         });
+        self.touched
+            .retain(|user, _| self.frames.contains_key(user));
         let images: HashSet<_> = self
             .frames
             .values()
@@ -135,6 +164,7 @@ impl Cache {
         spec: Spec,
     ) -> Option<PaintedFrame> {
         let decoration_id = decoration.map(Image::id);
+        self.touched.insert((user, spec.size), Instant::now());
         if let Some(frame) = self.frames.get(&(user, spec.size))
             && frame.avatar == avatar.id()
             && frame.decoration == decoration_id
@@ -406,6 +436,9 @@ impl Root {
                     let mut cache = this.member_avatars.borrow_mut();
                     if cache.generation == generation {
                         cache.expiry = None;
+                        drop(cache);
+                        // The decoration that ran out is read again on the next pass.
+                        this.data_revision += 1;
                         cx.notify();
                     }
                 });
@@ -501,6 +534,56 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_out_of_view_for_a_while_are_evicted_but_a_recent_set_stays() {
+        let start = Instant::now();
+        let mut touched = HashMap::new();
+        // 100 rows painted one second apart; at t=200s the newest KEEP_RECENT survive however old they are.
+        for row in 0..100u64 {
+            touched.insert((row, Size::Member), start + Duration::from_secs(row));
+        }
+        let now = start + Duration::from_secs(200);
+        let gone: HashSet<_> = idle_keys(&touched, now).into_iter().collect();
+        assert_eq!(gone.len(), 100 - KEEP_RECENT);
+        assert!(gone.contains(&(0, Size::Member)));
+        assert!(!gone.contains(&(99, Size::Member)));
+        // Just painted rows are never idle, even past the keep count.
+        let recent: HashMap<_, _> = (0..100u64)
+            .map(|row| ((row, Size::Member), start))
+            .collect();
+        assert!(idle_keys(&recent, start + Duration::from_secs(1)).is_empty());
+        // The cache hands the evicted textures back for release and keeps the rest.
+        let mut cache = Cache::default();
+        let image = || {
+            Arc::new(RenderImage::new(vec![image::Frame::new(RgbaImage::new(
+                1, 1,
+            ))]))
+        };
+        let spec = Spec {
+            size: Size::Member,
+            pixels: 1,
+            status: Status::Online,
+            tint: [0; 4],
+        };
+        for row in 0..100u64 {
+            cache.frames.insert(
+                (row, Size::Member),
+                CachedFrame {
+                    avatar: row,
+                    decoration: None,
+                    spec,
+                    image: image(),
+                },
+            );
+        }
+        cache.touched = touched.clone();
+        let users: HashSet<_> = (0..100u64).map(|row| (row, Size::Member)).collect();
+        let retired = cache.retain_at(&users, now);
+        assert_eq!(retired.len(), 100 - KEEP_RECENT);
+        assert_eq!(cache.frames.len(), KEEP_RECENT);
+        assert_eq!(cache.touched.len(), KEEP_RECENT);
+    }
 
     #[test]
     fn mobile_masks_preserve_screen_button_and_the_taller_transparent_ring() {

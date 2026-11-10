@@ -19,6 +19,8 @@ use std::time::Duration;
 
 const REPLY_LIMIT: usize = 200;
 const SEND_KEY: &str = "inventory-reply:";
+/// How long a reply may stay unanswered before the popout is released.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(super) struct State {
@@ -39,6 +41,10 @@ struct Open {
     palette: [gpui::Hsla; 2],
     palette_source: Option<std::sync::Arc<gpui::Image>>,
     art_height: f32,
+}
+
+fn still_waiting(pending: Option<&Pending>, key: &str) -> bool {
+    pending.is_some_and(|pending| pending.key == key)
 }
 
 struct Pending {
@@ -180,6 +186,12 @@ impl Root {
         url.into()
     }
     pub(super) fn prepare_inventory_games(&mut self) {
+        // A failed batch: the games it asked for may be asked for again.
+        if self.retry_failed_fetch("inventory-games") {
+            let fetched = &self.fetched;
+            self.requested
+                .retain(|key| !key.starts_with("inventory-game:") || fetched.contains_key(key));
+        }
         let Some(feed) = self.stores.content_inventory.get_feed(GLOBAL_FEED) else {
             return;
         };
@@ -457,6 +469,7 @@ impl Root {
             .find(|channel| channel.kind == 1 && channel.recipients == [user])
             .map(|channel| channel.id);
         let key = format!("{SEND_KEY}{}", crate::net::nonce());
+        let waiting = key.clone();
         self.inventory_popout.pending = Some(Pending {
             key: key.clone(),
             user,
@@ -465,6 +478,17 @@ impl Root {
             open_dm,
             channel,
         });
+        // A reply whose answer never comes must not keep the popout waiting for good.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REPLY_TIMEOUT).await;
+            let _ = this.update(cx, |this, cx| {
+                if still_waiting(this.inventory_popout.pending.as_ref(), &waiting) {
+                    this.inventory_popout.pending = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         if channel.is_some() {
             self.post_inventory_reply();
         } else {
@@ -968,6 +992,24 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_reply_that_timed_out_is_released() {
+        let pending = Pending {
+            key: "inventory-reply:1".into(),
+            user: 1,
+            content: String::new(),
+            entry: Value::Null,
+            open_dm: false,
+            channel: None,
+        };
+        assert!(still_waiting(Some(&pending), "inventory-reply:1"));
+        // A newer reply keeps its own wait; a finished one has nothing left to release.
+        assert!(!still_waiting(Some(&pending), "inventory-reply:0"));
+        assert!(!still_waiting(None, "inventory-reply:1"));
+        assert!(REPLY_TIMEOUT > Duration::ZERO);
+    }
+
     #[test]
     fn reply_preserves_inventory_content_and_uses_utf16_limit() {
         let entry = json!({"id":"1","author_id":"3","author_type":1,"content_type":6,"extra":{"artist":{"name":"Fixture"}},"traits":[],"future_field":true});
