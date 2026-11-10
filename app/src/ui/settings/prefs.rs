@@ -127,6 +127,10 @@ impl Root {
             // The account's value shows from now on; the page reads it from `Stores::prefs`.
             self.setting_choices.remove(key);
             let patch = self.stores.set_pref(pref, value);
+            if key == "activity_privacy_setting" {
+                // Share my detected activities: what the presence carries changes at once.
+                self.refresh_own_presence();
+            }
             let _ = self.requests.send(Request::Rest {
                 key: None,
                 method: reqwest::Method::PATCH,

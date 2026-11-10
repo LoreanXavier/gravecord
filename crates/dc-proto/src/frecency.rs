@@ -321,9 +321,131 @@ pub fn toggle_favorite_gif(mut gifs: Vec<FavoriteGif>, gif: FavoriteGif) -> Vec<
     gifs
 }
 
+pub const FAVORITE_STICKERS: u64 = 3;
+pub const STICKER_FRECENCY: u64 = 4;
+
+/// `FavoriteStickers` (module 803805): `sticker_ids` is field 1 of the message in field 3, repeated fixed64, packed
+/// by the writer in the bundle and read unpacked as well.
+pub fn favorite_stickers(settings_base64: &str) -> Vec<u64> {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (number, value) in fields(&settings) {
+        let (true, Value::Bytes(message)) = (number == FAVORITE_STICKERS, value) else {
+            continue;
+        };
+        let mut reader = Reader { bytes: message };
+        while !reader.bytes.is_empty() {
+            let Some(tag) = reader.varint() else { break };
+            match (tag >> 3, tag & 7) {
+                (1, 2) => {
+                    let Some(packed) = reader
+                        .varint()
+                        .and_then(|length| usize::try_from(length).ok())
+                        .and_then(|length| reader.take(length))
+                    else {
+                        break;
+                    };
+                    out.extend(
+                        packed
+                            .as_chunks::<8>()
+                            .0
+                            .iter()
+                            .copied()
+                            .map(u64::from_le_bytes),
+                    );
+                }
+                (1, 1) => {
+                    let Some(chunk) = reader.take(8).and_then(|chunk| chunk.try_into().ok()) else {
+                        break;
+                    };
+                    out.push(u64::from_le_bytes(chunk));
+                }
+                (_, 0) => {
+                    reader.varint();
+                }
+                (_, 1) => {
+                    reader.take(8);
+                }
+                (_, 2) => {
+                    let length = reader
+                        .varint()
+                        .and_then(|length| usize::try_from(length).ok())
+                        .unwrap_or(0);
+                    reader.take(length);
+                }
+                (_, 5) => {
+                    reader.take(4);
+                }
+                _ => break,
+            }
+        }
+    }
+    out
+}
+
+/// The PATCH body that sets the favourite stickers: the whole `favorite_stickers` message, which the server replaces
+/// as one (the bundle's `updateAsync("favoriteStickers")` writes the full list).
+pub fn favorite_stickers_patch(ids: &[u64]) -> String {
+    let mut packed = Vec::with_capacity(ids.len() * 8);
+    for id in ids {
+        packed.extend_from_slice(&id.to_le_bytes());
+    }
+    let mut message = Vec::new();
+    if !packed.is_empty() {
+        push_field(&mut message, 1, &packed);
+    }
+    let mut settings = Vec::new();
+    push_field(&mut settings, FAVORITE_STICKERS, &message);
+    STANDARD.encode(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorite_stickers_round_trip_packed_and_unpacked() {
+        let ids = [749_054_660_769_218_631u64, 796_140_620_111_544_330];
+        assert_eq!(favorite_stickers(&favorite_stickers_patch(&ids)), ids);
+        assert!(favorite_stickers(&favorite_stickers_patch(&[])).is_empty());
+        // One fixed64 per entry, the unpacked form.
+        let mut message = Vec::new();
+        for id in ids {
+            message.push((1 << 3) | 1);
+            message.extend_from_slice(&id.to_le_bytes());
+        }
+        let mut settings = Vec::new();
+        push_field(&mut settings, FAVORITE_STICKERS, &message);
+        assert_eq!(favorite_stickers(&STANDARD.encode(settings)), ids);
+    }
+
+    #[test]
+    fn sticker_frecency_reads_through_the_id_map() {
+        let mut item = vec![1 << 3];
+        item.extend(push_to_vec(3));
+        item.extend_from_slice(&[2 << 3 | 2, 1, 7]);
+        let mut entry = vec![(1 << 3) | 1];
+        entry.extend(796_140_620_111_544_330u64.to_le_bytes());
+        let mut value = Vec::new();
+        push_field(&mut value, 2, &item);
+        entry.extend(value);
+        let mut map = Vec::new();
+        push_field(&mut map, 1, &entry);
+        let mut settings = Vec::new();
+        push_field(&mut settings, STICKER_FRECENCY, &map);
+        let read = id_map(&STANDARD.encode(settings), STICKER_FRECENCY);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].0, 796_140_620_111_544_330);
+        assert_eq!(read[0].1.total_uses, 3);
+    }
+
+    fn push_to_vec(value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_varint(&mut out, value);
+        out
+    }
 
     fn varint(mut value: u64) -> Vec<u8> {
         let mut out = Vec::new();

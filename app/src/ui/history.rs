@@ -14,6 +14,8 @@ pub(crate) struct Route {
     pub nitro: bool,
     pub guild_guide: bool,
     pub channel_browser: bool,
+    /// The Discover page and the part of it shown.
+    pub discover: Option<super::discover::Place>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,7 @@ impl Root {
             nitro: self.nitro_open,
             guild_guide: self.guild_guide_open,
             channel_browser: self.channel_browser_open,
+            discover: self.discover_place(),
         }
     }
 
@@ -67,6 +70,11 @@ impl Root {
                 self.channel_browser_open = route.channel_browser && self.has_channel_browser();
             }
             Some(_) => {}
+            None if route.discover.is_some() => {
+                if let Some(place) = route.discover {
+                    self.set_discover_place(place, cx);
+                }
+            }
             None => {
                 self.select_home(route.channel);
                 if route.nitro {
@@ -161,6 +169,7 @@ mod tests {
             nitro: false,
             guild_guide: false,
             channel_browser: false,
+            discover: None,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());

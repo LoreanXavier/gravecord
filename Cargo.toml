@@ -58,6 +58,7 @@ url = "2"
 unicode-normalization = "0.1"
 zeroize = "1.8"
 dc-auth = { path = "crates/dc-auth" }
+dc-detect = { path = "crates/dc-detect" }
 dc-gateway = { path = "crates/dc-gateway" }
 dc-hotkey = { path = "crates/dc-hotkey" }
 dc-markdown = { path = "crates/dc-markdown" }

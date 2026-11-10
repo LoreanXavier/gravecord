@@ -532,12 +532,12 @@ const WINDOWS_KEYS: &[(&str, u32)] = &[
 ];
 
 /// `KEYBOARD_KEY`, `MOUSE_BUTTON`, `KEYBOARD_MODIFIER_KEY`, `GAMEPAD_BUTTON` (650583 `zY`).
-const KEYBOARD_KEY: u32 = 0;
-const MOUSE_BUTTON: u32 = 1;
+pub(super) const KEYBOARD_KEY: u32 = 0;
+pub(super) const MOUSE_BUTTON: u32 = 1;
 const KEYBOARD_MODIFIER_KEY: u32 = 2;
 const GAMEPAD_BUTTON: u32 = 3;
 /// `g$.WINDOWS`.
-const WINDOWS: u32 = 1;
+pub(super) const WINDOWS: u32 = 1;
 
 /// 350535's `f = invert(u.Nu)` with `f["223"] = "`"`: lodash keeps the last name a code appears under.
 fn windows_key_name(code: u32) -> Option<&'static str> {
@@ -618,7 +618,7 @@ pub(super) fn shortcut_down(shortcut: &[[u32; 3]], held: &[u32]) -> bool {
 }
 
 /// The modifier keys down, as the codes of `ctrl`, `shift`, `alt` and `meta`.
-fn modifier_codes(modifiers: &Modifiers) -> Vec<u32> {
+pub(super) fn modifier_codes(modifiers: &Modifiers) -> Vec<u32> {
     [
         (modifiers.control, 162),
         (modifiers.shift, 160),
@@ -904,6 +904,9 @@ impl Root {
     /// A page choice changed (the generated switch, radio or select already wrote it into `setting_choices`): the
     /// store takes it as the official action does, saves, and the processors follow.
     pub(in crate::ui) fn voice_setting_changed(&mut self, key: &'static str) {
+        if self.clips_setting_changed(key) {
+            return;
+        }
         let on = matches!(self.setting_choices.get(key), Some(Choice::On(true)));
         let index = match self.setting_choices.get(key) {
             Some(Choice::Index(index)) => *index,
@@ -1167,6 +1170,9 @@ impl Root {
         keystroke: &gpui::Keystroke,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.clips_key_down(keystroke, cx) {
+            return true;
+        }
         // The modifiers held with the key count as pressed before it, in case their own change never came.
         if keystroke.modifiers != self.voice.modifiers {
             self.voice_modifiers(keystroke.modifiers, cx);
@@ -1198,6 +1204,7 @@ impl Root {
         keystroke: &gpui::Keystroke,
         cx: &mut Context<Self>,
     ) {
+        self.clips_key_up(keystroke, cx);
         if let Some(code) = windows_code(&keystroke.key) {
             self.release_recorded(KEYBOARD_KEY, code);
             self.voice.held.retain(|held| *held != code);
@@ -1224,6 +1231,7 @@ impl Root {
 
     /// gpui reports modifier keys only as a change of the set held.
     pub(in crate::ui) fn voice_modifiers(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
+        self.clips_modifiers(modifiers, cx);
         let before = modifier_codes(&self.voice.modifiers);
         let after = modifier_codes(&modifiers);
         self.voice.modifiers = modifiers;
@@ -1303,6 +1311,9 @@ impl Root {
         down: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.clips_mouse(button, down, cx) {
+            return true;
+        }
         let Some(code) = Self::mouse_code(button) else {
             return false;
         };

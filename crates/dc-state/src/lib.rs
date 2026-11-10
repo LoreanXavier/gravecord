@@ -19,7 +19,10 @@ pub mod premium;
 pub mod presence;
 pub mod private_channels;
 pub mod read_state;
+pub mod running_games;
+pub mod scheduled_events;
 pub mod slowmode;
+pub mod stickers;
 pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
@@ -908,6 +911,8 @@ pub struct Message {
     pub reference_id: Option<Id>,
     /// `message_reference.channel_id`: for THREAD_CREATED, the thread.
     pub reference_channel_id: Option<Id>,
+    /// `sticker_items` (else `stickers`): the stickers sent with the message, as (id, name, `format_type`).
+    pub sticker_items: Vec<(Id, String, u64)>,
 }
 
 /// What a forward carries: the original's content, files and embeds, and its `message_reference`.
@@ -1016,6 +1021,19 @@ impl Message {
             pinned: value["pinned"].as_bool().unwrap_or(false),
             reference_id: id(&value["message_reference"]["message_id"]),
             reference_channel_id: id(&value["message_reference"]["channel_id"]),
+            sticker_items: value["sticker_items"]
+                .as_array()
+                .or_else(|| value["stickers"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|sticker| {
+                    Some((
+                        id(&sticker["id"])?,
+                        text(&sticker["name"])?,
+                        sticker["format_type"].as_u64()?,
+                    ))
+                })
+                .collect(),
         })
     }
 
@@ -1211,6 +1229,7 @@ pub struct Stores {
     pub presences: HashMap<Id, String>,
     pub presence: presence::PresenceStore,
     pub member_counts: guild_member_counts::GuildMemberCountStore,
+    pub scheduled_events: scheduled_events::GuildScheduledEventStore,
     pub content_inventory: content_inventory::ContentInventoryStore,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
@@ -1235,6 +1254,8 @@ pub struct Stores {
     pub notification_flags: u64,
     /// The members seen so far, per guild (`GuildMemberStore`).
     pub members: members::GuildMembers,
+    /// Guild stickers and the standard packs (`GuildStickersStore`, `StickersPackStore`).
+    pub stickers: stickers::StickersStore,
     /// Channel or thread id to the guild that holds it. Lookups check the answer against the guild, so a guild
     /// changed directly (not through `dispatch`) still resolves, by the slow way.
     channel_guilds: HashMap<Id, Id>,
@@ -1251,10 +1272,12 @@ impl Stores {
         }
         self.presence.dispatch(name, data);
         self.member_counts.dispatch(name, data);
+        self.scheduled_events.dispatch(name, data);
         if name == "READY" {
             self.content_inventory.connection_open();
         }
         self.members.dispatch(name, data);
+        self.stickers.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
             "READY_SUPPLEMENTAL" => {

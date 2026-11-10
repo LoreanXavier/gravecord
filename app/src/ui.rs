@@ -76,13 +76,16 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod presence;
+mod stickers;
 mod tray;
 mod unread_badges;
 mod unread_dms;
 pub use logout::RootEvent;
 mod channel_browser;
+mod discover;
 mod fetch_failures;
 mod forums;
+mod guild_events;
 mod guild_guide;
 mod guild_navigation;
 mod inline_video;
@@ -113,6 +116,7 @@ mod reactions_modal;
 mod remediation;
 mod reminder_modal;
 mod report;
+mod running_games;
 mod saved;
 mod screening;
 mod search;
@@ -290,6 +294,8 @@ pub struct Root {
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
     notification_runtime: crate::notifications::Runtime,
+    /// Game detection and the Registered Games page (`running_games`).
+    detect: running_games::Games,
     tray_runtime: crate::tray::Runtime,
     #[cfg(feature = "capture")]
     capture_badge: Option<(u64, bool)>,
@@ -352,6 +358,7 @@ pub struct Root {
     guild_notifications: Option<Id>,
     raid_alerts_off: HashSet<(Id, u8)>,
     create_channel: Option<create_channel::CreateChannel>,
+    guild_events: Option<guild_events::GuildEvents>,
     guild_menu: bool,
     thread_browser: Option<threads::ThreadBrowser>,
     new_thread: Option<threads::NewThread>,
@@ -360,6 +367,7 @@ pub struct Root {
     inbox_read: HashSet<Id>,
     inbox_collapsed: HashSet<Id>,
     gifs: Option<gifs::Gifs>,
+    sticker_ui: stickers::Stickers,
     /// The favourite GIFs once this session changed them; until then the settings fetch is read.
     favorite_gifs: Option<Vec<dc_proto::frecency::FavoriteGif>>,
     shown_blocked: HashSet<Id>,
@@ -483,11 +491,14 @@ pub struct Root {
     setting_choices: HashMap<&'static str, settings::Choice>,
     /// Voice & Video's stored choices, microphone preview, Mic Test, keybind recorder and slider drags.
     voice: settings::VoiceState,
+    /// The Clips page's stored settings, keybind recorder, select and slider.
+    clips: settings::ClipsState,
     /// Bodies of `Request::Fetch`, by key.
     fetched: HashMap<String, serde_json::Value>,
     /// The Nitro page: its plans and scroll, and whether it is the Home content.
     nitro: nitro::NitroState,
     nitro_open: bool,
+    discover: discover::State,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
@@ -568,6 +579,7 @@ impl Root {
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
+            detect: running_games::Games::new(updates.clone()),
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
             #[cfg(feature = "capture")]
             capture_badge: None,
@@ -620,6 +632,7 @@ impl Root {
             guild_notifications: None,
             raid_alerts_off: HashSet::new(),
             create_channel: None,
+            guild_events: None,
             guild_menu: false,
             thread_browser: None,
             new_thread: None,
@@ -628,6 +641,7 @@ impl Root {
             inbox_read: HashSet::new(),
             inbox_collapsed: HashSet::new(),
             gifs: None,
+            sticker_ui: stickers::Stickers::default(),
             favorite_gifs: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
@@ -712,9 +726,11 @@ impl Root {
             settings: None,
             setting_choices,
             voice,
+            clips: settings::ClipsState::restore(),
             fetched: HashMap::new(),
             nitro: nitro::NitroState::default(),
             nitro_open: false,
+            discover: discover::State::default(),
             tip_anchors: Rc::default(),
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
@@ -735,7 +751,11 @@ impl Root {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
-            Update::GatewayConnected(connected) => self.inventory_connection_changed(connected, cx),
+            Update::GatewayConnected(connected) => {
+                self.inventory_connection_changed(connected, cx);
+                self.detect_connection_changed(connected, cx);
+            }
+            Update::Games(scan) => self.detect_scanned(*scan, cx),
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Slowmode {
@@ -762,6 +782,11 @@ impl Root {
                 self.stores.dispatch(&name, &data);
                 if name == "READY" {
                     self.inventory_connection_open();
+                    self.detect_ready();
+                }
+                // Another session changed the status or the custom status: the account's own presence follows.
+                if name == "USER_SETTINGS_PROTO_UPDATE" {
+                    self.refresh_own_presence();
                 }
                 // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
                 // client goes. An outage keeps the server and the view.
@@ -900,9 +925,15 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if self.detect_lists_fetched(&key, &body) {
+                    return;
+                }
                 if self.fetch_failed(&key, &body, cx) {
                     // Retrying is driven by each key's own request guard (`retry_failed_fetch`).
                     cx.notify();
+                    return;
+                }
+                if self.guild_events_fetched(&key, &body, cx) {
                     return;
                 }
                 if self.inventory_games_fetched(&key, &body) {
@@ -983,6 +1014,11 @@ impl Root {
                 if key.starts_with(server_tag::TAG_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.tag_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(discover::FETCH_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.discover_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(nitro::NITRO_PREFIX) {
@@ -1142,6 +1178,9 @@ impl Root {
                 if gif_answer {
                     self.request_gif_images(&key);
                 }
+                if key == stickers::PACKS_KEY {
+                    self.sticker_packs_fetched(cx);
+                }
                 // Search results: their authors' avatars.
                 if key == search::RESULTS_KEY {
                     let users: Vec<User> = self.fetched[&key]["messages"]
@@ -1288,8 +1327,10 @@ impl Root {
                 nitro: false,
                 guild_guide: false,
                 channel_browser: false,
+                discover: None,
             },
         );
+        self.discover.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
@@ -1310,6 +1351,7 @@ impl Root {
                 let _ = self.requests.send(Request::LoadMessages { channel });
             }
         }
+        self.stop_lurking_elsewhere();
         self.rebuild_rows();
     }
 
@@ -1366,6 +1408,7 @@ impl Root {
             for message in messages.iter() {
                 media.extend(embed::wanted(message));
                 media.extend(files::wanted(message));
+                media.extend(stickers::wanted(message));
             }
             for attachment in messages.iter().flat_map(|message| &message.attachments) {
                 if attachment.is_image() {
@@ -2055,7 +2098,8 @@ impl Root {
         if self.screening_pending() {
             return;
         }
-        if content.is_empty() && self.pending_files.is_empty() {
+        let staged = self.sticker_ui.take_staged();
+        if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
         }
         let ping = self.reply_ping;
@@ -2069,12 +2113,24 @@ impl Root {
             .map(|pending| pending.upload())
             .collect();
         if let Some(channel) = self.channel {
-            let _ = self.requests.send(Request::Send {
-                channel,
-                content,
-                files,
-                reply,
-            });
+            if let Some(sticker) = staged {
+                // `STICKER_TRACK_USAGE` follows the send.
+                self.stores.stickers.track(&[sticker], picker::now_ms());
+                let _ = self.requests.send(Request::SendSticker {
+                    channel,
+                    content,
+                    files,
+                    reply,
+                    sticker_ids: vec![sticker],
+                });
+            } else {
+                let _ = self.requests.send(Request::Send {
+                    channel,
+                    content,
+                    files,
+                    reply,
+                });
+            }
         }
     }
 
@@ -2306,8 +2362,11 @@ impl Root {
                 .map(|browser| browser.search.clone()),
         );
         list.extend(self.gifs.as_ref().map(|gifs| gifs.search.clone()));
+        list.extend(self.sticker_ui.search());
         list.extend(self.create_channel.as_ref().map(|form| form.name.clone()));
+        list.extend(self.guild_events_editors());
         list.extend(self.search.as_ref().map(|search| search.field.clone()));
+        list.extend(self.search_editors());
         list.push(self.active_editor());
         list
     }
@@ -2336,6 +2395,7 @@ impl Root {
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
             (Some(guild), _) => guild.name.clone(),
+            (None, None) if self.discover_active() => "Discover".to_owned(),
             (None, None) if self.nitro_open => "Nitro".to_owned(),
             (None, None) => "Friends".to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
@@ -2379,6 +2439,8 @@ impl Root {
                         guild_icon
                     } else if in_dm {
                         icon("title_direct_messages", 18., "--text-default").into_any_element()
+                    } else if self.discover_active() {
+                        icon("discover", 18., "--text-default").into_any_element()
                     } else if self.nitro_open {
                         icon("home_nitro", 16., "--text-default").into_any_element()
                     } else {
@@ -2598,12 +2660,7 @@ impl Root {
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx))),
             )
-            .child(self.with_tip(
-                "discover",
-                Tip::rail(Body::Heading("Discover".into())),
-                tool("discover", 20.),
-                cx,
-            ));
+            .child(self.discover_tile(cx));
         // wrapper_5dqHTG reserves the observed panel border-box height + 8px - 16px.
         let reserved = self.user_panel_height.unwrap_or(px(58.)) - px(8.);
         div()
@@ -3127,7 +3184,7 @@ impl Root {
             .children(self.guild_guide_rows(cx))
             .children(self.channel_browser_row(cx))
             .when(self.sidebar_has_events(), |sidebar| {
-                sidebar.child(plain_row("events", "Events"))
+                sidebar.child(self.guild_events_row(cx))
             })
             .children(self.member_safety_row(cx))
             .when(self.sidebar_has_boosts(), |sidebar| {
@@ -3452,22 +3509,22 @@ impl Root {
             .items_center()
             .bg(color("--background-base-lower"))
             .when(self.guild.is_some(), |this| {
-                this.child(icon(
-                    if self.channel.is_some()
-                        && self
+                // 353428: the title's icon is the channel list's own (`gU(channel, guild)`), never `locked`.
+                let name = match self.current_channel() {
+                    Some(channel) => {
+                        let rules = self
                             .current_guild()
                             .and_then(|guild| guild.rules_channel_id)
-                            == self.channel
-                    {
-                        "ob_rules"
-                    } else if self.current_channel().is_some_and(Channel::is_forum) {
-                        "forum_header_icon"
-                    } else {
-                        "header_hash"
-                    },
-                    20.,
-                    "--channels-default",
-                ))
+                            == Some(channel.id);
+                        channel_icon::name(&channel_icon::Facts {
+                            locked: false,
+                            ..self.channel_icon_facts(channel, rules)
+                        })
+                    }
+                    // A thread: its own title row draws the rest.
+                    None => "header_hash",
+                };
+                this.child(icon(name, 20., "--channels-default"))
             })
             .when_some(dm_user.clone(), |this, user| {
                 // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
@@ -4373,6 +4430,7 @@ impl Root {
             self.attachments(message, cx),
             self.files(message, cx),
             self.embeds(message, cx),
+            self.message_stickers(&message.sticker_items),
             self.invite_cards(message, cx),
         ]
         .into_iter()
@@ -5066,7 +5124,17 @@ impl Root {
         }));
         let docked = self.voice_chat_docked();
         let gift_button = tool("gift");
-        let sticker_button = tool("sticker");
+        let sticker_button = tool("sticker").on_click(cx.listener(move |this, _, window, cx| {
+            let composer = this.tip_anchors.borrow().get("composer-box").copied();
+            if let Some(bounds) = composer {
+                this.open_picker_tab(
+                    picker::Tab::Stickers,
+                    gpui::point(bounds.left(), bounds.top() - px(9.)),
+                    window,
+                    cx,
+                );
+            }
+        }));
         let apps_button = tool("apps").on_click(cx.listener(|this, _, window, cx| {
             this.open_launcher(window, cx);
         }));
@@ -5559,6 +5627,10 @@ impl Render for Root {
                     return;
                 }
                 // The media viewer is the top layer: Escape and the arrows are its.
+                if this.guild_events_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.lightbox_key(event, cx) {
                     cx.stop_propagation();
                     return;
@@ -5961,10 +6033,14 @@ impl Render for Root {
                 let rail = self.rail(cx).into_any_element();
                 let sidebar = if self.guild.is_some() {
                     self.sidebar(cx).into_any_element()
+                } else if self.discover_active() {
+                    self.discover_sidebar(cx).into_any_element()
                 } else {
                     self.home_sidebar(cx).into_any_element()
                 };
-                let content = if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
+                let content = if self.discover_active() {
+                    self.discover_page(window, cx)
+                } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
                     self.nitro_page(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(window, cx).into_any_element()
@@ -6102,6 +6178,7 @@ impl Render for Root {
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
+            .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))
             .children(self.inbox_popout(window, cx))

@@ -56,7 +56,7 @@ fn measure(window: &mut Window, text: &str, size: f32, weight: f32) -> Pixels {
 
 /// Max-content and min-content widths of a label column: the title line and the description as one line,
 /// and the widest single word of either.
-fn label_extent(
+pub(super) fn label_extent(
     window: &mut Window,
     label: &str,
     badge: bool,
@@ -241,7 +241,11 @@ fn select_field(value: &'static str, width: Option<f32>) -> gpui::Div {
 }
 
 /// The field, its border brand and its chevron turned up while its list is open (`isOpen_vWC4bk`).
-fn select_field_open(value: impl Into<SharedString>, width: Option<f32>, open: bool) -> gpui::Div {
+pub(super) fn select_field_open(
+    value: impl Into<SharedString>,
+    width: Option<f32>,
+    open: bool,
+) -> gpui::Div {
     div()
         .flex_none()
         .when_some(width, |this, width| this.w(px(width)))
@@ -446,7 +450,7 @@ impl Root {
     /// The field and its open list for any options: `key` holds the chosen index and `open_key` whether the list is
     /// open, both in `setting_choices`. `current` is the index shown until one is chosen.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn select_with_list(
+    pub(in crate::ui) fn select_with_list(
         &self,
         key: &'static str,
         open_key: &'static str,
@@ -612,7 +616,11 @@ impl Root {
                         let marker = self
                             .anchor_probe(format!("settings-marker:{key}"))
                             .into_any_element();
-                        category_header(title, description, Some(marker))
+                        category_header(
+                            title,
+                            self.detect_description(key, description),
+                            Some(marker),
+                        )
                     }))
                     // A top-level category keeps its 1px spacer without a title too (the input profile rows).
                     .when(*key == "voice_input_profile_category", |this| {
@@ -1005,6 +1013,7 @@ impl Root {
                 _ => self
                     .billing_custom(key, cx)
                     .or_else(|| self.voice_custom(key, width, window, cx))
+                    .or_else(|| self.detect_custom(key, window, cx))
                     .unwrap_or_else(|| div().h(px(*height)).into_any_element()),
             },
         }

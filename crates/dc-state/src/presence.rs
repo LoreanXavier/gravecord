@@ -22,6 +22,9 @@ pub struct PresenceStore {
     revision: u64,
     /// The signed-in account: 290863 ignores presence updates for it (its own status comes from the settings).
     me: Option<Id>,
+    /// The account's own presence from `SelfPresenceStore` (module 894768): 290863 ignores the server's updates
+    /// for it and takes this one through `setCurrentUserOnConnectionOpen`.
+    own: Option<Presence>,
 }
 
 fn id(value: &Value) -> Option<Id> {
@@ -59,9 +62,26 @@ impl PresenceStore {
     /// Tells the store whose presence to ignore (`_.default.getId()` in 290863's `v` and `P`).
     pub fn set_current_user(&mut self, me: Option<Id>) {
         self.me = me;
+        self.own = None;
+    }
+
+    /// Sets the account's own status and activities (what its presence update carries).
+    pub fn set_own(&mut self, status: &str, activities: Vec<Value>) {
+        self.revision += 1;
+        self.own = Some(Presence {
+            status: status.to_owned(),
+            activities,
+            clients: Value::Null,
+            revision: self.revision,
+        });
     }
 
     pub fn get(&self, user: Id, guild: Option<Id>) -> Option<&Presence> {
+        if self.me == Some(user)
+            && let Some(own) = &self.own
+        {
+            return Some(own);
+        }
         if let Some(guild) = guild {
             return self.entries.get(&(Some(guild), user));
         }

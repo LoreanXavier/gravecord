@@ -19,8 +19,10 @@ impl Root {
                 nitro: false,
                 guild_guide: false,
                 channel_browser: false,
+                discover: None,
             },
         );
+        self.discover.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
@@ -48,12 +50,13 @@ impl Root {
                 ),
             });
         }
+        self.stop_lurking_elsewhere();
         self.rebuild_rows();
         self.request_images();
     }
 
     pub(super) fn home_tile(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.guild.is_none();
+        let selected = self.guild.is_none() && !self.discover.open;
         let requests = self.friend_request_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
         let group = SharedString::from("home-row");

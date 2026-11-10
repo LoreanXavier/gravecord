@@ -4,6 +4,7 @@
 
 mod appearance;
 mod billing;
+mod clips;
 mod gift_inventory_page;
 mod model;
 mod nitro_page;
@@ -16,6 +17,7 @@ pub(crate) use render::radio_dot;
 mod swatches;
 mod voice;
 mod voice_camera;
+pub(super) use clips::ClipsState;
 pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
 use super::{Root, SANS, avatar_source, color, kerning, window_controls};
@@ -50,6 +52,7 @@ pub(super) enum Page {
     LanguageTime,
     RegisteredGames,
     ActivityPrivacy,
+    Clips,
     GameOverlay,
     ConnectedApps,
     Developer,
@@ -131,6 +134,12 @@ const SECTIONS: &[(Option<&str>, &[Entry])] = &[
                 "Activity Privacy",
                 "activity_privacy",
             ),
+            Entry {
+                page: Page::Clips,
+                label: "Clips",
+                icon: "clips",
+                anchors: clips::ANCHORS,
+            },
             entry(Page::GameOverlay, "Game Overlay", "game_overlay"),
             entry(Page::ConnectedApps, "Connected Apps", "connected_apps"),
         ],
@@ -259,6 +268,23 @@ pub(super) fn mask_email(email: &str) -> String {
 /// `G7zwOk`: "{count} device" or "{count} devices".
 fn devices(count: usize) -> String {
     format!("{count} {}", if count == 1 { "device" } else { "devices" })
+}
+
+/// The add-game popout's buttons (module 158935 `fv`): the settings button, secondary or primary.
+pub(in crate::ui) fn popout_button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    primary: bool,
+) -> impl IntoElement {
+    button(
+        id,
+        label,
+        if primary {
+            ButtonKind::Primary
+        } else {
+            ButtonKind::Secondary
+        },
+    )
 }
 
 /// `md` text button: 40 tall, at least 100 wide, 15px inside a 1px border.
@@ -640,6 +666,7 @@ impl Root {
         let page = SECTIONS
             .iter()
             .flat_map(|(_, entries)| entries.iter())
+            .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == label)
             .map(|entry| entry.page);
         if let (Some(open), Some(page)) = (self.settings.as_mut(), page) {
@@ -659,6 +686,7 @@ impl Root {
         let entry = SECTIONS
             .iter()
             .flat_map(|(_, entries)| entries.iter())
+            .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == page_label);
         if let (Some(open), Some(entry)) = (self.settings.as_mut(), entry) {
             *open = Open::new(entry.page);
@@ -681,6 +709,7 @@ impl Root {
         let page = SECTIONS
             .iter()
             .flat_map(|(_, entries)| entries.iter())
+            .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| page_slug(entry.label) == slug)
             .map(|entry| entry.page);
         if let (Some(open), Some(page)) = (self.settings.as_mut(), page) {
@@ -1038,6 +1067,8 @@ impl Root {
                         div().flex().flex_col().gap(px(4.)).children(
                             entries
                                 .iter()
+                                // Clips is listed for Nitro only (`sw`, module 734066).
+                                .filter(|entry| entry.page != Page::Clips || self.clips_listed())
                                 .map(|entry| self.settings_nav_item(entry, window, cx)),
                         ),
                     )
@@ -1304,6 +1335,7 @@ impl Root {
         };
         let mut body = match open.page {
             Page::Account => self.account_page(),
+            Page::Clips => self.clips_page(window, cx),
             page => pages::nodes(page)
                 .iter()
                 .map(|node| {
@@ -1397,17 +1429,21 @@ impl Root {
                         open.anchor.clone(),
                         open.spy.clone(),
                         self.tip_anchors.clone(),
-                        pages::nodes(open.page)
-                            .iter()
-                            .filter_map(|node| match node {
-                                model::Node::Category {
-                                    key,
-                                    title: Some(_),
-                                    ..
-                                } => Some(*key),
-                                _ => None,
-                            })
-                            .collect(),
+                        if open.page == Page::Clips {
+                            clips::CATEGORIES.to_vec()
+                        } else {
+                            pages::nodes(open.page)
+                                .iter()
+                                .filter_map(|node| match node {
+                                    model::Node::Category {
+                                        key,
+                                        title: Some(_),
+                                        ..
+                                    } => Some(*key),
+                                    _ => None,
+                                })
+                                .collect()
+                        },
                     )),
             )
             .into_any_element()

@@ -96,6 +96,7 @@ mod tests {
             pinned: false,
             reference_id: None,
             reference_channel_id: None,
+            sticker_items: Vec::new(),
         }
     }
 

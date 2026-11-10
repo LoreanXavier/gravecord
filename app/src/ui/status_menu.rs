@@ -188,6 +188,7 @@ impl Root {
             .stores
             .set_status(status, expires_at(now, duration), now);
         self.patch_settings(patch);
+        self.refresh_own_presence();
         self.status_popout = None;
         cx.notify();
     }
@@ -268,6 +269,7 @@ impl Root {
         });
         let patch = self.stores.set_custom_status(custom.as_ref(), now);
         self.patch_settings(patch);
+        self.refresh_own_presence();
         cx.notify();
     }
 

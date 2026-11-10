@@ -13,6 +13,8 @@ use tracing::warn;
 
 pub enum Update {
     GatewayConnected(bool),
+    /// One pass of the game scan (`games`).
+    Games(Box<crate::games::GameScan>),
     NotificationClicked(u64),
     Tray(crate::tray::Action),
     /// The connecting screen's spinner, fetched and decoded.
@@ -65,6 +67,12 @@ pub enum Update {
 }
 
 pub enum Request {
+    /// Op 3 `PRESENCE_UPDATE` with the account's status and activities (`presenceUpdate` in module 868). Refused in
+    /// a harness run (`games::presence_refused`).
+    Presence {
+        status: String,
+        activities: Vec<Value>,
+    },
     /// Op 4 `VOICE_STATE_UPDATE`, as the bundle's `voiceStateUpdate` writes it. No channel leaves voice.
     VoiceState {
         guild: u64,
@@ -126,6 +134,14 @@ pub enum Request {
     },
     LoadMessages {
         channel: u64,
+    },
+    /// A message with stickers (`sticker_ids`), from the picker or a staged sticker.
+    SendSticker {
+        channel: u64,
+        content: String,
+        files: Vec<Upload>,
+        reply: Option<(Option<u64>, u64, bool)>,
+        sticker_ids: Vec<u64>,
     },
     Send {
         channel: u64,
@@ -560,14 +576,30 @@ pub async fn run(
                     }
                 });
             }
-            Request::Send {
-                channel,
-                content,
-                files,
-                reply,
-            } => {
+            request @ (Request::Send { .. } | Request::SendSticker { .. }) => {
+                let (channel, content, files, reply, sticker_ids) = match request {
+                    Request::Send {
+                        channel,
+                        content,
+                        files,
+                        reply,
+                    } => (channel, content, files, reply, Vec::new()),
+                    Request::SendSticker {
+                        channel,
+                        content,
+                        files,
+                        reply,
+                        sticker_ids,
+                    } => (channel, content, files, reply, sticker_ids),
+                    _ => continue,
+                };
                 tokio::spawn(async move {
                     let mut body = send_body(channel, &content, reply);
+                    if !sticker_ids.is_empty() {
+                        // `sticker_ids` beside the content, as module 989161 builds the request.
+                        body["sticker_ids"] =
+                            json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
+                    }
                     if !files.is_empty() {
                         let _ = updates.send(Update::Slowmode {
                             channel,
@@ -1004,6 +1036,15 @@ pub async fn run(
                     data,
                 });
             }
+            Request::Presence { status, activities } => {
+                if !crate::games::presence_refused(crate::storage::is_capture_run()) {
+                    let data = crate::games::presence_body(&status, &activities);
+                    let _ = commands.send(Command::Send {
+                        op: Op::PresenceUpdate,
+                        data,
+                    });
+                }
+            }
             Request::StreamOp { op, data } => {
                 let _ = commands.send(Command::Send { op, data });
             }
@@ -1130,6 +1171,27 @@ pub async fn run(
             Request::Image { key, url } => {
                 tokio::spawn(async move {
                     match client.fetch_public(&url).await {
+                        Ok(bytes)
+                            if url
+                                .split('?')
+                                .next()
+                                .is_some_and(|path| path.ends_with(".json")) =>
+                        {
+                            // Lottie sticker art: one frame at twice the picker's cell, drawn off the UI thread.
+                            match tokio::task::spawn_blocking(move || {
+                                crate::lottie::first_frame_png(&bytes, 192)
+                            })
+                            .await
+                            {
+                                Ok(Some(bytes)) => {
+                                    let _ = updates.send(Update::Image { key, bytes });
+                                }
+                                _ => {
+                                    warn!("lottie failed");
+                                    let _ = updates.send(Update::ImageFailed { key });
+                                }
+                            }
+                        }
                         Ok(bytes) => {
                             let _ = updates.send(Update::Image { key, bytes });
                         }

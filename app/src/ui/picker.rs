@@ -528,18 +528,13 @@ impl Root {
     }
 
     pub(super) fn set_picker_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        // Sticker art is Lottie, which nothing here draws yet: the tab keeps the emoji page.
-        let tab = if tab == Tab::Stickers {
-            Tab::Emoji
-        } else {
-            tab
-        };
         if let Some(picker) = self.picker.as_mut() {
             picker.tab = tab;
         }
         match tab {
             Tab::Gifs => self.ensure_gifs(window, cx),
-            Tab::Stickers | Tab::Emoji => {
+            Tab::Stickers => self.ensure_stickers(window, cx),
+            Tab::Emoji => {
                 if let Some(picker) = self.picker.as_ref() {
                     window.focus(&picker.search.read(cx).focus_handle(cx), cx);
                 }
@@ -1077,8 +1072,16 @@ impl Root {
                 f32::from(picker.anchor.y).min(f32::from(viewport.height) - EDGE - height),
             )
         } else {
+            // 24px in from the composer's right edge, which a docked member list pulls in from the window's.
+            let right = self
+                .tip_anchors
+                .borrow()
+                .get("composer-box")
+                .map_or(f32::from(viewport.width) - 8., |bounds| {
+                    f32::from(bounds.right()) + 1.
+                });
             (
-                f32::from(viewport.width) - 32. - PICKER_WIDTH,
+                right - 24. - PICKER_WIDTH,
                 f32::from(picker.anchor.y) - height,
             )
         };
@@ -1120,7 +1123,6 @@ impl Root {
                 })
                 .child(label)
         };
-        // Stickers stays on the emoji page until sticker art (Lottie) can be drawn.
         let tabs = [
             tab("picker-tab-gifs", "GIFs", Tab::Gifs),
             tab("picker-tab-stickers", "Stickers", Tab::Stickers),
@@ -1414,7 +1416,8 @@ impl Root {
                     })
                     .child(match current {
                         Tab::Gifs => self.gif_panel(cx),
-                        Tab::Stickers | Tab::Emoji => panel.into_any_element(),
+                        Tab::Stickers => self.sticker_panel(window, cx),
+                        Tab::Emoji => panel.into_any_element(),
                     }),
             )
             .with_priority(1)

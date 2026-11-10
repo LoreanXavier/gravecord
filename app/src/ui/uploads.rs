@@ -422,7 +422,8 @@ impl Root {
     }
 
     pub(super) fn upload_area(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.pending_files.is_empty() {
+        let staged = self.staged_sticker_card(cx);
+        if self.pending_files.is_empty() && staged.is_none() {
             return None;
         }
         let cards: Vec<AnyElement> = self
@@ -430,6 +431,7 @@ impl Root {
             .iter()
             .enumerate()
             .map(|(index, pending)| self.upload_card(index, pending, cx))
+            .chain(staged)
             .collect();
         Some(
             div()

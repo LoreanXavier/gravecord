@@ -3,12 +3,14 @@
 mod branding;
 mod editor;
 mod fonts;
+mod games;
 #[cfg(feature = "capture")]
 mod harness;
 mod inline;
 mod instance;
 mod logging;
 mod login_art;
+mod lottie;
 mod net;
 mod notifications;
 mod palette;

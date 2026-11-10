@@ -66,6 +66,14 @@ impl Frecency {
         }
     }
 
+    /// The same class with another `numFrequentlyItems`: the sticker store (module 931959) keeps 20.
+    pub fn with_limit(kind: Kind, items: usize) -> Self {
+        Self {
+            items,
+            ..Self::new(kind)
+        }
+    }
+
     /// `overwriteHistory`: the stored history replaces what is known.
     pub fn overwrite(&mut self, history: Vec<(String, Usage)>) {
         self.usage = history;

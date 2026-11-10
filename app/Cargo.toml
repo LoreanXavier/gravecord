@@ -21,6 +21,7 @@ dc-http.workspace = true
 dc-markdown.workspace = true
 dc-media.workspace = true
 dc-proto.workspace = true
+dc-detect.workspace = true
 dc-state.workspace = true
 dc-tokens.workspace = true
 dc-voice.workspace = true
@@ -29,6 +30,9 @@ gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features 
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 md-5 = "0.10"
+# Standard stickers are Lottie JSON (module 148355 draws them with lottie-web); rasterlottie (MIT OR Apache-2.0) draws
+# them on the CPU, as Serein does (DECISIONS.md).
+rasterlottie = { version = "=0.2.2", default-features = false }
 openh264.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

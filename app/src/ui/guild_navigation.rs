@@ -10,7 +10,7 @@ use serde_json::Value;
 const EVENTS: &str = "guild-nav:events:";
 const CREATE_EVENTS: u64 = 1 << 44;
 
-fn can_create_events(guild: &Guild, me: Me) -> bool {
+pub(super) fn can_create_events(guild: &Guild, me: Me) -> bool {
     permissions::can_in_guild(guild, me, permissions::ADMINISTRATOR)
         || permissions::can_in_guild(guild, me, CREATE_EVENTS)
         || guild.channels.iter().any(|channel| {

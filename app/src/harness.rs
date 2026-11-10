@@ -144,6 +144,10 @@ pub async fn run(
             ["native", "state"] => {
                 let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }
+            ["discover", "dump"] => {
+                let note = cx.update(|cx| root.update(cx, |root, _| root.discover_dump()));
+                let _ = writeln!(output, "{note}");
+            }
             ["tray", "preview"] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
@@ -418,6 +422,10 @@ pub async fn run(
                     });
                 }
             }
+            // Registered Games with a running game, two seen ones and a hand-added one, in memory only.
+            ["games", "demo"] => {
+                root.update(cx, |root, cx| root.script_games_demo(cx));
+            }
             // Opens a settings page by its label in lower case with dashes, as the captures are named.
             ["settings", page] => {
                 let page = (*page).to_owned();
@@ -469,6 +477,15 @@ pub async fn run(
             }
             // Capture only: the account's `premium_type` is set locally (none, 1, 2 or 3) to see the subscriber
             // states of the Nitro screens. Nothing is sent, and a normal build has no such step.
+            // The Clips page's own steps: `clips get`, `clips location <path>` (a folder dialog's answer).
+            ["clips", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_clips(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "clips: {line}");
+            }
             ["premium", tier] => {
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
