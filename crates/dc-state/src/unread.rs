@@ -183,11 +183,15 @@ pub fn guild_counts(stores: &Stores, guild: &Guild, now: DateTime<Utc>) -> Count
 }
 
 pub fn incoming_requests(stores: &Stores) -> u64 {
-    stores
+    let incoming = stores
         .relationships
         .values()
         .filter(|kind| **kind == 3)
-        .count() as u64
+        .count();
+    // 994500 subtracts both counters and clamps; they are not a union of filtered ids.
+    incoming
+        .saturating_sub(stores.spam_relationships.len())
+        .saturating_sub(stores.ignored_pending_relationships.len()) as u64
 }
 
 /// 596339: disabling the unread marker leaves explicit mention/request counts on the taskbar.
@@ -221,6 +225,65 @@ pub fn total_counts(stores: &Stores, now: DateTime<Utc>) -> Counts {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn pending_request_counts_follow_spam_ignore_and_normalized_gateway_flags() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({"user":{"id":"1","username":"me"},
+            "relationships":[
+                {"id":"10","type":3},
+                {"id":"11","type":3,"is_spam_request":true},
+                {"id":"12","type":3,"user_ignored":true},
+                {"id":"13","type":1,"user_ignored":true}
+            ]}),
+        );
+        assert_eq!(incoming_requests(&stores), 1);
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"14","type":3,"is_spam_request":true}),
+        );
+        assert_eq!(incoming_requests(&stores), 1);
+        stores.dispatch("RELATIONSHIP_UPDATE", &json!({"id":"11","type":3}));
+        assert_eq!(incoming_requests(&stores), 2);
+        stores.dispatch("RELATIONSHIP_UPDATE", &json!({"id":"12","type":3}));
+        assert!(!stores.is_ignored(12));
+        assert_eq!(incoming_requests(&stores), 3);
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id":"14","type":3}));
+        assert_eq!(incoming_requests(&stores), 3);
+        stores.set_ignored(10, true);
+        assert_eq!(incoming_requests(&stores), 2);
+        stores.dispatch(
+            "RELATIONSHIP_REMOVE",
+            &json!({"id":"10","type":3,"user_ignored":true}),
+        );
+        assert!(stores.is_ignored(10));
+        assert_eq!(incoming_requests(&stores), 2);
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id":"13","type":1}));
+        assert!(!stores.is_ignored(13));
+        stores.dispatch(
+            "READY",
+            &json!({"user":{"id":"1","username":"me"},"relationships":[]}),
+        );
+        assert_eq!(incoming_requests(&stores), 0);
+        assert!(stores.spam_relationships.is_empty());
+        assert!(stores.ignored_pending_relationships.is_empty());
+    }
+    #[test]
+    fn pending_request_counter_clamps_overlapping_filter_flags_like_the_source() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "RELATIONSHIP_ADD",
+            &json!({"id":"10","type":3,
+            "is_spam_request":true,"user_ignored":true}),
+        );
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"11","type":3}));
+        assert_eq!(incoming_requests(&stores), 0);
+        stores.set_ignored(10, false);
+        assert_eq!(incoming_requests(&stores), 1);
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"10","type":1}));
+        assert_eq!(incoming_requests(&stores), 1);
+    }
     fn setup() -> Stores {
         let mut stores = Stores::default();
         stores.dispatch("READY", &json!({

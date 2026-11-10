@@ -1088,6 +1088,9 @@ pub struct Stores {
     pub typing: HashMap<Id, Vec<(Id, Instant)>>,
     /// User id to relationship type.
     pub relationships: HashMap<Id, u64>,
+    /// RelationshipStore's spam-request and ignored-pending counters are separate sets.
+    pub spam_relationships: HashSet<Id>,
+    pub ignored_pending_relationships: HashSet<Id>,
     /// Users this account ignores (`user_ignored` on a relationship; RelationshipStore `isIgnored`).
     pub ignored: HashSet<Id>,
     /// The account has 2FA (`mfa_enabled` on READY's user).
@@ -1374,10 +1377,17 @@ impl Stores {
                 if let (Some(user), Some(kind)) = (id(&data["id"]), data["type"].as_u64()) {
                     self.relationships.insert(user, kind);
                 }
-                if let (Some(user), Some(ignored)) =
-                    (id(&data["id"]), data["user_ignored"].as_bool())
-                {
-                    self.set_ignored(user, ignored);
+                if let Some(user) = id(&data["id"]) {
+                    if data["is_spam_request"] == true {
+                        self.spam_relationships.insert(user);
+                    } else {
+                        self.spam_relationships.remove(&user);
+                    }
+                    // 225123 normalizes absent flags to false before RelationshipStore receives them.
+                    self.set_ignored(user, data["user_ignored"] == true);
+                    if name == "RELATIONSHIP_ADD" && data["type"] == 1 {
+                        self.ignored_pending_relationships.remove(&user);
+                    }
                 }
             }
             // A settings write from any session: type 1 is PreloadedUserSettings, sent whole.
@@ -1408,6 +1418,10 @@ impl Stores {
             "RELATIONSHIP_REMOVE" => {
                 if let Some(user) = id(&data["id"]) {
                     self.relationships.remove(&user);
+                    self.clear_relationship_request_flags(user);
+                    if data["user_ignored"] != true {
+                        self.ignored.remove(&user);
+                    }
                 }
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" => match id(&data["guild_id"]) {
@@ -1444,13 +1458,21 @@ impl Stores {
         }
     }
 
-    /// A DM or group DM from CHANNEL_CREATE or the `POST /users/@me/channels` answer, put first in the list.
+    pub fn clear_relationship_request_flags(&mut self, user: Id) {
+        self.spam_relationships.remove(&user);
+        self.ignored_pending_relationships.remove(&user);
+    }
+
     /// `RELATIONSHIP_IGNORE_USER_SUCCESS` / `RELATIONSHIP_UNIGNORE_USER_SUCCESS`.
     pub fn set_ignored(&mut self, user: Id, ignored: bool) {
         if ignored {
             self.ignored.insert(user);
+            if self.relationships.get(&user) == Some(&3) {
+                self.ignored_pending_relationships.insert(user);
+            }
         } else {
             self.ignored.remove(&user);
+            self.ignored_pending_relationships.remove(&user);
         }
     }
 
@@ -1609,6 +1631,20 @@ impl Stores {
             .into_iter()
             .flatten()
             .filter(|entry| entry["user_ignored"].as_bool() == Some(true))
+            .filter_map(|entry| id(&entry["id"]))
+            .collect();
+        self.spam_relationships = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["is_spam_request"] == true)
+            .filter_map(|entry| id(&entry["id"]))
+            .collect();
+        self.ignored_pending_relationships = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["user_ignored"] == true && entry["type"] == 3)
             .filter_map(|entry| id(&entry["id"]))
             .collect();
         self.private_channels = data["private_channels"]

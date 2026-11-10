@@ -262,6 +262,8 @@ pub struct Root {
     tray_runtime: crate::tray::Runtime,
     #[cfg(feature = "capture")]
     capture_badge: Option<(u64, bool)>,
+    #[cfg(feature = "capture")]
+    capture_requests: Option<u64>,
     notification_focused: bool,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
@@ -525,6 +527,8 @@ impl Root {
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
             #[cfg(feature = "capture")]
             capture_badge: None,
+            #[cfg(feature = "capture")]
+            capture_requests: None,
             notification_focused: false,
             notification_sounds: Default::default(),
             rows: Vec::new(),
@@ -2401,7 +2405,7 @@ impl Root {
                 row.child(unread_badges::rail_number(
                     counts.mentions,
                     counts.high_mentions == 0,
-                    selected,
+                    selected.then_some("rail-mention-badge"),
                 ))
             })
             // The server this client is in a call in carries a green speaker at the icon's top right.

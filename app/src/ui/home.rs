@@ -54,6 +54,7 @@ impl Root {
 
     pub(super) fn home_tile(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.guild.is_none();
+        let requests = self.friend_request_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
         let group = SharedString::from("home-row");
         div()
@@ -114,6 +115,13 @@ impl Root {
                     cx,
                 ),
             )
+            .when(requests > 0, |tile| {
+                tile.child(super::unread_badges::rail_number(
+                    requests,
+                    false,
+                    Some("home-request-badge"),
+                ))
+            })
     }
 
     /// Friends, Nitro, Shop and Quests rows.
@@ -158,12 +166,23 @@ impl Root {
                     .child(icon(name, 20., tint))
                     .child(
                         div()
+                            .when(id == "friends", |label| label.flex_1())
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color(tint))
                             .child(label.to_owned()),
-                    ),
+                    )
+                    .when(id == "friends" && self.friend_request_count() > 0, |row| {
+                        row.child(
+                            super::unread_badges::number(
+                                self.friend_request_count(),
+                                "--badge-notification-background",
+                                Some("friends-request-badge"),
+                            )
+                            .mr(px(16.)),
+                        )
+                    }),
             )
     }
 

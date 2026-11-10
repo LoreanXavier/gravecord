@@ -282,6 +282,7 @@ impl Root {
                 self.stores.relationships.remove(&user);
             }
         }
+        self.stores.clear_relationship_request_flags(user);
         self.rebuild_rows();
         cx.notify();
     }
@@ -303,6 +304,7 @@ impl Root {
         } else {
             self.stores.relationships.remove(&user);
         }
+        self.stores.clear_relationship_request_flags(user);
     }
 
     fn people_rows(&self) -> (String, Vec<(User, u64)>) {
@@ -355,6 +357,10 @@ impl Root {
     }
 
     fn has_pending(&self) -> bool {
+        #[cfg(feature = "capture")]
+        if self.capture_requests.is_some_and(|count| count > 0) {
+            return true;
+        }
         self.stores
             .relationships
             .values()
@@ -551,6 +557,7 @@ impl Root {
 
     pub(super) fn friends_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.friends_tab;
+        let requests = self.friend_request_count();
         let tab = |id: &'static str, label: &'static str, which: FriendsTab| {
             let active = current == which;
             div()
@@ -577,6 +584,16 @@ impl Root {
                     cx.listener(move |this, _, window, cx| this.set_friends_tab(which, window, cx)),
                 )
                 .child(label)
+                .when(which == FriendsTab::Pending && requests > 0, |tab| {
+                    tab.child(
+                        super::unread_badges::number(
+                            requests,
+                            "--badge-notification-background",
+                            Some("pending-request-badge"),
+                        )
+                        .ml(px(8.)),
+                    )
+                })
         };
         let adding = current == FriendsTab::Add;
         div()
@@ -606,12 +623,13 @@ impl Root {
                     .rounded_full()
                     .bg(color("--background-mod-strong")),
             )
-            .child(
-                div()
-                    .ml(px(4.))
-                    .child(tab("friends-online", "Online", FriendsTab::Online)),
-            )
-            .child(tab("friends-all", "All", FriendsTab::All))
+            .child(div().flex_none().w(px(4.)))
+            .when(!self.stores.online_friends().is_empty(), |header| {
+                header.child(tab("friends-online", "Online", FriendsTab::Online))
+            })
+            .when(!self.stores.friends().is_empty(), |header| {
+                header.child(tab("friends-all", "All", FriendsTab::All))
+            })
             .when(self.has_pending(), |this| {
                 this.child(tab("friends-pending", "Pending", FriendsTab::Pending))
             })

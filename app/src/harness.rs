@@ -152,6 +152,11 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, cx| root.script_badge(rest, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            ["badge", "requests", value] => {
+                let note = cx
+                    .update(|cx| root.update(cx, |root, cx| root.script_request_badge(value, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             // Positive `dy` scrolls the content up, as a wheel turned toward the user does.
             ["scroll", x, y, dy] => {
                 if let (Some(position), Ok(dy)) = (at(x, y), dy.parse::<f32>()) {
