@@ -1,0 +1,11 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "rail": { "class": "wrapper_5dqHTG" },
+  "sidebar": { "class": "sidebarList_pog62O" },
+  "guild-header": { "class": "header_XH4OpX" },
+  "user-panel": { "class": "panels_pog62O" },
+  "chat-header": { "class": "title_z_gUBg" },
+  "search": { "class": "searchBar_i16Ad0" },
+  "screening-composer": { "class": "wrapper_ST_Y69" },
+  "members": { "class": "membersWrap_86es0b" }
+}

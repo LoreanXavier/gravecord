@@ -45,14 +45,16 @@ struct Geometry {
 #[derive(Clone, Copy, PartialEq)]
 enum Status {
     Online,
+    Mobile,
     Idle,
     Dnd,
     Offline,
 }
 
 impl Status {
-    fn parse(value: &str) -> Self {
+    fn parse(value: &str, mobile: bool) -> Self {
         match value {
+            "online" if mobile => Self::Mobile,
             "idle" => Self::Idle,
             "dnd" => Self::Dnd,
             "offline" | "invisible" => Self::Offline,
@@ -61,7 +63,7 @@ impl Status {
     }
     fn token(self) -> &'static str {
         match self {
-            Self::Online => "--icon-status-online",
+            Self::Online | Self::Mobile => "--icon-status-online",
             Self::Idle => "--icon-status-idle",
             Self::Dnd => "--icon-status-dnd",
             Self::Offline => "--icon-status-offline",
@@ -167,11 +169,55 @@ fn circle(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32, feather: f3
     ((radius - (x - center_x).hypot(y - center_y)) / feather + 0.5).clamp(0., 1.)
 }
 
+fn rounded_rect(
+    x: f32,
+    y: f32,
+    [left, top, width, height]: [f32; 4],
+    radius: f32,
+    feather: f32,
+) -> f32 {
+    let dx = (x - left - width / 2.).abs() - (width / 2. - radius);
+    let dy = (y - top - height / 2.).abs() - (height / 2. - radius);
+    let distance = dx.max(0.).hypot(dy.max(0.)) + dx.max(dy).min(0.) - radius;
+    (0.5 - distance / feather).clamp(0., 1.)
+}
+
+fn status_cutout(x: f32, y: f32, spec: Spec, decoration: bool, feather: f32) -> f32 {
+    let g = spec.size.geometry();
+    if spec.status != Status::Mobile {
+        return circle(x, y, g.center, g.center, g.hole, feather);
+    }
+    // 573435's avatar and decoration masks share the physical box but different corner radii.
+    let stroke = g.hole - g.status / 2.;
+    let radius = match spec.size {
+        Size::Member => 4.2,
+        Size::Profile => 7.2,
+    } * if decoration { 1.2 } else { 1. };
+    rounded_rect(
+        x,
+        y,
+        [
+            g.center - g.hole,
+            g.center - g.status - stroke,
+            g.status + 2. * stroke,
+            g.status * 1.5 + 2. * stroke,
+        ],
+        radius,
+        feather,
+    )
+}
+
 fn status_mask(x: f32, y: f32, status: Status, feather: f32) -> f32 {
-    // Coordinates within the 10px status glyph. SVG masks are normalized to its box.
+    // The mobile glyph is 10x15; the remaining masks use a 10x10 box.
+    if status == Status::Mobile {
+        let shell = rounded_rect(x, y, [0., 0., 10., 15.], 1.875, feather);
+        let screen = rounded_rect(x, y, [1.25, 2.5, 7.5, 7.5], 0., feather);
+        let button = circle(x, y, 5., 12.5, 1.25, feather);
+        return shell * (1. - screen) * (1. - button);
+    }
     let disk = circle(x, y, 5., 5., 5., feather);
     let hole = match status {
-        Status::Online => 0.,
+        Status::Online | Status::Mobile => 0.,
         Status::Offline => circle(x, y, 5., 5., 2.5, feather),
         Status::Idle => circle(x, y, 2.5, 2.5, 3.75, feather),
         Status::Dnd => {
@@ -198,15 +244,7 @@ fn compose(avatar: &RgbaImage, decoration: Option<&RgbaImage>, spec: Spec) -> Rg
         let y = (y as f32 + 0.5) * feather;
         let ax = x - geometry.inset;
         let ay = y - geometry.inset;
-        let cutout = 1.
-            - circle(
-                ax,
-                ay,
-                geometry.center,
-                geometry.center,
-                geometry.hole,
-                feather,
-            );
+        let cutout = 1. - status_cutout(ax, ay, spec, false, feather);
         let mut output = [0.; 4];
         if let Some(pixel) =
             image::imageops::sample_bilinear(avatar, ax / geometry.base, ay / geometry.base)
@@ -227,16 +265,25 @@ fn compose(avatar: &RgbaImage, decoration: Option<&RgbaImage>, spec: Spec) -> Rg
         if let Some(pixel) = decoration.and_then(|art| {
             image::imageops::sample_bilinear(art, x / geometry.art, y / geometry.art)
         }) {
-            over(&mut output, pixel, cutout);
+            over(
+                &mut output,
+                pixel,
+                1. - status_cutout(ax, ay, spec, true, feather),
+            );
         }
         let origin = geometry.center - geometry.status / 2.;
+        let origin_y = if spec.status == Status::Mobile {
+            geometry.center - geometry.status
+        } else {
+            origin
+        };
         let to_mask = 10. / geometry.status;
         over(
             &mut output,
             Rgba(spec.tint),
             status_mask(
                 (ax - origin) * to_mask,
-                (ay - origin) * to_mask,
+                (ay - origin_y) * to_mask,
                 spec.status,
                 feather * to_mask,
             ),
@@ -252,6 +299,40 @@ fn compose(avatar: &RgbaImage, decoration: Option<&RgbaImage>, spec: Spec) -> Rg
 }
 
 impl Root {
+    #[cfg(feature = "capture")]
+    pub(crate) fn mobile_member_target(
+        &self,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Option<(gpui::Point<gpui::Pixels>, String)> {
+        if !self.show_members || self.settings.is_some() || self.profile.is_some() {
+            return None;
+        }
+        let guild = self.guild?;
+        let anchors = self.tip_anchors.borrow();
+        self.stores
+            .member_lists
+            .get(&guild)?
+            .rows
+            .iter()
+            .find_map(|row| {
+                let dc_state::member_list::Row::Member { user, .. } = row else {
+                    return None;
+                };
+                let presence = self.stores.presence.get(user.id, Some(guild))?;
+                if presence.status != "online" || !self.stores.presence.is_mobile_online(user.id) {
+                    return None;
+                }
+                let key = gpui::SharedString::from(format!("member-{}", user.id));
+                let bounds = anchors.get(&key)?;
+                // The text-channel list starts below the captured 32px titlebar and 50px header.
+                (bounds.origin.y >= px(82.)
+                    && bounds.bottom() <= viewport.height
+                    && bounds.origin.x >= px(0.)
+                    && bounds.right() <= viewport.width)
+                    .then(|| (bounds.center(), user.display_name().to_owned()))
+            })
+    }
+
     pub(super) fn equipped_decoration<'a>(
         &'a self,
         user: &'a User,
@@ -362,7 +443,7 @@ impl Root {
             .cloned();
         let cache = self.member_avatars.clone();
         let user = user.id;
-        let status = Status::parse(status);
+        let status = Status::parse(status, self.stores.presence.is_mobile_online(user));
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
         let geometry = size.geometry();
@@ -420,6 +501,44 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_masks_preserve_screen_button_and_the_taller_transparent_ring() {
+        let avatar = RgbaImage::from_pixel(32, 32, Rgba([255, 0, 0, 255]));
+        let decoration = RgbaImage::from_pixel(32, 32, Rgba([0, 255, 0, 255]));
+        assert!(Status::parse("online", true) == Status::Mobile);
+        assert!(Status::parse("dnd", true) == Status::Dnd);
+        for size in [Size::Member, Size::Profile] {
+            let g = size.geometry();
+            let spec = Spec {
+                size,
+                pixels: (g.art * 10.).round() as u32,
+                status: Status::Mobile,
+                tint: [0, 0, 255, 255],
+            };
+            let rendered = compose(&avatar, Some(&decoration), spec);
+            let at = |x: f32, y: f32| {
+                rendered.get_pixel(((x + g.inset) * 10.) as u32, ((y + g.inset) * 10.) as u32)
+            };
+            let left = g.center - g.status / 2.;
+            let top = g.center - g.status;
+            assert_eq!(at(left + g.status / 2., top + g.status * 0.6)[3], 0);
+            assert_eq!(at(left + g.status / 2., top + g.status * 1.25)[3], 0);
+            assert_eq!(
+                at(left + g.status / 2., top + g.status * 0.125).0,
+                [0, 0, 255, 255]
+            );
+            assert_eq!(at(left - 1., top + g.status / 2.)[3], 0);
+        }
+        let spec = Spec {
+            size: Size::Member,
+            pixels: 384,
+            status: Status::Mobile,
+            tint: [0, 0, 255, 255],
+        };
+        assert_eq!(status_cutout(20.4, 15.4, spec, false, 0.01), 1.);
+        assert_eq!(status_cutout(20.4, 15.4, spec, true, 0.01), 0.);
+    }
 
     #[test]
     fn avatar_and_decoration_leave_a_transparent_status_ring_and_glyph_holes() {

@@ -66,6 +66,15 @@ impl PresenceStore {
         self.entries.values()
     }
 
+    /// 290863: web sessions do not suppress the mobile indicator; online desktop or VR sessions do.
+    pub fn is_mobile_online(&self, user: Id) -> bool {
+        self.get(user, None).is_some_and(|presence| {
+            presence.clients["mobile"] == "online"
+                && presence.clients["desktop"] != "online"
+                && presence.clients["vr"] != "online"
+        })
+    }
+
     fn update(&mut self, guild: Option<Id>, user: Option<Id>, data: &Value) {
         let Some(user) = user
             .or_else(|| id(&data["user_id"]))
@@ -234,6 +243,36 @@ pub fn activity_text(activity: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn mobile_indicator_uses_latest_clients_and_excludes_online_desktop_or_vr() {
+        let mut store = PresenceStore::default();
+        assert!(!store.is_mobile_online(2));
+        for (clients, expected) in [
+            (json!({"mobile":"online"}), true),
+            (json!({"mobile":"online","web":"online"}), true),
+            (json!({"mobile":"online","desktop":"idle"}), true),
+            (json!({"mobile":"online","desktop":"online"}), false),
+            (json!({"mobile":"online","vr":"online"}), false),
+            (json!({"mobile":"idle"}), false),
+            (json!({}), false),
+        ] {
+            store.dispatch(
+                "PRESENCE_UPDATE",
+                &json!({"guild_id":"1","user_id":"2","status":"online","client_status":clients}),
+            );
+            assert_eq!(store.is_mobile_online(2), expected, "{clients}");
+        }
+        store.dispatch("PRESENCE_UPDATE", &json!({"guild_id":"3","user_id":"2","status":"online","client_status":{"mobile":"online"}}));
+        assert!(store.is_mobile_online(2));
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({"guild_id":"3","user_id":"2","status":"offline"}),
+        );
+        assert!(!store.is_mobile_online(2));
+        store.dispatch("READY", &json!({"guilds":[]}));
+        assert!(!store.is_mobile_online(2));
+    }
 
     #[test]
     fn member_sync_update_and_offline_keep_activity_lifecycle() {

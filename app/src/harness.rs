@@ -172,6 +172,26 @@ pub async fn run(
                 let state = cx.update(|cx| root.read(cx).call_background_status());
                 let _ = writeln!(output, "call background: {state}");
             }
+            ["member-profile", "mobile"] => {
+                let target = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.read(cx).mobile_member_target(window.viewport_size())
+                        })
+                        .ok()
+                        .flatten()
+                });
+                if let Some((position, name)) = target {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, down(position));
+                        dispatch(cx, window, up(position));
+                    });
+                    let _ = writeln!(output, "mobile member profile: {name} at {position:?}");
+                } else {
+                    let _ = writeln!(output, "mobile member profile: no visible mobile member");
+                }
+            }
             ["friends", tab] => {
                 let note = cx.update(|cx| {
                     window.update(cx, |_, window, cx| {
