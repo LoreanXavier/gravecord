@@ -73,6 +73,7 @@ mod logout;
 mod presence;
 mod tray;
 mod unread_badges;
+mod unread_dms;
 pub use logout::RootEvent;
 mod channel_browser;
 mod forums;
@@ -264,6 +265,9 @@ pub struct Root {
     capture_badge: Option<(u64, bool)>,
     #[cfg(feature = "capture")]
     capture_requests: Option<u64>,
+    #[cfg(feature = "capture")]
+    capture_dm_rail: Option<(u64, bool)>,
+    hovered_rail_dm: Option<Id>,
     notification_focused: bool,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
@@ -529,6 +533,9 @@ impl Root {
             capture_badge: None,
             #[cfg(feature = "capture")]
             capture_requests: None,
+            #[cfg(feature = "capture")]
+            capture_dm_rail: None,
+            hovered_rail_dm: None,
             notification_focused: false,
             notification_sounds: Default::default(),
             rows: Vec::new(),
@@ -2370,6 +2377,7 @@ impl Root {
             .relative()
             .w(px(72.))
             .h(px(40.))
+            .flex_none()
             .flex()
             .justify_center()
             .group(group.clone())
@@ -2445,6 +2453,7 @@ impl Root {
     fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tool = |name: &str, size: f32| {
             div()
+                .flex_none()
                 .size(px(40.))
                 .rounded(px(12.))
                 .bg(color("--background-mod-subtle"))
@@ -2455,6 +2464,8 @@ impl Root {
         };
         let list = div()
             .parity("rail")
+            .id("guild-rail-scroll")
+            .overflow_y_scroll()
             .flex_1()
             .min_h(px(0.))
             .w(px(72.))
@@ -2463,8 +2474,10 @@ impl Root {
             .items_center()
             .gap(px(8.))
             .child(self.home_tile(cx))
+            .children(self.unread_dm_rail(cx))
             .child(
                 div()
+                    .flex_none()
                     .w(px(32.))
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
@@ -5293,6 +5306,7 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
         self.prepare_member_avatars(window, cx);
         self.prepare_inline_videos(window, cx);

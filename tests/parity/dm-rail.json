@@ -1,0 +1,29 @@
+{
+  "titlebar": {
+    "class": "bar_3zSH5d"
+  },
+  "rail": {
+    "class": "wrapper_5dqHTG"
+  },
+  "sidebar": {
+    "class": "sidebarList_pog62O"
+  },
+  "user-panel": {
+    "class": "panels_pog62O"
+  },
+  "chat-header": {
+    "class": "title_z_gUBg"
+  },
+  "dm-rail-tile": {
+    "class": "wrapper_JJ-hgR",
+    "ancestor_id": "guild-list-unread-dms"
+  },
+  "dm-rail-pill": {
+    "class": "item__o8_Xq",
+    "ancestor_id": "guild-list-unread-dms"
+  },
+  "dm-rail-badge": {
+    "class": "numberBadge_lMvXrQ",
+    "ancestor_id": "guild-list-unread-dms"
+  }
+}

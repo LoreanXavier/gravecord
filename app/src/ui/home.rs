@@ -61,6 +61,7 @@ impl Root {
             .relative()
             .w(px(72.))
             .h(px(40.))
+            .flex_none()
             .flex()
             .justify_center()
             .group(group.clone())

@@ -152,6 +152,11 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, cx| root.script_badge(rest, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            ["badge", "dm", rest @ ..] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_dm_rail(rest, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             ["badge", "requests", value] => {
                 let note = cx
                     .update(|cx| root.update(cx, |root, cx| root.script_request_badge(value, cx)));
