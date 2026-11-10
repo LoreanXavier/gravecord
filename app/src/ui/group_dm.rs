@@ -627,6 +627,7 @@ mod tests {
             bot: false,
             nameplate: None,
             avatar_decoration: None,
+            ..Default::default()
         }
     }
 

@@ -111,9 +111,9 @@ impl GuildSettings {
     }
 }
 
-/// A mute holds while it has no end or the end is still ahead.
+/// A mute holds while it has no end or the end is not yet past (544743 `tG`: `end_time >= now`).
 pub fn mute_active(muted: bool, end: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
-    muted && end.is_none_or(|end| end > now)
+    muted && end.is_none_or(|end| end >= now)
 }
 
 #[derive(Default)]
@@ -195,5 +195,10 @@ mod tests {
         assert!(store.channel_muted(1, 5, before));
         assert!(!store.channel_muted(1, 5, after));
         assert!(!store.channel_muted(1, 6, before));
+        // The boundary itself still counts as muted.
+        let end = DateTime::parse_from_rfc3339("2026-11-08T01:46:03.459+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(store.channel_muted(1, 5, end));
     }
 }

@@ -57,6 +57,8 @@ impl Row {
                     &user["avatar_decoration_data"],
                 )
                 .map(Box::new),
+                flags: user["flags"].as_u64().unwrap_or(0),
+                public_flags: user["public_flags"].as_u64().unwrap_or(0),
             },
             nick: member["nick"].as_str().map(str::to_owned),
             roles: member["roles"]

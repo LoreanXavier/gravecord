@@ -15,8 +15,13 @@ pub struct Presence {
 #[derive(Default)]
 pub struct PresenceStore {
     entries: HashMap<(Option<Id>, Id), Presence>,
+    /// User to the scopes (a guild, or `None` for the friend list) holding an entry for them, so a lookup by user
+    /// does not scan every entry.
+    by_user: HashMap<Id, Vec<Option<Id>>>,
     guild_order: Vec<Option<Id>>,
     revision: u64,
+    /// The signed-in account: 290863 ignores presence updates for it (its own status comes from the settings).
+    me: Option<Id>,
 }
 
 fn id(value: &Value) -> Option<Id> {
@@ -51,15 +56,58 @@ fn rich(activity: &Value) -> bool {
 }
 
 impl PresenceStore {
+    /// Tells the store whose presence to ignore (`_.default.getId()` in 290863's `v` and `P`).
+    pub fn set_current_user(&mut self, me: Option<Id>) {
+        self.me = me;
+    }
+
     pub fn get(&self, user: Id, guild: Option<Id>) -> Option<&Presence> {
         if let Some(guild) = guild {
             return self.entries.get(&(Some(guild), user));
         }
-        self.entries
+        self.by_user
+            .get(&user)?
             .iter()
-            .filter(|((_, id), _)| *id == user)
-            .map(|(_, presence)| presence)
+            .filter_map(|scope| self.entries.get(&(*scope, user)))
             .max_by_key(|presence| (presence.revision, presence.activities.len()))
+    }
+
+    fn remove_entry(&mut self, scope: Option<Id>, user: Id) {
+        if self.entries.remove(&(scope, user)).is_some()
+            && let Some(scopes) = self.by_user.get_mut(&user)
+        {
+            scopes.retain(|known| *known != scope);
+            if scopes.is_empty() {
+                self.by_user.remove(&user);
+            }
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        self.by_user.clear();
+        for (scope, user) in self.entries.keys() {
+            self.by_user.entry(*user).or_default().push(*scope);
+        }
+    }
+
+    fn offline(status: &str) -> bool {
+        status == "offline" || status == "invisible"
+    }
+
+    /// 290863 `y`: once every entry of a user is offline (no hidden activities are kept here), the user is dropped.
+    fn prune(&mut self, user: Id) {
+        let all_offline = self.by_user.get(&user).is_some_and(|scopes| {
+            scopes.iter().all(|scope| {
+                self.entries
+                    .get(&(*scope, user))
+                    .is_none_or(|presence| Self::offline(&presence.status))
+            })
+        });
+        if all_offline && let Some(scopes) = self.by_user.remove(&user) {
+            for scope in scopes {
+                self.entries.remove(&(scope, user));
+            }
+        }
     }
 
     pub fn all(&self) -> impl Iterator<Item = &Presence> {
@@ -82,7 +130,17 @@ impl PresenceStore {
         else {
             return;
         };
+        // 290863 drops the current user's own updates because its getters answer for that user from
+        // SelfPresenceStore. There is no such store here, so the server's word is what the account's own row shows.
+        let known = self.entries.contains_key(&(guild, user));
+        // 290863 `v`: an offline update for someone with no entry creates nothing.
+        if !known && data["status"].as_str().is_some_and(Self::offline) {
+            return;
+        }
         self.revision += 1;
+        if !known {
+            self.by_user.entry(user).or_default().push(guild);
+        }
         let presence = self.entries.entry((guild, user)).or_default();
         presence.revision = self.revision;
         if let Some(status) = data["status"].as_str() {
@@ -105,9 +163,10 @@ impl PresenceStore {
         if let Some(clients) = data.get("client_status") {
             presence.clients = clients.clone();
         }
-        if presence.status == "offline" || presence.status == "invisible" {
+        if Self::offline(&presence.status) {
             presence.activities.clear();
             presence.clients = Value::Null;
+            self.prune(user);
         }
     }
 
@@ -117,6 +176,7 @@ impl PresenceStore {
             "READY" | "READY_SUPPLEMENTAL" => {
                 if event == "READY" {
                     self.entries.clear();
+                    self.by_user.clear();
                     self.guild_order = data["guilds"]
                         .as_array()
                         .into_iter()
@@ -176,8 +236,16 @@ impl PresenceStore {
                 }
             }
             "GUILD_DELETE" => {
-                self.entries
-                    .retain(|(guild, _), _| *guild != id(&data["id"]));
+                let deleted = id(&data["id"]);
+                self.entries.retain(|(guild, _), _| *guild != deleted);
+                self.rebuild_index();
+            }
+            "GUILD_MEMBER_REMOVE" => {
+                if let (Some(guild), Some(user)) = (guild, id(&data["user"]["id"]))
+                    && self.me != Some(user)
+                {
+                    self.remove_entry(Some(guild), user);
+                }
             }
             _ => {}
         }
@@ -300,13 +368,12 @@ mod tests {
                 .is_empty()
         );
         stores.dispatch("PRESENCE_UPDATE", &json!({"guild_id":"1","user":{"id":"2"},"status":"offline","activities":[{"type":0,"name":"stale"}]}));
+        // 290863 `y`: a user whose entries are all offline is dropped, so nothing stale remains.
         assert!(
             stores
                 .presence
                 .get(2, Some(1))
-                .unwrap()
-                .activities
-                .is_empty()
+                .is_none_or(|presence| presence.activities.is_empty())
         );
     }
 
@@ -338,5 +405,80 @@ mod tests {
         assert_eq!(activities.len(), 2);
         assert_eq!(activity_text(activities[0]), Some("Level".into()));
         assert_eq!(activities[1]["name"], "Spotify");
+    }
+
+    fn real(user: &str, guild: &str, status: &str, clients: Value, activities: Value) -> Value {
+        json!({"user":{"id":user,"username":"u","discriminator":"0","avatar":null},
+            "guild_id":guild,"status":status,"client_status":clients,"activities":activities})
+    }
+
+    #[test]
+    fn realistic_updates_prune_offline_users_and_keep_the_current_user() {
+        let mut store = PresenceStore::default();
+        store.set_current_user(Some(1));
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &real("1", "10", "dnd", json!({"desktop":"dnd"}), json!([])),
+        );
+        assert_eq!(store.get(1, None).unwrap().status, "dnd");
+        // An offline update for someone never seen creates nothing.
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &real("2", "10", "offline", json!({}), json!([])),
+        );
+        assert!(store.get(2, None).is_none());
+        for guild in ["10", "11"] {
+            store.dispatch("PRESENCE_UPDATE", &real("2", guild, "online", json!({"desktop":"online"}),
+                json!([{"type":0,"name":"Game","application_id":"3","created_at":1762650000000u64}])));
+        }
+        assert_eq!(store.get(2, None).unwrap().status, "online");
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &real("2", "10", "offline", json!({}), json!([])),
+        );
+        assert_eq!(store.get(2, Some(11)).unwrap().status, "online");
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &real("2", "11", "offline", json!({}), json!([])),
+        );
+        assert!(store.get(2, None).is_none());
+        assert!(store.get(2, Some(10)).is_none());
+        assert_eq!(store.all().count(), 1);
+    }
+
+    #[test]
+    fn member_removal_and_guild_delete_drop_entries_and_keep_the_user_index_correct() {
+        let mut store = PresenceStore::default();
+        for guild in ["10", "11"] {
+            store.dispatch(
+                "PRESENCE_UPDATE",
+                &real("2", guild, "idle", json!({"web":"idle"}), json!([])),
+            );
+        }
+        store.dispatch(
+            "GUILD_MEMBER_REMOVE",
+            &json!({"guild_id":"10","user":{"id":"2","username":"u"}}),
+        );
+        assert!(store.get(2, Some(10)).is_none());
+        assert_eq!(store.get(2, None).unwrap().status, "idle");
+        store.dispatch("GUILD_DELETE", &json!({"id":"11"}));
+        assert!(store.get(2, None).is_none());
+    }
+
+    #[test]
+    fn lookups_by_user_do_not_scan_every_entry() {
+        let mut store = PresenceStore::default();
+        for user in 100..20_100u64 {
+            store.dispatch(
+                "PRESENCE_UPDATE",
+                &json!({"guild_id":"10","user":{"id":user.to_string()},
+                "status":"online","client_status":{"desktop":"online"},"activities":[]}),
+            );
+        }
+        let start = std::time::Instant::now();
+        for user in 100..20_100u64 {
+            assert!(store.get(user, None).is_some());
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
     }
 }

@@ -11,7 +11,109 @@ pub struct Counts {
     pub unread: bool,
 }
 
-fn muted(stores: &Stores, guild: Id, channel: Id, parent: Option<Id>, now: DateTime<Utc>) -> bool {
+/// One cached `guild_counts` answer and what it was computed for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CountsEntry {
+    now_ms: i64,
+    channels: usize,
+    threads: usize,
+    stamp: u64,
+    counts: Counts,
+}
+
+/// A fingerprint of what the counts read from stores that callers change directly (the guild's settings entry, the
+/// read states of its channels, the channels' own flags), so such a change shows without waiting for an event.
+fn stamp(stores: &Stores, guild: &Guild) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let hash = |value: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value(&mut hasher);
+        hasher.finish()
+    };
+    let mut total = hash(&|h| {
+        stores.notification_flags.hash(h);
+        stores.account.nsfw_allowed.hash(h);
+        guild.nsfw_level.hash(h);
+        guild.my_roles.hash(h);
+        guild.joined_at.hash(h);
+    });
+    if let Some(settings) = stores.guild_settings.guilds.get(&guild.id) {
+        total = total.wrapping_add(hash(&|h| {
+            (
+                settings.flags,
+                settings.message_notifications,
+                settings.muted,
+            )
+                .hash(h);
+            (
+                settings.mute_end,
+                settings.suppress_everyone,
+                settings.suppress_roles,
+            )
+                .hash(h);
+        }));
+        for (id, entry) in &settings.channels {
+            total = total.wrapping_add(hash(&|h| {
+                (
+                    id,
+                    entry.flags,
+                    entry.message_notifications,
+                    entry.muted,
+                    entry.mute_end,
+                )
+                    .hash(h);
+            }));
+        }
+    }
+    for channel in &guild.channels {
+        total = total.wrapping_add(hash(&|h| {
+            (channel.id, channel.nsfw, channel.flags, channel.parent_id).hash(h);
+            (
+                channel.overwrites.len(),
+                channel.kind == ChannelKind::Category,
+            )
+                .hash(h);
+        }));
+    }
+    let ids = guild
+        .channels
+        .iter()
+        .map(|channel| channel.id)
+        .chain(guild.threads.iter().map(|thread| thread.id));
+    for id in ids {
+        let state = stores.read_states.states.get(&id);
+        let latest = stores.read_states.latest.get(&id);
+        total = total.wrapping_add(hash(&|h| {
+            (
+                id,
+                state.map(|s| (s.acked, s.mention_count, s.low_importance)),
+                latest,
+            )
+                .hash(h);
+        }));
+    }
+    for thread in &guild.threads {
+        total = total.wrapping_add(hash(&|h| {
+            (
+                thread.id,
+                thread.joined,
+                thread.archived,
+                thread.member_flags,
+            )
+                .hash(h);
+            (thread.muted, thread.mute_end).hash(h);
+        }));
+    }
+    total
+}
+
+pub(crate) fn muted(
+    stores: &Stores,
+    guild: Id,
+    channel: Id,
+    parent: Option<Id>,
+    now: DateTime<Utc>,
+) -> bool {
     let settings = stores.guild_settings.guilds.get(&guild);
     settings.is_some_and(|s| guild_settings::mute_active(s.muted, s.mute_end, now))
         || [Some(channel), parent].into_iter().flatten().any(|id| {
@@ -21,7 +123,7 @@ fn muted(stores: &Stores, guild: Id, channel: Id, parent: Option<Id>, now: DateT
         })
 }
 
-fn message_level(stores: &Stores, guild: &Guild, channel: &Channel) -> u64 {
+pub(crate) fn message_level(stores: &Stores, guild: &Guild, channel: &Channel) -> u64 {
     let settings = stores.guild_settings.guilds.get(&guild.id);
     [Some(channel.id), channel.parent_id]
         .into_iter()
@@ -58,17 +160,57 @@ fn all_unreads(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
     message_level(stores, guild, channel) == guild_settings::ALL_MESSAGES
 }
 
-fn opted_out(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
+/// 395504 `WW`: opt-in is on for the guild, and the guild is a community (or the account is staff).
+fn opt_in_enabled(stores: &Stores, guild: &Guild) -> bool {
+    stores
+        .guild_settings
+        .guilds
+        .get(&guild.id)
+        .is_some_and(|s| s.flags & 16384 != 0)
+        && (guild.has_feature("COMMUNITY")
+            || stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.has_flag(crate::USER_FLAG_STAFF)))
+}
+
+/// 543465 `isChannelRecordOrParentOptedIn`.
+fn opted_in(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
     let settings = stores.guild_settings.guilds.get(&guild.id);
-    settings.is_some_and(|s| s.flags & 16384 != 0)
-        && ![Some(channel.id), channel.parent_id]
-            .into_iter()
-            .flatten()
-            .any(|id| {
-                settings
-                    .and_then(|s| s.channels.get(&id))
-                    .is_some_and(|s| s.flags & 4096 != 0)
-            })
+    [Some(channel.id), channel.parent_id]
+        .into_iter()
+        .flatten()
+        .any(|id| {
+            settings
+                .and_then(|s| s.channels.get(&id))
+                .is_some_and(|s| s.flags & 4096 != 0)
+        })
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+/// 218461 `getGuildChannelUnreadState`, first clause: with opt-in on, a channel whose newest message is over seven
+/// days old, or that is not opted in, not visited and read within three days and has no mention, counts for nothing.
+/// `getGuildRecentsDismissedAt` lives in the app and is not known here: it is taken as never dismissed.
+fn opt_in_zeroes(stores: &Stores, guild: &Guild, channel: &Channel, now_ms: i64) -> bool {
+    let timestamp = |id: Id| crate::read_state::snowflake_ms(id) as i64;
+    let latest = stores
+        .read_states
+        .latest
+        .get(&channel.id)
+        .map_or(0, |id| timestamp(*id));
+    if latest < now_ms - 7 * DAY_MS {
+        return true;
+    }
+    let recently_visited = latest > 0
+        && stores
+            .read_states
+            .states
+            .get(&channel.id)
+            .is_some_and(|state| state.acked != 0 && timestamp(state.acked) > now_ms - 3 * DAY_MS);
+    !opted_in(stores, guild, channel)
+        && !recently_visited
+        && stores.read_states.mentions(channel.id) == 0
 }
 
 fn allowed_age(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
@@ -79,22 +221,14 @@ fn allowed_age(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
 pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> Option<Importance> {
     let me = stores.current_user.as_ref()?.id;
     let channel = crate::id(&message["channel_id"])?;
-    let author = crate::id(&message["author"]["id"])?;
-    if stores.relationships.get(&author) == Some(&2) || stores.ignored.contains(&author) {
+    crate::id(&message["author"]["id"])?;
+    if notifications::blocked_or_ignored_for_message(stores, message) {
         return None;
     }
-    let guild_channel = stores.guilds.iter().find_map(|guild| {
-        let target = guild
-            .channels
-            .iter()
-            .find(|c| c.id == channel)
-            .or_else(|| {
-                let parent = guild.threads.iter().find(|t| t.id == channel)?.parent_id;
-                guild.channels.iter().find(|c| c.id == parent)
-            })?;
-        Some((guild, target))
-    });
-    if let Some((guild, target)) = guild_channel {
+    if let Some(guild) = stores.guild_of_channel(channel) {
+        let thread = guild.threads.iter().find(|t| t.id == channel);
+        let parent = thread.map_or(channel, |t| t.parent_id);
+        let target = guild.channels.iter().find(|c| c.id == parent)?;
         if !allowed_age(stores, guild, target) {
             return None;
         }
@@ -108,13 +242,22 @@ pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> 
         ) {
             return Some(Importance::High);
         }
-        if channel == target.id
-            && stores.notification_flags & 32 != 0
-            && !matches!(target.kind, ChannelKind::Voice | ChannelKind::Other(13))
-            && !muted(stores, guild.id, channel, target.parent_id, now)
-            && message_level(stores, guild, target) == guild_settings::ALL_MESSAGES
-        {
-            return Some(Importance::Low);
+        if stores.notification_flags & 32 != 0 {
+            // 218461 MESSAGE_CREATE: a thread uses its own member level, anything else the channel's.
+            let low = match thread {
+                Some(thread) => {
+                    notifications::thread_level(stores, guild, thread, now)
+                        == crate::THREAD_ALL_MESSAGES
+                }
+                None => {
+                    !matches!(target.kind, ChannelKind::Voice | ChannelKind::Other(13))
+                        && !muted(stores, guild.id, channel, target.parent_id, now)
+                        && message_level(stores, guild, target) == guild_settings::ALL_MESSAGES
+                }
+            };
+            if low {
+                return Some(Importance::Low);
+            }
         }
     } else {
         let private = stores.private_channels.iter().find(|c| c.id == channel);
@@ -139,11 +282,54 @@ fn add_mentions(counts: &mut Counts, stores: &Stores, channel: Id) {
     }
 }
 
+/// How long a cached answer holds against the clock: mutes end by time alone. What callers change directly is caught
+/// by `stamp`; what only events change (roles, the member, the guild) by the cache being cleared on them.
+const COUNTS_TTL_MS: i64 = 250;
+
+/// The guild's counts, cached per guild. `Stores::dispatch` clears the cache on every event that can change them.
 pub fn guild_counts(stores: &Stores, guild: &Guild, now: DateTime<Utc>) -> Counts {
+    let now_ms = now.timestamp_millis();
+    let stamp = stamp(stores, guild);
+    let cache = stores
+        .counts_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = cache.get(&guild.id)
+        && entry.channels == guild.channels.len()
+        && entry.threads == guild.threads.len()
+        && (now_ms - entry.now_ms).abs() < COUNTS_TTL_MS
+        && entry.stamp == stamp
+    {
+        return entry.counts;
+    }
+    drop(cache);
+    let counts = guild_counts_uncached(stores, guild, now);
+    stores
+        .counts_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            guild.id,
+            CountsEntry {
+                now_ms,
+                channels: guild.channels.len(),
+                threads: guild.threads.len(),
+                stamp,
+                counts,
+            },
+        );
+    counts
+}
+
+/// 458294 `W` for one guild.
+pub fn guild_counts_uncached(stores: &Stores, guild: &Guild, now: DateTime<Utc>) -> Counts {
     let mut counts = Counts::default();
     let Some(me) = stores.me() else {
         return counts;
     };
+    let now_ms = now.timestamp_millis();
+    let opt_in = opt_in_enabled(stores, guild);
+    let joined = guild.joined_snowflake();
     for channel in &guild.channels {
         if channel.kind == ChannelKind::Category
             || channel.flags & 128 != 0
@@ -153,31 +339,42 @@ pub fn guild_counts(stores: &Stores, guild: &Guild, now: DateTime<Utc>) -> Count
             continue;
         }
         let mentions = stores.read_states.mentions(channel.id);
+        // getGuildChannelUnreadState: everything is zero, so nothing is added or marked.
+        if opt_in && opt_in_zeroes(stores, guild, channel, now_ms) {
+            continue;
+        }
         if mentions == 0
             && (matches!(channel.kind, ChannelKind::Voice | ChannelKind::Other(13))
-                || opted_out(stores, guild, channel))
+                // `U`: opt-in on, not opted in, and no mention (threads are exempt, `fT`).
+                || (opt_in && !opted_in(stores, guild, channel)))
         {
             continue;
         }
         add_mentions(&mut counts, stores, channel.id);
-        if !muted(stores, guild.id, channel.id, channel.parent_id, now)
+        if !counts.unread
+            && !muted(stores, guild.id, channel.id, channel.parent_id, now)
             && (mentions > 0 || all_unreads(stores, guild, channel))
-            && stores
-                .read_states
-                .is_unread(channel.id, guild.joined_snowflake())
+            && stores.read_states.is_unread(channel.id, joined)
         {
             counts.unread = true;
         }
     }
+    // `W`'s thread loop: active joined threads mark the guild unread unless the thread or the guild is muted, and
+    // add their mentions; no permission or NSFW check is made.
+    let guild_muted = stores
+        .guild_settings
+        .guilds
+        .get(&guild.id)
+        .is_some_and(|s| guild_settings::mute_active(s.muted, s.mute_end, now));
     for thread in guild.threads.iter().filter(|t| t.joined && !t.archived) {
-        let Some(parent) = guild.channels.iter().find(|c| c.id == thread.parent_id) else {
-            continue;
-        };
-        if allowed_age(stores, guild, parent)
-            && permissions::can_in_channel(guild, parent, me, permissions::VIEW_CHANNEL)
+        if !counts.unread
+            && stores.read_states.is_unread(thread.id, joined)
+            && !thread.is_muted(now)
+            && !guild_muted
         {
-            add_mentions(&mut counts, stores, thread.id);
+            counts.unread = true;
         }
+        add_mentions(&mut counts, stores, thread.id);
     }
     counts
 }
@@ -378,5 +575,320 @@ mod tests {
         assert_eq!(badge_count(0, 0, true, false), -1);
         assert_eq!(badge_count(0, 0, true, true), 0);
         assert_eq!(badge_count(2, incoming_requests(&stores), true, true), 3);
+    }
+
+    fn thread(stores: &mut Stores, flags: u64, muted: bool) {
+        stores.dispatch(
+            "THREAD_CREATE",
+            &json!({"id":"60","guild_id":"10","parent_id":"20","type":11,"name":"talk","owner_id":"2",
+                "last_message_id":"90","message_count":3,"thread_metadata":{"archived":false,"locked":false},
+                "member":{"id":"60","user_id":"1","flags":flags,"muted":muted,"mute_config":null,
+                    "join_timestamp":"2026-11-09T10:00:00.000000+00:00"}}),
+        );
+    }
+
+    fn thread_message(stores: &mut Stores, id: u64, mention: bool) {
+        stores.dispatch(
+            "MESSAGE_CREATE",
+            &json!({"id":id.to_string(),"channel_id":"60","type":0,"timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"2","username":"sender"},"content":"in thread",
+                "mentions": if mention { json!([{"id":"1","username":"me"}]) } else { json!([]) },
+                "mention_roles":[],"mention_everyone":false}),
+        );
+    }
+
+    #[test]
+    fn joined_threads_mark_the_guild_unread_unless_the_thread_or_guild_is_muted() {
+        let mut stores = setup();
+        thread(&mut stores, 2, false);
+        // The thread's newest message (90) was never read.
+        let now = Utc::now();
+        assert!(guild_counts(&stores, &stores.guilds[0], now).unread);
+        stores.dispatch(
+            "MESSAGE_ACK",
+            &json!({"channel_id":"60","message_id":"90","mention_count":0}),
+        );
+        assert!(!guild_counts_uncached(&stores, &stores.guilds[0], now).unread);
+        thread_message(&mut stores, 100, false);
+        assert!(guild_counts(&stores, &stores.guilds[0], now).unread);
+        thread(&mut stores, 2, true);
+        stores.dispatch(
+            "MESSAGE_ACK",
+            &json!({"channel_id":"60","message_id":"90","mention_count":0}),
+        );
+        thread_message(&mut stores, 101, false);
+        assert!(!guild_counts(&stores, &stores.guilds[0], now).unread);
+        thread(&mut stores, 2, false);
+        stores.dispatch(
+            "USER_GUILD_SETTINGS_UPDATE",
+            &json!({"guild_id":"10","muted":true,
+            "message_notifications":0,"channel_overrides":[]}),
+        );
+        assert!(!guild_counts(&stores, &stores.guilds[0], now).unread);
+    }
+
+    #[test]
+    fn thread_mentions_count_without_the_parents_permission() {
+        let mut stores = setup();
+        stores.dispatch(
+            "GUILD_ROLE_UPDATE",
+            &json!({"guild_id":"10",
+            "role":{"id":"10","name":"@everyone","permissions":"0"}}),
+        );
+        thread(&mut stores, 4, false);
+        thread_message(&mut stores, 100, true);
+        assert_eq!(stores.read_states.mentions(60), 1);
+        let counts = guild_counts(&stores, &stores.guilds[0], Utc::now());
+        assert_eq!((counts.mentions, counts.high_mentions), (1, 1));
+        // An unjoined (archived) thread adds nothing.
+        stores.dispatch(
+            "THREAD_UPDATE",
+            &json!({"id":"60","guild_id":"10","parent_id":"20","type":11,
+            "name":"talk","thread_metadata":{"archived":true}}),
+        );
+        assert_eq!(
+            guild_counts(&stores, &stores.guilds[0], Utc::now()).mentions,
+            0
+        );
+    }
+
+    #[test]
+    fn thread_messages_are_low_importance_mentions_only_at_the_all_messages_level() {
+        let mut stores = setup();
+        stores.notification_flags = 32;
+        thread(&mut stores, 2, false);
+        thread_message(&mut stores, 100, false);
+        assert_eq!(stores.read_states.mentions(60), 1);
+        assert!(stores.read_states.states[&60].low_importance);
+        thread(&mut stores, 4, false);
+        thread_message(&mut stores, 101, false);
+        assert_eq!(stores.read_states.mentions(60), 1);
+        thread_message(&mut stores, 102, true);
+        assert_eq!(stores.read_states.mentions(60), 2);
+        assert!(!stores.read_states.states[&60].low_importance);
+    }
+
+    fn at_ms(ms: i64) -> Id {
+        crate::read_state::snowflake_at(ms as u64)
+    }
+
+    fn channel_message(stores: &mut Stores, channel: &str, id: Id) {
+        stores.dispatch(
+            "MESSAGE_CREATE",
+            &json!({"id":id.to_string(),"channel_id":channel,"timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"2","username":"sender"},"content":"x","mentions":[]}),
+        );
+    }
+
+    #[test]
+    fn opt_in_zeroes_old_and_unopted_channels_only_in_communities() {
+        let now = Utc::now();
+        let now_ms = now.timestamp_millis();
+        let fresh = at_ms(now_ms - 3_600_000);
+        let old = at_ms(now_ms - 10 * 86_400_000);
+        let guild = |features: Value| {
+            let mut stores = Stores::default();
+            stores.dispatch("READY", &json!({"user":{"id":"1","username":"me"},
+                "guilds":[{"id":"10","joined_at":"2020-01-01T00:00:00+00:00",
+                    "properties":{"name":"g","default_message_notifications":0,"features":features},
+                    "roles":[{"id":"10","permissions":"1024"}],
+                    "channels":[{"id":"20","name":"chat","type":0},{"id":"21","name":"old","type":0}]}]}));
+            stores
+        };
+        let opt_in = json!({"guild_id":"10","flags":16384,"message_notifications":0});
+        // Not a community: the opt-in flag alone changes nothing.
+        let mut stores = guild(json!([]));
+        stores.guild_settings.update(&opt_in);
+        channel_message(&mut stores, "20", fresh);
+        assert!(guild_counts(&stores, &stores.guilds[0], now).unread);
+        // A community with opt-in on: a channel not opted in counts for nothing.
+        let mut stores = guild(json!(["COMMUNITY"]));
+        stores.guild_settings.update(&opt_in);
+        channel_message(&mut stores, "20", fresh);
+        assert!(!guild_counts(&stores, &stores.guilds[0], now).unread);
+        // Opted in: it counts again, but a channel quiet for over seven days still does not.
+        stores.guild_settings.update(&json!({"guild_id":"10","flags":16384,"message_notifications":0,
+            "channel_overrides":[{"channel_id":"20","flags":4096},{"channel_id":"21","flags":4096}]}));
+        stores.invalidate_counts();
+        assert!(guild_counts(&stores, &stores.guilds[0], now).unread);
+        let mut stores = guild(json!(["COMMUNITY"]));
+        stores.guild_settings.update(
+            &json!({"guild_id":"10","flags":16384,"message_notifications":0,
+            "channel_overrides":[{"channel_id":"21","flags":4096}]}),
+        );
+        channel_message(&mut stores, "21", old);
+        assert!(!guild_counts(&stores, &stores.guilds[0], now).unread);
+        // Mentions in an old channel are zeroed too (218461), while a fresh opted-out one keeps its direct ping.
+        stores.read_states.states.insert(
+            21,
+            crate::read_state::ReadState {
+                acked: 1,
+                mention_count: 2,
+                ..Default::default()
+            },
+        );
+        let counts = guild_counts(&stores, &stores.guilds[0], now);
+        assert_eq!(counts.mentions, 0);
+        stores.read_states.states.insert(
+            20,
+            crate::read_state::ReadState {
+                acked: 1,
+                mention_count: 1,
+                ..Default::default()
+            },
+        );
+        channel_message(&mut stores, "20", fresh);
+        stores.read_states.states.insert(
+            20,
+            crate::read_state::ReadState {
+                acked: 1,
+                mention_count: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(guild_counts(&stores, &stores.guilds[0], now).mentions, 1);
+    }
+
+    /// Every kind of event that can change a guild's counts leaves the cached answer equal to a fresh one, and the
+    /// ones that change the answer change the cached answer too.
+    #[test]
+    fn the_counts_cache_agrees_with_a_fresh_count_after_every_kind_of_event() {
+        let mut stores = setup();
+        let now = Utc::now();
+        let check = |stores: &Stores| {
+            let guild = &stores.guilds[0];
+            let cached = guild_counts(stores, guild, now);
+            assert_eq!(cached, guild_counts_uncached(stores, guild, now));
+            cached
+        };
+        let base = check(&stores);
+        let events: Vec<(&str, Value)> = vec![
+            (
+                "MESSAGE_CREATE",
+                json!({"id":"500","channel_id":"20","timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"2","username":"sender"},"content":"x","mentions":[{"id":"1"}]}),
+            ),
+            (
+                "MESSAGE_ACK",
+                json!({"channel_id":"20","message_id":"500","mention_count":0}),
+            ),
+            (
+                "MESSAGE_CREATE",
+                json!({"id":"501","channel_id":"20","timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"2","username":"sender"},"content":"x","mentions":[]}),
+            ),
+            (
+                "USER_GUILD_SETTINGS_UPDATE",
+                json!({"guild_id":"10","message_notifications":1,
+                "channel_overrides":[{"channel_id":"30","muted":true}]}),
+            ),
+            (
+                "USER_GUILD_SETTINGS_UPDATE",
+                json!({"guild_id":"10","message_notifications":0,"channel_overrides":[]}),
+            ),
+            (
+                "MESSAGE_CREATE",
+                json!({"id":"502","channel_id":"20","timestamp":"2026-11-09T12:00:00Z",
+                "author":{"id":"2","username":"sender"},"content":"x","mentions":[{"id":"1"}]}),
+            ),
+            (
+                "GUILD_ROLE_UPDATE",
+                json!({"guild_id":"10","role":{"id":"10","name":"@everyone","permissions":"0"}}),
+            ),
+            (
+                "GUILD_ROLE_UPDATE",
+                json!({"guild_id":"10","role":{"id":"10","name":"@everyone","permissions":"1024"}}),
+            ),
+            (
+                "GUILD_MEMBER_UPDATE",
+                json!({"guild_id":"10","user":{"id":"1","username":"me"},"roles":["50"]}),
+            ),
+            (
+                "CHANNEL_UPDATE",
+                json!({"id":"20","guild_id":"10","type":0,"name":"chat","parent_id":"30","nsfw":true}),
+            ),
+            (
+                "CHANNEL_UPDATE",
+                json!({"id":"20","guild_id":"10","type":0,"name":"chat","parent_id":"30","nsfw":false}),
+            ),
+            ("NOTIFICATION_SETTINGS_UPDATE", json!({"flags":16})),
+            (
+                "THREAD_CREATE",
+                json!({"id":"60","guild_id":"10","parent_id":"20","type":11,"name":"t",
+                "last_message_id":"900","thread_metadata":{"archived":false},"member":{"id":"60","user_id":"1","flags":2}}),
+            ),
+            (
+                "THREAD_MEMBER_UPDATE",
+                json!({"id":"60","guild_id":"10","user_id":"1","flags":2,"muted":true}),
+            ),
+            (
+                "CHANNEL_CREATE",
+                json!({"id":"22","guild_id":"10","type":0,"name":"new"}),
+            ),
+            (
+                "CHANNEL_DELETE",
+                json!({"id":"22","guild_id":"10","type":0}),
+            ),
+            (
+                "THREAD_DELETE",
+                json!({"id":"60","guild_id":"10","parent_id":"20","type":11}),
+            ),
+        ];
+        let mut changes = 0;
+        let mut last = base;
+        for (name, data) in &events {
+            stores.dispatch(name, data);
+            let now_counts = check(&stores);
+            changes += usize::from(now_counts != last);
+            last = now_counts;
+        }
+        // Role and member events are not seen by the stamp, so the events alone had to refresh the cache.
+        assert!(changes >= 6, "{changes}");
+        stores.dispatch(
+            "MESSAGE_CREATE",
+            &json!({"id":"600","channel_id":"20","timestamp":"2026-11-09T12:00:00Z",
+            "author":{"id":"2","username":"sender"},"content":"x","mentions":[{"id":"1"}]}),
+        );
+        let with_mention = check(&stores);
+        stores.dispatch(
+            "GUILD_ROLE_UPDATE",
+            &json!({"guild_id":"10","role":{"id":"10","name":"@everyone","permissions":"0"}}),
+        );
+        let hidden = check(&stores);
+        assert!(with_mention.mentions > 0);
+        assert_eq!(hidden.mentions, 0);
+    }
+
+    #[test]
+    fn channel_index_follows_creates_deletes_threads_and_guild_removal() {
+        let mut stores = setup();
+        assert_eq!(stores.guild_of_channel(20).map(|guild| guild.id), Some(10));
+        assert!(stores.guild_of_channel(40).is_none());
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id":"23","guild_id":"10","type":0,"name":"fresh"}),
+        );
+        assert_eq!(stores.guild_of_channel(23).map(|guild| guild.id), Some(10));
+        thread(&mut stores, 2, false);
+        assert_eq!(stores.guild_of_channel(60).map(|guild| guild.id), Some(10));
+        stores.dispatch(
+            "THREAD_DELETE",
+            &json!({"id":"60","guild_id":"10","parent_id":"20","type":11}),
+        );
+        assert!(stores.guild_of_channel(60).is_none());
+        stores.dispatch(
+            "CHANNEL_DELETE",
+            &json!({"id":"23","guild_id":"10","type":0}),
+        );
+        assert!(stores.guild_of_channel(23).is_none());
+        // A guild changed directly still resolves by the checked fallback.
+        stores.guilds[0].channels.retain(|channel| channel.id != 20);
+        assert!(stores.guild_of_channel(20).is_none());
+        stores.dispatch("GUILD_DELETE", &json!({"id":"10"}));
+        assert!(stores.guilds.is_empty());
+        // An outage keeps the guild.
+        let mut stores = setup();
+        stores.dispatch("GUILD_DELETE", &json!({"id":"10","unavailable":true}));
+        assert_eq!(stores.guilds.len(), 1);
     }
 }

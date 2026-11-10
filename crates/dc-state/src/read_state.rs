@@ -45,6 +45,11 @@ pub fn snowflake_at(unix_ms: u64) -> Id {
     unix_ms.saturating_sub(EPOCH_MS) << 22
 }
 
+/// The Unix milliseconds a snowflake was made at.
+pub fn snowflake_ms(id: Id) -> u64 {
+    (id >> 22) + EPOCH_MS
+}
+
 /// `last_viewed` in an ack: whole days since Discord's epoch (2015-01-01).
 pub fn days_since_epoch(unix_ms: u64) -> u64 {
     unix_ms.saturating_sub(EPOCH_MS) / 86_400_000

@@ -53,6 +53,8 @@ impl Member {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GuildMembers {
     guilds: HashMap<Id, Vec<Member>>,
+    /// Guild to user id to the member's position in `guilds`, so an upsert or lookup is not a scan.
+    index: HashMap<Id, HashMap<Id, usize>>,
 }
 
 impl GuildMembers {
@@ -62,7 +64,8 @@ impl GuildMembers {
     }
 
     pub fn get(&self, guild: Id, user: Id) -> Option<&Member> {
-        self.of(guild).iter().find(|member| member.user.id == user)
+        let at = *self.index.get(&guild)?.get(&user)?;
+        self.guilds.get(&guild)?.get(at)
     }
 
     /// Message member objects may omit the avatar; only an explicit null removes it.
@@ -90,23 +93,31 @@ impl GuildMembers {
     /// Adds the member, or replaces the one already known (keeping its place).
     pub fn upsert(&mut self, guild: Id, member: Member) {
         let list = self.guilds.entry(guild).or_default();
-        match list
-            .iter_mut()
-            .find(|known| known.user.id == member.user.id)
-        {
-            Some(known) => *known = member,
-            None => list.push(member),
+        let index = self.index.entry(guild).or_default();
+        match index.get(&member.user.id) {
+            Some(at) => list[*at] = member,
+            None => {
+                index.insert(member.user.id, list.len());
+                list.push(member);
+            }
         }
     }
 
     pub fn remove(&mut self, guild: Id, user: Id) {
-        if let Some(list) = self.guilds.get_mut(&guild) {
-            list.retain(|member| member.user.id != user);
+        if let (Some(list), Some(index)) = (self.guilds.get_mut(&guild), self.index.get_mut(&guild))
+            && let Some(at) = index.remove(&user)
+        {
+            // Later members shift down one place, keeping arrival order.
+            list.remove(at);
+            for position in index.values_mut().filter(|position| **position > at) {
+                *position -= 1;
+            }
         }
     }
 
     pub fn drop_guild(&mut self, guild: Id) {
         self.guilds.remove(&guild);
+        self.index.remove(&guild);
     }
 
     /// `GUILD_MEMBERS_CHUNK`, `GUILD_CREATE` and anything else that carries a `members` array for one guild.
@@ -305,5 +316,52 @@ mod tests {
         let member = store.get(9, 3).unwrap();
         assert!(member.avatar_decoration.is_none());
         assert_eq!(member.user.avatar_decoration.as_ref().unwrap().sku_id, 42);
+    }
+
+    #[test]
+    fn fifty_thousand_members_upsert_and_look_up_quickly_and_keep_order() {
+        let mut store = GuildMembers::default();
+        let start = std::time::Instant::now();
+        for n in 1..=50_000u64 {
+            let user = json!({"id": n.to_string(), "username": format!("u{n}")});
+            store.apply_member(9, &json!({"roles": [], "nick": "a"}), Some(&user));
+        }
+        // A second pass updates in place; the order does not change.
+        for n in (1..=50_000u64).rev() {
+            let user = json!({"id": n.to_string(), "username": format!("u{n}")});
+            store.apply_member(9, &json!({"roles": ["5"], "nick": "b"}), Some(&user));
+            assert_eq!(store.get(9, n).unwrap().nick.as_deref(), Some("b"));
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(store.of(9).len(), 50_000);
+        assert_eq!(store.of(9)[0].user.id, 1);
+        assert_eq!(store.of(9)[49_999].user.id, 50_000);
+    }
+
+    #[test]
+    fn removal_keeps_the_index_and_order_consistent() {
+        let mut store = GuildMembers::default();
+        for n in 1..=5u64 {
+            let user = json!({"id": n.to_string(), "username": "u"});
+            store.apply_member(9, &json!({"roles": []}), Some(&user));
+        }
+        store.remove(9, 2);
+        store.remove(9, 99);
+        let order: Vec<Id> = store.of(9).iter().map(|member| member.user.id).collect();
+        assert_eq!(order, vec![1, 3, 4, 5]);
+        for (at, user) in order.iter().enumerate() {
+            assert_eq!(store.get(9, *user).unwrap(), &store.of(9)[at]);
+        }
+        assert!(store.get(9, 2).is_none());
+        let again = json!({"id": "2", "username": "u"});
+        store.apply_member(9, &json!({"roles": []}), Some(&again));
+        assert_eq!(store.of(9).last().unwrap().user.id, 2);
+        assert_eq!(store.get(9, 2).unwrap().user.id, 2);
+        store.drop_guild(9);
+        assert!(store.get(9, 1).is_none());
     }
 }

@@ -61,6 +61,24 @@ impl GuildMemberCountStore {
                     set(&mut self.online, guild, &data["online_count"]);
                 }
             }
+            // 498642 `l`: an invite's guild carries the online count it was resolved or accepted with.
+            "INVITE_RESOLVE_SUCCESS" | "INVITE_ACCEPT_SUCCESS" => {
+                let invite = &data["invite"];
+                if let (Some(guild), Some(count)) = (
+                    id(&invite["guild"]["id"]),
+                    invite["approximate_presence_count"].as_u64(),
+                ) {
+                    self.online.insert(guild, count);
+                }
+            }
+            "ONLINE_GUILD_MEMBER_COUNT_UPDATE" => {
+                if let (Some(guild), Some(count)) = (
+                    id(&data["guild_id"]).or_else(|| id(&data["guildId"])),
+                    data["count"].as_u64(),
+                ) {
+                    self.online.insert(guild, count);
+                }
+            }
             _ => {}
         }
     }
@@ -92,5 +110,29 @@ mod tests {
         stores.dispatch("GUILD_DELETE", &json!({"id":"1"}));
         assert_eq!(stores.member_counts.get_member_count(1), None);
         assert_eq!(stores.member_counts.get_online_count(1), None);
+    }
+
+    #[test]
+    fn online_counts_follow_invites_and_the_online_count_update() {
+        let mut stores = crate::Stores::default();
+        stores.dispatch(
+            "INVITE_RESOLVE_SUCCESS",
+            &json!({"invite":{"code":"abc","guild":{"id":"7","name":"g"},
+                "approximate_member_count":900,"approximate_presence_count":120}}),
+        );
+        assert_eq!(stores.member_counts.get_online_count(7), Some(120));
+        // Without a presence count the invite changes nothing.
+        stores.dispatch(
+            "INVITE_ACCEPT_SUCCESS",
+            &json!({"invite":{"guild":{"id":"7"},"approximate_presence_count":null}}),
+        );
+        assert_eq!(stores.member_counts.get_online_count(7), Some(120));
+        stores.dispatch(
+            "ONLINE_GUILD_MEMBER_COUNT_UPDATE",
+            &json!({"guild_id":"7","count":133}),
+        );
+        assert_eq!(stores.member_counts.get_online_count(7), Some(133));
+        stores.dispatch("ONLINE_GUILD_MEMBER_COUNT_UPDATE", &json!({"guild_id":"7"}));
+        assert_eq!(stores.member_counts.get_online_count(7), Some(133));
     }
 }

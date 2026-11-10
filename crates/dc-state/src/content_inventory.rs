@@ -139,6 +139,8 @@ impl Entry {
 
 pub struct Feed {
     pub entries: Vec<Entry>,
+    /// `unranked_game_entries`: the game feed's unranked entries (214693 reads them when `unrankedEntries` is set).
+    pub unranked_game_entries: Vec<Entry>,
     pub request_id: Option<String>,
     pub expires_at: Option<i64>,
     pub refresh_stale_inbox_after_ms: Option<u64>,
@@ -171,6 +173,12 @@ impl ContentInventoryStore {
             feed.to_owned(),
             Feed {
                 entries: body["entries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| Entry::from_value(&e["content"]))
+                    .collect(),
+                unranked_game_entries: body["unranked_game_entries"]
                     .as_array()
                     .into_iter()
                     .flatten()

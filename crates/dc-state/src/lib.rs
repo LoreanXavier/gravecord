@@ -50,7 +50,14 @@ pub struct User {
     pub bot: bool,
     pub nameplate: Option<collectibles::Nameplate>,
     pub avatar_decoration: Option<Box<collectibles::AvatarDecoration>>,
+    /// `flags` and `public_flags` of the user object; 619019's `hasFlag` reads both.
+    pub flags: u64,
+    pub public_flags: u64,
 }
+
+/// `UserFlags.STAFF` and `UserFlags.SPAMMER` (652215).
+pub const USER_FLAG_STAFF: u64 = 1;
+pub const USER_FLAG_SPAMMER: u64 = 1 << 20;
 
 /// A user's server tag (`primary_guild` with `identity_enabled`): the guild, its badge hash and the tag text.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -97,7 +104,14 @@ impl User {
                 &value["avatar_decoration_data"],
             )
             .map(Box::new),
+            flags: value["flags"].as_u64().unwrap_or(0),
+            public_flags: value["public_flags"].as_u64().unwrap_or(0),
         })
+    }
+
+    /// 619019 `hasFlag`: `(flags | publicFlags) & flag === flag`.
+    pub fn has_flag(&self, flag: u64) -> bool {
+        (self.flags | self.public_flags) & flag == flag
     }
 
     pub fn display_name(&self) -> &str {
@@ -281,9 +295,47 @@ pub struct Thread {
     pub flags: u64,
     pub total_message_sent: u64,
     pub locked: bool,
+    /// The current user's thread member flags (`member.flags`: 2 all messages, 4 only mentions, 8 nothing). `None`
+    /// when no member data arrived: JoinedThreadsStore `flags()` is then null.
+    pub member_flags: Option<u64>,
+    /// `member.muted` and `member.mute_config.end_time`.
+    pub muted: bool,
+    pub mute_end: Option<DateTime<Utc>>,
+    pub join_timestamp: Option<String>,
 }
 
+/// `ThreadMemberFlags` (37411).
+pub const THREAD_ALL_MESSAGES: u64 = 2;
+pub const THREAD_ONLY_MENTIONS: u64 = 4;
+pub const THREAD_NO_MESSAGES: u64 = 8;
+
 impl Thread {
+    /// A thread member object (READY's `member`, THREAD_MEMBER_UPDATE, one of THREAD_LIST_SYNC's `members`).
+    pub fn apply_member(&mut self, member: &Value) {
+        self.joined = true;
+        self.member_flags = member["flags"].as_u64();
+        self.muted = member["muted"].as_bool().unwrap_or(false);
+        self.mute_end = member["mute_config"]["end_time"]
+            .as_str()
+            .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+            .map(|time| time.with_timezone(&Utc));
+        self.join_timestamp = text(&member["join_timestamp"]);
+    }
+
+    /// The account left the thread (THREAD_MEMBERS_UPDATE `removed_member_ids`).
+    pub fn clear_member(&mut self) {
+        self.joined = false;
+        self.member_flags = None;
+        self.muted = false;
+        self.mute_end = None;
+        self.join_timestamp = None;
+    }
+
+    /// 152007 `isMuted`: muted, and the mute's end (when there is one) still ahead (544743 `setTimer`).
+    pub fn is_muted(&self, now: DateTime<Utc>) -> bool {
+        self.joined && self.muted && self.mute_end.is_none_or(|end| end > now)
+    }
+
     /// A pinned forum post (`ChannelFlags.PINNED`).
     pub fn pinned(&self) -> bool {
         self.flags & 2 != 0
@@ -294,7 +346,7 @@ impl Thread {
         if !matches!(kind, 10..=12) {
             return None;
         }
-        Some(Self {
+        let mut thread = Self {
             id: id(&value["id"])?,
             parent_id: id(&value["parent_id"])?,
             name: text(&value["name"]).unwrap_or_default(),
@@ -318,7 +370,12 @@ impl Thread {
             locked: value["thread_metadata"]["locked"]
                 .as_bool()
                 .unwrap_or(false),
-        })
+            ..Self::default()
+        };
+        if value["member"].is_object() {
+            thread.apply_member(&value["member"]);
+        }
+        Some(thread)
     }
 }
 
@@ -1178,10 +1235,20 @@ pub struct Stores {
     pub notification_flags: u64,
     /// The members seen so far, per guild (`GuildMemberStore`).
     pub members: members::GuildMembers,
+    /// Channel or thread id to the guild that holds it. Lookups check the answer against the guild, so a guild
+    /// changed directly (not through `dispatch`) still resolves, by the slow way.
+    channel_guilds: HashMap<Id, Id>,
+    /// Guilds the account only lurks in: their `joined_at` is null (260509 `DG`, 857071 `isLurking`).
+    pub lurking_guilds: HashSet<Id>,
+    /// Per guild, the last `unread::guild_counts` answer; cleared by every event that can change one.
+    counts_cache: std::sync::Mutex<HashMap<Id, unread::CountsEntry>>,
 }
 
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
+        if name == "READY" {
+            self.presence.set_current_user(id(&data["user"]["id"]));
+        }
         self.presence.dispatch(name, data);
         self.member_counts.dispatch(name, data);
         if name == "READY" {
@@ -1277,9 +1344,34 @@ impl Stores {
                             self.read_states.latest.insert(channel.id, latest);
                         }
                     }
+                    if data.get("joined_at").is_some_and(Value::is_null) {
+                        self.lurking_guilds.insert(guild.id);
+                    } else {
+                        self.lurking_guilds.remove(&guild.id);
+                    }
+                    for thread in &guild.threads {
+                        self.note_thread_latest(thread);
+                    }
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
                     self.sort_guilds();
+                }
+            }
+            "GUILD_DELETE" => {
+                // An outage (`unavailable`) keeps the guild; a removal drops it.
+                if data["unavailable"] != true
+                    && let Some(guild) = id(&data["id"])
+                {
+                    self.guilds.retain(|known| known.id != guild);
+                    self.voice_states.remove(&guild);
+                    self.afk_channels.remove(&guild);
+                    self.lurking_guilds.remove(&guild);
+                }
+            }
+            "NOTIFICATION_SETTINGS_UPDATE" => {
+                // 225123 forwards `flags`; 543465 `Y` rereads USE_NEW_NOTIFICATIONS and MENTION_ON_ALL_MESSAGES.
+                if let Some(flags) = data["flags"].as_u64() {
+                    self.notification_flags = flags;
                 }
             }
             "GUILD_UPDATE" => {
@@ -1327,6 +1419,9 @@ impl Stores {
                         .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild))
                 {
                     guild.set_my_member(data);
+                    if data["joined_at"].is_string() {
+                        self.lurking_guilds.remove(&guild.id);
+                    }
                 }
             }
             "GUILD_EMOJIS_UPDATE" => {
@@ -1379,14 +1474,25 @@ impl Stores {
             "THREAD_CREATE" | "THREAD_UPDATE" => {
                 if let (Some(guild), Some(mut thread)) =
                     (id(&data["guild_id"]), Thread::from_value(data))
-                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
                 {
-                    if let Some(known) = guild.threads.iter().find(|known| known.id == thread.id) {
-                        thread.joined |= known.joined;
-                    }
-                    guild.threads.retain(|known| known.id != thread.id);
-                    if !thread.archived {
-                        guild.threads.push(thread);
+                    self.note_thread_latest(&thread);
+                    if let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild) {
+                        if let Some(known) =
+                            guild.threads.iter().find(|known| known.id == thread.id)
+                            && known.joined
+                            && !thread.joined
+                        {
+                            // An update without a member keeps the one already known.
+                            thread.joined = true;
+                            thread.member_flags = known.member_flags;
+                            thread.muted = known.muted;
+                            thread.mute_end = known.mute_end;
+                            thread.join_timestamp = known.join_timestamp.clone();
+                        }
+                        guild.threads.retain(|known| known.id != thread.id);
+                        if !thread.archived {
+                            guild.threads.push(thread);
+                        }
                     }
                 }
             }
@@ -1397,34 +1503,62 @@ impl Stores {
                     guild.threads.retain(|known| known.id != thread);
                 }
             }
+            // 152007: only the current user's member counts; the event carries one member's fields beside the id.
             "THREAD_MEMBER_UPDATE" => {
+                let me = self.current_user.as_ref().map(|user| user.id);
+                if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
+                    && id(&data["user_id"]).is_none_or(|user| Some(user) == me)
+                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
+                    && let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread)
+                {
+                    known.apply_member(data);
+                }
+            }
+            "THREAD_MEMBERS_UPDATE" => {
+                let me = self.current_user.as_ref().map(|user| user.id);
                 if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
                     && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
                     && let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread)
                 {
-                    known.joined = true;
+                    if data["removed_member_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|user| id(user).is_some() && id(user) == me)
+                    {
+                        known.clear_member();
+                    }
+                    for member in data["added_members"].as_array().into_iter().flatten() {
+                        if me.is_some() && id(&member["user_id"]) == me {
+                            known.apply_member(member);
+                        }
+                    }
                 }
             }
             "THREAD_LIST_SYNC" => {
-                if let Some(guild) = id(&data["guild_id"])
-                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
-                {
-                    for thread in data["threads"]
+                if let Some(guild) = id(&data["guild_id"]) {
+                    let synced: Vec<Thread> = data["threads"]
                         .as_array()
                         .into_iter()
                         .flatten()
                         .filter_map(Thread::from_value)
-                    {
-                        guild.threads.retain(|known| known.id != thread.id);
-                        guild.threads.push(thread);
+                        .collect();
+                    for thread in &synced {
+                        self.note_thread_latest(thread);
                     }
-                    // The account's own thread members come beside the threads, one per joined thread.
-                    for member in data["members"].as_array().into_iter().flatten() {
-                        if let Some(thread) = id(&member["id"])
-                            && let Some(known) =
-                                guild.threads.iter_mut().find(|known| known.id == thread)
-                        {
-                            known.joined = true;
+                    if let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild) {
+                        for thread in synced {
+                            guild.threads.retain(|known| known.id != thread.id);
+                            guild.threads.push(thread);
+                        }
+                        // The account's own thread members come beside the threads, one per joined thread.
+                        for member in data["members"].as_array().into_iter().flatten() {
+                            if let Some(thread) = id(&member["id"])
+                                && let Some(known) =
+                                    guild.threads.iter_mut().find(|known| known.id == thread)
+                            {
+                                known.apply_member(member);
+                            }
                         }
                     }
                 }
@@ -1553,6 +1687,111 @@ impl Stores {
                 }
             }
             _ => {}
+        }
+        self.after_dispatch(name, data);
+    }
+
+    /// Events that cannot change a guild's unread or mention counts.
+    const COUNT_NEUTRAL: [&'static str; 9] = [
+        "PRESENCE_UPDATE",
+        "TYPING_START",
+        "VOICE_STATE_UPDATE",
+        "VOICE_SERVER_UPDATE",
+        "GUILD_MEMBER_LIST_UPDATE",
+        "GUILD_MEMBERS_CHUNK",
+        "MESSAGE_REACTION_ADD",
+        "MESSAGE_REACTION_REMOVE",
+        "ONLINE_GUILD_MEMBER_COUNT_UPDATE",
+    ];
+
+    fn after_dispatch(&mut self, name: &str, data: &Value) {
+        match name {
+            "READY" => self.rebuild_channel_index(),
+            "GUILD_CREATE" => {
+                if let Some(guild) = id(&data["id"]) {
+                    self.index_guild(guild);
+                }
+            }
+            "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "THREAD_CREATE" | "THREAD_UPDATE"
+            | "THREAD_LIST_SYNC" => {
+                if let Some(guild) = id(&data["guild_id"]) {
+                    self.index_guild(guild);
+                }
+            }
+            "CHANNEL_DELETE" | "THREAD_DELETE" => {
+                if let Some(channel) = id(&data["id"]) {
+                    self.channel_guilds.remove(&channel);
+                }
+            }
+            "GUILD_DELETE" => {
+                if let Some(guild) = id(&data["id"]) {
+                    self.channel_guilds.retain(|_, known| *known != guild);
+                }
+            }
+            _ => {}
+        }
+        if !Self::COUNT_NEUTRAL.contains(&name) {
+            self.invalidate_counts();
+        }
+    }
+
+    /// Forgets the cached guild counts. `dispatch` does it for every event that can change them; a caller that
+    /// changes the stores directly (a settings entry, an ack, a guild) calls it too.
+    pub fn invalidate_counts(&mut self) {
+        self.counts_cache
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    fn index_guild(&mut self, guild: Id) {
+        if let Some(known) = self.guilds.iter().find(|known| known.id == guild) {
+            for channel in &known.channels {
+                self.channel_guilds.insert(channel.id, guild);
+            }
+            for thread in &known.threads {
+                self.channel_guilds.insert(thread.id, guild);
+            }
+        }
+    }
+
+    fn rebuild_channel_index(&mut self) {
+        self.channel_guilds.clear();
+        let all: Vec<Id> = self.guilds.iter().map(|guild| guild.id).collect();
+        for guild in all {
+            self.index_guild(guild);
+        }
+    }
+
+    /// The guild holding this channel or thread, by the channel index (checked, with a scan as the fallback).
+    pub fn guild_of_channel(&self, channel: Id) -> Option<&Guild> {
+        let holds = |guild: &Guild| {
+            guild.channels.iter().any(|known| known.id == channel)
+                || guild.threads.iter().any(|known| known.id == channel)
+        };
+        if let Some(guild) = self
+            .channel_guilds
+            .get(&channel)
+            .and_then(|guild| self.guild(*guild))
+            && holds(guild)
+        {
+            return Some(guild);
+        }
+        if self
+            .private_channels
+            .iter()
+            .any(|known| known.id == channel)
+        {
+            return None;
+        }
+        self.guilds.iter().find(|guild| holds(guild))
+    }
+
+    /// Seeds a thread's newest message so its unread state can be told.
+    fn note_thread_latest(&mut self, thread: &Thread) {
+        if let Some(last) = thread.last_message_id {
+            let latest = self.read_states.latest.entry(thread.id).or_insert(0);
+            *latest = (*latest).max(last);
         }
     }
 
@@ -1868,6 +2107,21 @@ impl Stores {
             )
             .collect();
         self.read_states.latest.extend(latest);
+        let threads: Vec<Thread> = self
+            .guilds
+            .iter()
+            .flat_map(|guild| guild.threads.iter().cloned())
+            .collect();
+        for thread in &threads {
+            self.note_thread_latest(thread);
+        }
+        self.lurking_guilds = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|guild| guild.get("joined_at").is_some_and(Value::is_null))
+            .filter_map(|guild| id(&guild["id"]))
+            .collect();
         self.sort_guilds();
     }
 
@@ -1891,9 +2145,7 @@ impl Stores {
     /// Whether `channel` has messages past its ack. Guild channels never read count from the join date.
     pub fn is_unread(&self, channel: Id) -> bool {
         let joined = self
-            .guilds
-            .iter()
-            .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+            .guild_of_channel(channel)
             .map_or(0, Guild::joined_snowflake);
         self.read_states.is_unread(channel, joined)
     }
@@ -2411,6 +2663,46 @@ mod tests {
                 {"id": "32", "type": 3, "recipient_ids": ["20", "21"], "last_message_id": null},
             ],
         })
+    }
+
+    #[test]
+    fn ready_threads_keep_the_members_flags_mute_and_newest_message() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({"user": {"id": "5", "username": "me"}, "guilds": [{"id": "1", "joined_at": "2026-01-01T00:00:00+00:00",
+                "properties": {"name": "g"}, "channels": [{"id": "2", "type": 0, "name": "c"}],
+                "threads": [
+                    {"id": "7", "guild_id": "1", "parent_id": "2", "type": 11, "name": "in", "last_message_id": "70",
+                     "thread_metadata": {"archived": false},
+                     "member": {"id": "7", "user_id": "5", "flags": 4, "muted": true,
+                         "mute_config": {"selected_time_window": 3600, "end_time": "2099-01-01T00:00:00+00:00"},
+                         "join_timestamp": "2026-11-01T00:00:00+00:00"}},
+                    {"id": "8", "guild_id": "1", "parent_id": "2", "type": 11, "name": "out",
+                     "thread_metadata": {"archived": false}}]}]}),
+        );
+        let guild = &stores.guilds[0];
+        let joined = &guild.threads[0];
+        assert!(joined.joined && joined.muted && joined.is_muted(chrono::Utc::now()));
+        assert_eq!(joined.member_flags, Some(THREAD_ONLY_MENTIONS));
+        assert_eq!(
+            joined.join_timestamp.as_deref(),
+            Some("2026-11-01T00:00:00+00:00")
+        );
+        assert!(!guild.threads[1].joined && guild.threads[1].member_flags.is_none());
+        assert_eq!(stores.read_states.latest.get(&7), Some(&70));
+        assert_eq!(stores.guild_of_channel(8).map(|guild| guild.id), Some(1));
+        // An update without a member keeps the one known.
+        stores.dispatch(
+            "THREAD_UPDATE",
+            &json!({"id": "7", "guild_id": "1", "parent_id": "2", "type": 11, "name": "renamed",
+                "thread_metadata": {"archived": false}}),
+        );
+        let kept = &stores.guilds[0].threads.iter().find(|t| t.id == 7).unwrap();
+        assert_eq!(
+            (kept.name.as_str(), kept.member_flags, kept.muted),
+            ("renamed", Some(4), true)
+        );
     }
 
     #[test]
