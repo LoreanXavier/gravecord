@@ -2557,7 +2557,9 @@ impl Root {
                 )
                 .into_any_element();
         }
-        let selected = self.channel == Some(channel.id) && self.member_view.is_none();
+        let selected = self.channel == Some(channel.id)
+            && self.member_view.is_none()
+            && !self.channel_browser_open;
         // The voice channel this client is in reads like a selected one, with a green speaker and a status line.
         let in_call = channel.kind == ChannelKind::Voice
             && self
@@ -5317,6 +5319,9 @@ impl Render for Root {
             // The docked voice chat is 450 wide with its 1px border.
             self.content_width = 450. - 2. - 112.;
         }
+        if self.channel_browser_open && self.channel.is_some() {
+            self.content_width = self.browser_preview_width() - 2. - 112.;
+        }
         let rows = list(
             self.list.clone(),
             cx.processor(|this, index, _, cx| this.row(index, cx)),
@@ -5335,6 +5340,10 @@ impl Render for Root {
             }))
             .capture_any_mouse_up(cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                 this.voice_mouse(event.button, false, cx);
+                this.end_browser_resize();
+            }))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                this.move_browser_resize(event, cx);
             }))
             .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
                 this.voice_key_up(&event.keystroke, cx);
@@ -5729,7 +5738,7 @@ impl Render for Root {
                 } else if self.guild_guide_open && self.guild.is_some() {
                     self.guild_guide_view(cx)
                 } else if self.channel_browser_open && self.guild.is_some() {
-                    self.channel_browser_view(window, cx)
+                    self.channel_browser_view(window, cx, rows.into_any_element())
                 } else if self.current_channel().is_some_and(Channel::is_forum) {
                     self.forum_view(cx)
                 } else {

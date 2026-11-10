@@ -1,4 +1,5 @@
 //! Member channel browser: 624186, 406997, 543465 and 816662.
+mod preview;
 use super::{Root, color, editor_style, icon};
 use crate::{
     editor::{Editor, EditorEvent},
@@ -20,6 +21,11 @@ const INTRO: u16 = 98;
 const NEW_BADGE: u16 = 133;
 const INTRO_ART: &str = "https://discord.com/assets/b755a73425584e3c.svg";
 const ONBOARDING: &str = "channel-browser:onboarding:";
+const INTRO_TITLE: &str = "Choose Your Channels";
+const INTRO_DESCRIPTION: &str =
+    "Customize what's on your channel list, so you see just the stuff you care about.";
+const INTRO_TIP: &str =
+    "Tip: Channels with mentions will always appear on your channel list, even if you hide them.";
 
 pub(super) struct Browser {
     guild: Id,
@@ -27,6 +33,9 @@ pub(super) struct Browser {
     _events: Subscription,
     query: String,
     scroll: ScrollHandle,
+    preview_width: f32,
+    resize_from: Option<(f32, f32)>,
+    action_focus: BTreeMap<Id, gpui::FocusHandle>,
 }
 
 fn has_prompts(guild: &Guild) -> bool {
@@ -184,8 +193,10 @@ impl Root {
             .as_ref()
             .map_or("", |browser| browser.query.as_str());
         format!(
-            "open={} followed={followed} sidebar={visible} query={query:?}",
-            self.channel_browser_open
+            "open={} preview={} width={} followed={followed} sidebar={visible} query={query:?}",
+            self.channel_browser_open,
+            self.channel_browser_open && self.channel.is_some(),
+            self.browser_preview_width()
         )
     }
 
@@ -338,10 +349,28 @@ impl Root {
                 _events: events,
                 query: String::new(),
                 scroll: ScrollHandle::new(),
+                preview_width: crate::storage::get("threadSidebarWidth")
+                    .and_then(|value| value.as_f64())
+                    .map_or(480., |width| (width as f32).clamp(450., 600.)),
+                resize_from: None,
+                action_focus: BTreeMap::new(),
             });
         }
         if !self.stores.content_dismissed(INTRO) {
             self.request_image(INTRO_ART.into(), INTRO_ART.into());
+        }
+        let channels: Vec<_> = self
+            .current_guild()
+            .into_iter()
+            .flat_map(|guild| guild.channels.iter().map(|channel| channel.id))
+            .collect();
+        if let Some(browser) = self.channel_browser.as_mut() {
+            for channel in channels {
+                browser
+                    .action_focus
+                    .entry(channel)
+                    .or_insert_with(|| cx.focus_handle());
+            }
         }
         if self.current_guild().is_some_and(|known| {
             legacy_selection(
@@ -504,20 +533,61 @@ impl Root {
     }
 
     fn browser_intro(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tip = gpui::StyledText::new("Tip: Channels with mentions will always appear on your channel list, even if you hide them.")
-            .with_highlights([(0..4, gpui::HighlightStyle { font_weight: Some(FontWeight(600.)), ..Default::default() })]);
-        let text = div().flex_1().min_w(px(0.))
-            .child(div().mb(px(8.)).text_size(px(20.)).line_height(px(24.)).font_weight(FontWeight(600.))
-                .text_color(color("--text-strong")).child("Choose Your Channels"))
-            .child(div().text_size(px(16.)).line_height(px(20.)).text_color(color("--text-default"))
-                .child("Customize what's on your channel list, so you see just the stuff you care about."))
-            .child(div().mt(px(4.)).text_size(px(16.)).line_height(px(20.)).text_color(color("--text-default")).child(tip));
+        // Pinned English NUX min-content width, measured in the 600px sidebar reference.
+        // Blink's nested flex intrinsic width includes more than the widest individual word.
+        let minimum = px(101.015625);
+        let piece = |text: &str, weight| {
+            self.piece(
+                &dc_markdown::Span {
+                    text: text.to_owned(),
+                    style: Default::default(),
+                    kind: dc_markdown::Kind::Text,
+                },
+                super::hsla("--text-default"),
+                16.,
+                weight,
+                16.,
+            )
+        };
+        let tip = crate::inline::inline(
+            vec![piece(&INTRO_TIP[..4], 600.), piece(&INTRO_TIP[4..], 400.)],
+            px(20.),
+        );
+        let description = crate::inline::inline(vec![piece(INTRO_DESCRIPTION, 400.)], px(20.));
+        let text = div()
+            .flex_shrink_1()
+            .min_w(minimum)
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(INTRO_TITLE),
+            )
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(description),
+            )
+            .child(
+                div()
+                    .mt(px(4.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(tip),
+            );
         let art = div()
             .w(px(180.))
-            .h(px(112.5))
+            .min_w(px(160.))
+            .aspect_ratio(1.6)
             .mb(px(-16.))
             .mr(px(24.))
-            .flex_none()
+            .flex_shrink_1()
             .children(
                 self.images
                     .get(INTRO_ART)
@@ -555,6 +625,7 @@ impl Root {
         channel: &Channel,
         first: bool,
         last: bool,
+        window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let parent_followed = channel.parent_id.is_some_and(|parent| {
@@ -578,6 +649,12 @@ impl Root {
             );
         let group = SharedString::from(format!("browser-channel-{}", channel.id));
         let (guild_id, channel_id) = (guild.id, channel.id);
+        let focus = self
+            .channel_browser
+            .as_ref()
+            .and_then(|browser| browser.action_focus.get(&channel_id))
+            .cloned();
+        let focused = focus.as_ref().is_some_and(|focus| focus.is_focused(window));
         let vocal = matches!(channel.kind, ChannelKind::Voice | ChannelKind::Other(13));
         let action = if vocal {
             "Join"
@@ -737,6 +814,7 @@ impl Root {
                             .id(SharedString::from(format!("browser-view-{channel_id}")))
                             .mr(px(16.))
                             .h(px(32.))
+                            .min_w(px(60.))
                             .px(px(12.))
                             .rounded(px(8.))
                             .bg(color("--white"))
@@ -749,19 +827,39 @@ impl Root {
                             .text_color(color("--black"))
                             .flex()
                             .hidden()
+                            .when(focused, |button| button.flex())
+                            .when_some(focus.clone(), |button, focus| button.track_focus(&focus))
                             .group_hover(group, |style| style.flex())
                             .items_center()
+                            .justify_center()
                             .child(action)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if vocal {
-                                    this.request_join_voice(guild_id, channel_id, cx);
-                                } else {
-                                    this.select(guild_id, Some(channel_id));
-                                    this.request_images();
-                                    cx.notify();
-                                }
-                            })),
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        this.activate_browser_channel(
+                                            guild_id,
+                                            channel_id,
+                                            event.keystroke.modifiers.shift,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(focus) = &focus {
+                                        window.focus(focus, cx);
+                                    }
+                                    this.activate_browser_channel(
+                                        guild_id,
+                                        channel_id,
+                                        event.modifiers().shift,
+                                        cx,
+                                    );
+                                },
+                            )),
                     )
                     .child(super::server_onboarding::checkbox(checked, parent_followed)),
             )
@@ -786,6 +884,7 @@ impl Root {
         &self,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
+        messages: AnyElement,
     ) -> AnyElement {
         let (Some(guild), Some(browser)) = (self.current_guild(), self.channel_browser.as_ref())
         else {
@@ -831,6 +930,9 @@ impl Root {
                 .justify_between()
                 .child(
                     div()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_size(px(20.))
                         .line_height(px(24.))
                         .font_weight(FontWeight(500.))
@@ -848,6 +950,7 @@ impl Root {
                     heading.child(
                         div()
                             .id(SharedString::from(format!("browser-category-{id}")))
+                            .min_w(px(0.))
                             .flex()
                             .items_center()
                             .gap(px(24.))
@@ -857,6 +960,7 @@ impl Root {
                             }))
                             .child(
                                 div()
+                                    .min_w(px(0.))
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .text_color(color("--text-default"))
@@ -879,6 +983,7 @@ impl Root {
                             channel,
                             index == 0,
                             index + 1 == count,
+                            window,
                             cx,
                         )),
                 );
@@ -888,7 +993,7 @@ impl Root {
         let search = browser.search.clone();
         let focused = search.read(cx).focus_handle(cx).is_focused(window);
         let border = if focused { 2. } else { 1. };
-        div()
+        let page = div()
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -1015,6 +1120,18 @@ impl Root {
                             .child(super::settings::auto_scrollbar(browser.scroll.clone())),
                     ),
             )
+            .into_any_element();
+        if self.channel.is_none() {
+            return page;
+        }
+        div()
+            .flex()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .child(page)
+            .child(self.browser_resize_handle(cx))
+            .child(self.browser_preview(messages, cx))
             .into_any_element()
     }
 }

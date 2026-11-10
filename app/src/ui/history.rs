@@ -47,7 +47,11 @@ impl Root {
     pub(super) fn route(&self) -> Route {
         Route {
             guild: self.guild,
-            channel: self.channel,
+            channel: if self.channel_browser_open {
+                None
+            } else {
+                self.channel
+            },
             nitro: self.nitro_open,
             guild_guide: self.guild_guide_open,
             channel_browser: self.channel_browser_open,

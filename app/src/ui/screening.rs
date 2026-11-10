@@ -202,6 +202,7 @@ impl Root {
                         div()
                             .ml(px(16.))
                             .flex_1()
+                            .min_w(px(0.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
@@ -210,6 +211,7 @@ impl Root {
                     .child(
                         div()
                             .id("screening-open")
+                            .flex_none()
                             .ml(px(12.))
                             .mr(px(12.))
                             .h(px(32.))
