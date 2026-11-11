@@ -242,7 +242,16 @@ impl Edit {
     pub(super) fn differs_from(&self, meta: &ClipMetadata, preset: &str) -> bool {
         let stored = meta.name.clone().filter(|name| !name.is_empty());
         let wanted = self.name.clone().filter(|name| !name.is_empty());
-        stored != wanted || meta.edit_metadata.as_ref() != Some(&self.edit_metadata(preset))
+        let edits_differ = match meta.edit_metadata.as_ref() {
+            Some(held) => held != &self.edit_metadata(preset),
+            // A clip that was never edited holds no `editMetadata`: the whole range with every track on is no change.
+            None => {
+                self.crop.start != 0.
+                    || self.crop.end != self.crop.duration
+                    || !(self.application_audio && self.voice_audio && self.soundboard_audio)
+            }
+        };
+        stored != wanted || edits_differ
     }
 }
 
@@ -423,5 +432,17 @@ mod tests {
         let mut detailed = meta();
         detailed.activity = Some(json!({"details": "Round 3"}));
         assert_eq!(title(&detailed), "Round 3");
+    }
+
+    #[test]
+    fn closing_a_clip_that_was_never_edited_writes_nothing() {
+        let original = meta();
+        let (mut edit, _) = Edit::of(&original, 12.);
+        assert!(!edit.differs_from(&original, "original"));
+        edit.crop.set_start(2.);
+        assert!(edit.differs_from(&original, "original"));
+        let (mut muted, _) = Edit::of(&original, 12.);
+        muted.voice_audio = false;
+        assert!(muted.differs_from(&original, "original"));
     }
 }

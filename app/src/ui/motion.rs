@@ -636,6 +636,13 @@ pub fn begin_view(view: gpui::EntityId) {
     });
 }
 
+/// The views that asked for another frame in their last render, and whether something drawn where no view was
+/// known is moving (the capture harness notifies them when it draws by hand).
+#[cfg(feature = "capture")]
+pub fn animating_views() -> (Vec<gpui::EntityId>, bool) {
+    with(|motion| (motion.active_views.iter().copied().collect(), motion.active))
+}
+
 /// The reads that follow belong to `view` (its rows are built after its render ended).
 pub fn enter_view(view: gpui::EntityId) {
     with(|motion| motion.view = Some(view));
@@ -1910,7 +1917,7 @@ pub(crate) async fn step(
     fn draw(cx: &mut gpui::AsyncApp, window: gpui::AnyWindowHandle) {
         cx.update(|cx| {
             let _ = window.update(cx, |_, window, cx| {
-                window.refresh();
+                super::regions::prepare_hand_draw(window, cx);
                 window.draw(cx).clear(cx);
             });
         });

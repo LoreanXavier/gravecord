@@ -4,7 +4,7 @@
 #
 #   tools/crawl-scoreboard.sh [spec.tsv] [out dir] [modes] [only]
 #
-# spec.tsv: name<TAB>setup steps (| between steps)<TAB>steps that return to the screen (| between steps)<TAB>expect
+# spec.tsv: name<TAB>setup steps (| between steps)<TAB>steps that return to the screen (| between steps)<TAB>expect<TAB>extra crawl arguments (optional, such as --rest 700 300 --neutral 0 0)
 #           expect: a parity id or visible text (_ for a space) the screen must show; the row says "setup failed" if it
 #           does not, and a crawl that loses the screen stops
 # modes:    click (default), right, hover, or several joined with commas
@@ -28,7 +28,7 @@ cd "$ROOT" && target/debug/xtask.exe headless "target/debug/$NAME" --capture "$O
 stop() { echo quit >> "$FOLLOW"; sleep 3; taskkill //F //IM "$NAME" > /dev/null 2>&1; }
 trap stop EXIT
 sleep 6
-while IFS=$'\t' read -r name setup nav expect; do
+while IFS=$'\t' read -r name setup nav expect extra; do
   [ -z "$name" ] && continue
   [[ "$name" == \#* ]] && continue
   [[ "$name" =~ $ONLY ]] || continue
@@ -40,8 +40,8 @@ while IFS=$'\t' read -r name setup nav expect; do
     echo "wait 1200" >> "$FOLLOW"
     neutral=""
     # A press on a blank spot between elements would close a popout, so popout screens (p_*) do not make one.
-    [[ "$name" == p_* ]] && neutral="--neutral 0 0"
-    echo "crawl $mode $dirw ${CRAWL_RANGE} $neutral ${expect:+--expect $expect} --nav ${nav}" >> "$FOLLOW"
+    [[ "$name" =~ ^(p|m|d|v|ss|cs)_ ]] && neutral="--neutral 0 0"
+    echo "crawl $mode $dirw ${CRAWL_RANGE} $neutral ${expect:+--expect $expect} $extra --nav ${nav}" >> "$FOLLOW"
     last=-1; idle=0
     while true; do
       sleep 2

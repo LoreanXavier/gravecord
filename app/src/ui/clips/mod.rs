@@ -1,20 +1,20 @@
 //! The parts of Clips the person sees besides the settings page: the Quick Bar above the account panel, the gallery
 //! modal and the editor inside it (modules 596339, 657766, 423699). The capture and the save are
 //! `settings::clips::engine`.
-//!
-//! The editor is reachable only through the harness until the Quick Bar opens it, so the normal build sees its code as
-//! unused. This allowance goes away when the Quick Bar's thumbnails open the editor.
-#![cfg_attr(not(feature = "capture"), allow(dead_code))]
 mod actions;
 mod editor;
 mod editor_view;
+mod gallery;
+mod gallery_view;
 mod model;
 mod panels;
 mod player;
+mod reminder;
 mod widgets;
 
 use super::*;
 pub(in crate::ui) use actions::ShareClip;
+pub(in crate::ui) use gallery::Facet;
 use gpui::deferred;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -41,6 +41,8 @@ pub(in crate::ui) struct State {
     pub confirm_delete: Option<String>,
     /// The editor's More menu.
     pub menu: actions::Menu,
+    /// The reminder panel store (module 468550).
+    pub reminder: Option<reminder::Reminder>,
 }
 
 /// The gallery modal: the editor panel slides over the gallery grid. Opened straight into the editor (the Quick Bar's
@@ -49,12 +51,15 @@ pub(in crate::ui) struct State {
 pub(in crate::ui) struct Modal {
     pub editor: Option<editor::Editor>,
     pub direct: bool,
+    /// The gallery behind the editor; none when the modal opened straight into the editor.
+    pub gallery: Option<gallery::State>,
 }
 
 impl Root {
     /// Runs once a second beside the capture sync: the Quick Bar closes when it has nothing to show (module 596339
     /// `I7`: it calls `closeQuickBar()` unless it is open, reminders are on and the game has clips).
     pub(in crate::ui) fn clips_ui_tick(&mut self, cx: &mut Context<Self>) {
+        self.clips_reminder_tick(cx);
         if self.clips.engine.ui.quick_bar_open && !self.clips_quick_bar_has_clips() {
             self.clips.engine.ui.quick_bar_open = false;
             cx.notify();
@@ -82,6 +87,7 @@ impl Root {
         self.clips.engine.ui.modal = Some(Modal {
             editor: Some(editor),
             direct: true,
+            gallery: None,
         });
         self.clips_start_polling(cx);
         cx.notify();
@@ -156,6 +162,36 @@ impl Root {
                 self.clips.engine.ui.last_write,
                 self.clips.engine.ui.last_export
             )),
+            ["gallery", rest @ ..] => {
+                let facet = match rest.first() {
+                    None | Some(&"all") => Facet::All,
+                    Some(&"favourites") => Facet::Favorites,
+                    Some(game) => Facet::Game((*game).to_owned()),
+                };
+                self.clips_open_gallery(facet, cx);
+                Some("gallery".to_owned())
+            }
+            ["appid", id] => {
+                if let Some(game) = self.clips.engine.game.as_mut() {
+                    game.application_id = Some((*id).to_owned());
+                }
+                Some(format!("appid {id}"))
+            }
+            ["reminder", "open", id] => {
+                self.clips_session_stop(Some((*id).to_owned()), cx);
+                Some(format!("reminder {}", self.clips_reminder_open()))
+            }
+            ["reminder", "age", ms] => {
+                if let (Some(reminder), Ok(ms)) =
+                    (self.clips.engine.ui.reminder.as_mut(), ms.parse::<f64>())
+                {
+                    reminder.opened_at = motion::now() - ms;
+                    reminder.paused_ms = 0.;
+                }
+                Some("reminder aged".to_owned())
+            }
+            ["reminder"] => Some(format!("reminder open {}", self.clips_reminder_open())),
+            ["grid"] => Some(self.clips_grid_status()),
             ["close"] => {
                 self.close_clips_modal(cx);
                 Some("closed".to_owned())
@@ -193,6 +229,21 @@ impl Root {
             cx.notify();
             return true;
         }
+        let grid_only = self
+            .clips
+            .engine
+            .ui
+            .modal
+            .as_ref()
+            .is_some_and(|modal| modal.editor.is_none());
+        if grid_only {
+            // The grid: Escape closes the modal.
+            if escape {
+                self.close_clips_modal(cx);
+                return true;
+            }
+            return false;
+        }
         self.clips_editor_key(event, window, cx)
     }
 
@@ -224,9 +275,10 @@ impl Root {
         let modal = self.clips.engine.ui.modal.as_ref()?;
         let (width, height, full) = modal_size(self.viewport);
         let pose = motion::modal_pose(MODAL_ID);
-        let content = match modal.editor.as_ref() {
-            Some(editor) => self.clips_editor_view(editor, (width, height), window, cx),
-            None => div().into_any_element(),
+        let content = match (modal.editor.as_ref(), modal.gallery.as_ref()) {
+            (Some(editor), _) => self.clips_editor_view(editor, (width, height), window, cx),
+            (None, Some(state)) => self.clips_gallery_view(state, (width, height), cx),
+            (None, None) => div().into_any_element(),
         };
         let shell = div()
             .id(MODAL_ID)

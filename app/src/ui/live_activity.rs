@@ -201,7 +201,7 @@ impl Root {
             .any(|a| !a["timestamps"].is_null() || !a["created_at"].is_null())
         {
             Some(Duration::from_secs(
-                if !self.notification_focused || self.pref_on("reduced_motion", false) {
+                if !self.notification_focused || crate::ui::motion::reduced() {
                     15
                 } else {
                     1

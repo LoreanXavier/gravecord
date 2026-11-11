@@ -318,6 +318,18 @@ impl Stored {
     }
 }
 
+/// The keys `Stored` holds (`voice_setting_changed`).
+const STORED_KEYS: [&str; 8] = [
+    PROFILE,
+    SENSITIVITY,
+    ADVANCED,
+    PUSH_TO_TALK,
+    NOISE,
+    ECHO,
+    AGC,
+    super::render::ROOM_ECHO_KEY,
+];
+
 /// Gives the processors the effective values (`t6`, `ns`). Every mode push lets go of push to talk first, as
 /// `t6` does through 140175.
 fn push(effective: &Effective) {
@@ -850,7 +862,23 @@ fn small_button(text: &'static str, background: Rgba, border: Rgba, foreground: 
         .child(text)
 }
 
+/// The open flag of the page's selects (device lists, camera list) in the layer system: Escape closes the list
+/// before the settings window (`keyboard/layers.rs`: every `/open` choice is a select layer).
+const SELECT_OPEN: &str = "voice_select/open";
+
 impl Root {
+    /// Mirrors the lists' open state into the layer system.
+    pub(in crate::ui) fn voice_sync_select_flag(&mut self) {
+        let open = self.voice.device_open.is_some() || self.voice.camera.open;
+        self.setting_choices.insert(SELECT_OPEN, Choice::On(open));
+    }
+
+    /// Escape or an outside press closed the select layer: the lists follow.
+    pub(in crate::ui) fn voice_selects_closed_by_layer(&mut self) {
+        self.voice.device_open = None;
+        self.voice.camera.open = false;
+    }
+
     fn voice_custom_profile(&self) -> bool {
         self.voice.stored.profile == Profile::Custom
     }
@@ -866,6 +894,10 @@ impl Root {
             extra::ATTENUATION_SET => extra::attenuation_shown(),
             // `usePredicate`: the strength only while Stream Attenuation is on.
             extra::STREAM_ATTEN_STRENGTH => self.voice.extra.stream_attenuation,
+            // `usePredicate` of the Video Background row (module 463951): a device with a video filter. The
+            // backgrounds are not drawn by this client (voice_camera.rs), so the section never shows: a grid whose
+            // choices change nothing would be a lie, and without a camera the official one is hidden too.
+            "camera_background_setting" => false,
             _ => true,
         }
     }
@@ -940,7 +972,8 @@ impl Root {
             return;
         }
         self.system_setting_changed(key, on);
-        if self.pref_changed(key, on, index) {
+        // The voice store owns these keys; `pref_changed` would otherwise keep them as generic rows that only flip.
+        if !STORED_KEYS.contains(&key) && self.pref_changed(key, on, index) {
             self.setting_applied(key);
             return;
         }
@@ -1062,6 +1095,7 @@ impl Root {
             self.voice.recording = false;
             self.voice.device_open = None;
             self.voice.camera.open = false;
+            self.voice_sync_select_flag();
             if self.voice.camera.test.is_some() {
                 self.camera_test_stop(cx);
             }
@@ -1566,6 +1600,8 @@ impl Root {
                 let direction = match event.keystroke.key.as_str() {
                     "left" | "down" => -1,
                     "right" | "up" => 1,
+                    "home" => -1_000_000,
+                    "end" => 1_000_000,
                     _ => return,
                 };
                 this.nudge_slider(key, direction, cx);
@@ -1703,6 +1739,9 @@ impl Root {
                     let direction = match event.keystroke.key.as_str() {
                         "left" | "down" => -1,
                         "right" | "up" => 1,
+                        // Home and End go to the first and last stop; `nudge_slider` clamps.
+                        "home" => -1_000_000,
+                        "end" => 1_000_000,
                         _ => return,
                     };
                     this.nudge_slider(key, direction, cx);
@@ -2086,6 +2125,7 @@ impl Root {
                     this.voice.devices = Devices::read();
                     this.voice.device_open = Some(side);
                 }
+                this.voice_sync_select_flag();
                 cx.notify();
             }))
             .child(
@@ -2144,6 +2184,7 @@ impl Root {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_device(side, device.clone(), cx);
                             this.voice.device_open = None;
+                            this.voice_sync_select_flag();
                             cx.notify();
                         }))
                         .child(mask_icon(icon, 20., tint))
@@ -2216,6 +2257,7 @@ impl Root {
                             .overflow_hidden()
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.voice.device_open = None;
+                                this.voice_sync_select_flag();
                                 cx.notify();
                             }))
                             .child(div().flex().flex_col().children(rows)),

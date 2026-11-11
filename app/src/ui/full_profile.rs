@@ -549,7 +549,19 @@ impl Root {
         let header = div()
             .relative()
             .h(px(220.))
-            .child(div().h(px(140.)).rounded_t(px(16.)).bg(palette.top))
+            .child(
+                div()
+                    .h(px(140.))
+                    .rounded_t(px(16.))
+                    .overflow_hidden()
+                    .relative()
+                    .bg(palette.top)
+                    .children(
+                        self.profile_banner_image(id)
+                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    )
+                    .children(self.live_banner(id, 400., 140., cx)),
+            )
             .child(
                 div()
                     .absolute()

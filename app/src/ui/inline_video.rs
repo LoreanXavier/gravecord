@@ -391,7 +391,7 @@ impl Root {
     }
 
     pub(super) fn prepare_inline_videos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let autoplay = self.pref_on("animate_gifs", true) && !self.pref_on("reduced_motion", false);
+        let autoplay = self.pref_on("animate_gifs", true) && !crate::ui::motion::reduced();
         let work = self
             .inline_videos
             .borrow_mut()

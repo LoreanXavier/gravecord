@@ -581,6 +581,7 @@ impl Root {
                         },
                     ),
             );
+        let cover = super::settings::client_theme::surface_cover(12.);
         Some(
             div()
                 .when(first, |d| d.parity_with_border("inventory-card", 1.))
@@ -598,16 +599,21 @@ impl Root {
                 .flex_none()
                 .p(px(8.))
                 .rounded(px(12.))
-                .bg(color(if self.inventory_popout_open(id) {
-                    "--interactive-background-selected"
+                .bg(if cover.is_some() && !self.inventory_popout_open(id) {
+                    gpui::rgba(0)
                 } else {
-                    "--background-surface-high"
-                }))
+                    color(if self.inventory_popout_open(id) {
+                        "--interactive-background-selected"
+                    } else {
+                        "--background-surface-high"
+                    })
+                })
                 .border_1()
                 .border_color(color("--border-muted"))
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .children(cover)
                 .child(self.anchor_probe(format!("inventory-card-{id}")))
                 .child(info)
                 .child(

@@ -242,6 +242,13 @@ impl Root {
                 ),
                 None => "visible game none".to_owned(),
             });
+            // `CLIPS_SESSION_STOP` / `CLIPS_SESSION_START` (module 516130): the game that was running offers its clips,
+            // and a session that starts with no game before it closes the panel.
+            let previous = self.clips.engine.game.take();
+            match previous.and_then(|previous| previous.application_id) {
+                Some(id) => self.clips_session_stop(Some(id), cx),
+                None => self.clips_session_start(cx),
+            }
             self.clips.engine.game = game;
         }
         self.clips_ensure_ticking(cx);

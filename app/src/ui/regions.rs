@@ -351,7 +351,7 @@ impl Regions {
             move |bounds, window, _| {
                 let height = f32::from(bounds.size.height);
                 size.measured.set(height);
-                if (height - size.used.get()).abs() > 0.5
+                if (height - size.used.get()).abs() > 0.01
                     && size.used.get() > 0.
                     && let Some(root) = IDS.with(|ids| ids.borrow().0)
                 {
@@ -364,5 +364,56 @@ impl Regions {
         .top_0()
         .left_0()
         .size_full()
+    }
+}
+
+/// Redraws the main view and every region: for a change of how things look that no state of the main view carries
+/// (a global such as the theme, the saturation, the zoom or a reduced-motion switch). The regions reuse their last
+/// frame until they are notified, so whatever changes a global the regions read calls this.
+pub(crate) fn invalidate_all(cx: &mut App) {
+    if let Some(root) = IDS.with(|ids| ids.borrow().0) {
+        cx.notify(root);
+    }
+    notify_all(cx);
+}
+
+thread_local! {
+    /// What the globals the regions read looked like at the last render of the main view.
+    static LOOK: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Called each render of the main view with a key of the globals the regions read (theme, saturation, zoom, motion
+/// preference, window activity, high contrast, the client theme). A key that differs from the last redraws every
+/// region on the next frame, so a global that changed without a notify of the main view is never left stale.
+pub(crate) fn sync_look(key: u64, window: &mut Window) {
+    let before = LOOK.with(|look| look.replace(Some(key)));
+    if before.is_some_and(|before| before != key) {
+        window.on_next_frame(|_, cx| invalidate_all(cx));
+    }
+}
+
+/// Whether a harness draw leaves the regions' cached frames alone (`GRAVECORD_NATURAL_DRAW=1`), as the window's own
+/// frames do, instead of forcing every view to render again.
+#[cfg(feature = "capture")]
+pub(crate) fn natural_draw() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("GRAVECORD_NATURAL_DRAW").as_deref() == Ok("1"))
+}
+
+/// What the harness does before it draws a frame by hand. By default every view renders again. A natural draw
+/// redraws only the views the window itself would: the dirty ones, and the ones that asked for another frame (the
+/// next-frame callbacks a window runs between two draws are not run by a hand draw, so they are notified here).
+#[cfg(feature = "capture")]
+pub(crate) fn prepare_hand_draw(window: &mut Window, cx: &mut App) {
+    if !natural_draw() {
+        window.refresh();
+        return;
+    }
+    let (views, everywhere) = motion::animating_views();
+    for view in views {
+        cx.notify(view);
+    }
+    if everywhere {
+        invalidate_all(cx);
     }
 }

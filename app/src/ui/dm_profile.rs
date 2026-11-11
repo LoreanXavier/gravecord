@@ -170,46 +170,59 @@ impl Root {
                 format!("{count} {many}")
             }
         };
-        let header =
-            div()
-                .relative()
-                .h(px(144.))
-                .mb(px(8.))
-                .child(div().h(px(105.)).rounded_t(px(6.)).bg(banner))
-                .child(
-                    // `avatar_WRLIGC clickable`: "View Full Profile".
-                    div()
-                        .id("dm-profile-avatar")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_full_profile(user_id, window, cx)
-                        }))
-                        .absolute()
-                        .left(px(8.))
-                        .top(px(49.))
-                        .size(px(92.))
-                        .rounded_full()
-                        .bg(palette.top)
-                        .child(
-                            div()
-                                .size(px(92.))
-                                .rounded_full()
-                                .bg(palette.overlay)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .relative()
-                                        .size(px(80.))
-                                        .rounded_full()
-                                        .children(avatar.map(|picture| {
+        let header = div()
+            .relative()
+            .h(px(144.))
+            .mb(px(8.))
+            .child(
+                div()
+                    .h(px(105.))
+                    .rounded_t(px(6.))
+                    .overflow_hidden()
+                    .relative()
+                    .bg(banner)
+                    .children(
+                        self.profile_banner_image(user_id)
+                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    )
+                    .children(self.live_banner(user_id, 300., 105., cx)),
+            )
+            .child(
+                // `avatar_WRLIGC clickable`: "View Full Profile".
+                div()
+                    .id("dm-profile-avatar")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_full_profile(user_id, window, cx)
+                    }))
+                    .absolute()
+                    .left(px(8.))
+                    .top(px(49.))
+                    .size(px(92.))
+                    .rounded_full()
+                    .bg(palette.top)
+                    .child(
+                        div()
+                            .size(px(92.))
+                            .rounded_full()
+                            .bg(palette.overlay)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .relative()
+                                    .size(px(80.))
+                                    .rounded_full()
+                                    .children(
+                                        avatar.map(|picture| {
                                             img(picture).size(px(80.)).rounded_full()
-                                        }))
-                                        .child(status_dot_large(&presence, "--black")),
-                                ),
-                        ),
-                );
+                                        }),
+                                    )
+                                    .child(status_dot_large(&presence, "--black")),
+                            ),
+                    ),
+            );
         // The banner buttons sit above the profile effect (z-index 3 against the effect's 2), so they are drawn after it.
         let banner_buttons = div()
             .absolute()

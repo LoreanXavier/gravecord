@@ -50,6 +50,8 @@ mod composer_plus;
 #[cfg(feature = "capture")]
 mod content_demo;
 mod context_menu;
+#[cfg(feature = "capture")]
+mod crawl_reset;
 mod create_channel;
 mod dm;
 mod dm_profile;
@@ -97,6 +99,8 @@ mod unread_badges;
 mod unread_dms;
 mod update_button;
 pub use logout::RootEvent;
+#[cfg(feature = "capture")]
+mod avatar_demo;
 mod avatar_play;
 mod channel_browser;
 mod discover;
@@ -286,7 +290,9 @@ fn desaturated(colour: Rgba, factor: f32) -> Rgba {
 }
 
 fn color(name: &str) -> Rgba {
-    let colour = settings::client_theme::overlay(name).unwrap_or_else(|| rgba(theme().color(name)));
+    let colour = settings::client_theme::overlay(name)
+        .or_else(|| settings::client_theme::high_contrast(name, theme()))
+        .unwrap_or_else(|| rgba(theme().color(name)));
     let factor = saturation();
     if factor < 1. {
         desaturated(colour, factor)
@@ -1063,7 +1069,7 @@ impl Root {
             Update::ClipSaveKey => self.clips_save_key(cx),
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
-            Update::AuthFailed => {}
+            Update::AuthFailed | Update::TokenRenewed(_) => {}
             Update::Fetched { key, body } => {
                 if key.starts_with(role_popout::IDS_PREFIX)
                     || key.starts_with(role_popout::COUNTS_PREFIX)
@@ -1076,6 +1082,10 @@ impl Root {
                 }
                 if key == settings::SESSIONS_LOGOUT_KEY {
                     self.sessions_logout_answered(&body);
+                    return;
+                }
+                if key == settings::ACCOUNT_USERNAME_KEY {
+                    self.username_check_answered(&body, cx);
                     return;
                 }
                 if key == settings::ACCOUNT_FORM_KEY {
@@ -1960,6 +1970,21 @@ impl Root {
                                         .items_center()
                                         .min_w(px(0.))
                                         .h(px(20.))
+                                        // "Next to names" (`roleStyle` "dot"): the role's dot before the name, 4px
+                                        // clear of it (`.roleDot` 790340).
+                                        .children(
+                                            (self.pref_index("role_style", 0) == 1)
+                                                .then(|| self.role_color_of(user.id))
+                                                .flatten()
+                                                .map(|rgb| {
+                                                    div()
+                                                        .flex_none()
+                                                        .size(px(8.))
+                                                        .mr(px(4.))
+                                                        .rounded_full()
+                                                        .bg(gpui::rgb(rgb))
+                                                }),
+                                        )
                                         .child(
                                             div()
                                                 .min_w(px(0.))
@@ -2042,7 +2067,7 @@ impl Root {
         div()
             .parity("members")
             .flex_none()
-            .w(px(264.))
+            .w(px(self.member_list_width()))
             .h_full()
             // A colour theme's chat layer behind it is the member list's own (the official repaints one layer).
             .when(settings::client_theme::active().is_none(), |panel| {
@@ -2646,7 +2671,11 @@ impl Root {
                     FontStyle::Normal
                 };
                 Piece {
-                    text: span.text.clone(),
+                    // The reply preview shows a mention as its resolved `@name`, never the raw `<@id>`.
+                    text: match span.kind {
+                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) => self.span_label(span),
+                        _ => span.text.clone(),
+                    },
                     font: run_font,
                     size: if style.code { px(11.9) } else { px(14.) },
                     color: color_value,
@@ -2937,8 +2966,12 @@ impl Root {
         let counts = self.guild_rail_counts(guild);
         let image = self.images.get(&format!("guild:{id}")).cloned();
         let row_key = format!("guild-{id}");
+        // An animated icon plays while the pointer is over its rail item (`live_guild_icon`).
+        let hover_key = format!("rail-guild:{id}");
+        let live = self.live_guild_icon(guild, self.avatar_hovered(&hover_key), cx);
         let tile = div()
             .id(SharedString::from(format!("guild-{id}")))
+            .on_hover(self.avatar_hover(hover_key, cx))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -2957,9 +2990,10 @@ impl Root {
             .child(self.anchor_probe(format!("stop-guild-{id}")))
             .on_click(cx.listener(move |this, _, _, cx| this.go_guild(id, cx)));
         let tile = self.group_stop(tile, "rail", keyboard::Nav::List, &row_key, selected, cx);
-        let tile = match image {
-            Some(image) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
-            None => tile
+        let tile = match (live, image) {
+            (Some(live), _) => tile.child(live),
+            (None, Some(image)) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
+            (None, None) => tile
                 // `childWrapper_JJ-hgR`: brand coloured while hovered or selected, over .15s.
                 .bg(motion::rail::tile_background(
                     &row_key,
@@ -3113,6 +3147,31 @@ impl Root {
         }
     }
 
+    /// "UI Density" (`uiDensity`, the `.density-*` classes of the root): the member list is 256px wide at Compact, 264px
+    /// by default and 268px at Spacious (`--custom-member-list-width`, stylesheet 419070).
+    fn member_list_width(&self) -> f32 {
+        [256., 264., 268.][self.pref_index("appearance_ui_density", 1).min(2)]
+    }
+
+    /// `--custom-category-channel-space-before-category`: 16px, `--space-8` at Compact.
+    fn category_space_before(&self) -> f32 {
+        if self.pref_index("appearance_ui_density", 1) == 0 {
+            8.
+        } else {
+            16.
+        }
+    }
+
+    /// `--channels-name-line-height` is 24px, 28px at Spacious (stylesheet 952007); a channel row is that line plus the
+    /// link's 4px padding above and below. Compact's 20px stays under the 24px icon, so its rows keep their height.
+    fn name_line_extra(&self) -> f32 {
+        if self.pref_index("appearance_ui_density", 1) == 2 {
+            4.
+        } else {
+            0.
+        }
+    }
+
     fn channel_row(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
         if channel.kind == ChannelKind::Category {
             let collapsed = self.guild.is_some_and(|guild| {
@@ -3147,8 +3206,9 @@ impl Root {
                 )
                 .flex_none()
                 .group(SharedString::from(format!("category-group-{category}")))
-                .pt(px(16.))
-                .h(px(40.))
+                // `--custom-category-channel-space-before-category`: 16px, 8px at Compact (stylesheet 419070).
+                .pt(px(self.category_space_before()))
+                .h(px(self.category_space_before() + 24.))
                 .pl(px(16.))
                 .pr(px(17.))
                 .cursor_pointer()
@@ -3315,7 +3375,11 @@ impl Root {
         div()
             .flex_none()
             .relative()
-            .h(px(if in_call { 50. } else { 34. }))
+            .h(px(if in_call {
+                50.
+            } else {
+                34. + self.name_line_extra()
+            }))
             .pt(px(1.))
             .pl(px(8.))
             .when(unread, |this| {
@@ -3374,7 +3438,11 @@ impl Root {
                     }
                 }))
                 .group(group)
-                .h(px(if in_call { 48. } else { 32. }))
+                .h(px(if in_call {
+                    48.
+                } else {
+                    32. + self.name_line_extra()
+                }))
                 .w(px(286.))
                 .pl(px(8.))
                 .pr(px(8.))
@@ -3395,7 +3463,11 @@ impl Root {
                 .child(
                     div()
                         .w_full()
-                        .h(px(if in_call { 24. } else { 32. }))
+                        .h(px(if in_call {
+                            24.
+                        } else {
+                            32. + self.name_line_extra()
+                        }))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -6691,11 +6763,25 @@ impl Render for Root {
             self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
         );
         // The name styles read the accessibility switches from here.
-        name_styles::set_preferences(
-            self.pref_on("display_name_styles", true),
-            self.pref_on("reduced_motion", false),
-        );
+        name_styles::set_preferences(self.pref_on("display_name_styles", true), motion::reduced());
         name_styles::pump(cx);
+        // The regions reuse their frame until notified: a global they read that changed without a notify of this
+        // view redraws them on the next frame.
+        regions::sync_look(
+            motion::key(&(
+                theme() as u8,
+                saturation().to_bits(),
+                self.zoom_factor().to_bits(),
+                motion::reduced(),
+                window.is_window_active(),
+                self.pref_on("high_contrast_mode", false),
+                self.pref_on("display_name_styles", true),
+                settings::client_theme::active().map(|swatch| swatch.name),
+                settings::client_theme::previewing(),
+                self.pref_index(settings::prefs::TIME_FORMAT, 0),
+            )),
+            window,
+        );
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.sync_voice_page(cx);
@@ -6723,7 +6809,7 @@ impl Render for Root {
         } else if self.current_dm().is_some() && self.show_dm_profile {
             320.
         } else if self.show_members && self.guild.is_some() {
-            264.
+            self.member_list_width()
         } else {
             0.
         };
@@ -7482,6 +7568,7 @@ impl Render for Root {
             .children(self.clips_modal(window, cx))
             .children(self.clips_delete_modal(cx))
             .children(self.clips_menu_layer(window, cx))
+            .children(self.clips_card_menu_layer(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))

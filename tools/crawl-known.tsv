@@ -1,1 +1,2 @@
 # screen<TAB>regex matched against a result line<TAB>why it is accepted (official does nothing, or the missing feature)
+p_inbox	text="Unreads"	the open tab of the inbox: official tabs are selected with a fill that is not translucent here, pressing the current tab does nothing

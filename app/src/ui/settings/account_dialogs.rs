@@ -17,6 +17,10 @@ use gpui::{
 use serde_json::{Value, json};
 
 pub(in crate::ui) const FORM_KEY: &str = "settings-account-form";
+/// The availability check of the username field.
+pub(in crate::ui) const USERNAME_KEY: &str = "settings-account-username-check";
+/// `debounce(..., 800)` of the check (module 576326).
+const USERNAME_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(800);
 /// `NC.d.USER_SETTINGS_UPDATE` (module 557722).
 const PHONE_REASON: &str = "user_settings_update";
 /// `INVALID_PASSWORD` (module 652215 `t02`).
@@ -169,9 +173,44 @@ pub(in crate::ui) fn username_problem(username: &str) -> Option<&'static str> {
     } else if username.contains("..") {
         Some("Username cannot contain repeating dots.")
     } else if username.chars().count() < 2 || username.chars().count() > 32 {
-        Some("Must be between 2 and 32 in length.")
+        Some("This must be 2-32 characters.")
     } else {
         None
+    }
+}
+
+/// `PgfBSx`, `mCrAUb` and `T15lqn`: what the availability check says.
+pub(in crate::ui) const USERNAME_AVAILABLE: &str = "Username is available. Nice!";
+const USERNAME_TAKEN: &str =
+    "Username is unavailable. Try adding numbers, letters, underscores _ , or periods.";
+const USERNAME_RATE_LIMIT: &str = "Too fast! Wait a bit and try again.";
+
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum Verdict {
+    Available,
+    Problem(String),
+}
+
+/// `UNIQUE_USERNAME_ATTEMPT_SUCCESS` / `_FAILURE` as the validation hook reads them: `{taken}` says yes or no; a 429
+/// is the rate limit; another status under 500 (not 401) shows the server's own message; the rest shows nothing.
+pub(in crate::ui) fn username_verdict(answer: &Value) -> Option<Verdict> {
+    if answer["refused"].as_bool() == Some(true) {
+        return None;
+    }
+    if answer["ok"].as_bool() == Some(true) {
+        return Some(match answer["body"]["taken"].as_bool() {
+            Some(true) => Verdict::Problem(USERNAME_TAKEN.to_owned()),
+            Some(false) => Verdict::Available,
+            None => return None,
+        });
+    }
+    match answer["status"].as_u64() {
+        Some(429) => Some(Verdict::Problem(USERNAME_RATE_LIMIT.to_owned())),
+        Some(status) if (1..500).contains(&status) && status != 401 => {
+            let message = answer["body"]["message"].as_str()?;
+            Some(Verdict::Problem(message.to_owned()))
+        }
+        _ => None,
     }
 }
 
@@ -215,6 +254,8 @@ pub(in crate::ui) struct Field {
     revealable: bool,
     shown: bool,
     error: Option<String>,
+    /// The positive message under the box (`successMessage` of module 452027).
+    success: Option<String>,
     helper: Option<&'static str>,
     leading: Option<&'static str>,
     width: Option<f32>,
@@ -235,6 +276,9 @@ pub(in crate::ui) struct Form {
     pub last: Option<String>,
     /// The first field takes the focus on the next frame.
     focus_pending: bool,
+    /// The debounce of the username check, and the name the request in flight asked about.
+    check_wait: Option<gpui::Task<()>>,
+    check_asked: String,
 }
 
 /// The reasons of module 162282 in `FL` order, with the strings `naBTFO`, `LQ0RUP`, `oOqQjw`, `p38n1b`.
@@ -293,6 +337,7 @@ impl Root {
             revealable: secret,
             shown: false,
             error: None,
+            success: None,
             helper: None,
             leading: None,
             width: None,
@@ -314,6 +359,8 @@ impl Root {
             new_email: String::new(),
             last: None,
             focus_pending: false,
+            check_wait: None,
+            check_asked: String::new(),
         };
         let verified = self.stores.account.verified && self.stores.account.email.is_some();
         let has_phone = self.stores.account.phone.is_some();
@@ -429,9 +476,75 @@ impl Root {
             && digits(&form.text("code", cx)).len() >= 6
             && !form.working;
         form.set_error(name, None);
+        if let Some(field) = form.fields.iter_mut().find(|f| f.name == name) {
+            field.success = None;
+        }
+        if form.step == Step::Username && name == "username" {
+            // `useUsernameValidation` (module 576326): after 800 ms without typing, a name that is not empty and
+            // not the current one is checked.
+            let typed = form.text("username", cx);
+            let current = self
+                .stores
+                .current_user
+                .as_ref()
+                .map(|user| user.username.clone())
+                .unwrap_or_default();
+            let form = self.settings_extra.form.as_mut().expect("form");
+            form.check_wait = None;
+            if !typed.is_empty() && typed != current {
+                form.check_wait = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(USERNAME_DEBOUNCE).await;
+                    this.update(cx, |root, cx| root.username_check(typed, cx))
+                        .ok();
+                }));
+            }
+        }
         if complete {
             self.account_form_submit(cx);
         }
+    }
+
+    /// The debounce ran out: the rules of `attemptUsername` first, then `POST /users/@me/pomelo-attempt`.
+    fn username_check(&mut self, typed: String, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        if form.step != Step::Username || form.text("username", cx) != typed {
+            return;
+        }
+        if let Some(problem) = username_problem(&typed) {
+            form.set_error("username", Some(problem.to_owned()));
+            cx.notify();
+            return;
+        }
+        form.check_asked = typed.clone();
+        let _ = self.requests.send(Request::Rest {
+            key: Some(USERNAME_KEY.to_owned()),
+            method: reqwest::Method::POST,
+            route: "/users/@me/pomelo-attempt".to_owned(),
+            body: Some(json!({"username": typed})),
+        });
+    }
+
+    /// The answer of the availability check, for the name still in the box.
+    pub(in crate::ui) fn username_check_answered(&mut self, body: &Value, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        if form.step != Step::Username || form.text("username", cx) != form.check_asked {
+            return;
+        }
+        match username_verdict(body) {
+            Some(Verdict::Available) => {
+                if let Some(field) = form.fields.iter_mut().find(|f| f.name == "username") {
+                    field.error = None;
+                    field.success = Some(USERNAME_AVAILABLE.to_owned());
+                }
+            }
+            Some(Verdict::Problem(message)) => form.set_error("username", Some(message)),
+            None => {}
+        }
+        cx.notify();
     }
 
     /// The primary button or Enter.
@@ -1093,13 +1206,38 @@ impl Root {
                             .child(message.clone()),
                     )
             }))
-            .children(field.helper.filter(|_| field.error.is_none()).map(|help| {
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(16.))
-                    .text_color(color("--text-subtle"))
-                    .child(help)
-            }))
+            .children(
+                field
+                    .success
+                    .as_ref()
+                    .filter(|_| field.error.is_none())
+                    .map(|message| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("circle_check", 16., "--text-feedback-positive"))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-feedback-positive"))
+                                    .child(message.clone()),
+                            )
+                    }),
+            )
+            .children(
+                field
+                    .helper
+                    .filter(|_| field.error.is_none() && field.success.is_none())
+                    .map(|help| {
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-subtle"))
+                            .child(help)
+                    }),
+            )
             .into_any_element()
     }
 }
@@ -1107,6 +1245,54 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_username_check_reads_its_answers_like_the_bundle() {
+        let taken = json!({"ok": true, "status": 200, "body": {"taken": true}});
+        let free = json!({"ok": true, "status": 200, "body": {"taken": false}});
+        assert_eq!(username_verdict(&free), Some(Verdict::Available));
+        assert_eq!(
+            username_verdict(&taken),
+            Some(Verdict::Problem(USERNAME_TAKEN.to_owned()))
+        );
+        let limited = json!({"ok": false, "status": 429, "body": {"retry_after": 3}});
+        assert_eq!(
+            username_verdict(&limited),
+            Some(Verdict::Problem(USERNAME_RATE_LIMIT.to_owned()))
+        );
+        let refused = json!({"ok": false, "status": 400, "body": {"message": "Nope"}});
+        assert_eq!(
+            username_verdict(&refused),
+            Some(Verdict::Problem("Nope".to_owned()))
+        );
+        // A dead token and a server fault say nothing; a harness refusal neither.
+        assert_eq!(
+            username_verdict(&json!({"ok": false, "status": 401, "body": {"message": "x"}})),
+            None
+        );
+        assert_eq!(
+            username_verdict(&json!({"ok": false, "status": 503, "body": null})),
+            None
+        );
+        assert_eq!(
+            username_verdict(&json!({"ok": false, "status": 0, "refused": true})),
+            None
+        );
+    }
+
+    #[test]
+    fn the_username_rules_use_the_bundles_strings() {
+        assert_eq!(username_problem("a"), Some("This must be 2-32 characters."));
+        assert_eq!(
+            username_problem("a..b"),
+            Some("Username cannot contain repeating dots.")
+        );
+        assert_eq!(
+            username_problem("a b"),
+            Some("Please only use numbers, letters, underscores _ , or periods.")
+        );
+        assert_eq!(username_problem("fine_name.2"), None);
+    }
 
     #[test]
     fn username_change_posts_username_and_password_to_me() {
@@ -1188,7 +1374,7 @@ mod tests {
             username_problem("a..b"),
             Some("Username cannot contain repeating dots.")
         );
-        assert!(username_problem("a").unwrap().contains("2 and 32"));
+        assert!(username_problem("a").unwrap().contains("2-32"));
         assert!(username_problem(&"a".repeat(33)).is_some());
     }
 

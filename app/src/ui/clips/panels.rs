@@ -1,15 +1,14 @@
 //! The Quick Bar: `I7` in module 596339, styled by module 442420 (`quickBar_y2dW7E`). It sits in the bottom-left stack
 //! above the account panel and shows the newest clips of the game being played. A thumbnail opens the editor and the
-//! fourth of a longer session opens the gallery in the official client; neither view exists here yet, so the
-//! thumbnails do nothing when pressed.
-use super::super::{Root, color};
+//! fourth of a longer session opens the gallery on the game.
+use super::super::{Root, color, icon};
 use crate::parity::Parity;
 use dc_clips::library::Clip;
 use gpui::{AnyElement, Context, FontWeight, ObjectFit, RenderImage, div, img, prelude::*, px};
 use std::sync::Arc;
 
 /// Whether the bar is drawn at all.
-const QUICK_BAR_PROVEN: bool = false;
+const QUICK_BAR_PROVEN: bool = true;
 
 /// Slots in the bar (`slice(0, 4)` padded to four).
 const SLOTS: usize = 4;
@@ -59,8 +58,11 @@ impl Root {
     }
 
     /// The Quick Bar, or nothing: shown while it is open, reminders are on and the visible game has a clip.
-    pub(in crate::ui) fn clips_panels(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
-        // Not shown until its frame has been compared with the official bar.
+    pub(in crate::ui) fn clips_panels(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // The reminder panel takes the bar's place while it is open (`I7` returns nothing when the store `isOpen`).
+        if self.clips_reminder_open() {
+            return self.clips_reminder_view(cx);
+        }
         if !QUICK_BAR_PROVEN
             || !self.clips.engine.ui.quick_bar_open
             || !self.clips_quick_bar_has_clips()
@@ -69,6 +71,13 @@ impl Root {
         }
         let clips = self.clips_quick_bar_clips();
         let more = clips.len() > SLOTS;
+        let game_facet = self
+            .clips
+            .engine
+            .game
+            .as_ref()
+            .and_then(|game| game.application_id.clone())
+            .map_or(super::Facet::All, super::Facet::Game);
         let mut slots = Vec::with_capacity(SLOTS);
         for index in 0..SLOTS {
             // `.WK`: flex 1 1 0, 47px, `--radius-sm` (8px, module 952007), `--background-mod-subtle`, opacity .9.
@@ -85,6 +94,21 @@ impl Root {
                 slots.push(slot.into_any_element());
                 continue;
             };
+            let overflow = index == SLOTS - 1 && more;
+            let opened = (*clip).clone();
+            let facet = game_facet.clone();
+            // `onClick`: the fourth slot of a longer session opens the gallery on the game, the others the editor.
+            let slot = slot
+                .id(("clips-quick-slot", index))
+                .cursor_pointer()
+                .hover(|style| style.opacity(1.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if overflow {
+                        this.clips_open_gallery(facet.clone(), cx);
+                    } else {
+                        this.open_clip_editor(opened.clone(), cx);
+                    }
+                }));
             let picture = self
                 .clips
                 .engine
@@ -101,7 +125,7 @@ impl Root {
                     .into_any_element()
             }));
             // The fourth slot of a longer session counts the rest: `+{length - 3}` (`N7`: black 45%, centred).
-            let slot = if index == SLOTS - 1 && more {
+            let slot = if overflow {
                 slot.child(
                     div()
                         .absolute()
@@ -111,12 +135,19 @@ impl Root {
                         .justify_center()
                         .rounded(px(8.))
                         .bg(gpui::rgba(0x0000_0073))
-                        .text_size(px(12.))
-                        .line_height(px(16.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-overlay-light"))
                         .child(format!("+{}", clips.len() - 3)),
                 )
+            } else if clip.meta.clip_method == "auto" {
+                // `3Y2DJ8` "Auto Clip": the sparkles glyph 4 px from the top left corner.
+                slot.child(div().absolute().top(px(4.)).left(px(4.)).child(icon(
+                    "clips_auto",
+                    16.,
+                    "--text-strong",
+                )))
             } else {
                 slot
             };

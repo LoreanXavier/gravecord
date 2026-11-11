@@ -151,10 +151,29 @@ impl Root {
         let Some(id) = self.clips.engine.ui.confirm_delete.take() else {
             return;
         };
+        // Deleting from the editor closes it (and the modal when it was opened into the editor); from the grid the
+        // grid stays.
+        let from_grid = self
+            .clips
+            .engine
+            .ui
+            .modal
+            .as_ref()
+            .is_some_and(|modal| modal.editor.is_none() && modal.gallery.is_some());
         if let Some(modal) = self.clips.engine.ui.modal.as_mut() {
             modal.editor = None;
         }
-        self.clips.engine.ui.modal = None;
+        if !from_grid
+            && self
+                .clips
+                .engine
+                .ui
+                .modal
+                .as_ref()
+                .is_none_or(|modal| modal.direct)
+        {
+            self.clips.engine.ui.modal = None;
+        }
         self.clips.engine.ui.menu.open = false;
         if let Some(clip) = self.clips.engine.clips.remove(&id)
             && let Err(error) = std::fs::remove_file(&clip.filepath)
@@ -204,11 +223,12 @@ impl Root {
     }
 
     pub(in crate::ui) fn clips_menu_open(&self) -> bool {
-        self.clips.engine.ui.menu.open
+        self.clips.engine.ui.menu.open || self.clips_card_menu_open()
     }
 
     pub(in crate::ui) fn clips_close_menu(&mut self) {
         self.clips.engine.ui.menu.open = false;
+        self.clips_close_card_menu();
     }
 
     /// Exports the trimmed video to the export folder and says so with the official toast.
@@ -217,21 +237,34 @@ impl Root {
         let Some(editor) = self.clips_open_editor_ref() else {
             return;
         };
-        let source = editor.clip.filepath.clone();
-        let crop = editor.edit.crop;
-        let keep: Vec<&'static str> = editor.edit.kept_tracks();
-        let stem = file_stem(&super::model::title(&{
-            let mut meta = editor.clip.meta.clone();
-            meta.name = editor.edit.name.clone();
-            meta
-        }));
+        let mut meta = editor.clip.meta.clone();
+        meta.name = editor.edit.name.clone();
+        let title = super::model::title(&meta);
+        let job = ShareClip {
+            source: editor.clip.filepath.clone(),
+            start_ms: (editor.edit.crop.start * 1000.).round() as u64,
+            end_ms: (editor.edit.crop.end * 1000.).round() as u64,
+            keep: editor.edit.kept_tracks(),
+            stem: file_stem(&title),
+            title,
+            thumbnail: None,
+        };
+        self.clips_export_job(job, cx);
+    }
+
+    /// Writes a clip's trimmed video to the export folder.
+    pub(super) fn clips_export_job(&mut self, job: ShareClip, cx: &mut Context<Self>) {
+        let ShareClip {
+            source,
+            start_ms,
+            end_ms,
+            keep,
+            stem,
+            ..
+        } = job;
         let Some(folder) = export_folder() else {
             return;
         };
-        let (start_ms, end_ms) = (
-            (crop.start * 1000.).round() as u64,
-            (crop.end * 1000.).round() as u64,
-        );
         self.show_app_toast("Exporting your Clip", cx);
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -266,6 +299,10 @@ impl Root {
         else {
             return;
         };
+        self.clips_show_path(path, cx);
+    }
+
+    pub(super) fn clips_show_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.clips.engine.ui.last_export = format!("show {}", path.display());
         #[cfg(all(windows, not(feature = "capture")))]
         {

@@ -255,8 +255,30 @@ fn switch(
                 .w(px(thumb.width as f32))
                 .h(px(thumb.height as f32))
                 .rounded(px(thumb.radius as f32))
-                .bg(gpui::white()),
+                .bg(gpui::white())
+                .children(switch_icon(on)),
         )
+}
+
+/// The mark in a switch's thumb when "Show on/off indicators" is on: 16px, `--switch-thumb-icon-default` off and
+/// `--switch-thumb-icon-active` on (module 489718, `hasIcon`).
+fn switch_icon(on: bool) -> Option<AnyElement> {
+    super::client_theme::switch_icons().then(|| {
+        super::mask_icon(
+            if on {
+                "switch_icon_on"
+            } else {
+                "switch_icon_off"
+            },
+            16.,
+            if on {
+                "--switch-thumb-icon-active"
+            } else {
+                "--switch-thumb-icon-default"
+            },
+        )
+        .into_any_element()
+    })
 }
 
 /// The same switch for a row that is not one of the generated pages' keys (a server in a list): the click calls back.
@@ -298,7 +320,8 @@ pub(super) fn plain_switch(
                 .w(px(thumb.width as f32))
                 .h(px(thumb.height as f32))
                 .rounded(px(thumb.radius as f32))
-                .bg(gpui::white()),
+                .bg(gpui::white())
+                .children(switch_icon(on)),
         )
 }
 

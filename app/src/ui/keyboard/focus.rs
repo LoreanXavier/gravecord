@@ -221,6 +221,8 @@ pub(in crate::ui) struct State {
     stack: FocusStack<Anchor>,
     anchor: Anchor,
     seen: Seen,
+    /// The open picker's search field, as of the last frame.
+    picker_search: Option<FocusHandle>,
     /// The last input was the keyboard: rings show on focused controls only then.
     pub(in crate::ui) keyboard_modality: bool,
     /// The server before the current one, for `TOGGLE_PREVIOUS_GUILD`.
@@ -410,6 +412,15 @@ impl Root {
         }
         if let Some(anchor) = target {
             self.restore_anchor(&anchor, window, cx);
+        } else if self.picker.is_none()
+            && matches!(&anchor_before, Anchor::Other(handle)
+                if self.keys.picker_search.as_ref() == Some(handle)
+                    && window.focused(cx).as_ref() == Some(handle))
+        {
+            // The picker closed in the same frame as a full-window layer opened (Add Emoji opens the server settings): its
+            // search field is gone and the layer count did not change, so nothing gave focus back. A focus handle that is
+            // not drawn receives no keys, so Escape would never reach the new layer; the window's own handle takes them.
+            window.focus(&self.focus, cx);
         } else if blurs_composer(
             &self.anchor_now(window, cx),
             now.modals > 0,
@@ -438,6 +449,7 @@ impl Root {
             self.keys.current_guild = self.guild;
         }
         self.keys.seen = now;
+        self.keys.picker_search = self.picker.as_ref().map(|picker| picker.search_handle(cx));
         self.keys.anchor = self.anchor_now(window, cx);
     }
 

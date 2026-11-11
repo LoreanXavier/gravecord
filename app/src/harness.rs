@@ -149,6 +149,26 @@ pub async fn run(
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));
                 }
             }
+            // `window size <w> <h>`: sets the content size of the window (the harness cannot drag an edge), as a
+            // resize by hand does. `window size` alone prints the current one.
+            ["window", "size", rest @ ..] => {
+                let want = match rest {
+                    [w, h] => w.parse::<f32>().ok().zip(h.parse::<f32>().ok()),
+                    _ => None,
+                };
+                let now = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, _| {
+                            if let Some((w, h)) = want {
+                                window.resize(gpui::size(gpui::px(w), gpui::px(h)));
+                            }
+                            let size = window.viewport_size();
+                            (f32::from(size.width), f32::from(size.height))
+                        })
+                        .unwrap_or_default()
+                });
+                let _ = writeln!(output, "window size: {} x {}", now.0, now.1);
+            }
             ["native", "move", x, y] => {
                 if let Some(position) = at(x, y) {
                     let result = native::move_pointer(window, position, cx).await;
@@ -573,6 +593,10 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "clips: {line}");
             }
+            // The calls the text-to-speech engine received (a capture build never speaks aloud).
+            ["speech", "log"] => {
+                let _ = writeln!(output, "speech: {:?}", crate::speech::spoken_log());
+            }
             ["premium", tier] => {
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
@@ -621,6 +645,35 @@ pub async fn run(
                     if crate::inert::on() { "on" } else { "off" },
                     lines.join(" | ")
                 );
+            }
+            // Capture only: `reset` closes everything that is open and goes Home with the window's handle focused
+            // (`ui/crawl_reset.rs`), so a script starts from a known place without Escape.
+            ["reset"] => {
+                let line = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.update(cx, |root, cx| root.script_reset(window, cx))
+                        })
+                        .unwrap_or_default()
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `server-settings <page>` and `channel-settings <section>` open those full-window pages.
+            ["server-settings", page] => {
+                let line = root.update(cx, |root, cx| root.script_server_settings(page, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            ["channel-settings", section] => {
+                let line = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.update(cx, |root, cx| {
+                                root.script_channel_settings(section, window, cx)
+                            })
+                        })
+                        .unwrap_or_default()
+                });
+                let _ = writeln!(output, "{line}");
             }
             ["layers"] => {
                 let line = root.update(cx, |root, _| root.layers_report());
@@ -994,6 +1047,11 @@ pub async fn run(
                 let _ = writeln!(output, "gif dump: {count} files");
             }
             // `avatar state`: the cached users whose avatar is animated (`a_`), as user id and guild-or-global.
+            // Capture only: `avatar demo` gives people, the open server's icon and one banner an animated picture.
+            ["avatar", "demo"] => {
+                let line = root.update(cx, |root, cx| root.script_avatar_demo(cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["avatar", "state"] => {
                 let report = root.read_with(cx, |root, _| root.avatar_report());
                 let _ = writeln!(output, "avatar state: {report}");

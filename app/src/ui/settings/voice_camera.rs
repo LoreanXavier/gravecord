@@ -266,6 +266,7 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.voice.camera.devices = dc_voice::camera_devices();
                 this.voice.camera.open = !this.voice.camera.open;
+                this.voice_sync_select_flag();
                 cx.notify();
             }))
             .child(
@@ -312,6 +313,7 @@ impl Root {
                     .hover(|style| style.bg(color("--interactive-background-hover")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.voice.camera.open = false;
+                        this.voice_sync_select_flag();
                         this.choose_camera(id.clone(), cx);
                         // A running test follows the choice.
                         if this.voice.camera.test.is_some() {
@@ -373,6 +375,7 @@ impl Root {
                             .overflow_hidden()
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.voice.camera.open = false;
+                                this.voice_sync_select_flag();
                                 cx.notify();
                             }))
                             .child(div().flex().flex_col().children(rows)),

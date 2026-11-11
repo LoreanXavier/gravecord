@@ -109,6 +109,7 @@ impl Shell {
                 root.update(cx, |root, cx| root.leave_for_logout(cx));
                 self.end_session(false, window, cx);
             }
+            (Update::TokenRenewed(token), Screen::Main(_)) => self.adopt_token(token),
             (update, Screen::Main(root)) => {
                 if matches!(&update, Update::NotificationClicked(_)) {
                     crate::notifications::restore_window(window);
@@ -252,6 +253,21 @@ impl Shell {
         self.screen = Screen::Login(login);
         self._pump = None;
         cx.notify();
+    }
+
+    /// The account's token was renewed (a password change): the stored login and the one kept for this run switch
+    /// to it, so the next start does not find a dead token. The value is never logged.
+    fn adopt_token(&mut self, token: Token) {
+        if self.persist {
+            let store = self.store.clone();
+            let saved = token.clone();
+            self.handle.spawn_blocking(move || {
+                if let Err(error) = store.save(ACTIVE, &saved) {
+                    warn!("the renewed login could not be stored: {error:?}");
+                }
+            });
+        }
+        self.token = Some(token);
     }
 
     fn signed_in(&mut self, token: Token, window: &mut Window, cx: &mut Context<Self>) {

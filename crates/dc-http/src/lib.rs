@@ -55,7 +55,8 @@ const MFA_REQUIRED: u64 = 60003;
 
 pub struct Client {
     http: reqwest::Client,
-    token: Token,
+    /// Replaced when the account's token is renewed (`UPDATE_TOKEN`, module 631670 `KD`).
+    token: std::sync::RwLock<Token>,
     identity: Identity,
     /// Called when Discord answers 401: the session is gone (`401` in `interceptResponse`, module 596339).
     unauthorized: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -104,10 +105,24 @@ impl Client {
             .build()?;
         Ok(Self {
             http,
-            token,
+            token: std::sync::RwLock::new(token),
             identity,
             unauthorized: None,
         })
+    }
+
+    /// Every request after this one carries the new token: `PATCH /users/@me` answers a password change with one
+    /// (`UPDATE_TOKEN`, module 631670 `KD`) and the old one is dead.
+    pub fn set_token(&self, token: Token) {
+        *self.token.write().unwrap_or_else(|e| e.into_inner()) = token;
+    }
+
+    fn authorization(&self) -> String {
+        self.token
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .expose()
+            .to_owned()
     }
 
     /// Runs `hook` whenever a request comes back 401 (not a step-up request), so the app can drop the stored login.
@@ -135,7 +150,7 @@ impl Client {
         let mut request = self
             .http
             .request(method.clone(), url)
-            .header("authorization", self.token.expose())
+            .header("authorization", self.authorization())
             .header(
                 "x-super-properties",
                 self.identity.super_properties_header(true),
@@ -242,7 +257,7 @@ impl Client {
             let mut request = self
                 .http
                 .post(&url)
-                .header("authorization", self.token.expose())
+                .header("authorization", self.authorization())
                 .header(
                     "x-super-properties",
                     self.identity.super_properties_header(true),
@@ -299,7 +314,7 @@ impl Client {
         let response = self
             .http
             .post(&url)
-            .header("authorization", self.token.expose())
+            .header("authorization", self.authorization())
             .header(
                 "x-super-properties",
                 self.identity.super_properties_header(true),
@@ -445,6 +460,14 @@ mod tests {
         assert!(slowmode_rejection(&json!({"code":20016,"retry_after":5})));
         assert!(!slowmode_rejection(&json!({"retry_after":5,"global":true})));
         assert!(!slowmode_rejection(&json!({"code":20028,"retry_after":5})));
+    }
+
+    #[test]
+    fn a_renewed_token_replaces_the_one_requests_carry() {
+        let client = Client::new(Token::new("fixture-old"), Identity::new()).unwrap();
+        assert_eq!(client.authorization(), "fixture-old");
+        client.set_token(Token::new("fixture-new"));
+        assert_eq!(client.authorization(), "fixture-new");
     }
 
     #[test]

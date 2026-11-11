@@ -361,6 +361,15 @@ pub async fn run(
     let mut neutral = Some((1255., 360.));
     // `--expect text_or_id`: a parity id or visible text (`_` is a space) the screen must show, before and after each element.
     let mut expect: Option<String> = None;
+    // `--rest x y`: where the pointer waits between elements (default: the bottom left corner, over nothing). A page whose
+    // controls show only under the pointer (a message's toolbar) rests on the row that carries them.
+    let mut rest = point(px(2.), px(715.));
+    // `--only text`: crawl only the elements whose parity id contains the text; `--within x0 y0 x1 y1`: only those whose
+    // centre lies in the rectangle. A popout leaves the page under it pressable, and the first press outside closes it.
+    let mut only: Option<String> = None;
+    let mut within: Option<[f32; 4]> = None;
+    // `--dedupe n`: of the elements with the same id and size (the cells of an emoji grid) only the first `n` are tried.
+    let mut dedupe: Option<usize> = None;
     let mut kept: Vec<&str> = Vec::new();
     let mut skip = 0;
     for (at, word) in words.iter().enumerate() {
@@ -370,6 +379,26 @@ pub async fn run(
             let spot: Option<(f32, f32)> =
                 words[at + 1].parse().ok().zip(words[at + 2].parse().ok());
             neutral = spot.filter(|spot| spot.0 > 0.);
+            skip = 2;
+        } else if *word == "--only" && words.len() > at + 1 {
+            only = Some(words[at + 1].to_owned());
+            skip = 1;
+        } else if *word == "--dedupe" && words.len() > at + 1 {
+            dedupe = words[at + 1].parse().ok();
+            skip = 1;
+        } else if *word == "--within" && words.len() > at + 4 {
+            let numbers: Vec<f32> = words[at + 1..at + 5]
+                .iter()
+                .filter_map(|word| word.parse().ok())
+                .collect();
+            if let Ok(rect) = <[f32; 4]>::try_from(numbers) {
+                within = Some(rect);
+            }
+            skip = 4;
+        } else if *word == "--rest" && words.len() > at + 2 {
+            if let (Ok(x), Ok(y)) = (words[at + 1].parse::<f32>(), words[at + 2].parse::<f32>()) {
+                rest = point(px(x), px(y));
+            }
             skip = 2;
         } else if *word == "--expect" && words.len() > at + 1 {
             expect = Some(words[at + 1].replace('_', " "));
@@ -383,12 +412,12 @@ pub async fn run(
         Some(at) => (&words[..at], words[at + 1..].join(" ").replace('|', ";")),
         None => (words, String::new()),
     };
-    let [mode, dir, rest @ ..] = words else {
+    let [mode, dir, tail @ ..] = words else {
         return "usage: crawl <click|right|hover> <out dir> [from to]\n".to_owned();
     };
     let dir = Path::new(dir);
     let _ = std::fs::create_dir_all(dir);
-    let range: Option<(usize, usize)> = match rest {
+    let range: Option<(usize, usize)> = match tail {
         [from, to] => from.parse().ok().zip(to.parse().ok()),
         _ => None,
     };
@@ -403,7 +432,7 @@ pub async fn run(
         }
     };
     blur(cx);
-    cx.update(|cx| dispatch(cx, window, moved(point(px(2.), px(715.)), None)));
+    cx.update(|cx| dispatch(cx, window, moved(rest, None)));
     settle(cx, window, 400).await;
     let _ = std::fs::remove_file(dir.join("progress.txt"));
     // A slow machine paints late: look for up to three seconds before calling the setup failed.
@@ -431,7 +460,24 @@ pub async fn run(
         );
         return out;
     }
-    let list = targets(cx, window);
+    let mut list = targets(cx, window);
+    list.retain(|target| {
+        let centre = target.bounds.center();
+        only.as_ref()
+            .is_none_or(|text| target.id.contains(text.as_str()))
+            && within.is_none_or(|[x0, y0, x1, y1]| {
+                (x0..=x1).contains(&f32::from(centre.x)) && (y0..=y1).contains(&f32::from(centre.y))
+            })
+    });
+    if let Some(keep) = dedupe {
+        let mut seen: std::collections::HashMap<(String, i64, i64), usize> = Default::default();
+        list.retain(|target| {
+            let (_, _, w, h) = whole(target.bounds);
+            let count = seen.entry((target.id.clone(), w, h)).or_default();
+            *count += 1;
+            *count <= keep
+        });
+    }
     let base_texts: std::collections::HashSet<String> = cx.update(|cx| {
         window
             .update(cx, |_, window, _| {
@@ -530,7 +576,7 @@ pub async fn run(
                 } else {
                     "no-tooltip"
                 };
-                cx.update(|cx| dispatch(cx, window, moved(point(px(2.), px(700.)), None)));
+                cx.update(|cx| dispatch(cx, window, moved(rest, None)));
             }
             other => {
                 cx.update(|cx| {
@@ -612,7 +658,7 @@ pub async fn run(
         let mut navved = false;
         loop {
             blur(cx);
-            cx.update(|cx| dispatch(cx, window, moved(point(px(2.), px(715.)), None)));
+            cx.update(|cx| dispatch(cx, window, moved(rest, None)));
             settle(cx, window, 150).await;
             let now = print(cx, window, root);
             if now.state == start.state && (!steady || now.scene == start.scene) {

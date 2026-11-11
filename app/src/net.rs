@@ -88,6 +88,9 @@ pub enum Update {
     },
     /// The gateway closed with 4004 or a request came back 401: the stored login is dead.
     AuthFailed,
+    /// `PATCH /users/@me` answered with a new token (a password change): the shell keeps it where the login is
+    /// kept (`UPDATE_TOKEN`, module 631670 `KD`).
+    TokenRenewed(Token),
 }
 
 pub enum Request {
@@ -321,6 +324,10 @@ fn account_route(route: &str) -> bool {
     if path == "/users/@me/channels" {
         return false;
     }
+    // The username availability check (`attemptUsername`, module 493527) answers `{taken}` and stores nothing.
+    if path == "/users/@me/pomelo-attempt" {
+        return false;
+    }
     path == "/users/@me"
         || path.starts_with("/users/@me/")
         || path.ends_with("/members/@me")
@@ -449,6 +456,20 @@ impl Request {
         }
         format!("{method} {masked}")
     }
+}
+
+/// The account update (`PATCH /users/@me`, module 631670 `KD`) answers a password change with the account's new
+/// token: the official client takes it out of the body before the user record is stored (`delete i.token`) and hands
+/// it to the token store. The old token is dead from then on. `None` for every other answer.
+pub(crate) fn take_renewed_token(method: &str, route: &str, answer: &mut Value) -> Option<Token> {
+    if method != "PATCH" || route != "/users/@me" {
+        return None;
+    }
+    let token = answer.as_object_mut()?.remove("token")?;
+    token
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .map(Token::new)
 }
 
 /// Applies inert mode to a request taken from the UI: true when it is refused (logged and counted).
@@ -1133,6 +1154,7 @@ pub async fn run(
                     }
                     continue;
                 }
+                let gateway = commands.clone();
                 tokio::spawn(async move {
                     // The server merges a settings PATCH into what it read a moment before, so two sent at once lose
                     // one of them: they go one after the other.
@@ -1141,9 +1163,19 @@ pub async fn run(
                     } else {
                         None
                     };
+                    let method_name = method.to_string();
                     let outcome = client.request(method, &route, body.as_ref()).await;
                     let report = match outcome {
-                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Ok(mut value) => {
+                            if let Some(token) =
+                                take_renewed_token(&method_name, &route, &mut value)
+                            {
+                                client.set_token(token.clone());
+                                let _ = gateway.send(Command::SetToken(token.clone()));
+                                let _ = updates.send(Update::TokenRenewed(token));
+                            }
+                            json!({"ok": true, "status": 200, "body": value})
+                        }
                         Err(dc_http::Error::Status { status, body, .. }) => {
                             warn!("{route} failed: {status}");
                             json!({"ok": false, "status": status.as_u16(), "body": body})
@@ -1720,6 +1752,26 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_password_change_answer_gives_up_its_token() {
+        use super::take_renewed_token;
+        use serde_json::json;
+        let mut answer = json!({"id": "1", "username": "x", "token": "fixture-token-value"});
+        let token = take_renewed_token("PATCH", "/users/@me", &mut answer).expect("token");
+        assert_eq!(token.expose(), "fixture-token-value");
+        // Like the official `delete i.token`: the user record never keeps it.
+        assert!(answer.get("token").is_none());
+        assert_eq!(answer["username"], "x");
+        // Other answers, routes and methods carry none; an empty one is no token.
+        let mut plain = json!({"id": "1"});
+        assert!(take_renewed_token("PATCH", "/users/@me", &mut plain).is_none());
+        let mut other = json!({"token": "fixture-token-value"});
+        assert!(take_renewed_token("POST", "/users/@me", &mut other).is_none());
+        assert!(take_renewed_token("PATCH", "/users/@me/profile", &mut other).is_none());
+        let mut empty = json!({"token": ""});
+        assert!(take_renewed_token("PATCH", "/users/@me", &mut empty).is_none());
+    }
+
     use super::{
         account_write_refused, fetch_failure, guild_member_requests, is_fetch_failure,
         percent_encode, send_body,

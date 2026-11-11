@@ -44,8 +44,13 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum Command {
-    Send { op: Op, data: Value },
+    Send {
+        op: Op,
+        data: Value,
+    },
     SetActive(bool),
+    /// The account's token was renewed: the next identify or resume uses it.
+    SetToken(Token),
     Shutdown,
 }
 
@@ -262,6 +267,7 @@ impl Session {
                         return Next::Stop;
                     }
                     Some(Command::SetActive(active)) => self.active = active,
+                    Some(Command::SetToken(token)) => self.config.token = token,
                     Some(Command::Send { op, data }) => {
                         if self.send(&mut socket, op, data).await.is_err() {
                             return Next::Reconnect;

@@ -506,7 +506,7 @@ fn run() -> Result<()> {
 fn write_capture(cx: &mut App, window: gpui::AnyWindowHandle, path: &Path) {
     let result = window.update(cx, |_, window, cx| {
         parity::clear();
-        window.refresh();
+        ui::regions::prepare_hand_draw(window, cx);
         window.draw(cx).clear(cx);
         parity::write(&path.with_extension("layout.json"));
         window.render_to_image()

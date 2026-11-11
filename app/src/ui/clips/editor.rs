@@ -590,7 +590,12 @@ impl Root {
             .clips_editor_mut()
             .is_some_and(|editor| editor.title_editing);
         if editing {
-            // The field takes everything, its Escape included (its Cancel event ends the edit).
+            // The field takes every key but Escape, which ends the edit here (module 701266 `ec`: Enter and Escape
+            // blur the input and stop the event, so the editor stays open); an earlier layer may take Escape first.
+            if key == "escape" {
+                self.clips_end_title_edit(cx);
+                return true;
+            }
             return false;
         }
         match key {

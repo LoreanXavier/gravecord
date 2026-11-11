@@ -555,11 +555,17 @@ impl ClipsState {
                 storage::get(KEYBIND_STORED).and_then(|saved| keybind_from_value(&saved)),
             )
         };
-        if store.settings.storage_location == DEFAULT_LOCATION
-            && let Some(location) = resolve_default_location(videos_folder(), documents_folder())
-        {
-            store.settings.storage_location = location;
-            storage::set(STORED, store.to_value());
+        if store.settings.storage_location == DEFAULT_LOCATION {
+            // A harness run never writes into the user's own clips folder: its default is a folder of its own.
+            let location = if storage::is_capture_run() {
+                storage::data_dir().map(|dir| dir.join("clips").to_string_lossy().into_owned())
+            } else {
+                resolve_default_location(videos_folder(), documents_folder())
+            };
+            if let Some(location) = location {
+                store.settings.storage_location = location;
+                storage::set(STORED, store.to_value());
+            }
         }
         Self {
             store,

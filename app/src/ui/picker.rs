@@ -189,6 +189,11 @@ pub(crate) struct Picker {
 }
 
 impl Picker {
+    /// The search field's focus handle.
+    pub(super) fn search_handle(&self, cx: &gpui::App) -> gpui::FocusHandle {
+        self.search.read(cx).focus_handle(cx)
+    }
+
     #[cfg(feature = "capture")]
     pub fn search(&self) -> Entity<Editor> {
         self.search.clone()

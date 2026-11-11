@@ -137,6 +137,32 @@ pub(in crate::ui) fn overlay(name: &str) -> Option<Rgba> {
     Some(layer(opacity, light))
 }
 
+/// "High Contrast Mode" (`contrastMode` "high" of the accessibility store): the colour resolver of module 646514 swaps
+/// the listed semantic tokens for the raw colour of `high_contrast_tokens`.
+static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
+
+/// "Show on/off indicators" (`switchIconsEnabled`): the switch thumb carries a cross (off) or a tick (on), module 489718.
+static SWITCH_ICONS: AtomicBool = AtomicBool::new(false);
+
+pub(in crate::ui) fn switch_icons() -> bool {
+    SWITCH_ICONS.load(Ordering::Relaxed)
+}
+
+pub(in crate::ui) fn high_contrast(name: &str, theme: dc_tokens::Theme) -> Option<Rgba> {
+    if !HIGH_CONTRAST.load(Ordering::Relaxed) {
+        return None;
+    }
+    let table = super::high_contrast_tokens::TOKENS;
+    let index = table.binary_search_by(|(key, _)| (*key).cmp(name)).ok()?;
+    let column = match theme {
+        dc_tokens::Theme::Dark => 0,
+        dc_tokens::Theme::Light => 1,
+        dc_tokens::Theme::Darker => 2,
+        dc_tokens::Theme::Midnight => 3,
+    };
+    Some(rgba(table[index].1[column]))
+}
+
 /// The cards of the member list and the like (`--background-surface-high`) while a colour theme is on: the official
 /// card paints the preset's gradient over its own box under a 0.70 white (light) or 0.75 black (dark) layer
 /// (`background-image` of `container_g7esM5` in both preview captures). A flat colour stands in for the gradient:
@@ -162,9 +188,20 @@ fn mid_surface(swatch: &Swatch, light: bool) -> Rgba {
 /// (`--background-gradient-highest`: the window's gradient under 0.65 black, or 0.95 white). It fills its parent, so
 /// the parent has to be positioned, and it is drawn first.
 pub(in crate::ui) fn cover(radius: f32) -> Option<AnyElement> {
+    cover_with(radius, 0.95, 0.65)
+}
+
+/// The cards of the member list (`--background-surface-high`): the window's gradient at the card's own place under a
+/// 0.70 white (light) or 0.75 black (dark) layer; the Citrus capture's first card is `251,232,194` at the top, which
+/// is the first stop under 0.70 white.
+pub(in crate::ui) fn surface_cover(radius: f32) -> Option<AnyElement> {
+    cover_with(radius, 0.70, 0.75)
+}
+
+fn cover_with(radius: f32, light_opacity: f32, dark_opacity: f32) -> Option<AnyElement> {
     let swatch = active()?;
     let light = is_light(swatch);
-    let opacity = if light { 0.95 } else { 0.65 };
+    let opacity = if light { light_opacity } else { dark_opacity };
     Some(
         gpui::canvas(
             move |_, window, _| {
@@ -515,6 +552,11 @@ impl Root {
 
     /// Every frame: the theme rules of `theme_state` put the palette and colour theme on screen.
     pub(in crate::ui) fn sync_client_theme(&mut self) {
+        HIGH_CONTRAST.store(self.pref_on("high_contrast_mode", false), Ordering::Relaxed);
+        SWITCH_ICONS.store(
+            self.pref_on("enable_switch_icons", false),
+            Ordering::Relaxed,
+        );
         self.theme_frame();
     }
 

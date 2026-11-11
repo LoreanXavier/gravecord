@@ -239,7 +239,7 @@ impl Root {
         let spec = Spec {
             width: width.round().max(1.) as u32,
             height: height.round().max(1.) as u32,
-            animate: !self.pref_on("reduced_motion", false),
+            animate: !crate::ui::motion::reduced(),
         };
         let active = self.notification_focused;
         if let Some((generation, svg)) = self.vv.background.request(spec, Instant::now(), active) {

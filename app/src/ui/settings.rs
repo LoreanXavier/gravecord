@@ -5,6 +5,7 @@
 mod account_dialogs;
 mod account_panels;
 pub(in crate::ui) use account_dialogs::FORM_KEY as ACCOUNT_FORM_KEY;
+pub(in crate::ui) use account_dialogs::USERNAME_KEY as ACCOUNT_USERNAME_KEY;
 pub(in crate::ui) use account_panels::LOGOUT_KEY as SESSIONS_LOGOUT_KEY;
 pub(in crate::ui) use streamer::HIDDEN_LINK as HIDDEN_INVITE_LINK;
 mod actions;
@@ -30,6 +31,7 @@ mod server_boost_page;
 mod soundboard;
 mod streamer;
 pub(crate) use render::radio_dot;
+mod high_contrast_tokens;
 mod swatches;
 mod system;
 mod theme_mix_tokens;
@@ -234,6 +236,13 @@ struct Anchor {
     badge: bool,
     /// The panel child the subnav scrolls to.
     target: usize,
+    /// The category's marker the content is scrolled to (`settings-marker:{key}`), when the page has one.
+    key: Option<&'static str>,
+}
+
+thread_local! {
+    /// The category the content scrolls to once its marker has a place on screen (a click on the subnav, or a deep link).
+    static PENDING_SCROLL: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 /// The Account page lists its own anchors; every other page lists its titled sections.
@@ -248,6 +257,7 @@ fn anchors_of(entry: &Entry) -> Vec<Anchor> {
                 badge: *badge,
                 // Categories sit between dividers: every other child of the panel.
                 target: index * 2,
+                key: None,
             })
             .collect();
     }
@@ -256,11 +266,14 @@ fn anchors_of(entry: &Entry) -> Vec<Anchor> {
         .enumerate()
         .filter_map(|(target, node)| match node {
             model::Node::Category {
-                title: Some(title), ..
+                key,
+                title: Some(title),
+                ..
             } => Some(Anchor {
                 label: title,
                 badge: false,
                 target,
+                key: Some(*key),
             }),
             _ => None,
         })
@@ -778,6 +791,7 @@ impl Root {
                 open.anchor.set(index);
                 open.spy.set((0., true));
                 open.content.scroll_to_top_of_item(anchor.target);
+                PENDING_SCROLL.set(anchor.key);
             }
         }
         cx.notify();
@@ -970,7 +984,7 @@ impl Root {
             .enumerate()
             .map(|(index, anchor)| {
                 let active = index == current;
-                let target = anchor.target;
+                let (target, key) = (anchor.target, anchor.key);
                 div()
                     .id(SharedString::from(format!("settings-anchor-{index}")))
                     .flex()
@@ -992,6 +1006,7 @@ impl Root {
                             // The click's own scroll does not move the lit entry (`isSidebarCategoryAutoSelectEnabled`).
                             open.spy.set((open.spy.get().0, true));
                             open.content.scroll_to_top_of_item(target);
+                            PENDING_SCROLL.set(key);
                         }
                         cx.notify();
                     }))
@@ -1851,6 +1866,21 @@ fn scroll_spy(
     canvas(
         |_, _, _| {},
         move |_, _, window, _| {
+            // A subnav click or deep link: the marker of the category goes to the top of the view (`scrollIntoView`).
+            if let Some(key) = PENDING_SCROLL.get() {
+                let top = markers
+                    .borrow()
+                    .get(&SharedString::from(format!("settings-marker:{key}")))
+                    .map(|bounds| bounds.top());
+                if let Some(top) = top {
+                    PENDING_SCROLL.set(None);
+                    let offset = content.offset();
+                    let wanted = (offset.y - (top - content.bounds().top()))
+                        .clamp(-content.max_offset().y, px(0.));
+                    content.set_offset(point(offset.x, wanted));
+                    window.refresh();
+                }
+            }
             let offset = f32::from(content.offset().y);
             let (seen, skip) = spy.get();
             if (offset - seen).abs() < 0.01 {

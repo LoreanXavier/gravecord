@@ -40,6 +40,8 @@ pub struct Prefs {
     recording_generation: AtomicU64,
     /// A recorder holds audio the worker has yet to write.
     recorder_alive: AtomicBool,
+    /// What `set_attenuation` last handed to the Windows session attenuator: percent, while we speak, while others do.
+    attenuation: Mutex<(u8, bool, bool)>,
 }
 
 pub fn prefs() -> &'static Prefs {
@@ -57,6 +59,7 @@ pub fn prefs() -> &'static Prefs {
         recording: Mutex::new(None),
         recording_generation: AtomicU64::new(0),
         recorder_alive: AtomicBool::new(false),
+        attenuation: Mutex::new((0, false, false)),
     })
 }
 
@@ -79,6 +82,37 @@ impl Prefs {
         }
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
+    /// One line of what the engine holds now: devices, gains, processing, push to talk, attenuation, QoS and the
+    /// recording. For the harness, which proves a setting reached the engine and not only the page.
+    pub fn engine_report(&self) -> String {
+        let p = &self.processing;
+        let attenuation = self
+            .attenuation
+            .lock()
+            .map(|slot| *slot)
+            .unwrap_or_default();
+        format!(
+            "input_device={:?} output_device={:?} input_gain={:.3} output_gain={:.3} suppression={:?} echo={} room_echo={} agc={} ptt={} ptt_delay_ms={} threshold_db={:.1} auto_threshold={} advanced_vad={} attenuation={}%/self={}/others={} qos={} recording={}",
+            self.input_device(),
+            self.output_device(),
+            self.input_gain(),
+            self.output_gain(),
+            p.suppression(),
+            p.echo_cancellation(),
+            p.room_echo(),
+            p.automatic_gain_control(),
+            p.push_to_talk(),
+            p.push_to_talk_delay_ms(),
+            p.threshold_db(),
+            p.auto_threshold(),
+            p.advanced_voice_activity(),
+            attenuation.0,
+            attenuation.1,
+            attenuation.2,
+            self.qos(),
+            self.recording.lock().map(|r| r.is_some()).unwrap_or(false),
+        )
+    }
     pub fn qos(&self) -> bool {
         self.qos.load(Ordering::Acquire)
     }
@@ -89,6 +123,9 @@ impl Prefs {
     /// `setAttenuation(percent, self, others)`: other applications' audio is lowered by `percent` (0 disables) while
     /// this client (`on_self`) or anyone else (`on_others`) speaks. Windows only; elsewhere it does nothing.
     pub fn set_attenuation(&self, percent: u8, on_self: bool, on_others: bool) {
+        if let Ok(mut slot) = self.attenuation.lock() {
+            *slot = (percent.min(100), on_self, on_others);
+        }
         dc_winaudio::attenuation().configure(dc_winaudio::Settings {
             percent: percent.min(100),
             on_self,

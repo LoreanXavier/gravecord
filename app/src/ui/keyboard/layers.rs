@@ -243,6 +243,7 @@ impl Root {
         for key in open {
             self.setting_choices.insert(key, Choice::On(false));
         }
+        self.voice_selects_closed_by_layer();
     }
 
     /// Escape for the layers that have no branch of their own in the root key handler: the top one closes.

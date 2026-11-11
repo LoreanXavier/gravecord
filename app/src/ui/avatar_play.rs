@@ -152,6 +152,45 @@ impl super::Root {
         )
     }
 
+    /// The server icon on the rail while it plays, and `None` while the still one is drawn. Module 396655 (the rail item):
+    /// the icon is asked for with `canAnimate = hovered && animatable`, `animatable` being the window's focus and
+    /// `hovered` the pointer being over that rail item; the setting for animated GIFs and reduced motion do not enter. The
+    /// file is `getGuildIconURL({size: 2 * 40, lossless})` (module 486020): `.webp?size=<80 * ratio to a power of two>&
+    /// quality=lossless&animated=true` for a hash that starts with `a_`.
+    pub(super) fn live_guild_icon(
+        &self,
+        guild: &dc_state::Guild,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let hash = guild.icon.as_deref().filter(|hash| is_animated(hash))?;
+        if !hovered || !super::motion::window_active() {
+            return None;
+        }
+        let scale = self.ui_scale.get();
+        let side = file_side(80., scale);
+        let key = format!("guild-live:{}:{hash}:{side}", guild.id);
+        let Some(image) = self.images.get(&key).cloned() else {
+            if !self.requested.contains(&key) {
+                let url = format!(
+                    "https://cdn.discordapp.com/icons/{}/{hash}.webp?size={side}&quality=lossless&animated=true",
+                    guild.id
+                );
+                self.avatar_wants.borrow_mut().push((key, url));
+                cx.notify();
+            }
+            return None;
+        };
+        let pixels = (40. * scale).round() as u32;
+        Some(
+            div()
+                .relative()
+                .size(px(40.))
+                .child(self.gif_art_pixels(&key, image, (pixels, pixels), 12., None, cx))
+                .into_any_element(),
+        )
+    }
+
     /// The cached users with an animated avatar, for the harness.
     #[cfg(feature = "capture")]
     pub(crate) fn avatar_report(&self) -> String {

@@ -353,7 +353,7 @@ impl Root {
             })
             .collect();
         let selected = self.profile.as_ref().map(|profile| profile.user);
-        let can_animate = window.is_window_active() && !self.pref_on("reduced_motion", false);
+        let can_animate = window.is_window_active() && !crate::ui::motion::reduced();
         let active: Vec<_> = members
             .iter()
             .filter_map(|(user, sku)| {

@@ -6,6 +6,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
+/// Calls made while the voice is silent (capture builds), oldest first.
+static SPOKEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Capture builds and runs with `GRAVECORD_SILENT_SPEECH` never reach the system voice.
+fn silent() -> bool {
+    cfg!(feature = "capture") || std::env::var_os("GRAVECORD_SILENT_SPEECH").is_some()
+}
+
+/// The recorded calls, for the harness.
+#[cfg(feature = "capture")]
+pub fn spoken_log() -> Vec<String> {
+    SPOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 enum Command {
     Speak(String, f32),
     Stop,
@@ -18,6 +32,13 @@ pub struct Speech {
 
 impl Speech {
     pub fn new() -> Self {
+        if silent() {
+            let (commands, _) = mpsc::channel::<Command>();
+            return Self {
+                commands,
+                speaking: Arc::new(AtomicBool::new(false)),
+            };
+        }
         let (commands, received) = mpsc::channel::<Command>();
         let speaking = Arc::new(AtomicBool::new(false));
         let flag = speaking.clone();
@@ -65,10 +86,26 @@ impl Speech {
 
     pub fn speak(&self, text: String, rate: f32) {
         self.speaking.store(true, Ordering::SeqCst);
+        if silent() {
+            // The capture harness never makes a sound: the call is written down and `speech log` reads it back.
+            SPOKEN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("speak rate={rate:.2} text={text:?}"));
+            return;
+        }
         let _ = self.commands.send(Command::Speak(text, rate));
     }
 
     pub fn stop(&self) {
+        if silent() {
+            self.speaking.store(false, Ordering::SeqCst);
+            SPOKEN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push("stop".to_owned());
+            return;
+        }
         let _ = self.commands.send(Command::Stop);
     }
 

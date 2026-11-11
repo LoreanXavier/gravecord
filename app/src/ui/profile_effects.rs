@@ -543,8 +543,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let focused = window.is_window_active() || self.profile_effects.borrow().harness.is_some();
-        let reduced =
-            self.pref_on("reduced_motion", false) || self.profile_effects.borrow().force_reduced;
+        let reduced = crate::ui::motion::reduced() || self.profile_effects.borrow().force_reduced;
         let now = Instant::now();
         let mut retired = Vec::new();
         let mut decode_jobs: Vec<(ClipKey, Arc<Vec<u8>>)> = Vec::new();

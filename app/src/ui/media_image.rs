@@ -32,7 +32,7 @@ pub(super) fn image_url(base: &str, animated: bool, width: u32, height: u32) -> 
 
 impl Root {
     pub(super) fn media_image(&self, picture: Img, key: &str) -> AnyElement {
-        let play = (self.pref_on("animate_gifs", true) && !self.pref_on("reduced_motion", false))
+        let play = (self.pref_on("animate_gifs", true) && !crate::ui::motion::reduced())
             || self.hovered_media.as_deref() == Some(key);
         // GPUI retains the animation frame only for identified images. An anonymous image is its poster.
         if play {

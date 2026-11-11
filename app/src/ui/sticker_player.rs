@@ -758,7 +758,7 @@ impl Root {
     /// `animateStickers`: the account's choice (or this capture's), under reduced motion's override.
     fn sticker_setting(&self) -> Setting {
         Setting::from_index(self.pref_index("animate_stickers", 0))
-            .under(self.pref_on("reduced_motion", false))
+            .under(crate::ui::motion::reduced())
     }
 
     /// The picture of a sticker to draw: the frame its animation is at, or its still. `interacting` is the caller's
