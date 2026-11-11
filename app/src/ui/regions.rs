@@ -29,9 +29,10 @@ pub(crate) enum Kind {
     Header,
     Messages,
     Members,
+    Composer,
 }
 
-pub(crate) const KINDS: usize = 6;
+pub(crate) const KINDS: usize = 7;
 const ALL: [Kind; KINDS] = [
     Kind::Titlebar,
     Kind::Rail,
@@ -39,10 +40,11 @@ const ALL: [Kind; KINDS] = [
     Kind::Header,
     Kind::Messages,
     Kind::Members,
+    Kind::Composer,
 ];
 #[cfg_attr(not(feature = "capture"), allow(dead_code))]
 pub(crate) const NAMES: [&str; KINDS] = [
-    "titlebar", "rail", "sidebar", "header", "messages", "members",
+    "titlebar", "rail", "sidebar", "header", "messages", "members", "composer",
 ];
 
 static COUNT: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
@@ -137,7 +139,7 @@ impl Render for Region {
             kind: self.kind,
             started: std::time::Instant::now(),
         };
-        let cached = enabled();
+        let cached = enabled(self.kind);
         if cached {
             motion::begin_view(cx.entity_id());
         } else {
@@ -167,7 +169,18 @@ impl Render for Region {
 #[derive(Default)]
 pub(crate) struct Regions {
     views: Vec<Entity<Region>>,
+    composer: std::rc::Rc<ComposerSize>,
 }
+
+/// The composer form's height: what it measured last paint and what the main view laid its region out at.
+#[derive(Default)]
+pub(crate) struct ComposerSize {
+    measured: std::cell::Cell<f32>,
+    used: std::cell::Cell<f32>,
+}
+
+/// The form's height before it has been measured: its 58px box and the 8px under it.
+const COMPOSER_GUESS: f32 = 58. + 8.;
 
 impl Regions {
     /// Creates the views at the first render.
@@ -186,7 +199,7 @@ impl Regions {
     /// The area as a cached view laid out at `style`; an empty element before `ensure`.
     pub(crate) fn place(&self, kind: Kind, style: StyleRefinement) -> AnyElement {
         match self.views.get(kind as usize) {
-            Some(view) if !enabled() => AnyView::from(view.clone()).into_any_element(),
+            Some(view) if !enabled(kind) => AnyView::from(view.clone()).into_any_element(),
             Some(view) => AnyView::from(view.clone()).cached(style).into_any_element(),
             None => div().into_any_element(),
         }
@@ -208,6 +221,8 @@ pub(crate) fn style_of(kind: Kind) -> StyleRefinement {
         Kind::Messages => style.flex_1().min_h(px(0.)).w_full(),
         // The member list, 264 wide.
         Kind::Members => style.flex_none().w(px(264.)).h_full(),
+        // The height is measured, see `Regions::place_composer`.
+        Kind::Composer => style.flex_none().w_full(),
     }
 }
 
@@ -219,7 +234,7 @@ impl Root {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if enabled() {
+        if enabled(kind) {
             // What this area laid out for the keyboard last time is laid out again below.
             self.keys.stops.begin_region(motion::current_view());
         }
@@ -230,6 +245,7 @@ impl Root {
             Kind::Sidebar => self.home_sidebar(cx).into_any_element(),
             Kind::Header => self.header(cx).into_any_element(),
             Kind::Members => self.member_panel(cx).into_any_element(),
+            Kind::Composer => self.composer_bar(cx).into_any_element(),
             Kind::Messages if hidden("messages") => div().into_any_element(),
             Kind::Messages => {
                 let rows = list(
@@ -238,7 +254,7 @@ impl Root {
                         #[cfg(feature = "capture")]
                         let _row = crate::perf::Timer::row();
                         // The rows are built while the list is prepared, after the region's own render ended.
-                        if enabled() {
+                        if enabled(Kind::Messages) {
                             motion::enter_view(window.current_view());
                         }
                         let row = this.row(index, cx);
@@ -262,23 +278,33 @@ impl Root {
     }
 }
 
-/// Whether the regions are cached views. Off until each region has been proven by the use checks (typing, hover,
-/// switching, popouts, dialogs, settings, incoming messages, scrolling); the capture build can turn them on
-/// (`GRAVECORD_REGIONS=1`) to measure and to compare a run against the same areas drawn as part of the main view.
-const CACHED: bool = false;
+/// Which regions are cached views. All are off by default: each still needs its own run of the use checks (typing,
+/// hover, switching, popouts, dialogs, settings, incoming messages, scrolling, resize). The capture build can turn them
+/// on (`GRAVECORD_REGIONS=all`, or a list such as `rail,sidebar`; `0` turns all off) to measure, and to compare a run
+/// against the same areas drawn as part of the main view.
+const CACHED: [bool; KINDS] = [false; KINDS];
 
-fn enabled() -> bool {
+fn enabled(kind: Kind) -> bool {
     #[cfg(feature = "capture")]
     {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| match std::env::var("GRAVECORD_REGIONS").as_deref() {
-            Ok("1") => true,
-            Ok("0") => false,
-            _ => CACHED,
-        })
+        static ON: std::sync::OnceLock<[bool; KINDS]> = std::sync::OnceLock::new();
+        ON.get_or_init(|| match std::env::var("GRAVECORD_REGIONS").as_deref() {
+            Ok("1" | "all") => [true; KINDS],
+            Ok("0") => [false; KINDS],
+            Ok(list) => {
+                let mut on = [false; KINDS];
+                for name in list.split(',') {
+                    if let Some(index) = NAMES.iter().position(|known| *known == name) {
+                        on[index] = true;
+                    }
+                }
+                on
+            }
+            Err(_) => CACHED,
+        })[kind as usize]
     }
     #[cfg(not(feature = "capture"))]
-    CACHED
+    CACHED[kind as usize]
 }
 
 /// Whether the capture build was told to leave `part` out (`GRAVECORD_HIDE=composer,user_panel,messages`), to measure
@@ -295,5 +321,48 @@ pub(crate) fn hidden(part: &str) -> bool {
     {
         let _ = part;
         false
+    }
+}
+
+impl Regions {
+    /// The composer as a region laid out at its measured height (the form overlaps the list by 16px, which the
+    /// region's box does not include), or `None` when the composer is drawn inline.
+    pub(crate) fn place_composer(&self) -> Option<AnyElement> {
+        let view = self.views.get(Kind::Composer as usize)?;
+        if !enabled(Kind::Composer) {
+            return None;
+        }
+        let measured = self.composer.measured.get();
+        let height = if measured > 0. {
+            measured
+        } else {
+            COMPOSER_GUESS
+        };
+        self.composer.used.set(height);
+        let style = style_of(Kind::Composer).h(px(height - 16.));
+        Some(AnyView::from(view.clone()).cached(style).into_any_element())
+    }
+
+    /// Measures the composer form while it paints. A height that differs from the one the region was laid out at
+    /// redraws the main view, which lays the region out again at the new height.
+    pub(crate) fn composer_probe(&self) -> impl IntoElement {
+        let size = self.composer.clone();
+        gpui::canvas(
+            move |bounds, window, _| {
+                let height = f32::from(bounds.size.height);
+                size.measured.set(height);
+                if (height - size.used.get()).abs() > 0.5
+                    && size.used.get() > 0.
+                    && let Some(root) = IDS.with(|ids| ids.borrow().0)
+                {
+                    window.on_next_frame(move |_, cx| cx.notify(root));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 }

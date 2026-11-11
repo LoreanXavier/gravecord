@@ -220,7 +220,7 @@ impl GameCapture {
         let video_tap = tap.clone();
         let source = if game.window == TEST_WINDOW {
             Source::Test(
-                Synthetic::start(
+                Synthetic::start_detailed(
                     settings.width,
                     settings.height,
                     settings.fps,

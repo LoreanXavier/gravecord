@@ -17,7 +17,7 @@ mod actions;
 mod context_key;
 mod focus;
 mod grid;
-mod help;
+pub(in crate::ui) mod help;
 mod layers;
 mod messages;
 mod nav;

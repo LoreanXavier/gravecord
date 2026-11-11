@@ -1595,8 +1595,10 @@ impl Root {
                                     .borrow()
                                     .get("submenu")
                                     .is_some_and(|bounds| bounds.contains(&event.position));
-                                if !in_sub {
-                                    this.close_context_menu(cx);
+                                if !in_sub
+                                    && this.press_outside(super::keyboard::Layer::ContextMenu, cx)
+                                {
+                                    cx.stop_propagation();
                                 }
                             },
                         ))

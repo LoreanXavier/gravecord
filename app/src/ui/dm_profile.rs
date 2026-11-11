@@ -102,16 +102,22 @@ impl Root {
             ))
         });
         match colors {
-            Some((primary, secondary)) if luminance(primary) < 0.5 => Palette {
-                top: rgba((primary << 8) | 0xff),
-                bottom: rgba((secondary << 8) | 0xff),
-                // `--profile-gradient-overlay-color: #00000099`.
-                overlay: hsla(0., 0., 0., 0.6),
-                text: hsla(0., 0., 1., 0.96),
-                // Mutuals in the capture: oklab(0.7886 …) on the dark overlay.
-                subtle: hsla(0., 0., 0.71, 1.),
-                themed: true,
-            },
+            // "Apply theme to other users' profiles" (`syncProfileThemeWithUserTheme`): a profile wears the viewer's
+            // own theme, not the colours its owner picked.
+            Some((primary, secondary))
+                if luminance(primary) < 0.5 && !self.pref_on("sync_profile_themes", false) =>
+            {
+                Palette {
+                    top: rgba((primary << 8) | 0xff),
+                    bottom: rgba((secondary << 8) | 0xff),
+                    // `--profile-gradient-overlay-color: #00000099`.
+                    overlay: hsla(0., 0., 0., 0.6),
+                    text: hsla(0., 0., 1., 0.96),
+                    // Mutuals in the capture: oklab(0.7886 …) on the dark overlay.
+                    subtle: hsla(0., 0., 0.71, 1.),
+                    themed: true,
+                }
+            }
             _ => Palette {
                 top: color("--chat-background-default"),
                 bottom: color("--chat-background-default"),

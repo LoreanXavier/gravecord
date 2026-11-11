@@ -127,6 +127,89 @@ pub fn scaled_rgba(
     Some((out_width, out_height, out))
 }
 
+/// Like [`scaled_rgba`], but every output pixel averages the source pixels it covers (area sampling), so a 1080p
+/// picture shown at a third of its size keeps thin lines and text instead of dropping to nearest samples. Luma is
+/// averaged over its box and each chroma plane over the matching box of the half-size plane; the colour conversion is
+/// the same BT.601 limited range. RGBA sources fall back to [`scaled_rgba`].
+pub fn scaled_rgba_area(
+    picture: &Picture,
+    max_width: u32,
+    max_height: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if picture.layout == Layout::Rgba {
+        return scaled_rgba(picture, max_width, max_height);
+    }
+    if picture.width == 0
+        || picture.height == 0
+        || picture.data.len() != picture.layout.len(picture.width, picture.height)?
+    {
+        return None;
+    }
+    let scale = (f64::from(max_width) / f64::from(picture.width))
+        .min(f64::from(max_height) / f64::from(picture.height))
+        .min(1.0);
+    let out_width = ((f64::from(picture.width) * scale) as u32).max(1) as usize;
+    let out_height = ((f64::from(picture.height) * scale) as u32).max(1) as usize;
+    let (width, height) = (picture.width as usize, picture.height as usize);
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let plane = width * height;
+    let edges = |count: usize, source: usize| -> Vec<(usize, usize)> {
+        (0..count)
+            .map(|index| {
+                let from = index * source / count;
+                let to = ((index + 1) * source / count).max(from + 1).min(source);
+                (from, to)
+            })
+            .collect()
+    };
+    let columns = edges(out_width, width);
+    let rows = edges(out_height, height);
+    let chroma_at = |x: usize, y: usize| -> (usize, usize) {
+        match picture.layout {
+            Layout::Nv12 => {
+                let pair = plane + (y * chroma_width + x) * 2;
+                (pair, pair + 1)
+            }
+            _ => {
+                let cb = plane + y * chroma_width + x;
+                (cb, cb + chroma_width * chroma_height)
+            }
+        }
+    };
+    let mut out = vec![255u8; out_width * out_height * 4];
+    for (y, (y0, y1)) in rows.iter().enumerate() {
+        for (x, (x0, x1)) in columns.iter().enumerate() {
+            let mut luma_sum = 0u32;
+            for row in *y0..*y1 {
+                let line = &picture.data[row * width + x0..row * width + x1];
+                luma_sum += line.iter().map(|value| u32::from(*value)).sum::<u32>();
+            }
+            let luma = (luma_sum / ((y1 - y0) * (x1 - x0)) as u32) as i32;
+            let (cx0, cx1) = (x0 / 2, x1.div_ceil(2).min(chroma_width).max(x0 / 2 + 1));
+            let (cy0, cy1) = (y0 / 2, y1.div_ceil(2).min(chroma_height).max(y0 / 2 + 1));
+            let (mut cb_sum, mut cr_sum, mut count) = (0u32, 0u32, 0u32);
+            for cy in cy0..cy1 {
+                for cx in cx0..cx1 {
+                    let (cb, cr) = chroma_at(cx, cy);
+                    cb_sum += u32::from(picture.data[cb]);
+                    cr_sum += u32::from(picture.data[cr]);
+                    count += 1;
+                }
+            }
+            let cb = (cb_sum / count) as i32;
+            let cr = (cr_sum / count) as i32;
+            let c = (luma - 16) * 298;
+            let d = cb - 128;
+            let e = cr - 128;
+            let at = (y * out_width + x) * 4;
+            out[at] = clamp8((c + 409 * e + 128) >> 8);
+            out[at + 1] = clamp8((c - 100 * d - 208 * e + 128) >> 8);
+            out[at + 2] = clamp8((c + 516 * d + 128) >> 8);
+        }
+    }
+    Some((out_width as u32, out_height as u32, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +262,33 @@ mod tests {
         assert_eq!(big.2.len(), 960 * 540 * 4);
         let small = scaled_rgba(&flat(Layout::I420, 64, 36, 100, 128, 128), 960, 540).unwrap();
         assert_eq!((small.0, small.1), (64, 36));
+    }
+
+    #[test]
+    fn area_sampling_averages_the_pixels_it_covers() {
+        // Alternating black and white rows of luma: area sampling gives the mean, nearest sampling gives an extreme.
+        let (width, height) = (8u32, 8u32);
+        let mut picture = flat(Layout::I420, width, height, 16, 128, 128);
+        for row in 0..height as usize {
+            let value = if row % 2 == 0 { 16 } else { 235 };
+            for column in 0..width as usize {
+                picture.data[row * width as usize + column] = value;
+            }
+        }
+        let area = scaled_rgba_area(&picture, 4, 4).unwrap();
+        assert_eq!((area.0, area.1), (4, 4));
+        let mid = i32::from(area.2[0]);
+        assert!((mid - 128).abs() <= 3, "{mid}");
+        let nearest = scaled_rgba(&picture, 4, 4).unwrap();
+        assert!(i32::from(nearest.2[0]) < 20 || i32::from(nearest.2[0]) > 230);
+        // A flat picture stays flat and agrees with the nearest path; a bigger limit keeps the size.
+        let flat_grey = flat(Layout::Nv12, 64, 36, 126, 128, 128);
+        let a = scaled_rgba_area(&flat_grey, 64, 36).unwrap();
+        let b = scaled_rgba(&flat_grey, 64, 36).unwrap();
+        assert_eq!(a, b);
+        assert!(
+            scaled_rgba_area(&flat(Layout::I420, 1920, 1080, 100, 128, 128), 960, 540).is_some()
+        );
     }
 
     #[test]

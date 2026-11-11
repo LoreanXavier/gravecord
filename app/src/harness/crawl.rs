@@ -203,6 +203,51 @@ fn targets(cx: &mut AsyncApp, window: AnyWindowHandle) -> Vec<Target> {
     })
 }
 
+/// The text visible on the screen (what a failed `--expect` could have named), top to bottom.
+fn visible_text(cx: &mut AsyncApp, window: AnyWindowHandle) -> String {
+    cx.update(|cx| {
+        window
+            .update(cx, |_, window, _| {
+                let mut shown: Vec<_> = gpui::inert_text_log()
+                    .into_iter()
+                    .filter(|(at, _)| window.text_visible(*at))
+                    .collect();
+                shown.sort_by(|a, b| {
+                    (a.0.origin.y, a.0.origin.x)
+                        .partial_cmp(&(b.0.origin.y, b.0.origin.x))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                shown
+                    .iter()
+                    .take(80)
+                    .map(|(_, text)| clip(text))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Whether a parity id contains `needle` or visible text does.
+fn shows(cx: &mut AsyncApp, window: AnyWindowHandle, needle: &str) -> bool {
+    cx.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                crate::parity::clear();
+                gpui::inert_text_clear();
+                window.refresh();
+                window.draw(cx).clear(cx);
+                crate::parity::snapshot()
+                    .iter()
+                    .any(|(id, _)| id.contains(needle))
+                    || gpui::inert_text_log()
+                        .iter()
+                        .any(|(at, text)| text.contains(needle) && window.text_visible(*at))
+            })
+            .unwrap_or(false)
+    })
+}
+
 fn frame(cx: &mut AsyncApp, window: AnyWindowHandle) -> Option<image::RgbaImage> {
     cx.update(|cx| {
         window
@@ -314,6 +359,8 @@ pub async fn run(
     // `--nav a | b | c` after the other words: steps that bring the app back to where the crawl started.
     // `--neutral x y`: a blank place to click so that focus is the same before and after (0 0: none).
     let mut neutral = Some((1255., 360.));
+    // `--expect text_or_id`: a parity id or visible text (`_` is a space) the screen must show, before and after each element.
+    let mut expect: Option<String> = None;
     let mut kept: Vec<&str> = Vec::new();
     let mut skip = 0;
     for (at, word) in words.iter().enumerate() {
@@ -324,6 +371,9 @@ pub async fn run(
                 words[at + 1].parse().ok().zip(words[at + 2].parse().ok());
             neutral = spot.filter(|spot| spot.0 > 0.);
             skip = 2;
+        } else if *word == "--expect" && words.len() > at + 1 {
+            expect = Some(words[at + 1].replace('_', " "));
+            skip = 1;
         } else {
             kept.push(word);
         }
@@ -356,6 +406,31 @@ pub async fn run(
     cx.update(|cx| dispatch(cx, window, moved(point(px(2.), px(715.)), None)));
     settle(cx, window, 400).await;
     let _ = std::fs::remove_file(dir.join("progress.txt"));
+    // A slow machine paints late: look for up to three seconds before calling the setup failed.
+    let mut found = false;
+    if let Some(needle) = &expect {
+        for _ in 0..6 {
+            if shows(cx, window, needle) {
+                found = true;
+                break;
+            }
+            settle(cx, window, 500).await;
+        }
+    }
+    if let Some(needle) = &expect
+        && !found
+    {
+        if let Some(image) = frame(cx, window) {
+            let _ = image.save(dir.join("setup-failed.png"));
+        }
+        let seen = visible_text(cx, window);
+        log(
+            &mut out,
+            dir,
+            &format!("crawl: setup failed, `{needle}` is not on the screen; text seen: {seen}"),
+        );
+        return out;
+    }
     let list = targets(cx, window);
     let base_texts: std::collections::HashSet<String> = cx.update(|cx| {
         window
@@ -368,7 +443,7 @@ pub async fn run(
             })
             .unwrap_or_default()
     });
-    let mut base = frame(cx, window);
+    let base = frame(cx, window);
     let total = list.len();
     let mut start = print(cx, window, root);
     // Is what is drawn steady by itself? A spinner or a blinking caret makes the scene differ with no input.
@@ -376,6 +451,8 @@ pub async fn run(
     let steady = print(cx, window, root).scene == start.scene;
     let mut counts: std::collections::BTreeMap<&'static str, usize> = Default::default();
     let mut visited = 0;
+    // Set when the app could not be brought back: later elements may no longer be where the list says.
+    let mut drifted = false;
     let mut dead_boxes: Vec<Bounds<Pixels>> = Vec::new();
     log(
         &mut out,
@@ -479,6 +556,24 @@ pub async fn run(
                 } else {
                     "dead"
                 };
+                if class == "dead" {
+                    // A control that waits for the network shows its result later: look again before calling it dead.
+                    settle(cx, window, 1200).await;
+                    let late = print(cx, window, root);
+                    if late.acted != before.acted {
+                        class = "acted";
+                    } else if late.state != before.state || (steady && late.scene != before.scene) {
+                        class = "changed";
+                    } else if late.reads != before.reads {
+                        class = "read";
+                    }
+                }
+                if class == "dead"
+                    && let Some(image) = frame(cx, window)
+                {
+                    // What the page looks like after the click that did nothing.
+                    let _ = image.save(dir.join(format!("{mode}-{index}-after.png")));
+                }
                 if class == "dead" && target.selected {
                     class = "selected";
                 }
@@ -494,7 +589,10 @@ pub async fn run(
         log(
             &mut out,
             dir,
-            &format!("#{index} {class} {name}{extra} {notes}"),
+            &format!(
+                "#{index} {class} {name}{extra}{} {notes}",
+                if drifted { " (page drifted)" } else { "" }
+            ),
         );
         if class == "dead" || class == "no-tooltip" || class == "selected" {
             if let Some(base) = &base {
@@ -520,6 +618,12 @@ pub async fn run(
             if now.state == start.state && (!steady || now.scene == start.scene) {
                 break;
             }
+            if (tries >= 5 || navved) && (now.state == start.state || now.scene == start.scene) {
+                // The same page (the state, or else the picture, matches): what differs is a focus ring, a scroll offset, a hover, or the
+                // navigation history the state describes.
+                start = now;
+                break;
+            }
             if tries >= 5 || navved {
                 // Not back where it started: say so, take this as the new start and go on.
                 log(
@@ -532,11 +636,11 @@ pub async fn run(
                     ),
                 );
                 start = now;
-                base = frame(cx, window);
+                drifted = true;
                 break;
             }
             if tries == 2 && !nav.is_empty() {
-                let log_path = std::path::PathBuf::from("crawl-nav.log");
+                let log_path = dir.join("nav.log");
                 Box::pin(super::run(&nav, window, root.clone(), log_path, cx)).await;
                 settle(cx, window, 900).await;
                 navved = true;
@@ -561,6 +665,36 @@ pub async fn run(
             settle(cx, window, 200).await;
             tries += 1;
         }
+        if let Some(needle) = &expect
+            && !shows(cx, window, needle)
+        {
+            // The screen is gone (a click left the page): the re-open steps, once; if it still is not there, stop.
+            if !nav.is_empty() {
+                let log_path = dir.join("nav.log");
+                Box::pin(super::run(&nav, window, root.clone(), log_path, cx)).await;
+                settle(cx, window, 900).await;
+            }
+            if !shows(cx, window, needle) {
+                log(
+                    &mut out,
+                    dir,
+                    &format!(
+                        "crawl: lost the screen after #{index}, `{needle}` is not shown; stopped"
+                    ),
+                );
+                break;
+            }
+            start = print(cx, window, root);
+        }
+    }
+    if let Some(needle) = &expect
+        && !shows(cx, window, needle)
+    {
+        log(
+            &mut out,
+            dir,
+            &format!("crawl: lost the screen, `{needle}` is gone at the end"),
+        );
     }
     if let Some(mut whole_frame) = base
         && !dead_boxes.is_empty()

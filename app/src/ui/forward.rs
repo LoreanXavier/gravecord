@@ -41,6 +41,8 @@ pub(crate) struct Forward {
     pub message: Option<Message>,
     /// Share Profile (module 627664): the same modal, sending the profile link instead.
     pub(super) profile: Option<dc_state::User>,
+    /// Share Clip (module 243258): the same modal, sending the clip's trimmed video.
+    pub(super) clip: Option<super::clips::ShareClip>,
     pub(super) search: Entity<Editor>,
     pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
@@ -79,6 +81,19 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.open_forward_with(None, Some(user), window, cx);
+    }
+
+    /// Share Clip: the forward modal titled "Share Clip" with the clip as preview.
+    pub(super) fn open_share_clip(
+        &mut self,
+        clip: super::clips::ShareClip,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forward_with(None, None, window, cx);
+        if let Some(forward) = self.forward.as_mut() {
+            forward.clip = Some(clip);
+        }
     }
 
     fn open_forward_with(
@@ -123,6 +138,7 @@ impl Root {
         self.forward = Some(Forward {
             message,
             profile,
+            clip: None,
             search,
             note,
             _events: [search_events, note_events],
@@ -264,6 +280,15 @@ impl Root {
             return;
         }
         let note = note.unwrap_or_else(|| forward.note.read(cx).text().trim().to_owned());
+        if forward.clip.is_some() {
+            // `customSendHandler` of module 243258: the video to each destination, then the note.
+            let channels: Vec<Id> = forward.selected.iter().map(|d| d.channel()).collect();
+            self.go_to_destination(&forward.selected);
+            if let Some(share) = forward.clip {
+                self.clips_send_share(share, channels, note, cx);
+            }
+            return;
+        }
         if let Some(user) = forward.profile.as_ref() {
             // The link, then the note after a blank line, as one message per destination.
             let link = profile_link(user.id);
@@ -539,7 +564,10 @@ impl Root {
                 .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
             (None, Some(user)) => self.profile_preview(user),
-            (None, None) => div().into_any_element(),
+            (None, None) => match forward.clip.as_ref() {
+                Some(clip) => self.clips_share_preview(clip),
+                None => div().into_any_element(),
+            },
         };
         let sharing = forward.profile.as_ref().map(|user| user.id);
         let send_label = if count <= 1 {
@@ -587,7 +615,9 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child(if sharing.is_some() {
+                                    .child(if forward.clip.is_some() {
+                                        "Share Clip"
+                                    } else if sharing.is_some() {
                                         "Share Profile"
                                     } else {
                                         "Forward To"
@@ -622,6 +652,9 @@ impl Root {
                             .text_color(color("--text-muted"))
                             .child(if full {
                                 format!("Maximum {MAX_DESTINATIONS} places at once.")
+                            } else if forward.clip.is_some() {
+                                // `Ey7mOU`.
+                                "Share your clip to a channel or directly with friends!".to_owned()
                             } else {
                                 "Select where you want to share this message.".to_owned()
                             }),
@@ -691,7 +724,9 @@ impl Root {
                     div()
                         .relative()
                         .pl(px(16.))
-                        .when(sharing.is_none(), |this| this.py(px(4.)))
+                        .when(sharing.is_none() && forward.clip.is_none(), |this| {
+                            this.py(px(4.))
+                        })
                         .child(
                             div()
                                 .absolute()
@@ -702,7 +737,7 @@ impl Root {
                                 .rounded(px(2.))
                                 .bg(color("--border-subtle")),
                         )
-                        .child(if sharing.is_some() {
+                        .child(if sharing.is_some() || forward.clip.is_some() {
                             div().child(preview)
                         } else {
                             div().h(px(22.)).pt(px(2.)).child(preview)

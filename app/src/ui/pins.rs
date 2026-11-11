@@ -314,8 +314,9 @@ impl Root {
                     ])
                     .overflow_hidden()
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.pins_open = None;
-                        cx.notify();
+                        if this.press_outside(super::keyboard::Layer::Pins, cx) {
+                            cx.stop_propagation();
+                        }
                     }))
                     .child(
                         div()

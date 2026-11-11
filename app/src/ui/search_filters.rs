@@ -1250,10 +1250,11 @@ impl Root {
                                 .is_some_and(|bounds| {
                                     bounds.dilate(px(1.)).contains(&event.position)
                                 });
-                            if !on_field && let Some(filters) = this.search_filters.as_mut() {
-                                filters.open = None;
+                            if !on_field
+                                && this.press_outside(super::keyboard::Layer::SearchFilters, cx)
+                            {
+                                cx.stop_propagation();
                             }
-                            cx.notify();
                         },
                     ))
                     .child(if rows.is_empty() {

@@ -213,11 +213,13 @@ impl Root {
                     .h(px(105.))
                     .rounded_t(px(6.))
                     .overflow_hidden()
+                    .relative()
                     .bg(banner)
                     .children(
                         self.profile_banner_image(id)
                             .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    ),
+                    )
+                    .children(self.live_banner(id, 300., 105., cx)),
             )
             .child(
                 // `avatar_WRLIGC clickable`: "View Full Profile".

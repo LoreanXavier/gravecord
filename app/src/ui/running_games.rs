@@ -166,6 +166,7 @@ impl Root {
 
     /// One scan: the running games change (`RUNNING_GAMES_CHANGE`), and the activity follows.
     pub(super) fn detect_scanned(&mut self, scan: GameScan, cx: &mut Context<Self>) {
+        self.streamer_scanned(scan.streamer_tools);
         let now = now_ms();
         let games: Vec<Game> = scan
             .games

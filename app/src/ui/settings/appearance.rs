@@ -5,14 +5,11 @@
 use super::model::{Layer, Swatch};
 use super::swatches::SWATCHES;
 use super::{Root, button, color, mask_icon};
-use crate::net::Request;
-use crate::ui::{set_theme, theme};
 use dc_tokens::Theme;
 use gpui::{
     AnyElement, BoxShadow, Context, FontWeight, Image, ImageFormat, IntoElement, SharedString, div,
     img, point, prelude::*, px,
 };
-use serde_json::json;
 use std::sync::Arc;
 
 /// The in-app icons of `746322` `v8()` in the order the page lists them: the name and the asset's file.
@@ -48,16 +45,6 @@ pub(super) fn app_icon_key(index: usize) -> String {
 
 pub(super) fn app_icon_url(index: usize) -> String {
     format!("https://discord.com/assets/{}.webp", APP_ICONS[index].1)
-}
-
-/// `appearance.theme` as the settings proto holds it: DARK 1, LIGHT 2, DARKER 3, MIDNIGHT 4.
-fn theme_value(palette: Theme) -> u64 {
-    match palette {
-        Theme::Dark => 1,
-        Theme::Light => 2,
-        Theme::Darker => 3,
-        Theme::Midnight => 4,
-    }
 }
 
 fn rgba_hex(value: u32) -> (String, f32) {
@@ -165,54 +152,20 @@ impl Root {
             .child(div().flex().gap(px(12.)).children(options)).into_any_element()
     }
 
-    /// A 48px swatch with its 1px inset ring; the chosen one wears a 4px brand ring and a check.
-    fn swatch(
+    /// A 48px swatch with its 1px inset ring; the chosen one wears a 4px brand ring and a check. The caller adds the
+    /// click.
+    pub(super) fn swatch_base(
         &self,
         swatch: &'static Swatch,
         selected: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let picture = swatch_image(swatch);
-        let palette = palette_of(swatch.name);
         div()
             .id(SharedString::from(format!("swatch-{}", swatch.name)))
             .relative()
             .flex_none()
             .size(px(48.))
             .cursor_pointer()
-            .when_some(palette, |this, palette| {
-                this.on_click(cx.listener(move |this, _, _, cx| {
-                    this.choose_theme(palette);
-                    cx.refresh_windows();
-                    cx.notify();
-                }))
-            })
-            // A colour theme is a Nitro perk: a free account gets the upsell (`Selecting closes settings and opens
-            // a theme preview`; the preview and the sync tile are not drawn by this client).
-            .when(
-                palette.is_none() && swatch.group == "client" && !swatch.layers.is_empty(),
-                |this| {
-                    let name = swatch.name;
-                    this.on_click(
-                        cx.listener(move |this, _, _, cx| this.pick_client_theme(name, cx)),
-                    )
-                },
-            )
-            .when(
-                palette.is_none()
-                    && swatch.name != "Sync with computer"
-                    && (swatch.group != "client" || swatch.layers.is_empty()),
-                |this| this.on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx))),
-            )
-            .when(swatch.name == "Sync with computer", |this| {
-                this.on_click(cx.listener(|this, _, _, cx| {
-                    this.setting_choices
-                        .insert(SAME_AS_DEVICE, super::model::Choice::On(true));
-                    this.voice_setting_changed(SAME_AS_DEVICE);
-                    cx.refresh_windows();
-                    cx.notify();
-                }))
-            })
             .child(img(picture).size(px(48.)).rounded(px(8.)))
             .child(
                 div()
@@ -266,48 +219,66 @@ impl Root {
                         ))),
                 )
             })
+    }
+
+    fn swatch(
+        &self,
+        swatch: &'static Swatch,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let palette = palette_of(swatch.name);
+        self.swatch_base(swatch, selected)
+            .when_some(palette, |this, palette| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.choose_theme(palette);
+                    cx.refresh_windows();
+                    cx.notify();
+                }))
+            })
+            // A colour theme: Nitro applies and saves it, any other account previews it.
+            .when(
+                palette.is_none() && swatch.group == "client" && !swatch.layers.is_empty(),
+                |this| {
+                    let name = swatch.name;
+                    this.on_click(
+                        cx.listener(move |this, _, _, cx| this.pick_client_theme(name, cx)),
+                    )
+                },
+            )
+            .when(
+                palette.is_none()
+                    && swatch.name != "Sync with computer"
+                    && (swatch.group != "client" || swatch.layers.is_empty()),
+                |this| this.on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx))),
+            )
+            // `u_({theme: "system"})`: the device setting on, no colour theme.
+            .when(swatch.name == "Sync with computer", |this| {
+                this.on_click(cx.listener(|this, _, _, cx| {
+                    this.theme_choose_system();
+                    cx.refresh_windows();
+                    cx.notify();
+                }))
+            })
             .into_any_element()
     }
 
-    /// `appearance.theme`: shown now, kept for the next start and sent to the account as the official client does.
-    /// Choosing a palette by hand ends "Same as Device Theme".
+    /// `appearance.theme`: shown now, kept for the next start and sent to the account as the official client does
+    /// (`theme_state`). Choosing a palette by hand ends "Same as Device Theme" and any colour theme.
     pub(super) fn choose_theme(&mut self, palette: Theme) {
-        set_theme(palette);
-        self.clear_client_theme();
-        let was_synced = self.pref_on(SAME_AS_DEVICE, false);
-        if was_synced {
-            self.setting_choices
-                .insert(SAME_AS_DEVICE, super::model::Choice::On(false));
-            self.voice_setting_changed(SAME_AS_DEVICE);
-        }
-        let value = theme_value(palette);
-        let patch = self.stores.set_pref(&dc_proto::settings::THEME, value);
-        self.stores.theme = value;
-        if !patch.is_empty() {
-            let _ = self.requests.send(Request::Rest {
-                key: None,
-                method: reqwest::Method::PATCH,
-                route: "/users/@me/settings-proto/1".to_owned(),
-                body: Some(json!({"settings": patch})),
-            });
-        }
+        self.theme_choose_default(super::theme_state::proto_of(palette));
         self.request_emoji_button();
     }
 
     pub(super) fn default_themes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current = theme();
-        let device = self.pref_on(SAME_AS_DEVICE, false);
+        // "Same as Device Theme" swaps the row for the Light Mode and Dark Mode selectors.
+        if self.theme_same_as_device() {
+            return self.dual_theme_selector(cx);
+        }
         let swatches: Vec<AnyElement> = SWATCHES
             .iter()
             .filter(|swatch| swatch.group == "default")
-            .map(|swatch| {
-                let selected = if swatch.name == "Sync with computer" {
-                    device
-                } else {
-                    !device && palette_of(swatch.name) == Some(current)
-                };
-                self.swatch(swatch, selected, cx)
-            })
+            .map(|swatch| self.swatch(swatch, self.theme_tile_selected(swatch.name), cx))
             .collect();
         div()
             .py(px(8.))
@@ -486,6 +457,7 @@ impl Root {
     }
 
     pub(super) fn color_themes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let nitro = self.premium() != dc_state::premium::PremiumType::None;
         let swatches: Vec<AnyElement> = SWATCHES
             .iter()
             .filter(|swatch| swatch.group == "client")
@@ -517,7 +489,10 @@ impl Root {
                         )
                         .into_any_element()
                 } else {
-                    self.swatch(swatch, false, cx)
+                    let chosen = !super::client_theme::previewing()
+                        && super::client_theme::preset_id(swatch.name)
+                            .is_some_and(|id| self.theme_wanted().preset == Some(id));
+                    self.swatch(swatch, chosen, cx)
                 }
             })
             .collect();
@@ -525,11 +500,15 @@ impl Root {
             .py(px(8.))
             .child(
                 div()
-                    .p(px(24.))
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(color("--border-normal"))
-                    .bg(color("--background-base-lower"))
+                    // Preview (no Nitro): `colorThemesBackground_A7cGXu`, a bordered panel. A subscriber sees the
+                    // header and the tiles without it.
+                    .when(!nitro, |this| {
+                        this.p(px(24.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-normal"))
+                            .bg(color("--background-base-lower"))
+                    })
                     .flex()
                     .flex_col()
                     .child(
@@ -554,33 +533,45 @@ impl Root {
                                             .child("Color Themes")
                                             .child(mask_icon("nitro_wheel", 16., "--text-default")),
                                     )
-                                    .child(super::described(
-                                        &[
-                                            ("Unlock more themes with ", false),
-                                            ("Nitro", true),
-                                            (".", false),
-                                        ],
-                                        "--text-subtle",
-                                    )),
+                                    .child(if nitro {
+                                        // `np0X/u`
+                                        super::described(
+                                            &[("Make Discord yours. Only with Nitro.", false)],
+                                            "--text-subtle",
+                                        )
+                                        .into_any_element()
+                                    } else {
+                                        super::described(
+                                            &[
+                                                ("Unlock more themes with ", false),
+                                                ("Nitro", true),
+                                                (".", false),
+                                            ],
+                                            "--text-subtle",
+                                        )
+                                        .into_any_element()
+                                    }),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(12.))
-                                    .child(
-                                        div()
-                                            .id("theme-preview-click")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.pick_client_theme("Mint Apple", cx)
-                                            }))
-                                            .child(button(
-                                                "theme-preview",
-                                                "Preview Theme",
-                                                super::ButtonKind::Secondary,
-                                            )),
-                                    )
-                                    .child(self.unlock_with_nitro("theme-unlock", cx)),
-                            ),
+                            .when(!nitro, |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .id("theme-preview-click")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.pick_client_theme("Mint Apple", cx)
+                                                }))
+                                                .child(button(
+                                                    "theme-preview",
+                                                    "Preview Theme",
+                                                    super::ButtonKind::Secondary,
+                                                )),
+                                        )
+                                        .child(self.unlock_with_nitro("theme-unlock", cx)),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -594,9 +585,6 @@ impl Root {
             .into_any_element()
     }
 }
-
-/// The key of "Same as Device Theme" (`ThemeStore.syncedThemesEnabled`).
-pub(super) const SAME_AS_DEVICE: &str = "appearance_same_as_device_theme";
 
 fn hsla_from_rgb(red: f32, green: f32, blue: f32, alpha: f32) -> gpui::Hsla {
     gpui::Rgba {

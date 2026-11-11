@@ -47,6 +47,7 @@ pub(in crate::ui) enum Layer {
     FriendMenu,
     ProfileMenu,
     SnoozeMenu,
+    ClipMenu,
     Menu,
     Submenu,
     ContextMenu,
@@ -78,6 +79,7 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::FriendMenu,
     Layer::ProfileMenu,
     Layer::SnoozeMenu,
+    Layer::ClipMenu,
     Layer::Menu,
     Layer::Submenu,
     Layer::ContextMenu,
@@ -111,6 +113,7 @@ impl Layer {
             | Layer::FriendMenu
             | Layer::ProfileMenu
             | Layer::SnoozeMenu
+            | Layer::ClipMenu
             | Layer::Menu
             | Layer::Submenu
             | Layer::ContextMenu => Kind::Popover,
@@ -169,6 +172,7 @@ impl Root {
             Layer::FriendMenu => self.friend_menu.is_some(),
             Layer::ProfileMenu => self.profile_menu.is_some(),
             Layer::SnoozeMenu => self.snooze_menu.is_some(),
+            Layer::ClipMenu => self.clips_menu_open(),
             Layer::Menu => self.menu.is_some(),
             Layer::Submenu => self.submenu.is_some(),
             Layer::ContextMenu => self.context.open.is_some(),
@@ -213,6 +217,7 @@ impl Root {
             Layer::FriendMenu => self.friend_menu = None,
             Layer::ProfileMenu => self.profile_menu = None,
             Layer::SnoozeMenu => self.snooze_menu = None,
+            Layer::ClipMenu => self.clips_close_menu(),
             Layer::Menu => self.menu = None,
             Layer::Submenu => self.submenu = None,
             Layer::ContextMenu => self.close_context_menu(cx),
@@ -252,7 +257,7 @@ impl Root {
     }
 
     /// A press outside `layer`'s card: closes it when it is the top layer. True when it did.
-    fn press_outside(&mut self, layer: Layer, cx: &mut Context<Self>) -> bool {
+    pub(in crate::ui) fn press_outside(&mut self, layer: Layer, cx: &mut Context<Self>) -> bool {
         let open = self.open_layers();
         if layer.kind() != Kind::Popover || !is_top(&open, layer) {
             return false;
@@ -300,7 +305,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 27);
+        assert_eq!(ALL.len(), 28);
     }
 
     #[test]

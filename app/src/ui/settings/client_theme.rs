@@ -27,8 +27,6 @@ static PREVIEW: AtomicBool = AtomicBool::new(false);
 /// What Exit Preview restores: the palette and the colour theme from before the preview.
 static SAVED_THEME: AtomicU8 = AtomicU8::new(2);
 static SAVED_ACTIVE: AtomicUsize = AtomicUsize::new(0);
-/// The preset id of the account that was last applied, so a change made elsewhere is picked up once.
-static LAST_ACCOUNT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// `BackgroundGradientPresetId` (module 873298) of each colour swatch, by the name the page shows.
 const PRESET_IDS: &[(&str, u64)] = &[
@@ -70,6 +68,14 @@ fn swatch_of_preset(id: u64) -> Option<usize> {
 
 pub(in crate::ui) fn active() -> Option<&'static Swatch> {
     SWATCHES.get(ACTIVE.load(Ordering::Relaxed).checked_sub(1)?)
+}
+
+/// Puts a colour theme on screen by its preset id (none: the plain palette).
+pub(in crate::ui) fn show_preset(id: Option<u64>) {
+    ACTIVE.store(
+        id.and_then(swatch_of_preset).map_or(0, |index| index + 1),
+        Ordering::Relaxed,
+    );
 }
 
 pub(in crate::ui) fn previewing() -> bool {
@@ -114,6 +120,7 @@ fn level(name: &str, light: bool) -> Option<f32> {
 }
 
 /// The colour a surface token resolves to while a colour theme is on, or `None` to use the palette's own.
+#[cfg(test)]
 fn overlay_opacity(name: &str, light: bool) -> Option<f32> {
     level(name, light)
 }
@@ -121,8 +128,34 @@ fn overlay_opacity(name: &str, light: bool) -> Option<f32> {
 pub(in crate::ui) fn overlay(name: &str) -> Option<Rgba> {
     let swatch = active()?;
     let light = is_light(swatch);
-    let opacity = level(name, light)?;
+    if name == "--background-surface-high" {
+        return Some(mid_surface(swatch, light));
+    }
+    let Some(opacity) = level(name, light) else {
+        return mixed(name, swatch);
+    };
     Some(layer(opacity, light))
+}
+
+/// The cards of the member list and the like (`--background-surface-high`) while a colour theme is on: the official
+/// card paints the preset's gradient over its own box under a 0.70 white (light) or 0.75 black (dark) layer
+/// (`background-image` of `container_g7esM5` in both preview captures). A flat colour stands in for the gradient:
+/// the layer over the middle of the preset's first and last colour.
+fn mid_surface(swatch: &Swatch, light: bool) -> Rgba {
+    let stops = swatch.layers.last().map_or(&[][..], |layer| layer.stops);
+    let (Some(first), Some(last)) = (stops.first(), stops.last()) else {
+        return rgba(0);
+    };
+    let mid = |shift: u32| ((first.0 >> shift) & 0xff).midpoint((last.0 >> shift) & 0xff);
+    let under = [mid(24), mid(16), mid(8)].map(|channel| channel as f32 / 255.);
+    let (over, opacity) = if light { (1., 0.70) } else { (0., 0.75) };
+    let mixed = under.map(|channel| channel * (1. - opacity) + over * opacity);
+    Rgba {
+        r: mixed[0],
+        g: mixed[1],
+        b: mixed[2],
+        a: 1.,
+    }
 }
 
 /// A surface that repaints the gradient instead of lying over the surface behind it: the chat input
@@ -243,43 +276,169 @@ fn backdrop_image(swatch: &'static Swatch, width: f32, height: f32) -> Arc<gpui:
     Arc::new(gpui::RenderImage::new(vec![image::Frame::new(picture)]))
 }
 
-/// Mixes the base colour of the theme into a panel colour (`--custom-theme-base-color-amount`, 50% for a client
-/// theme): the preview panel of the dark capture is the palette's panel tinted toward the gradient's darkest hue.
+/// `--custom-theme-base-color` and `--custom-theme-text-color` of a preset (module 345815 `i`, fed by `162772` `m`
+/// with the preset's first and last colour): the lighter and the darker of the two by luminance, the darker one
+/// standing in for the lighter when it has no hue; the base is the darker (dark theme, lightness .05) or lighter (light
+/// theme, .9) one at full saturation, the text colour the lighter (dark) or darker (light) one at full saturation and
+/// a lightness of .8 or .95 (dark) or .25 or .15 (light), the first for hues from 200 to 300.
+struct ThemeMix {
+    base: Rgba,
+    text: Rgba,
+}
+
+fn luminance(colour: Rgba) -> f32 {
+    let linear = |c: f32| {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(colour.r) + 0.7152 * linear(colour.g) + 0.0722 * linear(colour.b)
+}
+
+fn theme_mix(swatch: &Swatch) -> ThemeMix {
+    let stops = swatch.layers.last().map_or(&[][..], |layer| layer.stops);
+    let (Some(first), Some(last)) = (stops.first(), stops.last()) else {
+        return ThemeMix {
+            base: rgba(0x000000ff),
+            text: rgba(0xffffffff),
+        };
+    };
+    let (primary, secondary) = (rgba(first.0 | 0xff), rgba(last.0 | 0xff));
+    let (lighter, mut darker) = if luminance(primary) > luminance(secondary) {
+        (primary, secondary)
+    } else {
+        (secondary, primary)
+    };
+    let dark = !is_light(swatch);
+    let hsl = |colour: Rgba| -> Hsla { colour.into() };
+    if hsl(darker).s == 0. {
+        darker = lighter;
+    }
+    let with = |colour: Rgba, lightness: f32| -> Rgba {
+        Hsla {
+            s: 1.,
+            l: lightness,
+            a: 1.,
+            ..hsl(colour)
+        }
+        .into()
+    };
+    let text_source = if dark { lighter } else { darker };
+    let hue = hsl(text_source).h * 360.;
+    let blue = (200. ..=300.).contains(&hue);
+    let text_lightness = match (dark, blue) {
+        (true, true) => 0.8,
+        (true, false) => 0.95,
+        (false, true) => 0.25,
+        (false, false) => 0.15,
+    };
+    ThemeMix {
+        base: if dark {
+            with(darker, 0.05)
+        } else {
+            with(lighter, 0.9)
+        },
+        text: with(text_source, text_lightness),
+    }
+}
+
+fn to_oklab(colour: Rgba) -> [f32; 3] {
+    let linear = |c: f32| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = (linear(colour.r), linear(colour.g), linear(colour.b));
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
+fn from_oklab(lab: [f32; 3], alpha: f32) -> Rgba {
+    let l = (lab[0] + 0.396_337_78 * lab[1] + 0.215_803_76 * lab[2]).powi(3);
+    let m = (lab[0] - 0.105_561_346 * lab[1] - 0.063_854_17 * lab[2]).powi(3);
+    let s = (lab[0] - 0.089_484_18 * lab[1] - 1.291_485_5 * lab[2]).powi(3);
+    let channel = |linear: f32| {
+        let linear = linear.clamp(0., 1.);
+        if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1. / 2.4) - 0.055
+        }
+    };
+    Rgba {
+        r: channel(4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_93 * s),
+        g: channel(-1.268_438 * l + 2.609_757_4 * m - 0.341_319_4 * s),
+        b: channel(-0.004_196_086 * l - 0.703_418_6 * m + 1.707_614_7 * s),
+        a: alpha,
+    }
+}
+
+/// `color-mix(in oklab, <own> 100%, <with> <amount>%)`: the percentages add to more than 100, so they are scaled to
+/// share it, `with` getting `amount / (100 + amount)`.
+fn mix_oklab(own: Rgba, with: Rgba, amount_percent: f32) -> Rgba {
+    let weight = amount_percent / (100. + amount_percent);
+    let (a, b) = (to_oklab(own), to_oklab(with));
+    from_oklab([0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * weight), own.a)
+}
+
+/// The default amounts of a preset (`Zk`): 50% base, 38% text.
+const BASE_AMOUNT: f32 = 50.;
+const TEXT_AMOUNT: f32 = 38.;
+
+/// The mix of the active theme, made once per theme.
+fn active_mix(swatch: &'static Swatch) -> std::rc::Rc<ThemeMix> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(usize, std::rc::Rc<ThemeMix>)>> = const { std::cell::RefCell::new(None) };
+    }
+    let index = ACTIVE.load(Ordering::Relaxed);
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.as_ref().map(|(known, _)| *known) != Some(index) {
+            *cache = Some((index, std::rc::Rc::new(theme_mix(swatch))));
+        }
+        cache.as_ref().map(|(_, mix)| mix.clone()).unwrap()
+    })
+}
+
+/// A token the theme mixes with its base colour or its text colour (see `theme_mix_tokens`), mixed.
+fn mixed(name: &str, swatch: &'static Swatch) -> Option<Rgba> {
+    use super::theme_mix_tokens as tokens;
+    let light = is_light(swatch);
+    let (base, text) = if light {
+        (tokens::BASE_LIGHT, tokens::TEXT_LIGHT)
+    } else {
+        (tokens::BASE_DARK, tokens::TEXT_DARK)
+    };
+    let is_base = base.binary_search(&name).is_ok();
+    if !is_base && text.binary_search(&name).is_err() {
+        return None;
+    }
+    let own = rgba(theme().color(name));
+    let mix = active_mix(swatch);
+    Some(if is_base {
+        mix_oklab(own, mix.base, BASE_AMOUNT)
+    } else {
+        mix_oklab(own, mix.text, TEXT_AMOUNT)
+    })
+}
+
+/// A panel colour of the palette with the theme's base colour mixed in, as the preview panel of the captures.
 fn tinted(name: &str) -> Rgba {
     let own = rgba(theme().color(name));
     let Some(swatch) = active() else {
         return own;
     };
-    let Some(layer) = swatch.layers.last() else {
-        return own;
-    };
-    // `--custom-theme-base-color` (module 345815): the darker (dark theme) or lighter (light theme) of the two
-    // gradient colours at full saturation, lightness 0.05 or 0.9.
-    let light = is_light(swatch);
-    let brightness = |value: u32| (value >> 24) + ((value >> 16) & 0xff) + ((value >> 8) & 0xff);
-    let stops = layer.stops.iter().map(|(value, _)| *value);
-    let pick = if light {
-        stops.max_by_key(|value| brightness(*value))
-    } else {
-        stops.min_by_key(|value| brightness(*value))
-    };
-    let hsl: Hsla = rgba(pick.unwrap_or(0)).into();
-    let base: Rgba = Hsla {
-        s: 1.,
-        l: if light { 0.9 } else { 0.05 },
-        a: 1.,
-        ..hsl
-    }
-    .into();
-    // The mix is 50% in the bundle; the panels of both captures sit about a fifth (dark) and a third (light) of the
-    // way to it, measured on their pixels.
-    let amount = if light { 0.33 } else { 0.2 };
-    Rgba {
-        r: own.r + (base.r - own.r) * amount,
-        g: own.g + (base.g - own.g) * amount,
-        b: own.b + (base.b - own.b) * amount,
-        a: 1.,
-    }
+    mix_oklab(own, active_mix(swatch).base, BASE_AMOUNT)
 }
 
 fn theme_value(theme: Theme) -> u8 {
@@ -345,54 +504,18 @@ impl Root {
         let Some(id) = preset_id(swatch.name) else {
             return;
         };
-        ACTIVE.store(index + 1, Ordering::Relaxed);
-        LAST_ACCOUNT.store(id as usize, Ordering::Relaxed);
-        self.choose_theme(base_of(swatch));
-        // `choose_theme` clears the colour theme; this is the one chosen.
-        ACTIVE.store(index + 1, Ordering::Relaxed);
-        let patch = self
-            .stores
-            .set_pref(&dc_proto::settings::CLIENT_THEME_PRESET, id);
-        if !patch.is_empty() {
-            let _ = self.requests.send(crate::net::Request::Rest {
-                key: None,
-                method: reqwest::Method::PATCH,
-                route: "/users/@me/settings-proto/1".to_owned(),
-                body: Some(serde_json::json!({"settings": patch})),
-            });
-        }
+        let theme = super::theme_state::proto_of(base_of(swatch));
+        self.theme_choose_preset(super::theme_state::Pick {
+            theme,
+            preset: Some(id),
+        });
         cx.refresh_windows();
         cx.notify();
     }
 
-    /// A palette chosen on the Appearance page replaces a colour theme.
-    pub(in crate::ui) fn clear_client_theme(&mut self) {
-        ACTIVE.store(0, Ordering::Relaxed);
-    }
-
-    /// Follows the account's colour theme at READY and when another session changes it (Nitro only), once per value.
+    /// Every frame: the theme rules of `theme_state` put the palette and colour theme on screen.
     pub(in crate::ui) fn sync_client_theme(&mut self) {
-        if previewing() {
-            return;
-        }
-        let account = if self.premium() == dc_state::premium::PremiumType::None {
-            None
-        } else {
-            self.stores
-                .prefs
-                .get("appearance_client_theme_preset")
-                .copied()
-        };
-        let key = account.map_or(usize::MAX - 1, |id| id as usize);
-        if LAST_ACCOUNT.swap(key, Ordering::Relaxed) == key {
-            return;
-        }
-        ACTIVE.store(
-            account
-                .and_then(swatch_of_preset)
-                .map_or(0, |index| index + 1),
-            Ordering::Relaxed,
-        );
+        self.theme_frame();
     }
 
     /// The gradient behind the app, painted first in the window.
@@ -566,32 +689,54 @@ impl Root {
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.exit_theme_preview(cx)))
                                 .child(mask_icon(
-                                    "icons/modal_close.svg",
-                                    24.,
-                                    "--interactive-icon-default",
+                                    "circle_x_small",
+                                    20.,
+                                    "--interactive-text-default",
                                 )),
                         ),
                 )
                 .child(
                     div()
-                        .mx(px(8.))
+                        .ml(px(22.))
+                        .mr(px(8.))
+                        .mt(px(9.))
                         .p(px(8.))
                         .rounded(px(8.))
                         .bg(tinted("--background-base-low"))
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(px(10.))
                         .child(
                             div()
                                 .flex()
-                                .flex_col()
-                                .px(px(8.))
+                                .gap(px(12.))
                                 .child(
-                                    text(16., 600., "--text-strong").child("Create your own theme"),
+                                    // `bannerImage_tE9t7v`: 57.2 by 33.8, centred in the 58px row.
+                                    div()
+                                        .flex_none()
+                                        .w(px(57.2))
+                                        .flex()
+                                        .items_center()
+                                        .children(
+                                            self.images.get("theme_upsell_banner").cloned().map(
+                                                |picture| img(picture).w(px(57.2)).h(px(33.8)),
+                                            ),
+                                        ),
                                 )
                                 .child(
-                                    text(14., 400., "--text-default")
-                                        .child("Style your space with endless color combinations."),
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            text(16., 600., "--text-strong")
+                                                .child("Create your own theme"),
+                                        )
+                                        // `body-sm/medium`, 2px under the title.
+                                        .child(text(14., 500., "--text-default").mt(px(2.)).child(
+                                            "Style your space with endless color combinations.",
+                                        )),
                                 ),
                         )
                         .child(
@@ -622,7 +767,14 @@ impl Root {
                         .pl(px(34.))
                         .pr(px(18.))
                         .pt(px(16.))
-                        .child(text(16., 600., "--text-strong").child("Color Themes"))
+                        .child(
+                            text(16., 600., "--text-strong")
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child("Color Themes")
+                                .child(mask_icon("nitro_wheel", 16., "--text-strong")),
+                        )
                         .child(
                             text(14., 400., "--text-default")
                                 .pt(px(8.))
@@ -665,11 +817,7 @@ impl Root {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(mask_icon(
-                                            "icons/golive_heart.svg",
-                                            20.,
-                                            "--interactive-icon-default",
-                                        )),
+                                        .child(mask_icon("golive_heart", 20., "--icon-default")),
                                 )
                                 .child(
                                     div()
@@ -736,6 +884,46 @@ mod tests {
 
     fn swatch(name: &str) -> &'static Swatch {
         SWATCHES.iter().find(|swatch| swatch.name == name).unwrap()
+    }
+
+    #[test]
+    fn oklab_round_trips_and_mixes_by_the_shared_percentage() {
+        let colour = rgba(0x3a7bd5ff);
+        let back = from_oklab(to_oklab(colour), 1.);
+        assert!((back.r - colour.r).abs() < 0.003 && (back.b - colour.b).abs() < 0.003);
+        // 50% on top of 100% is a third of the way: black mixed with white lands at a third of the lightness.
+        let third = mix_oklab(rgba(0x000000ff), rgba(0xffffffff), 50.);
+        assert!(
+            (to_oklab(third)[0] - 1. / 3.).abs() < 0.01,
+            "{:?}",
+            to_oklab(third)
+        );
+        // Nothing mixed in leaves the colour as it was, and its alpha stays.
+        let same = mix_oklab(rgba(0x12345680), rgba(0xffffffff), 0.);
+        assert!((same.a - 128. / 255.).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_dark_theme_mixes_in_its_darker_colour_and_a_light_one_its_lighter() {
+        let dark = theme_mix(swatch("Sunset"));
+        let dark_base: Hsla = dark.base.into();
+        assert!((dark_base.l - 0.05).abs() < 0.01 && (dark_base.s - 1.).abs() < 0.01);
+        let light = theme_mix(swatch("Mint Apple"));
+        let light_base: Hsla = light.base.into();
+        assert!((light_base.l - 0.9).abs() < 0.01);
+        // Dark text is light, light text is dark.
+        let (dark_text, light_text): (Hsla, Hsla) = (dark.text.into(), light.text.into());
+        assert!(dark_text.l >= 0.8 && light_text.l <= 0.25);
+    }
+
+    #[test]
+    fn the_token_lists_are_sorted_for_the_search() {
+        use super::super::theme_mix_tokens::*;
+        for list in [BASE_DARK, TEXT_DARK, BASE_LIGHT, TEXT_LIGHT] {
+            assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert!(BASE_DARK.contains(&"--modal-background"));
+        assert!(TEXT_DARK.contains(&"--icon-default"));
     }
 
     #[test]

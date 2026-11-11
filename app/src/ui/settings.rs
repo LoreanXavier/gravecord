@@ -2,6 +2,11 @@
 //! content `content_3Rvb29`, panel `panel_nNq2Vb`, rows `baseControlItem_FiiQ6I`, buttons `button_F7qvhY`.
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
+mod account_dialogs;
+mod account_panels;
+pub(in crate::ui) use account_dialogs::FORM_KEY as ACCOUNT_FORM_KEY;
+pub(in crate::ui) use account_panels::LOGOUT_KEY as SESSIONS_LOGOUT_KEY;
+pub(in crate::ui) use streamer::HIDDEN_LINK as HIDDEN_INVITE_LINK;
 mod actions;
 mod appearance;
 mod billing;
@@ -11,9 +16,11 @@ mod connections;
 mod content_filters;
 mod controls;
 mod gift_inventory_page;
+mod keybinds;
 mod languages;
 mod model;
 mod nitro_page;
+mod notifications_page;
 mod pages;
 pub(super) mod prefs;
 mod preview;
@@ -21,9 +28,12 @@ mod privacy;
 mod render;
 mod server_boost_page;
 mod soundboard;
+mod streamer;
 pub(crate) use render::radio_dot;
 mod swatches;
 mod system;
+mod theme_mix_tokens;
+mod theme_state;
 mod voice;
 mod voice_camera;
 pub(super) use actions::State as ActionsState;
@@ -447,7 +457,12 @@ struct Row {
     leading: Option<AnyElement>,
     trailing: Option<AnyElement>,
     clickable: bool,
+    /// What a press on the row does (a nested panel opens).
+    press: Option<(&'static str, RowPress)>,
 }
+
+/// What a row's press runs.
+type RowPress = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App)>;
 
 impl Row {
     fn new(title: &'static str) -> Self {
@@ -458,7 +473,17 @@ impl Row {
             leading: None,
             trailing: None,
             clickable: false,
+            press: None,
         }
+    }
+
+    fn press(
+        mut self,
+        id: &'static str,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.press = Some((id, Box::new(handler)));
+        self
     }
 
     fn description(mut self, element: impl IntoElement) -> Self {
@@ -500,7 +525,8 @@ impl Row {
         self
     }
 
-    fn render(self) -> AnyElement {
+    fn render(mut self) -> AnyElement {
+        let press = self.press.take();
         let title = div()
             .flex()
             .items_center()
@@ -514,7 +540,7 @@ impl Row {
                     .child(self.title),
             )
             .when(self.badge, |this| this.child(new_badge()));
-        div()
+        let row = div()
             .flex()
             .gap(px(12.))
             .min_h(px(48.))
@@ -543,8 +569,11 @@ impl Row {
             .children(
                 self.trailing
                     .map(|trailing| div().flex().items_center().child(trailing)),
-            )
-            .into_any_element()
+            );
+        match press {
+            Some((id, handler)) => row.id(id).on_click(handler).into_any_element(),
+            None => row.into_any_element(),
+        }
     }
 }
 
@@ -1256,7 +1285,15 @@ impl Root {
     fn account_page(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let account = &self.stores.account;
-        let email = account.email.as_deref().map(mask_email);
+        let reveal_email = self.settings_extra.reveal_email;
+        let reveal_phone = self.settings_extra.reveal_phone;
+        let email = account.email.as_deref().map(|email| {
+            if reveal_email {
+                email.to_owned()
+            } else {
+                mask_email(email)
+            }
+        });
         // A button that opens the first dialog of its action (`actions::Dialog::Account`).
         let opens = |kind: &'static str,
                      id: &'static str,
@@ -1267,7 +1304,7 @@ impl Root {
                 .id(SharedString::from(format!("account-{kind}")))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings_extra.dialog = Some(actions::Dialog::Account(kind));
+                    this.open_account_form(kind, cx);
                     cx.notify();
                 }))
                 .child(button(id, label, tone))
@@ -1302,7 +1339,13 @@ impl Root {
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-brand"))
                                     .cursor_pointer()
-                                    .child("Reveal"),
+                                    .id("account-reveal-email")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings_extra.reveal_email =
+                                            !this.settings_extra.reveal_email;
+                                        cx.notify();
+                                    }))
+                                    .child(if reveal_email { "Hide" } else { "Reveal" }),
                             ),
                         )
                         .child(opens(
@@ -1319,8 +1362,24 @@ impl Root {
                         .items_center()
                         .gap(px(16.))
                         .child(value(match &account.phone {
+                            Some(phone) if reveal_phone => phone.clone(),
                             Some(phone) => mask_phone(phone),
                             None => "You haven't added a phone number yet.".to_owned(),
+                        }))
+                        .children(account.phone.as_ref().map(|_| {
+                            div()
+                                .id("account-reveal-phone")
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-brand"))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings_extra.reveal_phone =
+                                        !this.settings_extra.reveal_phone;
+                                    cx.notify();
+                                }))
+                                .child(if reveal_phone { "Hide" } else { "Reveal" })
                         }))
                         .child(opens(
                             "phone",
@@ -1352,8 +1411,28 @@ impl Root {
                     cx,
                 )),
                 Row::new("Multi-Factor Authentication")
-                    .link((!account.mfa_enabled).then(|| "Set up".to_owned())),
-                Row::new("Logged-in Devices").link(sessions),
+                    .link(Some(
+                        if account.mfa_enabled {
+                            "Enabled"
+                        } else {
+                            "Set up"
+                        }
+                        .to_owned(),
+                    ))
+                    .press(
+                        "account-mfa",
+                        cx.listener(|this, _, _, cx| {
+                            this.settings_extra.panel = Some(account_panels::Panel::Mfa);
+                            cx.notify();
+                        }),
+                    ),
+                Row::new("Logged-in Devices").link(sessions).press(
+                    "account-sessions",
+                    cx.listener(|this, _, _, cx| {
+                        this.settings_extra.panel = Some(account_panels::Panel::Sessions);
+                        cx.notify();
+                    }),
+                ),
             ],
         );
         let status = div()
@@ -1495,7 +1574,10 @@ impl Root {
         };
         actions::link_owner_clear();
         let mut body = match open.page {
-            Page::Account => self.account_page(cx),
+            Page::Account => match self.settings_extra.panel {
+                Some(panel) => self.account_panel_page(panel, cx),
+                None => self.account_page(cx),
+            },
             Page::Clips => self.clips_page(window, cx),
             page => pages::nodes(page)
                 .iter()

@@ -94,6 +94,19 @@ pub(in crate::ui) enum Then {
 #[derive(Default)]
 pub(in crate::ui) struct State {
     pub dialog: Option<Dialog>,
+    /// The Account page's field dialogs (`account_dialogs.rs`).
+    pub form: Option<super::account_dialogs::Form>,
+    /// The Reveal links of the email and phone rows (`N_`, module 158935): the full value while set.
+    pub panel: Option<super::account_panels::Panel>,
+    pub notif: super::notifications_page::State,
+    /// The System page's keybinds (`keybinds.rs`).
+    pub kb: super::keybinds::State,
+    /// The window is excluded from screen captures now (`streamer.rs`).
+    pub content_protected: bool,
+    /// How many streamer tools the last scan saw.
+    pub streamer_tools: usize,
+    pub reveal_email: bool,
+    pub reveal_phone: bool,
     /// `GET /users/@me/harvest` (`harvestType`): the last package request, whose `created_at` rate limits the next.
     harvest: Option<Value>,
     harvest_loaded: bool,
@@ -111,12 +124,13 @@ pub(in crate::ui) struct State {
 impl State {
     /// A dialog of this module is open: it takes the keys and the focus like every modal.
     pub(in crate::ui) fn has_dialog(&self) -> bool {
-        self.dialog.is_some()
+        self.dialog.is_some() || self.form.is_some()
     }
 
     /// Escape or an outside press: the dialog goes away and nothing it asked for happens.
     pub(in crate::ui) fn close_dialog(&mut self) {
         self.dialog = None;
+        self.form = None;
     }
 }
 
@@ -292,6 +306,8 @@ pub(super) fn harvest_next_allowed(harvest: &Value) -> Option<chrono::DateTime<c
 impl Root {
     /// Settings opened: ask for what the pages list (`initialize` of the data usage category and the harvest row).
     pub(super) fn settings_pages_opened(&mut self) {
+        self.settings_extra.panel = None;
+        self.notification_page_opened();
         if !self.stores.consents.contains_key(USAGE_STATISTICS) {
             let _ = self.requests.send(Request::Fetch {
                 key: CONSENT_KEY.to_owned(),
@@ -319,6 +335,9 @@ impl Root {
 
     /// A fetch of this module came back: true when the key was ours.
     pub(in crate::ui) fn settings_fetched(&mut self, key: &str, body: &Value) -> bool {
+        if self.notification_page_fetched(key, body) {
+            return true;
+        }
         match key {
             CONSENT_KEY => {
                 self.stores.set_consents(body);
@@ -380,6 +399,9 @@ impl Root {
 
     /// The value of a switch kept in an account route: the consents. `None` for every other row.
     pub(super) fn action_switch_value(&self, key: &str) -> Option<bool> {
+        if let Some(on) = self.notification_switch_value(key) {
+            return Some(on);
+        }
         if let Some(view) = self.messaging_view(key) {
             return Some(view.on);
         }
@@ -454,6 +476,10 @@ impl Root {
         _index: usize,
         _cx: &mut Context<Self>,
     ) {
+        if key == super::notifications_page::UNSUBSCRIBE {
+            self.unsubscribe_marketing();
+            return;
+        }
         if key == "data_harvest_request_setting" && self.harvest_allowed() {
             self.settings_extra.dialog = Some(Dialog::RequestData {
                 checked: [false; 7],
@@ -535,6 +561,9 @@ impl Root {
 
     /// The dialogs of this module, drawn over the settings layer.
     pub(in crate::ui) fn settings_dialogs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.settings_extra.form.is_some() {
+            return self.account_form_dialog(cx);
+        }
         let dialog = self.settings_extra.dialog.clone()?;
         let spec = match dialog {
             Dialog::Confirm {

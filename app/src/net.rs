@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
+    /// What the last run left (`ui/start_cache.rs`), applied before the gateway answers.
+    Cached(Box<crate::ui::start_cache::Cached>),
     GatewayConnected(bool),
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
@@ -65,6 +67,11 @@ pub enum Update {
     PushToTalk(bool),
     /// The system-wide `SAVE_CLIP` keybind went down.
     ClipSaveKey,
+    /// A custom keybind (`KeybindsStore`) went down or up.
+    Keybind {
+        id: String,
+        down: bool,
+    },
     /// An event of a Go Live stream's own voice connection.
     Stream {
         key: dc_voice::streams::StreamKey,

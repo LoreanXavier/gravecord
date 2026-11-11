@@ -1491,9 +1491,9 @@ impl Root {
                             .borrow()
                             .get("composer-box")
                             .is_some_and(|bounds| on_composer_tools(*bounds, event.position));
-                        if !on_tools {
-                            this.picker = None;
-                            cx.notify();
+                        // The closing press goes no further, as for every layer (keyboard/layers.rs).
+                        if !on_tools && this.press_outside(super::keyboard::Layer::Picker, cx) {
+                            cx.stop_propagation();
                         }
                     }))
                     .when(!tabless, |this| {

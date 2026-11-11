@@ -273,6 +273,7 @@ impl Root {
             .map(|code| format!("https://discord.gg/{code}"))
             .unwrap_or_default();
         let copy_link = link.clone();
+        let shown_link = link;
         let body = div()
             .flex()
             .flex_col()
@@ -347,7 +348,13 @@ impl Root {
                                     .pl(px(10.))
                                     .line_height(px(20.))
                                     .text_color(color("--text-default"))
-                                    .child(link),
+                                    .child(
+                                        if self.streamer_hides_invites() && !shown_link.is_empty() {
+                                            crate::ui::settings::HIDDEN_INVITE_LINK.to_owned()
+                                        } else {
+                                            shown_link
+                                        },
+                                    ),
                             )
                             .child(
                                 div()

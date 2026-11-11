@@ -274,9 +274,8 @@ impl Root {
                     .borrow()
                     .get("inbox-filter")
                     .is_some_and(|bounds| bounds.contains(&event.position));
-                if !on_button {
-                    this.mentions_filter_open = false;
-                    cx.notify();
+                if !on_button && this.press_outside(super::keyboard::Layer::MentionsFilter, cx) {
+                    cx.stop_propagation();
                 }
             }))
             .flex()
@@ -1421,8 +1420,9 @@ impl Root {
             .flex()
             .flex_col()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.inbox = None;
-                cx.notify();
+                if this.press_outside(super::keyboard::Layer::Inbox, cx) {
+                    cx.stop_propagation();
+                }
             }))
             .child(
                 div()

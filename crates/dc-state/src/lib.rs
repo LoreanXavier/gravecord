@@ -2075,6 +2075,18 @@ impl Stores {
         patch
     }
 
+    /// Takes a preference out of the account's settings (a default theme ends the colour theme): the PATCH body value
+    /// comes back, empty until the account's settings have arrived.
+    pub fn clear_pref(&mut self, pref: &'static settings::ProtoPref) -> String {
+        self.prefs.remove(pref.key);
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::clear_pref(&self.settings_raw, pref);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// Takes the consents object (`{"usage_statistics": {"consented": true}, ...}`): the names it lists replace the
     /// store's, as `UPDATE_CONSENTS` does. Anything else is ignored.
     pub fn set_consents(&mut self, consents: &Value) {

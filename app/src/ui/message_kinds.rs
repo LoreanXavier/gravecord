@@ -350,6 +350,27 @@ impl Root {
         let Some(channel) = self.channel else {
             return "messages: no channel is open".to_owned();
         };
+        if *set == "typing" || *set == "typing-off" {
+            // One or two people typing in the open channel: `typing` starts it (the notice runs out after ten
+            // seconds, as it does on the wire), `typing-off` ends it.
+            if *set == "typing-off" {
+                self.stores.typing.remove(&channel);
+            } else {
+                for (id, name) in [(900_u64, "ada"), (901, "grace")] {
+                    if let Some(user) =
+                        dc_state::User::from_value(&json!({"id": id.to_string(), "username": name}))
+                    {
+                        self.stores.users.insert(user.id, user);
+                    }
+                    self.stores.dispatch(
+                        "TYPING_START",
+                        &json!({"channel_id": channel.to_string(), "user_id": id.to_string()}),
+                    );
+                }
+            }
+            cx.notify();
+            return format!("messages: typing {set} in {channel}");
+        }
         if *set == "unread" {
             // Every text channel but the open one gets a newer message than its ack, so its row reads unread.
             let newest = ((chrono::Utc::now().timestamp_millis() - 1_420_070_400_000) as u64) << 22;

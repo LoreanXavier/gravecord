@@ -443,6 +443,24 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
         "chat_spoilers_show_spoilers/open",
         &["On click", "Always", "On servers I moderate"],
     ),
+    // Module 158935 `vV`: `W.range(1, 11)` minutes, "{minutes} minute(s)" (string `iXLF9W`).
+    (
+        "mobile_notification_delay",
+        "mobile_notification_delay/open",
+        &[
+            "1 minute",
+            "2 minutes",
+            "3 minutes",
+            "4 minutes",
+            "5 minutes",
+            "6 minutes",
+            "7 minutes",
+            "8 minutes",
+            "9 minutes",
+            "10 minutes",
+            "11 minutes",
+        ],
+    ),
     // `ex`: `roleStyle` username, dot, hidden.
     (
         "role_style",
@@ -766,6 +784,9 @@ impl Root {
     }
 
     fn choice_index(&self, key: &'static str, captured: usize) -> usize {
+        if let Some(index) = self.notification_page_index(key) {
+            return index;
+        }
         self.pref_index(key, captured)
     }
 
@@ -796,7 +817,9 @@ impl Root {
                     shown.push(child);
                     shown.extend(self.voice_rows_after(child.key()));
                 }
-                shown.retain(|child| self.voice_row_shown(child.key()));
+                shown.retain(|child| {
+                    self.voice_row_shown(child.key()) && self.appearance_row_shown(child.key())
+                });
                 let rows: Vec<AnyElement> = shown
                     .into_iter()
                     .map(|child| {
@@ -806,7 +829,8 @@ impl Root {
                             && child.key() != super::content_filters::FILTERS
                             && child.key() != super::connections::ACCOUNTS
                             && child.key() != super::connections::APPS
-                            && child.key() != super::privacy::ACTIVITY_GUILDS)
+                            && child.key() != super::privacy::ACTIVITY_GUILDS
+                            && child.key() != super::keybinds::CUSTOM)
                             .then(|| super::pages::padded(child.key()))
                             .flatten();
                         div()
@@ -834,7 +858,21 @@ impl Root {
                             Some(marker),
                         );
                         // `useHeaderDecoration`: the App Icon header carries its buttons at the right.
-                        if *key == "appearance_in_app_icon_category" {
+                        if *key == super::keybinds::CATEGORY {
+                            // `useHeaderDecoration`: the Add a Keybind button at the right of the header.
+                            div()
+                                .relative()
+                                // The description stops before the button (`system.json`: 517px wide).
+                                .child(div().max_w(px(517.)).child(header))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(16.))
+                                        .right_0()
+                                        .child(self.kb_add_button(cx)),
+                                )
+                                .into_any_element()
+                        } else if *key == "appearance_in_app_icon_category" {
                             div()
                                 .relative()
                                 .child(header)
@@ -900,6 +938,10 @@ impl Root {
             Node::Custom { key, .. } if *key == super::content_filters::FILTERS => {
                 self.content_filters(width, cx)
             }
+            Node::Switch { key, .. } if *key == super::keybinds::CUSTOM => {
+                self.kb_custom(width, cx)
+            }
+            Node::Custom { key, .. } if *key == super::keybinds::DEFAULT => self.kb_defaults(),
             Node::Switch { key, .. } if *key == super::privacy::ACTIVITY_GUILDS => {
                 self.activity_guild_list(width, cx)
             }
@@ -937,6 +979,7 @@ impl Root {
                     || self.action_switch_disabled(key)
                     || avatars_locked
                     || self.voice_disabled(key)
+                    || self.appearance_switch_disabled(key)
                     || (*key == crate::sounds::SELECTED_CHANNEL
                         && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));
                 let row = self.switch_row(
@@ -1202,6 +1245,11 @@ impl Root {
                                             cx.notify();
                                         }))
                                     })
+                                    .when(
+                                        key == super::notifications_page::UNSUBSCRIBE
+                                            && self.unsubscribe_disabled(),
+                                        |this| this.opacity(0.5),
+                                    )
                                     .child(button(id, text, *kind))
                             })),
                     );

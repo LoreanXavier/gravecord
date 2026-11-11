@@ -303,6 +303,9 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("profile_privacy_setting", &[8], 32),
     pref("dm_spam_setting", &[6], 27),
     pref("reaction_notifications", &[7], 7),
+    // voice_and_video (5).afk_timeout 6, a UInt32Value of seconds: how long the desktop must be idle before the phone is
+    // notified (`mobile_notification_delay`, module 158935 `vV`).
+    pref("mobile_notification_delay", &[5, 6], 1),
     // appearance.client_theme_settings (3).background_gradient_preset_id (2, a UInt32Value): the Nitro colour theme,
     // `BackgroundGradientPresetId` of module 873298 (MINT_APPLE 0 ... HEXAGON 23).
     pref("appearance_client_theme_preset", &[13, 3, 2], 1),
@@ -461,6 +464,48 @@ pub fn set_pref(current: &[u8], pref: &ProtoPref, value: u64) -> (String, Vec<u8
         with_encoded(current, pref.path, pref.field, &encoded)
     };
     let top = pref.path.first().copied().unwrap_or(0);
+    whole_message_patch(updated, top)
+}
+
+/// `message` with the field `field` of the nested message at `path` left out, everything else kept byte for byte. A
+/// message on the way that is not there leaves `message` as it is.
+fn without_field(message: &[u8], path: &[u64], field: u64) -> Vec<u8> {
+    let Some((head, tail)) = path.split_first() else {
+        return raw_fields(message)
+            .into_iter()
+            .filter(|(number, _)| *number != field)
+            .flat_map(|(_, raw)| raw.iter().copied())
+            .collect();
+    };
+    let Some(inner) = fields(message)
+        .find(|(number, _)| number == head)
+        .map(|(_, payload)| payload)
+    else {
+        return message.to_vec();
+    };
+    let rebuilt = without_field(inner, tail, field);
+    let mut out = Vec::new();
+    for (number, raw) in raw_fields(message) {
+        if number != *head {
+            out.extend_from_slice(raw);
+        }
+    }
+    push_varint(&mut out, head << 3 | WIRE_BYTES);
+    push_varint(&mut out, rebuilt.len() as u64);
+    out.extend_from_slice(&rebuilt);
+    out
+}
+
+/// Takes a preference out of the account's settings, as choosing a default theme does with the colour theme: the
+/// wrapper message that held the value (`background_gradient_preset_id`) is left out of its parent and the parent
+/// stays, empty if it held nothing else. Like `set_pref` it returns the PATCH body value (the whole top-level message)
+/// and the settings from now on.
+pub fn clear_pref(current: &[u8], pref: &ProtoPref) -> (String, Vec<u8>) {
+    let updated = match pref.path.split_last() {
+        Some((wrapper, parent)) => without_field(current, parent, *wrapper),
+        None => without_field(current, &[], pref.field),
+    };
+    let top = pref.path.first().copied().unwrap_or(pref.field);
     whole_message_patch(updated, top)
 }
 
@@ -1036,6 +1081,44 @@ mod tests {
             bytes_field(13, &bytes_field(3, &bytes_field(2, &[8, 8])))
         );
         assert_eq!(STANDARD.encode(&updated), patch);
+    }
+
+    #[test]
+    fn choosing_a_default_theme_clears_the_saved_colour_theme() {
+        let preset = &CLIENT_THEME_PRESET;
+        // appearance { theme 3, client_theme_settings { background_gradient_preset_id { value 8 }, other 5 } }
+        let mut client = bytes_field(2, &[8, 8]);
+        client.extend_from_slice(&[0x28, 5]);
+        let mut appearance = vec![8, 3];
+        appearance.extend(bytes_field(3, &client));
+        let current = bytes_field(13, &appearance);
+        let (patch, updated) = clear_pref(&current, preset);
+        // The preset is gone, the theme and the other field of the same message stay, and the patch is the whole
+        // `appearance` message.
+        assert_eq!(varint_at(&patch, &[13, 3, 2], 1), None);
+        assert_eq!(varint_at(&patch, &[13], 1), Some(3));
+        assert_eq!(varint_at(&patch, &[13, 3], 5), Some(5));
+        assert_eq!(STANDARD.encode(&updated), patch);
+        // Nothing saved: nothing changes, and a message that is not there is not made.
+        let (again, same) = clear_pref(&updated, preset);
+        assert_eq!(again, patch);
+        assert_eq!(same, updated);
+        let (empty_patch, empty) = clear_pref(&[], preset);
+        assert!(empty.is_empty());
+        assert!(empty_patch.is_empty());
+    }
+
+    #[test]
+    fn the_theme_is_the_first_varint_of_appearance_with_the_enum_of_the_definition() {
+        // `PreloadedUserSettings.appearance` is 13 and its `theme` 1: UNSET 0, DARK 1, LIGHT 2, DARKER 3, MIDNIGHT 4
+        // (module 873298).
+        assert_eq!((THEME.path, THEME.field), (&[13][..], 1));
+        for value in 1..=4 {
+            let (patch, updated) = set_pref(&[], &THEME, value);
+            assert_eq!(STANDARD.encode(bytes_field(13, &[8, value as u8])), patch);
+            assert_eq!(updated, bytes_field(13, &[8, value as u8]));
+            assert_eq!(theme(&patch), Some(value));
+        }
     }
 
     #[test]

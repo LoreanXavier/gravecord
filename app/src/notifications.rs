@@ -293,6 +293,15 @@ fn setting(key: &str) -> Option<(&'static str, &'static str, bool, bool)> {
         "enable_unread_message_badge" => ("notifications", "disableUnreadBadge", true, true),
         "streaming_enable_streamer_mode" => ("StreamerModeStore", "enabled", false, false),
         "streaming_auto_streamer_mode" => ("StreamerModeStore", "autoToggle", true, false),
+        "streamer_mode_hide_personal_information" => {
+            ("StreamerModeStore", "hidePersonalInformation", true, false)
+        }
+        "streamer_mode_hide_invite_links" => {
+            ("StreamerModeStore", "hideInstantInvites", true, false)
+        }
+        "streamer_mode_hide_discord_window_from_screen_capture" => {
+            ("StreamerModeStore", "enableContentProtection", false, false)
+        }
         "streamer_mode_disable_sounds" => ("StreamerModeStore", "disableSounds", true, false),
         "streamer_mode_disable_notifications" => {
             ("StreamerModeStore", "disableNotifications", true, false)

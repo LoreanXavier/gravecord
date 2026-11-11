@@ -37,10 +37,11 @@ for name in sorted(os.listdir(out)):
         if cls in bad[mode] and not any(s == screen and r.search(line) for s, r in known):
             real += 1
     died = "crawl summary" not in text
-    rows.append((screen, mode, total, counts, real, died))
+    flag = "SETUP FAILED" if "setup failed" in text else ("LOST SCREEN" if "lost the screen" in text else ("DIED" if died else ""))
+    rows.append((screen, mode, total, counts, real, flag))
 head = f"{'screen':24} {'mode':6} {'elements':>8} {'changed':>7} {'acted':>5} {'read':>4} {'dead':>4} {'dead-real':>9} {'selected':>8} {'decor':>5}"
 print(head)
-for screen, mode, total, c, real, died in rows:
+for screen, mode, total, c, real, flag in rows:
     dead = c.get("dead", 0) if mode != "hover" else c.get("no-tooltip", 0)
     changed = c.get("changed", 0) + c.get("tooltip", 0)
-    print(f"{screen:24} {mode:6} {total:8} {changed:7} {c.get('acted', 0):5} {c.get('read', 0):4} {dead:4} {real:9} {c.get('selected', 0):8} {c.get('decor', 0):5}" + ("  DIED" if died else ""))
+    print(f"{screen:24} {mode:6} {total:8} {changed:7} {c.get('acted', 0):5} {c.get('read', 0):4} {dead:4} {real:9} {c.get('selected', 0):8} {c.get('decor', 0):5}" + (("  " + flag) if flag else ""))

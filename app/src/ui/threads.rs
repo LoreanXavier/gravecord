@@ -106,7 +106,8 @@ impl Root {
                     .relative()
                     .w(px(294.))
                     .h(px(34.))
-                    // `spineBorder_reDhww`: one 2px rule down the whole list, ending 24px above the last row's bottom.
+                    // `spineBorder_reDhww`: one 2px rule down the whole list, ending 24px above the last row's bottom, in
+                    // `--spine-default` like the branch (`spine_reDhww`). The token is opaque, so the two can overlap.
                     .child(
                         div()
                             .absolute()
@@ -114,8 +115,11 @@ impl Root {
                             .top(px(0.))
                             .w(px(2.))
                             .h(px(if index + 1 < count { 34. } else { 10. }))
-                            .rounded(px(2.))
-                            .bg(color("--background-mod-strong")),
+                            // One rule in the official: only its two ends are rounded, so the rows' pieces meet
+                            // without a seam.
+                            .when(index == 0, |this| this.rounded_t(px(2.)))
+                            .when(index + 1 == count, |this| this.rounded_b(px(2.)))
+                            .bg(color("--spine-default")),
                     )
                     .child(
                         div().absolute().left(px(24.)).top(px(0.)).child(
@@ -123,7 +127,7 @@ impl Root {
                                 .path("icons/thread_spine.svg")
                                 .w(px(10.))
                                 .h(px(19.))
-                                .text_color(color("--background-mod-strong")),
+                                .text_color(color("--spine-default")),
                         ),
                     )
                     .child(
@@ -572,8 +576,9 @@ impl Root {
                 inset: false,
             }])
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.thread_browser = None;
-                cx.notify();
+                if this.press_outside(super::keyboard::Layer::ThreadBrowser, cx) {
+                    cx.stop_propagation();
+                }
             }))
             .child(
                 div()

@@ -1761,6 +1761,9 @@ impl Root {
     /// The harness's `clips` steps: `clips get`, and `clips location <path>` for the answer a folder dialog would give.
     #[cfg(feature = "capture")]
     pub(crate) fn script_clips(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        if let Some(line) = self.clips_script_ui(words, cx) {
+            return line;
+        }
         match words {
             ["get"] => format!(
                 "{} keybind {} recording {}",
@@ -1781,6 +1784,7 @@ impl Root {
                 self.clips.store.set_enabled(true);
                 self.clips.save();
                 self.clips_sync_engine();
+                cx.notify();
                 "enabled".to_owned()
             }
             // The save keybind, as the hook would deliver it (the harness cannot press a global key).

@@ -417,9 +417,10 @@ impl Root {
                                             .as_ref()
                                             .is_some_and(|menu| inside(menu.anchor));
                                 drop(anchors);
-                                if !keep {
-                                    this.profile_menu = None;
-                                    cx.notify();
+                                if !keep
+                                    && this.press_outside(super::keyboard::Layer::ProfileMenu, cx)
+                                {
+                                    cx.stop_propagation();
                                 }
                             },
                         ))

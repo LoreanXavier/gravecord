@@ -41,6 +41,17 @@ pub fn pattern_i420(width: u32, height: u32, index: u32) -> Vec<u8> {
     data
 }
 
+/// Adds a few levels of pseudo-random noise, different for every picture, to a luma plane.
+fn add_noise(luma: &mut [u8], index: u32) {
+    let mut state = 0x9E37_79B9u32 ^ index.wrapping_mul(0x85EB_CA6B);
+    for value in luma {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        *value = value.saturating_add((state & 0x1F) as u8);
+    }
+}
+
 /// Encodes the pattern one picture at a time, on the caller's thread.
 pub struct Generator {
     encoder: Encoder,
@@ -49,6 +60,7 @@ pub struct Generator {
     index: u32,
     origin: Instant,
     fps: u32,
+    detail: bool,
 }
 
 impl Generator {
@@ -70,13 +82,25 @@ impl Generator {
             index: 0,
             origin: Instant::now(),
             fps,
+            detail: false,
         })
+    }
+
+    /// [`Generator::new`] with per-picture noise on the luma, so the encoder has motion and fine detail to spend its
+    /// rate on (a bitrate test needs a picture a low rate visibly costs).
+    pub fn detailed(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
+        let mut generator = Self::new(width, height, fps, bitrate)?;
+        generator.detail = true;
+        Ok(generator)
     }
 
     /// The next picture, encoded. `None` when the encoder held it back. The timestamp follows the frame index, so it is
     /// steady however the caller paces.
     pub fn next(&mut self, keyframe: bool) -> Result<Option<EncodedFrame>> {
-        let yuv = pattern_i420(self.width, self.height, self.index);
+        let mut yuv = pattern_i420(self.width, self.height, self.index);
+        if self.detail {
+            add_noise(&mut yuv[..(self.width * self.height) as usize], self.index);
+        }
         let timestamp = rtp_ticks(Duration::from_micros(
             u64::from(self.index) * 1_000_000 / u64::from(self.fps),
         ));
@@ -117,6 +141,28 @@ impl Synthetic {
         height: u32,
         fps: u32,
         bitrate: u32,
+        video: impl FnMut(EncodedFrame) + Send + 'static,
+    ) -> Result<Self> {
+        Self::spawn(false, width, height, fps, bitrate, video)
+    }
+
+    /// [`Synthetic::start`] with noise on every picture (see [`Generator::detailed`]).
+    pub fn start_detailed(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        video: impl FnMut(EncodedFrame) + Send + 'static,
+    ) -> Result<Self> {
+        Self::spawn(true, width, height, fps, bitrate, video)
+    }
+
+    fn spawn(
+        detail: bool,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
         mut video: impl FnMut(EncodedFrame) + Send + 'static,
     ) -> Result<Self> {
         let (started_send, started) = std::sync::mpsc::sync_channel::<Result<()>>(1);
@@ -126,7 +172,12 @@ impl Synthetic {
             .name("dc-media-synthetic".into())
             .spawn(move || {
                 // The encoder holds COM state on Windows, so it is made on the thread that uses it.
-                let mut generator = match Generator::new(width, height, fps, bitrate) {
+                let made = if detail {
+                    Generator::detailed(width, height, fps, bitrate)
+                } else {
+                    Generator::new(width, height, fps, bitrate)
+                };
+                let mut generator = match made {
                     Ok(generator) => {
                         let _ = started_send.send(Ok(()));
                         generator

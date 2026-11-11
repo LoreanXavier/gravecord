@@ -912,6 +912,9 @@ impl Root {
             Some(Choice::Index(index)) => *index,
             _ => 0,
         };
+        if self.notification_page_changed(key, on, index) {
+            return;
+        }
         // The Sounds lists (Voice & Video, Notifications) are the notification store's switches.
         if crate::sounds::set_switch(key, on) {
             return;
@@ -1188,7 +1191,7 @@ impl Root {
         keystroke: &gpui::Keystroke,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.clips_key_down(keystroke, cx) {
+        if self.clips_key_down(keystroke, cx) || self.kb_key_down(keystroke, cx) {
             return true;
         }
         // The modifiers held with the key count as pressed before it, in case their own change never came.
@@ -1214,6 +1217,7 @@ impl Root {
             self.voice.held.push(code);
             self.update_push_to_talk();
         }
+        self.kb_window_keys(cx);
         false
     }
 
@@ -1223,6 +1227,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.clips_key_up(keystroke, cx);
+        self.kb_key_up(keystroke);
         if let Some(code) = windows_code(&keystroke.key) {
             self.release_recorded(KEYBOARD_KEY, code);
             self.voice.held.retain(|held| *held != code);
@@ -1232,6 +1237,7 @@ impl Root {
             self.voice_modifiers(keystroke.modifiers, cx);
         }
         self.update_push_to_talk();
+        self.kb_window_keys(cx);
         cx.notify();
     }
 
@@ -1250,6 +1256,8 @@ impl Root {
     /// gpui reports modifier keys only as a change of the set held.
     pub(in crate::ui) fn voice_modifiers(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
         self.clips_modifiers(modifiers, cx);
+        let previous = self.voice.modifiers;
+        self.kb_modifiers(&previous, &modifiers, cx);
         let before = modifier_codes(&self.voice.modifiers);
         let after = modifier_codes(&modifiers);
         self.voice.modifiers = modifiers;
@@ -1270,6 +1278,35 @@ impl Root {
             }
         }
         self.update_push_to_talk();
+        self.kb_window_keys(cx);
+    }
+
+    /// Push to talk is the voice mode now.
+    pub(in crate::ui) fn kb_push_to_talk(&self) -> bool {
+        self.voice.stored.effective().push_to_talk
+    }
+
+    /// The modifier keys down as the window last saw them.
+    pub(in crate::ui) fn voice_modifiers_now(&self) -> Modifiers {
+        self.voice.modifiers
+    }
+
+    /// The codes of the keys down in the window.
+    pub(in crate::ui) fn kb_held(&self) -> Vec<u32> {
+        self.voice.held.clone()
+    }
+
+    /// Another keybind recorder took over: this one stops.
+    pub(in crate::ui) fn voice_stop_recording(&mut self) {
+        self.voice.recording = false;
+        self.voice.recording_held.clear();
+    }
+
+    /// `TOGGLE_VOICE_MODE`: push to talk and voice activity swap (`setMode` with the other mode).
+    pub(in crate::ui) fn kb_toggle_voice_mode(&mut self) {
+        let push_to_talk = self.voice.stored.effective().push_to_talk;
+        self.voice.stored.set_mode(!push_to_talk, |_| {});
+        self.voice_commit();
     }
 
     /// A key went down while recording: the combo grows and is saved at once, as each `onChange` calls
@@ -1329,7 +1366,7 @@ impl Root {
         down: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.clips_mouse(button, down, cx) {
+        if self.clips_mouse(button, down, cx) || self.kb_mouse(button, down, cx) {
             return true;
         }
         let Some(code) = Self::mouse_code(button) else {

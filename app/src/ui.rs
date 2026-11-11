@@ -163,6 +163,7 @@ mod shop;
 mod slash;
 mod slowmode;
 mod splash;
+pub(crate) mod start_cache;
 mod status_menu;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
@@ -398,6 +399,8 @@ pub struct Root {
     avatar_wants: std::cell::RefCell<Vec<(String, String)>>,
     /// The window's pixel ratio as the last frame had it, for builders that have no window at hand.
     ui_scale: std::cell::Cell<f32>,
+    /// The avatar surface the pointer is over (a row's or panel's own key), for `animate_on_hover` avatars.
+    avatar_over: Option<String>,
     selection: SharedSelection,
     hovered: Option<Id>,
     /// The message being edited, with its own field. Enter saves, Escape cancels.
@@ -713,6 +716,7 @@ impl Root {
             requested: HashSet::new(),
             avatar_wants: std::cell::RefCell::new(Vec::new()),
             ui_scale: std::cell::Cell::new(1.),
+            avatar_over: None,
             selection: SharedSelection::default(),
             hovered: None,
             editing: None,
@@ -883,6 +887,7 @@ impl Root {
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
+            Update::Cached(cached) => self.apply_cache(*cached, cx),
             Update::Slowmode {
                 channel,
                 kind,
@@ -980,19 +985,14 @@ impl Root {
                     self.rebuild_rows();
                 }
                 if name == "READY" {
-                    // The account's saved theme; unset keeps the default.
-                    match self.stores.theme {
-                        1 => set_theme(Theme::Dark),
-                        2 => set_theme(Theme::Light),
-                        3 => set_theme(Theme::Darker),
-                        4 => set_theme(Theme::Midnight),
-                        _ => {}
-                    }
+                    // The account's saved theme is read again by the theme rules at the next frame.
+                    self.reset_theme_sync();
                     crate::sounds::refresh_soundpack(
                         crate::sounds::now_ms(),
                         &self.stores.experiments,
                     );
                     self.after_ready();
+                    start_cache::save_ready(&data, self.cache_guild());
                 }
                 if name == "MESSAGE_CREATE"
                     && self.notification_focused
@@ -1041,12 +1041,16 @@ impl Root {
                 let anchor = self.scroll_anchor();
                 self.stores.load_messages_since(channel, &page, started_ms);
                 if Some(channel) == self.channel {
+                    start_cache::save_messages(channel, &page);
+                }
+                if Some(channel) == self.channel {
                     self.read_current_channel();
                 }
                 self.rebuild_rows();
                 self.restore_scroll_anchor(anchor);
                 self.request_images();
                 self.ready = true;
+                self.kb_sync_hooks();
             }
             Update::MessagesLoaded { spec, page } => self.window_loaded(spec, page, cx),
             Update::MessagesFailed { channel } => {
@@ -1057,6 +1061,7 @@ impl Root {
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::ClipSaveKey => self.clips_save_key(cx),
+            Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
@@ -1067,6 +1072,14 @@ impl Root {
                     return;
                 }
                 if self.profile_effect_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key == settings::SESSIONS_LOGOUT_KEY {
+                    self.sessions_logout_answered(&body);
+                    return;
+                }
+                if key == settings::ACCOUNT_FORM_KEY {
+                    self.account_form_fetched(&body, cx);
                     return;
                 }
                 if self.settings_fetched(&key, &body) {
@@ -2031,7 +2044,10 @@ impl Root {
             .flex_none()
             .w(px(264.))
             .h_full()
-            .bg(color("--background-base-lower"))
+            // A colour theme's chat layer behind it is the member list's own (the official repaints one layer).
+            .when(settings::client_theme::active().is_none(), |panel| {
+                panel.bg(color("--background-base-lower"))
+            })
             .flex()
             .flex_col()
             .child(
@@ -3823,7 +3839,15 @@ impl Root {
                     .size(px(32.))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
-                    .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
+                    .on_hover(self.avatar_hover("panel-avatar".to_owned(), cx))
+                    .children(
+                        self.live_avatar(&user, 32., self.avatar_hovered("panel-avatar"), cx)
+                            .or_else(|| {
+                                avatar.map(|image| {
+                                    img(image).size(px(32.)).rounded_full().into_any_element()
+                                })
+                            }),
+                    )
                     .child(status_dot(&self.stores.status, "--background-base-low")),
             )
             .child(
@@ -6210,6 +6234,7 @@ impl Root {
             .pb(px(8.))
             .children(self.typing_bar())
             .children(self.slowmode_notice(cx))
+            .child(self.regions.composer_probe())
             .child(
                 div()
                     .parity_with_border("composer", 1.)
@@ -6615,12 +6640,14 @@ impl Render for Root {
             motion::cached_system_preference(),
         ));
         motion::set_window_active(window.is_window_active());
+        self.streamer_apply(window);
         motion::begin_view(cx.entity_id());
         self.regions.ensure(&cx.entity(), cx);
         window.set_ui_zoom(self.zoom_factor(), cx);
         self.sync_client_theme();
         self.ui_scale.set(window.scale_factor());
         self.focus_new_menu(window, cx);
+        self.account_form_focus(window, cx);
         self.focus_new_dialog(window, cx);
         // The base layer of the layer stack fades while a full-window layer is open (module 596339).
         let base_opacity = motion::layers::base_opacity(
@@ -6658,7 +6685,6 @@ impl Render for Root {
         }
         self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
-        self.apply_device_theme();
         set_saturation(self.saturation_factor());
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
@@ -6744,6 +6770,7 @@ impl Render for Root {
             .capture_any_mouse_up(cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                 this.voice_mouse(event.button, false, cx);
                 this.end_browser_resize();
+                this.clips_mouse_up(cx);
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
@@ -6762,12 +6789,20 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.modifiers.control && !keys.modifiers.alt && this.zoom_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 // The media viewer is the top layer: Escape and the arrows are its.
                 if this.guild_events_key(&keys.key, cx) {
                     cx.stop_propagation();
                     return;
                 }
                 if this.lightbox_key(event, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.clips_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -7338,14 +7373,13 @@ impl Render for Root {
                                                         None if self.screening_pending() => {
                                                             self.screening_composer(cx)
                                                         }
-                                                        None => {
-                                                            if regions::hidden("composer") {
-                                                                div().into_any_element()
-                                                            } else {
+                                                        None => self
+                                                            .regions
+                                                            .place_composer()
+                                                            .unwrap_or_else(|| {
                                                                 self.composer_bar(cx)
                                                                     .into_any_element()
-                                                            }
-                                                        }
+                                                            }),
                                                     },
                                                 ),
                                         )
@@ -7381,11 +7415,7 @@ impl Render for Root {
                 motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
             })
             .child(motion::layers::faded(
-                if regions::hidden("user_panel") {
-                    div().into_any_element()
-                } else {
-                    self.user_panel(cx).into_any_element()
-                },
+                self.user_panel(cx).into_any_element(),
                 base_opacity,
             ))
             .children(self.forum_layer(cx))
@@ -7449,6 +7479,9 @@ impl Render for Root {
             .children(self.poll_modal(cx))
             .children(self.schedule_modal_layer(window, cx))
             .children(self.lightbox_layer(cx))
+            .children(self.clips_modal(window, cx))
+            .children(self.clips_delete_modal(cx))
+            .children(self.clips_menu_layer(window, cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))

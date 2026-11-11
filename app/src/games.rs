@@ -41,6 +41,8 @@ pub struct GameScan {
     pub games: Vec<Detected>,
     pub candidates: Vec<Candidate>,
     pub foreground: Option<u32>,
+    /// Running OBS, XSplit and the other streamer tools (`RUNNING_STREAMER_TOOLS_CHANGE`'s count).
+    pub streamer_tools: usize,
 }
 
 #[derive(Default)]
@@ -266,7 +268,20 @@ fn scan_once(shared: &Mutex<Shared>) -> GameScan {
     };
     let scan = lists.scan(&processes, dc_detect::matcher::WINDOWS);
     let candidates = lists.candidates(&processes, &windows, &scan, dc_detect::matcher::WINDOWS);
+    let streamer_tools = scan
+        .observed
+        .iter()
+        .filter(|(_, kind)| {
+            matches!(
+                kind,
+                dc_detect::matcher::Kind::Observed {
+                    streamer_tool: true
+                }
+            )
+        })
+        .count();
     GameScan {
+        streamer_tools,
         games: scan.games,
         candidates,
         foreground: dc_detect::foreground_pid(),

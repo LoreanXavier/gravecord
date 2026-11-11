@@ -270,6 +270,7 @@ impl Root {
                 self.view_reactions.is_some(),
                 self.search_filters.is_some(),
                 self.lightbox.is_some(),
+                self.clips_modal_open(),
                 self.poll.is_some(),
                 self.schedule.modal.is_some(),
                 self.snooze_menu.is_some(),

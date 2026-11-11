@@ -187,6 +187,21 @@ impl Root {
         (self.pref_number(ZOOM, 100.) / 100.).clamp(0.5, 2.0)
     }
 
+    /// `ZOOM_IN`/`ZOOM_OUT`/`ZOOM_RESET` (module 406975): Ctrl plus, minus and 0 step through `ZOOMS`
+    /// (`ZOOM_SCALES`) or return to 100, and the level is saved like the slider's.
+    pub(in crate::ui) fn zoom_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let current = self.pref_number(ZOOM, 100.);
+        let next = match key {
+            "+" | "=" => step_zoom(current, 1),
+            "-" => step_zoom(current, -1),
+            "0" => 100.,
+            _ => return false,
+        };
+        self.slider_committed(ZOOM, next);
+        cx.notify();
+        true
+    }
+
     /// `AccessibilityStore.messageGroupSpacing`: 16px between groups, none in compact mode, until it is set.
     pub(in crate::ui) fn message_group_spacing(&self) -> f32 {
         let default = if self.compact_messages() { 0. } else { 16. };
@@ -323,47 +338,9 @@ fn read_apps_use_light_theme() -> Option<bool> {
 }
 
 impl Root {
-    /// The theme the account holds (`appearance.theme`), if it has one.
-    fn account_theme(&self) -> Option<dc_tokens::Theme> {
-        use dc_tokens::Theme;
-        match self.stores.theme {
-            1 => Some(Theme::Dark),
-            2 => Some(Theme::Light),
-            3 => Some(Theme::Darker),
-            4 => Some(Theme::Midnight),
-            _ => None,
-        }
-    }
-
-    /// "Same as Device Theme" (`ThemeStore.isSameAsDeviceThemeEnabled`): the app follows Windows' light or dark
-    /// setting, the dark side being the account's dark theme.
-    pub(in crate::ui) fn apply_device_theme(&self) {
-        use dc_tokens::Theme;
-        if !self.pref_on(super::appearance::SAME_AS_DEVICE, false) {
-            return;
-        }
-        let Some(light) = device_light() else {
-            return;
-        };
-        let wanted = match (light, self.account_theme()) {
-            (true, _) => Theme::Light,
-            (false, Some(dark)) if dark != Theme::Light => dark,
-            (false, _) => Theme::Darker,
-        };
-        if crate::ui::theme() != wanted {
-            crate::ui::set_theme(wanted);
-        }
-    }
-
     /// A setting took its new value: what has to happen right away besides the pages reading it.
     pub(in crate::ui) fn setting_applied(&mut self, key: &'static str) {
-        if key == super::appearance::SAME_AS_DEVICE {
-            if self.pref_on(key, false) {
-                self.apply_device_theme();
-            } else if let Some(theme) = self.account_theme() {
-                crate::ui::set_theme(theme);
-            }
-        }
+        self.theme_switch_changed(key);
     }
 }
 
@@ -429,5 +406,28 @@ mod tests {
             destination_of("appearance_chat_accessibility_navigator"),
             Some(("Accessibility", None))
         );
+    }
+}
+
+/// One step along `ZOOMS` from `current`; a value off the list counts as the first level (`indexOf` is -1).
+fn step_zoom(current: f32, by: i32) -> f32 {
+    let at = ZOOMS
+        .iter()
+        .position(|&z| z == current)
+        .map_or(-1, |i| i as i32);
+    ZOOMS[(at + by).clamp(0, ZOOMS.len() as i32 - 1) as usize]
+}
+
+#[cfg(test)]
+mod zoom_key_tests {
+    use super::*;
+
+    #[test]
+    fn zoom_steps_follow_the_official_scales() {
+        assert_eq!(step_zoom(100., 1), 110.);
+        assert_eq!(step_zoom(100., -1), 90.);
+        assert_eq!(step_zoom(200., 1), 200.);
+        assert_eq!(step_zoom(50., -1), 50.);
+        assert_eq!(step_zoom(137., 1), 50.);
     }
 }

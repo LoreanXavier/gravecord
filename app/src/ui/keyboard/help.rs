@@ -103,13 +103,13 @@ impl Help {
 
 /// One cap of a combo: text, or an arrow glyph.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Cap {
+pub(in crate::ui) enum Cap {
     Text(String),
     Arrow(Arrow),
 }
 
 /// `475358`: a bind string is split on `+`; each part is a named key, or itself.
-pub(super) fn caps(bind: &str) -> Vec<Cap> {
+pub(in crate::ui) fn caps(bind: &str) -> Vec<Cap> {
     bind.split('+')
         .map(|part| match part {
             "ctrl" | "mod" => Cap::Text("ctrl".into()),
@@ -132,13 +132,13 @@ pub(super) fn caps(bind: &str) -> Vec<Cap> {
         .collect()
 }
 
-pub(super) struct Item {
+pub(in crate::ui) struct Item {
     pub description: &'static str,
     /// One combo per bind.
     pub binds: Vec<&'static str>,
 }
 
-pub(super) struct Section {
+pub(in crate::ui) struct Section {
     pub title: &'static str,
     /// `eT`: the line under the heading.
     pub note: Option<&'static str>,
@@ -167,7 +167,7 @@ fn action_item(description: &'static str, actions: &[Action]) -> Item {
 
 /// The sections in the order of `B` (Messages, Navigation, Voice and Video, Chat, Miscellaneous) with the entries
 /// of each in the order of `eN`. `DND` is not in `B`, so the drag-and-drop shortcuts are not listed.
-pub(super) fn sections() -> Vec<Section> {
+pub(in crate::ui) fn sections() -> Vec<Section> {
     use Action as A;
     vec![
         Section {
@@ -274,13 +274,13 @@ const MIN_TRACK: f32 = 180.;
 const GAP: f32 = 24.;
 
 /// How many columns fit: the count `auto-fill` makes from the 180px minimum.
-pub(super) fn columns(available: f32) -> usize {
+pub(in crate::ui) fn columns(available: f32) -> usize {
     (((available + GAP) / (MIN_TRACK + GAP)).floor() as usize).max(1)
 }
 
 /// The track widths of `minmax(180px, max-content)`: every track starts at 180, and the free space is shared out
 /// equally among the tracks that have not reached the widest content in them ("maximize tracks").
-pub(super) fn tracks(limits: &[f32], available: f32) -> Vec<f32> {
+pub(in crate::ui) fn tracks(limits: &[f32], available: f32) -> Vec<f32> {
     let mut widths = vec![MIN_TRACK; limits.len()];
     let mut free =
         available - GAP * limits.len().saturating_sub(1) as f32 - MIN_TRACK * limits.len() as f32;
@@ -398,7 +398,7 @@ fn key_cap(cap: &Cap) -> AnyElement {
 }
 
 /// `combo`: the caps of one bind, 3px apart.
-fn combo(bind: &str) -> gpui::Div {
+pub(in crate::ui) fn combo(bind: &str) -> gpui::Div {
     div()
         .flex()
         .h(px(23.))

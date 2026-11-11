@@ -23,7 +23,82 @@ pub(super) fn banner_source(user: Id, guild: Option<Id>, body: &Value) -> Option
     Some((format!("profile-banner:{url}"), url))
 }
 
+/// The banner file of a user whose banner is animated (`a_`), asked for the way module 486020 (`getUserBannerURL`)
+/// does: `webp` at a power-of-two size with `animated=true`.
+pub(super) fn live_banner_source(
+    user: Id,
+    guild: Option<Id>,
+    body: &Value,
+    side: u32,
+) -> Option<(String, String)> {
+    let member = &body["guild_member_profile"];
+    let member_guild = member["guild_id"]
+        .as_str()
+        .and_then(|id| id.parse::<Id>().ok());
+    let scoped = guild
+        .filter(|guild| Some(*guild) == member_guild)
+        .zip(member["banner"].as_str());
+    let (base, hash) = if let Some((guild, hash)) = scoped {
+        (
+            format!("https://cdn.discordapp.com/guilds/{guild}/users/{user}/banners/{hash}"),
+            hash,
+        )
+    } else {
+        let hash = body["user_profile"]["banner"].as_str()?;
+        (
+            format!("https://cdn.discordapp.com/banners/{user}/{hash}"),
+            hash,
+        )
+    };
+    super::avatar_play::is_animated(hash).then(|| {
+        (
+            format!("banner-live:{base}:{side}"),
+            super::avatar_play::animated_url(&base, side),
+        )
+    })
+}
+
 impl Root {
+    /// The playing banner of a profile shown in a `width` x `height` box, or `None` when it is still. A profile card
+    /// plays its banner whenever it is shown (module 891522 draws it as hovered).
+    pub(super) fn live_banner(
+        &self,
+        user: Id,
+        width: f32,
+        height: f32,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement, ParentElement, Styled, div};
+        let body = self.fetched.get(&format!("profile:{user}"))?;
+        let scale = self.ui_scale.get();
+        let side = super::avatar_play::file_side(width, scale);
+        let (key, url) = live_banner_source(user, self.guild, body, side)?;
+        if !super::avatar_play::should_animate(
+            super::motion::window_active(),
+            true,
+            super::motion::reduced(),
+            true,
+            self.pref_on("animate_gifs", true),
+        ) {
+            return None;
+        }
+        let Some(image) = self.images.get(&key).cloned() else {
+            self.want_image(key, url, cx);
+            return None;
+        };
+        let pixels = (
+            (width * scale).round() as u32,
+            (height * scale).round() as u32,
+        );
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .child(self.gif_art_pixels(&key, image, pixels, 0., None, cx))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn profile_banner_image(&self, user: Id) -> Option<Arc<gpui::Image>> {
         let body = self.fetched.get(&format!("profile:{user}"))?;
         let (key, _) = banner_source(user, self.guild, body)?;

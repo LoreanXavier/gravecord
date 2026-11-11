@@ -185,6 +185,7 @@ impl Root {
     }
 
     pub(super) fn notify_message(&mut self, message: &Value, cx: &mut Context<Self>) {
+        self.speak_incoming(message, cx);
         let decision = message_decision(
             &self.stores,
             message,

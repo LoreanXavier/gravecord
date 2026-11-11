@@ -16,7 +16,7 @@ const SLOTS: usize = 4;
 
 /// The clip picture from its data URL, as an image the renderer takes (BGRA). `None` when there is none or it does
 /// not decode.
-fn decode(data_url: &str) -> Option<Arc<RenderImage>> {
+pub(super) fn decode(data_url: &str) -> Option<Arc<RenderImage>> {
     use base64::Engine as _;
     let payload = data_url.strip_prefix("data:")?.split_once(";base64,")?.1;
     let bytes = base64::engine::general_purpose::STANDARD

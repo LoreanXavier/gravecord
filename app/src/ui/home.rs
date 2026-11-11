@@ -258,7 +258,20 @@ impl Root {
                                 .relative()
                                 .size(px(32.))
                                 .children(
-                                    avatar.map(|image| img(image).size(px(32.)).rounded_full()),
+                                    self.live_avatar(
+                                        &recipient,
+                                        32.,
+                                        self.hovered_dm == Some(id),
+                                        cx,
+                                    )
+                                    .or_else(|| {
+                                        avatar.map(|image| {
+                                            img(image)
+                                                .size(px(32.))
+                                                .rounded_full()
+                                                .into_any_element()
+                                        })
+                                    }),
                                 )
                                 .child(status_dot(&status, "--background-base-lowest")),
                         )

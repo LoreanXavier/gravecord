@@ -123,6 +123,9 @@ impl Shell {
         let (update_tx, mut update_rx) = mpsc::unbounded_channel();
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let hook_tx = update_tx.clone();
+        if let Some(cached) = crate::ui::start_cache::load() {
+            let _ = update_tx.send(net::Update::Cached(Box::new(cached)));
+        }
         if let Ok(client) = dc_http::Client::new(Token::new(""), Identity::new()) {
             let spinner_tx = update_tx.clone();
             self.handle.spawn(async move {
@@ -143,6 +146,7 @@ impl Shell {
             cx.subscribe_in(&root, window, |this, _, event, window, cx| match event {
                 RootEvent::LogOut => {
                     if !crate::inert::skip("log out") {
+                        crate::ui::start_cache::forget();
                         this.end_session(true, window, cx);
                     }
                 }

@@ -557,7 +557,14 @@ impl Root {
                     .top(px(80.))
                     .size(px(120.))
                     .rounded_full()
-                    .children(avatar.map(|picture| img(picture).size(px(120.)).rounded_full()))
+                    .children(self.live_avatar(&user, 120., true, cx).or_else(|| {
+                        avatar.map(|picture| {
+                            img(picture)
+                                .size(px(120.))
+                                .rounded_full()
+                                .into_any_element()
+                        })
+                    }))
                     .child(status_dot_120(&presence)),
             );
         let names = div()

@@ -191,6 +191,11 @@ fn save_generic(key: &str, value: Value) {
 /// non-friends, Don't filter (`dm_spam_filter_v2` 3, 2, 1).
 const RAW: &[(&str, &[u64])] = &[
     (UI_DENSITY, &[1, 4, 2]),
+    // Push notification inactive timeout: one to eleven minutes, in seconds (`afk_timeout`).
+    (
+        super::notifications_page::MOBILE_DELAY,
+        &super::notifications_page::DELAYS,
+    ),
     // Activity Privacy's default for new servers: Don't share, Share in large servers, Share (`eJ.Qd` 1, 2, 3; 0 is
     // unset).
     ("activity_sharing_per_guild_default_setting", &[1, 2, 3]),

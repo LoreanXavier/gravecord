@@ -269,8 +269,9 @@ impl Root {
                             inset: false,
                         }])
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.guild_menu = false;
-                            cx.notify();
+                            if this.press_outside(super::keyboard::Layer::GuildMenu, cx) {
+                                cx.stop_propagation();
+                            }
                         }))
                         .children(items),
                 ),

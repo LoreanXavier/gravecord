@@ -303,9 +303,10 @@ impl Root {
                             .get("submenu")
                             .is_some_and(|bounds| bounds.contains(&event.position));
                         if !in_submenu {
-                            this.notify_open = false;
                             this.notify_submenu = None;
-                            cx.notify();
+                            if this.press_outside(super::keyboard::Layer::Notify, cx) {
+                                cx.stop_propagation();
+                            }
                         }
                     }))
                     .p(px(8.))

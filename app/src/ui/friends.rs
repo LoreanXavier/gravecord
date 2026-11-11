@@ -556,6 +556,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("person-{id}")))
                     .group(group.clone())
+                    .on_hover(self.avatar_hover(group.to_string(), cx))
                     .h(px(61.))
                     .px(px(10.))
                     .rounded(px(8.))
@@ -578,7 +579,17 @@ impl Root {
                         div()
                             .relative()
                             .size(px(32.))
-                            .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
+                            .children(
+                                self.live_avatar(user, 32., self.avatar_hovered(&group), cx)
+                                    .or_else(|| {
+                                        avatar.map(|image| {
+                                            img(image)
+                                                .size(px(32.))
+                                                .rounded_full()
+                                                .into_any_element()
+                                        })
+                                    }),
+                            )
                             .when(kind == RELATIONSHIP_FRIEND, |this| {
                                 this.child(status_dot(&status, "--background-base-lower"))
                             }),
@@ -1185,8 +1196,9 @@ impl Root {
                                 inset: false,
                             }])
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.friend_menu = None;
-                                cx.notify();
+                                if this.press_outside(super::keyboard::Layer::FriendMenu, cx) {
+                                    cx.stop_propagation();
+                                }
                             }))
                             .child(row("friend-video", "Start Video Call", false).on_click(
                                 cx.listener(move |this, _, _, cx| {

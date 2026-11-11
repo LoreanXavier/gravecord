@@ -140,6 +140,10 @@ fn card(id: SharedString) -> gpui::Stateful<gpui::Div> {
 
 impl Root {
     pub(super) fn connected_accounts(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `TJ` renders nothing while `hidePersonalInformation` holds.
+        if self.streamer_hides_personal() {
+            return div().into_any_element();
+        }
         let Some(list) = self.settings_extra.connections.as_ref() else {
             return div().h(px(216.)).into_any_element();
         };

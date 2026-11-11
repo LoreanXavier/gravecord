@@ -35,6 +35,38 @@ pub(super) fn animated_url(base: &str, side: u32) -> String {
 }
 
 impl super::Root {
+    /// Asks for `url` on the next frame (see `prepare_live_avatars`).
+    pub(super) fn want_image(&self, key: String, url: String, cx: &mut Context<Self>) {
+        if !self.requested.contains(&key) {
+            self.avatar_wants.borrow_mut().push((key, url));
+            cx.notify();
+        }
+    }
+
+    /// Whether the pointer is over the surface with this key (see `avatar_hover`).
+    pub(super) fn avatar_hovered(&self, key: &str) -> bool {
+        self.avatar_over.as_deref() == Some(key)
+    }
+
+    /// The hover handler of a surface whose avatar plays while the pointer is over it.
+    pub(super) fn avatar_hover(
+        &self,
+        key: String,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut gpui::Window, &mut gpui::App) + 'static {
+        cx.listener(move |this, inside: &bool, _, cx| {
+            let was = this.avatar_over.clone();
+            if *inside {
+                this.avatar_over = Some(key.clone());
+            } else if this.avatar_over.as_deref() == Some(key.as_str()) {
+                this.avatar_over = None;
+            }
+            if was != this.avatar_over {
+                cx.notify();
+            }
+        })
+    }
+
     /// The animated file of a user's avatar in a server (their server avatar first), as a cache key and URL.
     fn live_avatar_source(&self, user: &User, side: u32) -> Option<(String, String)> {
         let guild_hash = self.guild.and_then(|guild| {
@@ -150,8 +182,37 @@ impl super::Root {
                     .collect()
             })
             .unwrap_or_default();
+        let emoji: Vec<String> = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .into_iter()
+            .flatten()
+            .flat_map(|message| {
+                message
+                    .content
+                    .match_indices("<a:")
+                    .map(|(at, _)| {
+                        let tail = &message.content[at..];
+                        let id: String = tail
+                            .rsplit_once(':')
+                            .map(|_| {
+                                tail.split(':')
+                                    .nth(2)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take_while(char::is_ascii_digit)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let loaded = self.images.contains_key(&format!("custom-animated:{id}"));
+                        format!("{id}:loaded={loaded}")
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         format!(
-            "active={} reduced={} live_images={} live_requested={} tiles=[{}] hovered_member={:?} users={} animated={} [{}] server_avatars={}",
+            "animated_emoji=[{}] active={} reduced={} live_images={} live_requested={} tiles=[{}] hovered_member={:?} users={} animated={} [{}] server_avatars={}",
+            emoji.join(","),
             super::motion::window_active(),
             super::motion::reduced(),
             self.images
