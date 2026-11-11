@@ -63,7 +63,7 @@ fn fit(media: &EmbedMedia, max_width: f32, max_height: f32) -> (f64, f64) {
 
 impl Root {
     /// Description and field text: markdown at 14/18 in the default text color, line breaks kept (`pre-line`).
-    fn embed_text(&self, text: &str, key: (u64, u32)) -> AnyElement {
+    pub(super) fn embed_text(&self, text: &str, key: (u64, u32)) -> AnyElement {
         let base = hsla("--text-default");
         let blocks = parse(text);
         div()

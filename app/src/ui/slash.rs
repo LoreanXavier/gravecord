@@ -969,7 +969,7 @@ impl Root {
                     &session,
                     &crate::net::nonce(),
                 );
-                let _ = self.requests.send(Request::Interaction { body });
+                self.start_command_interaction(&cmd.name, &cmd.app_id, &cmd.app_name, body, cx);
             }
         }
         cx.notify();

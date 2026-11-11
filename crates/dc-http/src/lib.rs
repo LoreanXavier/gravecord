@@ -11,6 +11,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+mod webhook;
+
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
 fn diagnostic_route(route: &str) -> &str {
@@ -146,6 +148,7 @@ impl Client {
         route: &str,
         body: Option<&Value>,
     ) -> Result<Response, Error> {
+        let (route, reason) = split_audit_reason(route);
         let url = format!("{}{route}", pin::API_BASE);
         let mut request = self
             .http
@@ -155,13 +158,17 @@ impl Client {
                 "x-super-properties",
                 self.identity.super_properties_header(true),
             );
+        if let Some(reason) = reason {
+            // `reason` of the bundle's request options (module 620632) travels as this header, percent-encoded.
+            request = request.header("x-audit-log-reason", reason);
+        }
         if let Some(body) = body {
             request = request.json(body);
         }
         request
             .send()
             .await
-            .map_err(|error| transport_error(error, route))
+            .map_err(|error| transport_error(error, &route))
     }
 
     pub async fn request(
@@ -377,11 +384,85 @@ fn slowmode_rejection(body: &Value) -> bool {
     body["code"].as_u64() == Some(20016)
 }
 
+/// The query parameter that carries a moderation reason through a route string; `send` turns it into the
+/// `X-Audit-Log-Reason` header the official client sets for `reason` (kick, ban, timeout and the like).
+pub const AUDIT_REASON_PARAM: &str = "__audit_reason";
+
+/// `text` percent-encoded the way `encodeURIComponent` does it.
+pub fn percent_encode(text: &str) -> String {
+    let mut encoded = String::new();
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
+
+/// `route` with `reason` attached as the audit reason, percent-encoded. An empty reason adds nothing.
+pub fn with_audit_reason(route: &str, reason: &str) -> String {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return route.to_owned();
+    }
+    let joiner = if route.contains('?') { '&' } else { '?' };
+    format!(
+        "{route}{joiner}{AUDIT_REASON_PARAM}={}",
+        percent_encode(reason)
+    )
+}
+
+/// Takes the audit reason back out of a route: the route as it goes on the wire, and the header value.
+fn split_audit_reason(route: &str) -> (String, Option<String>) {
+    let Some((path, query)) = route.split_once('?') else {
+        return (route.to_owned(), None);
+    };
+    let mut kept = Vec::new();
+    let mut reason = None;
+    for pair in query.split('&') {
+        match pair
+            .strip_prefix(AUDIT_REASON_PARAM)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            Some(value) => reason = Some(value.to_owned()),
+            None => kept.push(pair),
+        }
+    }
+    if kept.is_empty() {
+        (path.to_owned(), reason)
+    } else {
+        (format!("{path}?{}", kept.join("&")), reason)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dc_proto::identity::{Launch, System};
     use serde_json::json;
+
+    #[test]
+    fn an_audit_reason_rides_the_route_and_leaves_as_a_header() {
+        let route = with_audit_reason("/guilds/1/bans/2", "spam & more");
+        assert_eq!(route, "/guilds/1/bans/2?__audit_reason=spam%20%26%20more");
+        assert_eq!(
+            split_audit_reason(&route),
+            (
+                "/guilds/1/bans/2".to_owned(),
+                Some("spam%20%26%20more".to_owned())
+            )
+        );
+        assert_eq!(with_audit_reason("/a", "  "), "/a");
+        let with_query = with_audit_reason("/guilds/1/members/2?x=1", "r");
+        assert_eq!(
+            split_audit_reason(&with_query),
+            ("/guilds/1/members/2?x=1".to_owned(), Some("r".to_owned()))
+        );
+        assert_eq!(split_audit_reason("/a"), ("/a".to_owned(), None));
+    }
 
     fn identity() -> Identity {
         Identity {

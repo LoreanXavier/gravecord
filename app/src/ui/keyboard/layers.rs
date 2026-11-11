@@ -51,6 +51,8 @@ pub(in crate::ui) enum Layer {
     Menu,
     Submenu,
     ContextMenu,
+    /// The list of a select under a bot message (`popout_uFkqU2`).
+    ComponentSelect,
 }
 
 /// Every layer, bottom to top. A test checks the count against the variants.
@@ -83,6 +85,7 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::Menu,
     Layer::Submenu,
     Layer::ContextMenu,
+    Layer::ComponentSelect,
 ];
 
 impl Layer {
@@ -116,13 +119,19 @@ impl Layer {
             | Layer::ClipMenu
             | Layer::Menu
             | Layer::Submenu
-            | Layer::ContextMenu => Kind::Popover,
+            | Layer::ContextMenu
+            | Layer::ComponentSelect => Kind::Popover,
         }
     }
 }
 
 /// The layers Escape closes through `escape_layer`; every other layer has its own branch in the root key handler.
-const ESCAPE_HERE: &[Layer] = &[Layer::AddGame, Layer::SettingsSelect, Layer::HeaderPopout];
+const ESCAPE_HERE: &[Layer] = &[
+    Layer::AddGame,
+    Layer::SettingsSelect,
+    Layer::HeaderPopout,
+    Layer::ComponentSelect,
+];
 
 /// The open flag of a settings select (`select_with_list`'s `open_key`); the add-game popout's flag is not one.
 fn is_select_key(key: &str) -> bool {
@@ -176,6 +185,7 @@ impl Root {
             Layer::Menu => self.menu.is_some(),
             Layer::Submenu => self.submenu.is_some(),
             Layer::ContextMenu => self.context.open.is_some(),
+            Layer::ComponentSelect => self.components.open.is_some(),
         }
     }
 
@@ -221,6 +231,7 @@ impl Root {
             Layer::Menu => self.menu = None,
             Layer::Submenu => self.submenu = None,
             Layer::ContextMenu => self.close_context_menu(cx),
+            Layer::ComponentSelect => self.close_component_select(cx),
         }
         cx.notify();
     }
@@ -306,7 +317,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 28);
+        assert_eq!(ALL.len(), 29);
     }
 
     #[test]
