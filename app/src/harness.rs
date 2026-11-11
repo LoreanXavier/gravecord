@@ -195,6 +195,10 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
             }
+            ["rail", rest @ ..] => {
+                let note = cx.update(|cx| root.update(cx, |root, cx| root.script_rail(rest, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             ["badge", "fixture", rest @ ..] => {
                 let note = cx.update(|cx| root.update(cx, |root, cx| root.script_badge(rest, cx)));
                 let _ = writeln!(output, "{note}");
@@ -593,6 +597,15 @@ pub async fn run(
             ["mfa", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_mfa(rest, cx));
                 let _ = writeln!(output, "mfa: {line}");
+            }
+            // Fixture inspection, channel and message creation, and injected dispatches (`ui::ch_fixture`).
+            ["ch", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_ch(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "ch: {line}");
             }
             ["voice", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_voice(rest, cx));

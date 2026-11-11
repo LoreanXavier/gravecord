@@ -44,9 +44,12 @@ mod badge_modal;
 mod badge_paths;
 mod blocked;
 mod call_background;
+#[cfg(feature = "capture")]
+mod ch_fixture;
 mod channel_icon;
 mod channel_settings;
 mod channel_settings_pages;
+mod channel_status;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -96,6 +99,7 @@ mod message_header;
 mod message_kinds;
 mod message_tips;
 mod presence;
+mod role_dot;
 mod role_popout;
 mod schedule_message;
 mod sticker_player;
@@ -157,6 +161,7 @@ mod profile_menu;
 mod profile_other;
 mod quests;
 mod quickswitcher;
+mod rail_folders;
 mod reaction_tip;
 mod reactions_modal;
 pub(crate) mod regions;
@@ -398,6 +403,7 @@ pub struct Root {
     #[cfg(feature = "capture")]
     capture_dm_rail: Option<(u64, bool)>,
     hovered_rail_dm: Option<Id>,
+    rail_folders: rail_folders::State,
     #[cfg(feature = "capture")]
     capture_friend_nickname: bool,
     notification_focused: bool,
@@ -748,6 +754,7 @@ impl Root {
             #[cfg(feature = "capture")]
             capture_dm_rail: None,
             hovered_rail_dm: None,
+            rail_folders: rail_folders::State::default(),
             #[cfg(feature = "capture")]
             capture_friend_nickname: false,
             notification_focused: false,
@@ -976,6 +983,7 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                self.channel_info_check();
                 self.calls_after_dispatch(&name, cx);
                 self.interaction_dispatched(&name, &data, cx);
                 if name == "READY" {
@@ -1003,6 +1011,9 @@ impl Root {
                     self.inventory_stale(&data, cx);
                 }
                 self.sidebar_event_update(&name, &data);
+                if name == "CHANNEL_PINS_UPDATE" {
+                    self.ack_open_pins();
+                }
                 if matches!(
                     name.as_str(),
                     "READY"
@@ -1133,6 +1144,7 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
             Update::Fetched { key, body } => {
+                self.thread_members_fetched(&key, &body);
                 if key.starts_with(voice_message::VOICE_SEND_KEY) {
                     self.voice_sent(&body, cx);
                     return;
@@ -1213,6 +1225,11 @@ impl Root {
                 }
                 if key.starts_with("presence-button:") {
                     self.live_button_fetched(&key, body, cx);
+                    return;
+                }
+                if key.starts_with("oauth-token:") {
+                    self.live_tokens_fetched(key, body);
+                    cx.notify();
                     return;
                 }
                 if key.starts_with("presence-app:") {
@@ -2122,12 +2139,7 @@ impl Root {
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
-                                                        .child(
-                                                            div()
-                                                                .size(px(12.))
-                                                                .rounded_full()
-                                                                .bg(gpui::rgb(rgb)),
-                                                        )
+                                                        .child(role_dot::dot(rgb))
                                                 }),
                                         )
                                         .child(
@@ -3224,44 +3236,47 @@ impl Root {
                 .justify_center()
                 .child(icon(name, size, "--text-default"))
         };
-        let list = div()
-            .parity("rail")
-            .id("guild-rail-scroll")
-            .overflow_y_scroll()
-            .flex_1()
-            .min_h(px(0.))
-            .w(px(72.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(8.))
-            .child(self.home_tile(cx))
-            .children(self.unread_dm_rail(cx))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(32.))
-                    .h(px(1.))
-                    .bg(color("--background-mod-subtle")),
-            )
-            .children(
-                self.stores
-                    .guilds
-                    .iter()
-                    .map(|guild| self.rail_item(guild, cx).into_any_element())
-                    .collect::<Vec<_>>(),
-            )
-            .child(
-                self.with_tip(
-                    "add-server",
-                    Tip::rail(Body::Heading("Add a Server".into())),
-                    tool("add_server", 20.),
-                    cx,
+        let list =
+            div()
+                .parity("rail")
+                .id("guild-rail-scroll")
+                .overflow_y_scroll()
+                .flex_1()
+                .min_h(px(0.))
+                .w(px(72.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.))
+                .child(self.home_tile(cx))
+                .children(self.unread_dm_rail(cx))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(32.))
+                        .h(px(1.))
+                        .bg(color("--background-mod-subtle")),
                 )
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx))),
-            )
-            .child(self.discover_tile(cx));
+                .on_drag_move::<rail_folders::RailDrag>(cx.listener(
+                    |this, event: &gpui::DragMoveEvent<rail_folders::RailDrag>, _, cx| {
+                        this.rail_drag_moved(event, cx)
+                    },
+                ))
+                .on_drop(cx.listener(|this, drag: &rail_folders::RailDrag, _, cx| {
+                    this.rail_dropped(drag, cx)
+                }))
+                .children(self.rail_entries(cx))
+                .child(
+                    self.with_tip(
+                        "add-server",
+                        Tip::rail(Body::Heading("Add a Server".into())),
+                        tool("add_server", 20.),
+                        cx,
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx))),
+                )
+                .child(self.discover_tile(cx));
         // wrapper_5dqHTG reserves the observed panel border-box height + 8px - 16px.
         let reserved = self.user_panel_height.unwrap_or(px(58.)) - px(8.);
         div()
@@ -4293,11 +4308,20 @@ impl Root {
             "threads" => self.thread_browser.is_some(),
             _ => false,
         };
+        // `hasUnreadPins`: the pin button carries the `unread` badge at the bottom (module 287074 -> 58736): an 8px
+        // `--background-brand` dot 2px past the corner of the 20px icon, which is cut away in a 5px-radius circle
+        // around the dot's centre (`svg-mask-header-bar-badge-bottom`). The cut shows the header's own fill.
+        let pins_unread = self
+            .channel
+            .is_some_and(|channel| self.stores.has_unread_pins(channel));
+        let header_fill = color("--background-base-lower");
         let tool = |name: &str| {
             let group = SharedString::from(format!("header-{name}"));
             let active = open_popout(name);
+            let badge = name == "pin" && pins_unread;
             div()
                 .group(group.clone())
+                .relative()
                 .size(px(32.))
                 .flex()
                 .items_center()
@@ -4316,6 +4340,27 @@ impl Root {
                             style.text_color(color("--interactive-text-default"))
                         }),
                 )
+                .when(badge, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(16.))
+                            .top(px(16.))
+                            .size(px(10.))
+                            .rounded_full()
+                            .bg(header_fill),
+                    )
+                    .child(
+                        div()
+                            .parity("pins-unread-dot")
+                            .absolute()
+                            .left(px(17.))
+                            .top(px(17.))
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(color("--background-brand")),
+                    )
+                })
         };
         div()
             .parity_below("chat-header", 1.)
@@ -6102,12 +6147,7 @@ impl Root {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(
-                                                        div()
-                                                            .size(px(12.))
-                                                            .rounded_full()
-                                                            .bg(gpui::rgb(rgb)),
-                                                    )
+                                                    .child(role_dot::dot(rgb))
                                             }),
                                     )
                                     .child(
@@ -7120,6 +7160,7 @@ impl Render for Root {
         self.sync_focus(window, cx);
         self.pump_window(window);
         self.request_rail_dm_images();
+        self.rail_folders_frame(cx);
         self.prepare_nameplate_animations(window, cx);
         self.profile_effects_sweep(window, cx);
         self.sticker_player_sweep(window, cx);
@@ -7633,6 +7674,7 @@ impl Render for Root {
                         || this.too_long.is_some()
                         || this.leaving.is_some()
                         || this.confirm_delete.is_some()
+                        || this.menu_extra.reactions_confirm.is_some()
                         || this.menu.is_some())
                 {
                     // The top layer closes first: a modal, then the menu under it.
@@ -7644,6 +7686,8 @@ impl Render for Root {
                         this.leaving = None;
                     } else if this.confirm_delete.is_some() {
                         this.confirm_delete = None;
+                    } else if this.menu_extra.reactions_confirm.is_some() {
+                        this.menu_extra.reactions_confirm = None;
                     } else {
                         this.menu = None;
                     }

@@ -3,6 +3,7 @@
 
 pub mod autocomplete;
 pub mod calls;
+pub mod channel_status;
 pub mod collectibles;
 pub mod components;
 pub mod confusables;
@@ -10,6 +11,7 @@ pub mod content_inventory;
 pub mod content_inventory_manager;
 pub mod display_name_styles;
 pub mod experiments;
+pub mod folders;
 pub mod frecency;
 mod gateway_extra;
 pub mod grouping;
@@ -23,6 +25,7 @@ pub mod message_kinds;
 pub mod message_window;
 pub mod notifications;
 pub mod permissions;
+pub mod pins_unread;
 pub mod polls;
 pub mod premium;
 pub mod presence;
@@ -34,8 +37,10 @@ pub mod running_games;
 pub mod scheduled_events;
 pub mod scheduled_message;
 pub mod slowmode;
+pub mod stage;
 pub mod stickers;
 pub mod thread_list;
+pub mod thread_members;
 pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
@@ -386,8 +391,7 @@ impl Thread {
             archived: value["thread_metadata"]["archived"]
                 .as_bool()
                 .unwrap_or(false),
-            joined: value["member"].is_object()
-                || value["newly_created"].as_bool().unwrap_or(false),
+            joined: value["member"].is_object(),
             applied_tags: value["applied_tags"]
                 .as_array()
                 .into_iter()
@@ -1336,6 +1340,8 @@ pub struct VoiceState {
     pub deaf: bool,
     /// Held back from speaking in a stage.
     pub suppress: bool,
+    /// When this member asked to speak in a Stage (`request_to_speak_timestamp`, ISO 8601), if they did.
+    pub request_to_speak_timestamp: Option<String>,
     /// The camera is on (`self_video`).
     pub self_video: bool,
     /// Going live (`self_stream`).
@@ -1353,6 +1359,7 @@ impl VoiceState {
             mute: value["mute"].as_bool().unwrap_or(false),
             deaf: value["deaf"].as_bool().unwrap_or(false),
             suppress: value["suppress"].as_bool().unwrap_or(false),
+            request_to_speak_timestamp: text(&value["request_to_speak_timestamp"]),
             self_video: value["self_video"].as_bool().unwrap_or(false),
             self_stream: value["self_stream"].as_bool().unwrap_or(false),
         })
@@ -1408,6 +1415,10 @@ pub struct Stores {
     pub presence: presence::PresenceStore,
     pub member_counts: guild_member_counts::GuildMemberCountStore,
     pub scheduled_events: scheduled_events::GuildScheduledEventStore,
+    /// Voice channel statuses and call start times (`ChannelStatusStore`, `VoiceChannelStartTimeStore`).
+    pub channel_status: channel_status::ChannelStatusStore,
+    /// Live Stage instances (`StageInstanceStore`).
+    pub stage_instances: stage::StageInstanceStore,
     /// The user's scheduled messages and each channel's scheduled-message draft (`scheduledMessageStore`, `DraftStore`).
     pub scheduled_messages: scheduled_message::ScheduledMessageStore,
     pub scheduled_drafts: scheduled_message::ScheduledDrafts,
@@ -1420,6 +1431,8 @@ pub struct Stores {
     /// The account's sessions (`SessionsStore`, module 528767): READY's `sessions`, then `SESSIONS_REPLACE`.
     pub sessions: Vec<Session>,
     pub guild_order: Vec<Id>,
+    /// Server folders and the rail order (`SortedGuildStore`, `ExpandedGuildFolderStore`).
+    pub folders: folders::GuildFolders,
     /// Client preferences kept in the account's proto settings (`settings::PROTO_PREFS`), by row key: the varint as
     /// stored. A key that is absent was never set, and the preference keeps its default.
     pub prefs: HashMap<&'static str, u64>,
@@ -1445,6 +1458,10 @@ pub struct Stores {
     pub notification_flags: u64,
     /// The members seen so far, per guild (`GuildMemberStore`).
     pub members: members::GuildMembers,
+    /// The threads the current user has joined (`JoinedThreadsStore`).
+    pub thread_members: thread_members::ThreadMembers,
+    /// Newest and acknowledged pin times per channel (`hasUnreadPins`).
+    pub pin_states: pins_unread::PinStates,
     /// Guild stickers and the standard packs (`GuildStickersStore`, `StickersPackStore`).
     pub stickers: stickers::StickersStore,
     /// Channel or thread id to the guild that holds it. Lookups check the answer against the guild, so a guild
@@ -1469,6 +1486,8 @@ impl Stores {
         self.presence.dispatch(name, data);
         self.member_counts.dispatch(name, data);
         self.scheduled_events.dispatch(name, data);
+        self.channel_status.dispatch(name, data);
+        self.stage_instances.dispatch(name, data);
         {
             let known: Vec<Id> = self
                 .private_channels
@@ -1486,6 +1505,9 @@ impl Stores {
         self.members.dispatch(name, data);
         self.stickers.dispatch(name, data);
         self.interactions.dispatch(name, data);
+        let me = self.current_user.as_ref().map(|user| user.id);
+        self.thread_members.dispatch(name, data, me);
+        self.pin_states.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
             "READY_SUPPLEMENTAL" => {
@@ -1719,23 +1741,11 @@ impl Stores {
                 }
             }
             "THREAD_CREATE" | "THREAD_UPDATE" => {
-                if let (Some(guild), Some(mut thread)) =
+                if let (Some(guild), Some(thread)) =
                     (id(&data["guild_id"]), Thread::from_value(data))
                 {
                     self.note_thread_latest(&thread);
                     if let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild) {
-                        if let Some(known) =
-                            guild.threads.iter().find(|known| known.id == thread.id)
-                            && known.joined
-                            && !thread.joined
-                        {
-                            // An update without a member keeps the one already known.
-                            thread.joined = true;
-                            thread.member_flags = known.member_flags;
-                            thread.muted = known.muted;
-                            thread.mute_end = known.mute_end;
-                            thread.join_timestamp = known.join_timestamp.clone();
-                        }
                         guild.threads.retain(|known| known.id != thread.id);
                         if !thread.archived {
                             guild.threads.push(thread);
@@ -1748,38 +1758,6 @@ impl Stores {
                     && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
                 {
                     guild.threads.retain(|known| known.id != thread);
-                }
-            }
-            // 152007: only the current user's member counts; the event carries one member's fields beside the id.
-            "THREAD_MEMBER_UPDATE" => {
-                let me = self.current_user.as_ref().map(|user| user.id);
-                if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
-                    && id(&data["user_id"]).is_none_or(|user| Some(user) == me)
-                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
-                    && let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread)
-                {
-                    known.apply_member(data);
-                }
-            }
-            "THREAD_MEMBERS_UPDATE" => {
-                let me = self.current_user.as_ref().map(|user| user.id);
-                if let (Some(guild), Some(thread)) = (id(&data["guild_id"]), id(&data["id"]))
-                    && let Some(guild) = self.guilds.iter_mut().find(|known| known.id == guild)
-                    && let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread)
-                {
-                    if data["removed_member_ids"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .any(|user| id(user).is_some() && id(user) == me)
-                    {
-                        known.clear_member();
-                    }
-                    for member in data["added_members"].as_array().into_iter().flatten() {
-                        if me.is_some() && id(&member["user_id"]) == me {
-                            known.apply_member(member);
-                        }
-                    }
                 }
             }
             "THREAD_LIST_SYNC" => {
@@ -1797,15 +1775,6 @@ impl Stores {
                         for thread in synced {
                             guild.threads.retain(|known| known.id != thread.id);
                             guild.threads.push(thread);
-                        }
-                        // The account's own thread members come beside the threads, one per joined thread.
-                        for member in data["members"].as_array().into_iter().flatten() {
-                            if let Some(thread) = id(&member["id"])
-                                && let Some(known) =
-                                    guild.threads.iter_mut().find(|known| known.id == thread)
-                            {
-                                known.apply_member(member);
-                            }
                         }
                     }
                 }
@@ -1859,6 +1828,7 @@ impl Stores {
                         &settings::decode(proto),
                         data["partial"] == true,
                     );
+                    self.refresh_guild_order();
                     // The status chosen in another session (or lapsed on the server) shows here too.
                     if let Some(status) = self.status_state().and_then(|state| state.status) {
                         self.status = status;
@@ -1991,9 +1961,34 @@ impl Stores {
             }
             _ => {}
         }
+        if thread_members::ThreadMembers::AFFECTS_THREADS.contains(&name) {
+            self.sync_thread_members();
+        }
         if !Self::COUNT_NEUTRAL.contains(&name) {
             self.invalidate_counts();
         }
+    }
+
+    /// Every known thread takes its membership from `thread_members` (`JoinedThreadsStore.hasJoined` and friends).
+    pub fn sync_thread_members(&mut self) {
+        for guild in &mut self.guilds {
+            for thread in &mut guild.threads {
+                thread.set_member(self.thread_members.get(thread.id));
+            }
+        }
+    }
+
+    /// The `members` of a message-search, thread-search or archived-threads response body (`SEARCH_MESSAGES_SUCCESS`,
+    /// `LOAD_THREADS_SUCCESS`, `LOAD_ARCHIVED_THREADS_SUCCESS`).
+    pub fn thread_members_from_response(&mut self, guild: Option<Id>, body: &Value) {
+        self.thread_members.add_response(guild, body);
+        self.sync_thread_members();
+    }
+
+    /// `THREAD_MEMBER_LOCAL_UPDATE`: this client joined or left a forum post and waits for the server's word.
+    pub fn thread_member_local_update(&mut self, guild: Id, thread: Id, joining: bool) {
+        self.thread_members.local_update(thread, guild, joining);
+        self.sync_thread_members();
     }
 
     /// Forgets the cached guild counts. `dispatch` does it for every event that can change them; a caller that
@@ -2473,7 +2468,8 @@ impl Stores {
         unread::guild_counts(self, guild, chrono::Utc::now()).unread
     }
 
-    /// The order from the settings proto. Guilds it does not list yet go on top, newest first.
+    /// The order from the settings proto. Guilds it does not list yet go on top, newest first. The folders are
+    /// rebuilt from the same settings (`SortedGuildStore` `N`).
     fn sort_guilds(&mut self) {
         let mut ranked: Vec<(Option<usize>, Guild)> =
             self.guilds.drain(..).map(|guild| (None, guild)).collect();
@@ -2487,6 +2483,83 @@ impl Stores {
             (None, None) => second.joined_at.cmp(&first.joined_at),
         });
         self.guilds = ranked.into_iter().map(|(_, guild)| guild).collect();
+        let (entries, positions) = settings::guild_folders(&self.settings_raw);
+        let positions = if entries.is_empty() && positions.is_empty() {
+            self.guild_order.clone()
+        } else {
+            positions
+        };
+        let listed: std::collections::HashSet<Id> = if entries.is_empty() {
+            positions.iter().copied().collect()
+        } else {
+            entries
+                .iter()
+                .flat_map(|entry| entry.guild_ids.iter().copied())
+                .collect()
+        };
+        let known: Vec<Id> = self.guilds.iter().map(|guild| guild.id).collect();
+        let unlisted: Vec<Id> = known
+            .iter()
+            .copied()
+            .filter(|id| !listed.contains(id))
+            .collect();
+        self.folders
+            .rebuild(&entries, &positions, &known, &unlisted);
+        let flat = self.folders.flattened();
+        self.guilds
+            .sort_by_key(|guild| flat.iter().position(|id| *id == guild.id));
+    }
+
+    /// The order and folders from the settings as they are now (a settings update from another session).
+    fn refresh_guild_order(&mut self) {
+        let (entries, positions) = settings::guild_folders(&self.settings_raw);
+        self.guild_order = if entries.is_empty() {
+            positions
+        } else {
+            entries
+                .into_iter()
+                .flat_map(|entry| entry.guild_ids)
+                .collect()
+        };
+        self.sort_guilds();
+    }
+
+    /// Writes the tree's entries into the account's settings and re-sorts the rail. The PATCH body value comes back
+    /// (`updateAsync("guildFolders", ...)`, module 817281 `um`); empty until the settings have arrived, and the tree
+    /// still changes locally then.
+    pub fn commit_guild_folders(&mut self) -> String {
+        let entries = self.folders.to_entries();
+        self.guild_order = self.folders.flattened();
+        let flat = self.guild_order.clone();
+        self.guilds
+            .sort_by_key(|guild| flat.iter().position(|id| *id == guild.id));
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_guild_folders(&self.settings_raw, &entries);
+        self.settings_raw = updated;
+        patch
+    }
+
+    /// A flat order of plain servers, listed ones first (a capture script's layout; the folders are dropped).
+    pub fn set_rail_order(&mut self, ids: &[Id]) {
+        let entries: Vec<settings::GuildFolderEntry> = ids
+            .iter()
+            .map(|id| settings::GuildFolderEntry {
+                guild_ids: vec![*id],
+                ..settings::GuildFolderEntry::default()
+            })
+            .collect();
+        let known: Vec<Id> = self.guilds.iter().map(|guild| guild.id).collect();
+        self.folders.rebuild(&entries, &[], &known, &[]);
+    }
+
+    /// "Move to... First in List / Last in List" (`moveFirst`, `moveLast`).
+    pub fn move_guild(&mut self, id: Id, placement: folders::Placement) -> String {
+        if !self.folders.move_guild(id, placement) {
+            return String::new();
+        }
+        self.commit_guild_folders()
     }
 
     fn react(&mut self, data: &Value, change: i64) {
@@ -3266,10 +3339,14 @@ mod tests {
     fn thread_events_keep_the_active_list() {
         let mut stores = Stores::default();
         stores.dispatch(
+            "READY",
+            &json!({"user": {"id": "3", "username": "me"}, "users": [], "guilds": []}),
+        );
+        stores.dispatch(
             "GUILD_CREATE",
             &json!({"id": "1", "name": "g", "channels": [], "threads": []}),
         );
-        // As recorded in TRAFFIC/thread-create.json.
+        // As recorded in TRAFFIC/thread-create.json: the create names no member, a THREAD_MEMBER_UPDATE follows.
         stores.dispatch(
             "THREAD_CREATE",
             &json!({"guild_id": "1", "id": "9", "parent_id": "5", "name": "t", "type": 11, "newly_created": true,
@@ -3277,9 +3354,75 @@ mod tests {
         );
         let guild = stores.guilds.iter().find(|guild| guild.id == 1).unwrap();
         assert_eq!(guild.threads.len(), 1);
-        assert!(guild.threads[0].joined);
-        stores.dispatch("THREAD_DELETE", &json!({"guild_id": "1", "id": "9"}));
+        assert!(!guild.threads[0].joined);
+        stores.dispatch(
+            "THREAD_MEMBER_UPDATE",
+            &json!({"flags": 1, "guild_id": "1", "id": "9", "join_timestamp": "2026-11-08T02:57:03.036078+00:00",
+                "mute_config": null, "muted": false, "user_id": "3"}),
+        );
+        assert!(stores.guilds[0].threads[0].joined);
+        // An update of the thread keeps the membership; so does the archive and unarchive round trip.
+        stores.dispatch(
+            "THREAD_UPDATE",
+            &json!({"guild_id": "1", "id": "9", "parent_id": "5", "name": "t2", "type": 11,
+                "thread_metadata": {"archived": true}}),
+        );
         assert!(stores.guilds[0].threads.is_empty());
+        stores.dispatch(
+            "THREAD_UPDATE",
+            &json!({"guild_id": "1", "id": "9", "parent_id": "5", "name": "t2", "type": 11,
+                "thread_metadata": {"archived": false}}),
+        );
+        assert!(stores.guilds[0].threads[0].joined);
+        // A search response that names the membership of a thread seen later.
+        stores
+            .thread_members_from_response(Some(1), &json!({"members": [{"id": "10", "flags": 2}]}));
+        stores.dispatch(
+            "THREAD_UPDATE",
+            &json!({"guild_id": "1", "id": "10", "parent_id": "5", "name": "u", "type": 11,
+                "thread_metadata": {"archived": false}}),
+        );
+        let ten = stores.guilds[0]
+            .threads
+            .iter()
+            .find(|thread| thread.id == 10)
+            .unwrap();
+        assert!(ten.joined && ten.member_flags == Some(2));
+        stores.dispatch("THREAD_DELETE", &json!({"guild_id": "1", "id": "9"}));
+        stores.dispatch("THREAD_DELETE", &json!({"guild_id": "1", "id": "10"}));
+        assert!(stores.guilds[0].threads.is_empty());
+        assert!(stores.thread_members.is_empty());
+    }
+
+    #[test]
+    fn a_list_sync_without_members_keeps_the_memberships_ready_gave() {
+        // READY lists the joined threads with their `member`; the THREAD_LIST_SYNC that follows (op 37 `threads`)
+        // carries the same threads without one and must not unjoin them (`JoinedThreadsStore` is a separate map).
+        let mut stores = Stores::default();
+        let thread = |member: bool| {
+            let mut value = json!({"id": "9", "guild_id": "1", "parent_id": "5", "name": "t", "type": 11,
+                "thread_metadata": {"archived": false, "auto_archive_duration": 4320}});
+            if member {
+                value["member"] = json!({"flags": 1, "muted": false, "join_timestamp": "2026-11-08T02:57:03.036000+00:00"});
+            }
+            value
+        };
+        stores.dispatch(
+            "READY",
+            &json!({"user": {"id": "3", "username": "me"}, "users": [],
+                "guilds": [{"id": "1", "name": "g", "channels": [], "threads": [thread(true)]}]}),
+        );
+        assert!(stores.guilds[0].threads[0].joined);
+        stores.dispatch(
+            "THREAD_LIST_SYNC",
+            &json!({"guild_id": "1", "threads": [thread(false)], "most_recent_messages": []}),
+        );
+        let synced = &stores.guilds[0].threads[0];
+        assert!(synced.joined && synced.member_flags == Some(1));
+        assert_eq!(
+            synced.join_timestamp.as_deref(),
+            Some("2026-11-08T02:57:03.036000+00:00")
+        );
     }
 
     #[test]
@@ -3498,6 +3641,32 @@ mod tests {
         assert_eq!(stores.guilds[0].id, 1);
         stores.guild_order = vec![1];
         stores.sort_guilds();
+        assert_eq!(stores.guilds[0].id, 2);
+    }
+
+    #[test]
+    fn folders_come_from_the_settings_and_a_change_is_written_back() {
+        use dc_proto::settings::{GuildFolderEntry, guild_folders, set_guild_folders};
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready());
+        stores.settings_loaded = true;
+        let folder = GuildFolderEntry {
+            id: Some(5),
+            guild_ids: vec![1, 2],
+            ..GuildFolderEntry::default()
+        };
+        stores.settings_raw = set_guild_folders(&[], &[folder]).1;
+        stores.refresh_guild_order();
+        assert_eq!(stores.folders.folder(5).unwrap().guilds, vec![1, 2]);
+        assert_eq!(stores.guilds[0].id, 1);
+        assert!(stores.folders.move_by_id(2, 5, false, false));
+        let patch = stores.commit_guild_folders();
+        assert!(!patch.is_empty());
+        let (entries, _) = guild_folders(&settings::decode(&patch));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].guild_ids, vec![2]);
+        assert_eq!(entries[1].guild_ids, vec![1]);
+        assert_eq!(stores.guild_order, vec![2, 1]);
         assert_eq!(stores.guilds[0].id, 2);
     }
 
