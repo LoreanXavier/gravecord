@@ -166,6 +166,56 @@ impl Root {
             Action::MarkUnread => self.mark_unread(message.channel_id, message.id),
             Action::Bookmark => self.toggle_bookmark(message.channel_id, message.id, cx),
             Action::Speak => self.speak_message(message, cx),
+            Action::EndPoll => self.poll_end_ask(message.channel_id, message.id),
+            Action::Report => self.open_report_message(&message, false, window, cx),
+            Action::CopySelection => {
+                let text = self.menu_extra.selection.clone();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            // Module 826308: the text goes into a Google search in the browser.
+            Action::SearchGoogle => {
+                let query = dc_http::percent_encode(&self.menu_extra.selection);
+                cx.open_url(&format!("https://www.google.com/search?q={query}"));
+            }
+            Action::CopyUrl => {
+                if let Some(url) = self.menu_url() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
+                    self.show_success_toast("Link Copied!".into(), cx);
+                }
+            }
+            // `^(tel|sms|mailto):([^?;]+)`: what follows the scheme, up to a query or a parameter.
+            Action::CopyContact => {
+                if let Some(url) = self.menu_url()
+                    && let Some((_, rest)) = url.split_once(':')
+                {
+                    let address = rest.split(['?', ';']).next().unwrap_or(rest).to_owned();
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(address));
+                    self.show_success_toast("Link Copied!".into(), cx);
+                }
+            }
+            Action::SendSms => {
+                if let Some(url) = self.menu_url() {
+                    self.follow_link(&url.replacen("tel:", "sms:", 1), &url, cx);
+                }
+            }
+            Action::OpenUrl => {
+                if let Some(url) = self.menu_url() {
+                    let label = match &self.menu_extra.hit {
+                        Some(super::menu::Hit::Link { label, .. }) => label.clone(),
+                        _ => String::new(),
+                    };
+                    self.follow_link(&url, &label, cx);
+                }
+            }
+            Action::CopyImage => {
+                if let Some(image) = self.menu_image() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&image));
+                    self.show_success_toast("Image Copied!".into(), cx);
+                } else {
+                    self.show_app_toast("Unable to copy image", cx);
+                }
+            }
+            Action::SaveImage => self.save_menu_image(cx),
             Action::Forward => self.open_forward(message, window, cx),
             Action::Thread => self.open_new_thread_from(message, window, cx),
             Action::ViewReactions => self.open_view_reactions(message, cx),
@@ -191,5 +241,52 @@ impl Root {
                 let _ = (window, cx);
             }
         }
+    }
+
+    /// The address of what the open menu was opened on.
+    fn menu_url(&self) -> Option<String> {
+        match self.menu_extra.hit.as_ref()? {
+            super::menu::Hit::Link { url, .. } | super::menu::Hit::Media { url, .. } => {
+                Some(url.clone())
+            }
+        }
+    }
+
+    fn menu_image(&self) -> Option<std::sync::Arc<gpui::Image>> {
+        match self.menu_extra.hit.as_ref()? {
+            super::menu::Hit::Media { key, .. } => self.images.get(key).cloned(),
+            super::menu::Hit::Link { .. } => None,
+        }
+    }
+
+    /// Module 115184 `saveImage`: a save dialog named after the file, then the picture's bytes go there.
+    fn save_menu_image(&mut self, cx: &mut Context<Self>) {
+        let (Some(image), Some(url)) = (self.menu_image(), self.menu_url()) else {
+            return;
+        };
+        let name = url
+            .split(['?', '#'])
+            .next()
+            .and_then(|path| path.rsplit('/').next())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("image.png")
+            .to_owned();
+        let directory = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
+        cx.spawn(async move |this, cx| {
+            let saved = match chosen.await {
+                Ok(Ok(Some(path))) => Some(std::fs::write(path, image.bytes()).is_ok()),
+                _ => None,
+            };
+            let _ = this.update(cx, |this, cx| match saved {
+                Some(true) => this.show_success_toast("Image Saved".into(), cx),
+                Some(false) => this.show_app_toast("Unable to save image", cx),
+                None => {}
+            });
+        })
+        .detach();
     }
 }

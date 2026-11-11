@@ -32,6 +32,9 @@ pub const BYPASS_SLOWMODE: u64 = 1 << 52;
 /// `xBc.CONNECT`, `xBc.MOVE_MEMBERS` (module 375389).
 pub const CONNECT: u64 = 1 << 20;
 pub const MOVE_MEMBERS: u64 = 1 << 24;
+/// `MUTE_MEMBERS` and `DEAFEN_MEMBERS` (module 375389, bits 22 and 23).
+pub const MUTE_MEMBERS: u64 = 1 << 22;
+pub const DEAFEN_MEMBERS: u64 = 1 << 23;
 pub const ALL: u64 = u64::MAX;
 /// `y`: what a lurker or a pending member keeps.
 const LURKER: u64 = VIEW_CHANNEL | READ_MESSAGE_HISTORY;
@@ -351,5 +354,71 @@ mod tests {
         guild.my_timeout_until = Some(now_ms() + 60_000);
         assert!(!can_in_guild(&guild, ME, CREATE_INSTANT_INVITE));
         assert!(can_in_guild(&guild, ME, VIEW_CHANNEL));
+    }
+}
+
+/// Module 7864 `l` and 488926 `wO`: whether `role` ranks below the highest of `roles` held by `me`. The owner outranks
+/// every role; otherwise a higher position wins, and equal positions go to the lower id. @everyone ranks last.
+pub fn role_is_higher(guild: &Guild, me: Id, roles: &[Id], role: Id) -> bool {
+    if guild.owner_id == Some(me) {
+        return true;
+    }
+    let rank = |id: Id| -> (i64, Id) {
+        if id == guild.id {
+            return (i64::MIN, id);
+        }
+        (guild.role_info.get(&id).map_or(0, |info| info.position), id)
+    };
+    let Some(mine) = roles
+        .iter()
+        .copied()
+        .map(rank)
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+    else {
+        return false;
+    };
+    let other = rank(role);
+    mine.0 > other.0 || (mine.0 == other.0 && mine.1 < other.1)
+}
+
+#[cfg(test)]
+mod role_rank_tests {
+    use super::*;
+    use crate::RoleInfo;
+
+    fn guild() -> Guild {
+        let mut guild = Guild {
+            id: 1,
+            owner_id: Some(100),
+            ..Guild::default()
+        };
+        for (id, position) in [(10, 5), (11, 3), (12, 3)] {
+            guild.role_info.insert(
+                id,
+                RoleInfo {
+                    position,
+                    ..RoleInfo::default()
+                },
+            );
+        }
+        guild
+    }
+
+    #[test]
+    fn a_higher_position_outranks_and_ties_go_to_the_lower_id() {
+        let guild = guild();
+        assert!(role_is_higher(&guild, 5, &[10], 11));
+        assert!(!role_is_higher(&guild, 5, &[11], 10));
+        assert!(role_is_higher(&guild, 5, &[11], 12));
+        assert!(!role_is_higher(&guild, 5, &[12], 11));
+        assert!(!role_is_higher(&guild, 5, &[11], 11));
+    }
+
+    #[test]
+    fn the_owner_outranks_every_role_and_nobody_without_roles_does() {
+        let guild = guild();
+        assert!(role_is_higher(&guild, 100, &[], 10));
+        assert!(!role_is_higher(&guild, 5, &[], 11));
+        assert!(role_is_higher(&guild, 5, &[11], 1));
     }
 }

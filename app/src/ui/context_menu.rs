@@ -89,6 +89,19 @@ pub(super) enum Act {
     Timeout,
     Kick,
     Ban,
+    /// Server-wide voice moderation of a person in a voice channel (module 291247): `voice-mute`, `voice-deafen`,
+    /// `voice-disconnect`.
+    ServerMute,
+    ServerDeafen,
+    Disconnect,
+    /// "Roles" (module 180798): a submenu that gives and takes roles by `PATCH /guilds/:g/members/:u` with the list.
+    Roles,
+    /// "Move to" for a person in a voice channel (module 252726): the voice channels they can be moved to.
+    MoveMember,
+    /// "Change Nickname" of someone else (module 346247 opens module 752118).
+    ChangeNickname,
+    /// "Remove Timeout" of a member who is in timeout.
+    RemoveTimeout,
     LeaveGuild,
     /// Voice: how loud a person is to us, and muting them (or their soundboard) here.
     Volume,
@@ -104,6 +117,249 @@ pub(super) enum Act {
     Cut,
     Copy,
     Paste,
+}
+
+impl Act {
+    /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
+    /// without listing it here fails the build or the `act_list_is_complete` test.
+    #[cfg(test)]
+    pub(super) const ALL: [Act; 67] = [
+        Act::InventoryAbout,
+        Act::InventoryHide,
+        Act::ReportApp,
+        Act::MarkRead,
+        Act::Invite,
+        Act::Mute,
+        Act::Notifications,
+        Act::HideMuted,
+        Act::ServerSettings,
+        Act::PrivacySettings,
+        Act::EditProfile,
+        Act::CreateChannel,
+        Act::CreateCategory,
+        Act::CreateEvent,
+        Act::MoveTo,
+        Act::CopyLink,
+        Act::CopyId,
+        Act::EditChannel,
+        Act::Duplicate,
+        Act::DeleteChannel,
+        Act::CollapseCategory,
+        Act::CollapseAll,
+        Act::PinChannel,
+        Act::Favorite,
+        Act::OpenChat,
+        Act::HideNames,
+        Act::CloseThread,
+        Act::LockThread,
+        Act::LeaveThread,
+        Act::Profile,
+        Act::Mention,
+        Act::Message,
+        Act::Call,
+        Act::Note,
+        Act::Apps,
+        Act::AddFriend,
+        Act::RemoveFriend,
+        Act::FriendNickname,
+        Act::Ignore,
+        Act::Block,
+        Act::CloseDm,
+        Act::PinDm,
+        Act::InviteToServer,
+        Act::ModView,
+        Act::Verify,
+        Act::Timeout,
+        Act::Kick,
+        Act::Ban,
+        Act::ServerMute,
+        Act::ServerDeafen,
+        Act::Disconnect,
+        Act::LeaveGuild,
+        Act::Volume,
+        Act::VoiceMute,
+        Act::SoundboardMute,
+        Act::Correction(0),
+        Act::AddToDictionary,
+        Act::RemoveFromDictionary,
+        Act::Spellcheck,
+        Act::SpellLanguages,
+        Act::Cut,
+        Act::Copy,
+        Act::Paste,
+        Act::Roles,
+        Act::MoveMember,
+        Act::ChangeNickname,
+        Act::RemoveTimeout,
+    ];
+
+    #[cfg(test)]
+    pub(super) fn ordinal(self) -> usize {
+        match self {
+            Act::InventoryAbout => 0,
+            Act::InventoryHide => 1,
+            Act::ReportApp => 2,
+            Act::MarkRead => 3,
+            Act::Invite => 4,
+            Act::Mute => 5,
+            Act::Notifications => 6,
+            Act::HideMuted => 7,
+            Act::ServerSettings => 8,
+            Act::PrivacySettings => 9,
+            Act::EditProfile => 10,
+            Act::CreateChannel => 11,
+            Act::CreateCategory => 12,
+            Act::CreateEvent => 13,
+            Act::MoveTo => 14,
+            Act::CopyLink => 15,
+            Act::CopyId => 16,
+            Act::EditChannel => 17,
+            Act::Duplicate => 18,
+            Act::DeleteChannel => 19,
+            Act::CollapseCategory => 20,
+            Act::CollapseAll => 21,
+            Act::PinChannel => 22,
+            Act::Favorite => 23,
+            Act::OpenChat => 24,
+            Act::HideNames => 25,
+            Act::CloseThread => 26,
+            Act::LockThread => 27,
+            Act::LeaveThread => 28,
+            Act::Profile => 29,
+            Act::Mention => 30,
+            Act::Message => 31,
+            Act::Call => 32,
+            Act::Note => 33,
+            Act::Apps => 34,
+            Act::AddFriend => 35,
+            Act::RemoveFriend => 36,
+            Act::FriendNickname => 37,
+            Act::Ignore => 38,
+            Act::Block => 39,
+            Act::CloseDm => 40,
+            Act::PinDm => 41,
+            Act::InviteToServer => 42,
+            Act::ModView => 43,
+            Act::Verify => 44,
+            Act::Timeout => 45,
+            Act::Kick => 46,
+            Act::Ban => 47,
+            Act::ServerMute => 48,
+            Act::ServerDeafen => 49,
+            Act::Disconnect => 50,
+            Act::LeaveGuild => 51,
+            Act::Volume => 52,
+            Act::VoiceMute => 53,
+            Act::SoundboardMute => 54,
+            Act::Correction(_) => 55,
+            Act::AddToDictionary => 56,
+            Act::RemoveFromDictionary => 57,
+            Act::Spellcheck => 58,
+            Act::SpellLanguages => 59,
+            Act::Cut => 60,
+            Act::Copy => 61,
+            Act::Paste => 62,
+            Act::Roles => 63,
+            Act::MoveMember => 64,
+            Act::ChangeNickname => 65,
+            Act::RemoveTimeout => 66,
+        }
+    }
+}
+
+/// Whether a row's action exists in the app. A row whose feature is missing is drawn disabled (never a live-looking
+/// row that does nothing); the name says what is missing. Every `Act` is classified here, so a new row cannot be added
+/// without deciding it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Status {
+    Wired,
+    Missing(&'static str),
+}
+
+pub(super) fn status(act: Act) -> Status {
+    use Status::{Missing, Wired};
+    match act {
+        Act::MoveTo => Missing("channel and category reordering"),
+        Act::PinChannel => Missing("pinned channels (user settings proto)"),
+        Act::Favorite => Missing("favorite channels (user settings proto)"),
+        Act::PinDm => Missing("pinned direct messages (user settings proto)"),
+        Act::HideNames => Missing("Hide Names for a voice channel"),
+        Act::Apps => Missing("the user-app commands submenu"),
+        Act::ModView => Missing("Mod View"),
+        Act::InventoryAbout
+        | Act::InventoryHide
+        | Act::ReportApp
+        | Act::MarkRead
+        | Act::Invite
+        | Act::Mute
+        | Act::Notifications
+        | Act::HideMuted
+        | Act::ServerSettings
+        | Act::PrivacySettings
+        | Act::EditProfile
+        | Act::CreateChannel
+        | Act::CreateCategory
+        | Act::CreateEvent
+        | Act::CopyLink
+        | Act::CopyId
+        | Act::EditChannel
+        | Act::Duplicate
+        | Act::DeleteChannel
+        | Act::CollapseCategory
+        | Act::CollapseAll
+        | Act::OpenChat
+        | Act::CloseThread
+        | Act::LockThread
+        | Act::LeaveThread
+        | Act::Profile
+        | Act::Mention
+        | Act::Message
+        | Act::Call
+        | Act::Note
+        | Act::AddFriend
+        | Act::RemoveFriend
+        | Act::FriendNickname
+        | Act::Ignore
+        | Act::Block
+        | Act::CloseDm
+        | Act::Timeout
+        | Act::Kick
+        | Act::Ban
+        | Act::ServerMute
+        | Act::ServerDeafen
+        | Act::Disconnect
+        | Act::Verify
+        | Act::Roles
+        | Act::MoveMember
+        | Act::ChangeNickname
+        | Act::RemoveTimeout
+        | Act::InviteToServer
+        | Act::LeaveGuild
+        | Act::Volume
+        | Act::VoiceMute
+        | Act::SoundboardMute
+        | Act::Correction(_)
+        | Act::AddToDictionary
+        | Act::RemoveFromDictionary
+        | Act::Spellcheck
+        | Act::SpellLanguages
+        | Act::Cut
+        | Act::Copy
+        | Act::Paste => Wired,
+    }
+}
+
+/// A row of a submenu: its label, whether it is ticked, a colour dot (roles), and the id it stands for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct SubRow {
+    pub label: String,
+    pub on: bool,
+    pub disabled: bool,
+    /// Shown but never acted on: a member's roles when we cannot manage roles.
+    pub plain: bool,
+    /// A role's colour (`0xRRGGBB`, 0 for the default dot).
+    pub dot: Option<u32>,
+    pub id: Id,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,7 +387,7 @@ impl Row {
             caret: false,
             check: None,
             danger: false,
-            disabled: false,
+            disabled: matches!(status(act), Status::Missing(_)),
             shortcut: None,
         }
     }
@@ -535,10 +791,33 @@ pub(super) struct UserFacts {
     pub invite_servers: bool,
     /// In the call we are in (never true unless a call is open): adds the voice rows.
     pub in_call: bool,
+    /// The person is in a voice channel of this server (module 291247 `Z`).
+    pub server_voice: Option<ServerVoice>,
+    /// The person is in timeout and we may lift it.
+    pub in_timeout: bool,
+    /// Verify Member is offered: `Some(true)` when the member already bypasses verification (module 291247).
+    pub verify: Option<bool>,
+    /// The Roles submenu has something to show: the member's roles, or the ones we may give.
+    pub roles: bool,
     pub voice_muted: bool,
     pub soundboard_muted: bool,
     /// The volume as a percentage, 0 to 200.
     pub volume: u32,
+}
+
+/// `GuildMemberFlags.BYPASSES_VERIFICATION` (module 340837).
+const BYPASSES_VERIFICATION: u64 = 4;
+
+/// A person's place in a voice channel of the open server, and what we may do to them there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ServerVoice {
+    pub mute: bool,
+    pub deaf: bool,
+    pub can_mute: bool,
+    pub can_deafen: bool,
+    pub can_disconnect: bool,
+    /// There is a voice channel to move them to.
+    pub can_move: bool,
 }
 
 pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
@@ -604,7 +883,11 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut mid = Vec::new();
     if facts.dm.is_none() && facts.in_guild && (facts.me || facts.can_nick) {
         mid.push(Row::new(
-            Act::EditProfile,
+            if facts.me {
+                Act::EditProfile
+            } else {
+                Act::ChangeNickname
+            },
             if facts.me {
                 "Edit Per-server Profile"
             } else {
@@ -641,11 +924,59 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         out.extend(mid.into_iter().map(Entry::Row));
     }
     if facts.dm.is_none() && facts.in_guild {
+        // Module 107632: Roles (180798) and Move to (252726) share a group before the moderation one.
+        let mut place = Vec::new();
+        if facts.roles {
+            place.push(Row::new(Act::Roles, "Roles").caret());
+        }
+        if facts.server_voice.is_some_and(|voice| voice.can_move) {
+            place.push(Row::new(Act::MoveMember, "Move to").caret());
+        }
+        group(&mut out, place);
+    }
+    if facts.dm.is_none() && facts.in_guild {
         let mut moderation = vec![Row::new(Act::ModView, "Open in Mod View")];
         if !facts.me {
+            if let Some(verified) = facts.verify {
+                moderation.push(Row::new(
+                    Act::Verify,
+                    if verified {
+                        "Unverify Member"
+                    } else {
+                        "Verify Member"
+                    },
+                ));
+            }
+            // Module 291247 lists the voice rows between Verify and Timeout, in the same group.
+            if let Some(voice) = facts.server_voice {
+                if voice.can_mute {
+                    moderation.push(
+                        Row::new(Act::ServerMute, "Server Mute")
+                            .check(voice.mute)
+                            .danger(),
+                    );
+                }
+                if voice.can_deafen {
+                    moderation.push(
+                        Row::new(Act::ServerDeafen, "Server Deafen")
+                            .check(voice.deaf)
+                            .danger(),
+                    );
+                }
+                if voice.can_disconnect {
+                    moderation.push(Row::new(Act::Disconnect, "Disconnect").danger());
+                }
+            }
             if facts.can_moderate {
-                moderation.push(Row::new(Act::Verify, "Verify Member"));
-                moderation.push(Row::new(Act::Timeout, format!("Timeout {}", facts.name)).danger());
+                moderation.push(if facts.in_timeout {
+                    Row::new(
+                        Act::RemoveTimeout,
+                        format!("Remove Timeout From {}", facts.name),
+                    )
+                    .danger()
+                } else {
+                    Row::new(Act::Timeout, format!("Timeout {}", facts.name)).danger()
+                });
             }
             if facts.can_kick {
                 moderation.push(Row::new(Act::Kick, format!("Kick {}", facts.name)).danger());
@@ -714,6 +1045,168 @@ impl Root {
         self.pref_on("developer_mode", false)
     }
 
+    /// Module 291247: Verify Member needs a member who joined, a server that ever had onboarding, and the right to
+    /// manage them (moderate, kick and ban, or manage the server or roles). `Some(true)` when already verified.
+    fn verify_state(&self, guild: Id, user: Id, me: bool) -> Option<bool> {
+        let known = self.stores.guild(guild)?;
+        let member = self.stores.members.get(guild, user)?;
+        if me
+            || member.joined_at.is_none()
+            || !known
+                .features
+                .iter()
+                .any(|feature| feature == "GUILD_ONBOARDING_EVER_ENABLED")
+            || !self.outranks(guild, user)
+        {
+            return None;
+        }
+        let can = |bit| self.my_permission(guild, None, bit);
+        let allowed = (can(permissions::MODERATE_MEMBERS)
+            && can(permissions::KICK_MEMBERS)
+            && can(permissions::BAN_MEMBERS))
+            || can(permissions::MANAGE_GUILD)
+            || can(permissions::MANAGE_ROLES);
+        allowed.then_some(member.flags & BYPASSES_VERIFICATION != 0)
+    }
+
+    /// The member is in timeout now (`communication_disabled_until` in the future).
+    fn is_in_timeout(&self, guild: Id, user: Id) -> bool {
+        self.stores
+            .members
+            .get(guild, user)
+            .and_then(|member| member.timeout_until.as_deref())
+            .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+            .is_some_and(|until| until > chrono::Utc::now())
+    }
+
+    /// Whether our roles outrank everything the person holds, and they do not own the server: what
+    /// `canManageUser` asks (module 576705).
+    fn outranks(&self, guild: Id, user: Id) -> bool {
+        let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) else {
+            return false;
+        };
+        let Some(known) = self.stores.guild(guild) else {
+            return false;
+        };
+        if known.owner_id == Some(user) {
+            return false;
+        }
+        let theirs = self
+            .stores
+            .members
+            .get(guild, user)
+            .map(|member| member.roles.clone())
+            .unwrap_or_default();
+        theirs.iter().all(|role| {
+            *role == guild || permissions::role_is_higher(known, me, &known.my_roles, *role)
+        })
+    }
+
+    /// The Roles submenu (module 180798): with Manage Roles, every role below our highest (a role above is listed
+    /// only when the person holds it, and is disabled), checked when held; without it, just the roles they hold.
+    fn role_sub_rows(&self, guild: Id, user: Id) -> Vec<SubRow> {
+        let (Some(known), Some(member), Some(me)) = (
+            self.stores.guild(guild),
+            self.stores.members.get(guild, user),
+            self.stores.current_user.as_ref().map(|me| me.id),
+        ) else {
+            return Vec::new();
+        };
+        let manage = self.my_permission(guild, None, permissions::MANAGE_ROLES);
+        let mut roles: Vec<(i64, Id)> = known
+            .roles
+            .keys()
+            .copied()
+            .filter(|id| *id != guild)
+            .map(|id| (known.role_info.get(&id).map_or(0, |info| info.position), id))
+            .collect();
+        roles.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        roles
+            .into_iter()
+            .filter_map(|(_, id)| {
+                let info = known.role_info.get(&id).copied().unwrap_or_default();
+                let held = member.roles.contains(&id);
+                let locked =
+                    info.managed || !permissions::role_is_higher(known, me, &known.my_roles, id);
+                if manage && locked && !held {
+                    return None;
+                }
+                if !manage && !held {
+                    return None;
+                }
+                Some(SubRow {
+                    label: known.roles.get(&id).cloned().unwrap_or_default(),
+                    on: manage && held,
+                    disabled: manage && locked,
+                    plain: !manage,
+                    dot: Some(info.color),
+                    id,
+                })
+            })
+            .collect()
+    }
+
+    /// Module 252726: the voice channels a person can be moved to: not the one they are in, where we may move
+    /// members and they may connect.
+    fn move_targets(&self, guild: Id, user: Id) -> Vec<Id> {
+        let (Some(known), Some(state)) = (
+            self.stores.guild(guild),
+            self.stores
+                .voice_states
+                .get(&guild)
+                .and_then(|states| states.iter().find(|state| state.user_id == user)),
+        ) else {
+            return Vec::new();
+        };
+        let roles = self
+            .stores
+            .members
+            .get(guild, user)
+            .map(|member| member.roles.clone())
+            .unwrap_or_default();
+        let mut channels: Vec<&Channel> = known
+            .channels
+            .iter()
+            .filter(|channel| channel.kind == ChannelKind::Voice && channel.id != state.channel_id)
+            .filter(|channel| {
+                self.my_permission(guild, Some(channel), permissions::MOVE_MEMBERS)
+                    && permissions::member_channel_permissions(known, channel, user, &roles)
+                        & permissions::CONNECT
+                        != 0
+            })
+            .collect();
+        channels.sort_by_key(|channel| (channel.position, channel.id));
+        channels.into_iter().map(|channel| channel.id).collect()
+    }
+
+    /// Module 291247: the voice rows need the person in a voice channel of this server and the permission in that
+    /// channel; Disconnect also needs the person to be someone else.
+    fn server_voice_of(&self, guild: Id, user: Id, me: bool) -> Option<ServerVoice> {
+        let state = self
+            .stores
+            .voice_states
+            .get(&guild)?
+            .iter()
+            .find(|state| state.user_id == user)?;
+        let channel = self
+            .stores
+            .guild(guild)?
+            .channels
+            .iter()
+            .find(|channel| channel.id == state.channel_id)?;
+        Some(ServerVoice {
+            mute: state.mute,
+            deaf: state.deaf,
+            can_mute: self.my_permission(guild, Some(channel), permissions::MUTE_MEMBERS),
+            can_deafen: self.my_permission(guild, Some(channel), permissions::DEAFEN_MEMBERS),
+            can_disconnect: !me
+                && self.my_permission(guild, Some(channel), permissions::MOVE_MEMBERS),
+            can_move: !me
+                && self.my_permission(guild, Some(channel), permissions::MOVE_MEMBERS)
+                && !self.move_targets(guild, user).is_empty(),
+        })
+    }
+
     fn my_permission(&self, guild: Id, channel: Option<&Channel>, bit: u64) -> bool {
         let Some(me) = self.stores.me() else {
             return false;
@@ -761,6 +1254,71 @@ impl Root {
                 .get(&guild)
                 .map_or(1, |settings| settings.message_notifications),
         )
+    }
+
+    /// Harness: `context-user` opens the menu of the first other known person in the fixture server, `context-dm` the
+    /// one of the first direct message, at a fixed place.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_context(&mut self, kind: &str, cx: &mut Context<Self>) -> String {
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let target = match kind {
+            "user" => {
+                let Some(user) = self
+                    .stores
+                    .users
+                    .keys()
+                    .copied()
+                    .filter(|id| Some(*id) != me)
+                    .min()
+                else {
+                    return "no other person known".to_owned();
+                };
+                Target::User {
+                    user,
+                    guild: Some(self.guild.unwrap_or(1_568_692_564_637_524_109)),
+                }
+            }
+            "self" => {
+                let Some(user) = me else {
+                    return "no current user".to_owned();
+                };
+                self.open_context_menu(
+                    Target::User {
+                        user,
+                        guild: Some(self.guild.unwrap_or(1_568_692_564_637_524_109)),
+                    },
+                    gpui::point(px(980.), px(465.)),
+                    cx,
+                );
+                return "menu open for self".to_owned();
+            }
+            "dm" => {
+                let Some(channel) = self.stores.private_channels.first().map(|dm| dm.id) else {
+                    return "no direct message".to_owned();
+                };
+                Target::Dm(channel)
+            }
+            _ => return "usage: context-user | context-dm".to_owned(),
+        };
+        self.open_context_menu(target, gpui::point(px(520.), px(120.)), cx);
+        format!("menu open for {target:?}")
+    }
+
+    /// Harness: whether a submenu is open and how many rows it holds.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_context_sub_state(&self) -> String {
+        let Some(open) = self.context.open.as_ref() else {
+            return "no menu".to_owned();
+        };
+        match open.sub {
+            Some((act, row)) => format!(
+                "sub {act:?}: {} rows, row {:?}, submenu anchor {:?}",
+                self.context_sub_rows(act, open.target).len(),
+                row,
+                self.tip_anchors.borrow().get("submenu")
+            ),
+            None => "no sub open".to_owned(),
+        }
     }
 
     pub(super) fn open_context_menu(
@@ -906,7 +1464,7 @@ impl Root {
                     ignored: self.stores.is_ignored(user.id),
                     developer,
                     dm: Some(self.stores.is_unread(channel)),
-                    invite_servers: true,
+                    invite_servers: !self.invite_servers().is_empty(),
                     ..UserFacts::default()
                 };
                 user_items(&facts)
@@ -937,6 +1495,7 @@ impl Root {
                     ignored: self.stores.is_ignored(user),
                     can_nick: guild.is_some_and(|guild| {
                         self.my_permission(guild, None, permissions::MANAGE_NICKNAMES)
+                            && self.outranks(guild, user)
                     }),
                     can_moderate: guild.is_some_and(|guild| {
                         self.my_permission(guild, None, permissions::MODERATE_MEMBERS)
@@ -950,6 +1509,13 @@ impl Root {
                     developer,
                     dm: None,
                     invite_servers: false,
+                    server_voice: guild.and_then(|guild| self.server_voice_of(guild, user, me)),
+                    in_timeout: guild.is_some_and(|guild| self.is_in_timeout(guild, user))
+                        && guild.is_some_and(|guild| {
+                            self.my_permission(guild, None, permissions::MODERATE_MEMBERS)
+                        }),
+                    roles: guild.is_some_and(|guild| !self.role_sub_rows(guild, user).is_empty()),
+                    verify: guild.and_then(|guild| self.verify_state(guild, user, me)),
                     in_call: self
                         .others_in_call()
                         .is_some_and(|others| others.contains(&user)),
@@ -1276,6 +1842,109 @@ impl Root {
                     }
                 }
             }
+            // "Start a Call" of the DM row's menu (`dm-row-context.json`): a voice call that rings.
+            (Act::Call, Target::Dm(channel)) => {
+                self.select_home(Some(channel));
+                let active = self.stores.calls.is_call_active(channel, None);
+                self.start_call(channel, false, !active, cx);
+            }
+            // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
+            (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
+            // "Add Note": the note field of the full profile.
+            (Act::Note, Target::User { user, .. }) => self.open_full_profile(user, window, cx),
+            (Act::Note, Target::Dm(channel)) => {
+                if let Some(user) = self
+                    .stores
+                    .private_channels
+                    .iter()
+                    .find(|known| known.id == channel)
+                    .and_then(|known| known.recipients.first().copied())
+                {
+                    self.open_full_profile(user, window, cx);
+                }
+            }
+            (
+                Act::Verify,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => {
+                // Module 778858 `setMemberFlags`: the flags go back with the bit flipped.
+                let flags = self
+                    .stores
+                    .members
+                    .get(guild, user)
+                    .map_or(0, |member| member.flags);
+                let _ = self.requests.send(super::member_actions::member_patch(
+                    guild,
+                    user,
+                    "flags",
+                    json!(flags ^ BYPASSES_VERIFICATION),
+                ));
+            }
+            (
+                Act::ChangeNickname,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => self.open_nickname_dialog(guild, user, window, cx),
+            (
+                Act::RemoveTimeout,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => self.open_remove_timeout(guild, user, window, cx),
+            (Act::CreateEvent, Target::Guild(guild)) => {
+                self.select(guild, None);
+                self.open_guild_events(cx);
+                self.open_create_event(window, cx);
+            }
+            (
+                Act::Timeout | Act::Kick | Act::Ban,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => {
+                let kind = match act {
+                    Act::Timeout => super::member_actions::Kind::Timeout,
+                    Act::Kick => super::member_actions::Kind::Kick,
+                    _ => super::member_actions::Kind::Ban,
+                };
+                self.open_member_action(kind, guild, user, window, cx);
+            }
+            (
+                Act::ServerMute | Act::ServerDeafen | Act::Disconnect,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => {
+                let state = self
+                    .stores
+                    .voice_states
+                    .get(&guild)
+                    .and_then(|states| states.iter().find(|state| state.user_id == user))
+                    .cloned();
+                let request = match (act, state) {
+                    (Act::ServerMute, Some(state)) => {
+                        super::member_actions::member_patch(guild, user, "mute", json!(!state.mute))
+                    }
+                    (Act::ServerDeafen, Some(state)) => {
+                        super::member_actions::member_patch(guild, user, "deaf", json!(!state.deaf))
+                    }
+                    (_, _) => super::member_actions::member_patch(
+                        guild,
+                        user,
+                        "channel_id",
+                        serde_json::Value::Null,
+                    ),
+                };
+                let _ = self.requests.send(request);
+            }
             (Act::Mention, Target::User { user, .. }) => {
                 let text = format!(
                     "{}{} ",
@@ -1407,8 +2076,14 @@ impl Root {
             (Act::Paste, Target::Composer) => self
                 .composer
                 .update(cx, |composer, cx| composer.paste_clipboard(cx)),
-            // Calls are voice: never started from here. The rest have no page yet (see the report).
-            _ => {}
+            // Rows of a missing feature are drawn disabled (`Row::new`) and never reach here; any other pair is a row
+            // built for a target it has no handler for, which the debug assertion below reports.
+            (act, target) => {
+                debug_assert!(
+                    matches!(status(act), Status::Missing(_)),
+                    "context row {act:?} has no handler for {target:?}"
+                );
+            }
         }
     }
 
@@ -1447,12 +2122,58 @@ impl Root {
         }
     }
 
-    /// The rows of a submenu: mute durations, or notification levels.
-    fn context_sub_rows(&self, act: Act, target: Target) -> Vec<(String, bool)> {
+    /// The rows of a submenu: mute durations, notification levels, roles, voice channels or servers.
+    fn context_sub_rows(&self, act: Act, target: Target) -> Vec<SubRow> {
+        let plain = |label: &str, on: bool| SubRow {
+            label: label.to_owned(),
+            on,
+            ..SubRow::default()
+        };
         match act {
+            Act::Roles => match target {
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                } => self.role_sub_rows(guild, user),
+                _ => Vec::new(),
+            },
+            Act::MoveMember => match target {
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                } => self
+                    .move_targets(guild, user)
+                    .into_iter()
+                    .filter_map(|id| {
+                        let name = self
+                            .stores
+                            .guild(guild)?
+                            .channels
+                            .iter()
+                            .find(|channel| channel.id == id)?
+                            .name
+                            .clone();
+                        Some(SubRow {
+                            label: name,
+                            id,
+                            ..SubRow::default()
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Act::InviteToServer => self
+                .invite_servers()
+                .into_iter()
+                .map(|(id, name, _)| SubRow {
+                    label: name,
+                    id,
+                    ..SubRow::default()
+                })
+                .collect(),
             Act::Mute => MUTE_FOR
                 .iter()
-                .map(|(_, label)| ((*label).to_owned(), false))
+                .map(|(_, label)| plain(label, false))
                 .collect(),
             Act::Notifications => {
                 let channel = matches!(target, Target::Channel(_) | Target::Thread(_));
@@ -1470,12 +2191,12 @@ impl Root {
                 };
                 let mut rows = Vec::new();
                 if channel {
-                    rows.push(("Use Category Default".to_owned(), current == INHERIT));
+                    rows.push(plain("Use Category Default", current == INHERIT));
                 }
                 rows.extend(
                     LEVELS
                         .iter()
-                        .map(|(value, label)| ((*label).to_owned(), current == *value)),
+                        .map(|(value, label)| plain(label, current == *value)),
                 );
                 rows
             }
@@ -1483,7 +2204,95 @@ impl Root {
         }
     }
 
+    /// Servers we may create an invite in, with the channel to invite to (module 777933's invite list): a text
+    /// channel we can see, in a server where we hold Create Invite.
+    pub(super) fn invite_servers(&self) -> Vec<(Id, String, Id)> {
+        self.stores
+            .guilds
+            .iter()
+            .filter(|guild| self.my_permission(guild.id, None, permissions::CREATE_INSTANT_INVITE))
+            .filter_map(|guild| {
+                let channel = guild.channels.iter().find(|channel| {
+                    channel.kind == ChannelKind::Text
+                        && self.my_permission(
+                            guild.id,
+                            Some(channel),
+                            permissions::CREATE_INSTANT_INVITE,
+                        )
+                })?;
+                Some((guild.id, guild.name.clone(), channel.id))
+            })
+            .collect()
+    }
+
     fn run_context_sub(&mut self, act: Act, target: Target, index: usize, cx: &mut Context<Self>) {
+        let row = self.context_sub_rows(act, target).into_iter().nth(index);
+        match act {
+            Act::Roles => {
+                let (
+                    Some(row),
+                    Target::User {
+                        user,
+                        guild: Some(guild),
+                    },
+                ) = (row, target)
+                else {
+                    return;
+                };
+                if row.plain || row.disabled {
+                    return;
+                }
+                // Module 180798: the whole list goes back, with the role added or taken out.
+                let mut roles: Vec<Id> = self
+                    .stores
+                    .members
+                    .get(guild, user)
+                    .map(|member| member.roles.clone())
+                    .unwrap_or_default();
+                if row.on {
+                    roles.retain(|id| *id != row.id);
+                } else {
+                    roles.push(row.id);
+                }
+                let list: Vec<String> = roles.iter().map(ToString::to_string).collect();
+                let _ = self.requests.send(super::member_actions::member_patch(
+                    guild,
+                    user,
+                    "roles",
+                    json!(list),
+                ));
+                return;
+            }
+            Act::MoveMember => {
+                if let (
+                    Some(row),
+                    Target::User {
+                        user,
+                        guild: Some(guild),
+                    },
+                ) = (row, target)
+                {
+                    let _ = self.requests.send(super::member_actions::member_patch(
+                        guild,
+                        user,
+                        "channel_id",
+                        json!(row.id.to_string()),
+                    ));
+                }
+                return;
+            }
+            Act::InviteToServer => {
+                let Target::Dm(channel) = target else {
+                    return;
+                };
+                let (Some(row), Some(user)) = (row, self.dm_user(channel)) else {
+                    return;
+                };
+                self.send_server_invite(row.id, user);
+                return;
+            }
+            _ => {}
+        }
         match act {
             Act::Mute => {
                 let seconds = MUTE_FOR[index].0;
@@ -1615,28 +2424,86 @@ impl Root {
             let rows: Vec<(AnyElement, f32)> = labels
                 .into_iter()
                 .enumerate()
-                .map(|(index, (label, on))| {
-                    (
-                        self.submenu_item(
+                .map(|(index, sub)| {
+                    let SubRow {
+                        label,
+                        on,
+                        disabled,
+                        plain,
+                        dot,
+                        ..
+                    } = sub;
+                    let role = dot.is_some();
+                    let height = if role { 36. } else { 34. };
+                    let leading = match dot {
+                        Some(rgb) => Some(
+                            div()
+                                .size(px(20.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .size(px(12.))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(if rgb == 0 { 0x99_aab5 } else { rgb })),
+                                )
+                                .into_any_element(),
+                        ),
+                        None => on
+                            .then(|| icon("checkbox_check", 16., "--text-link").into_any_element()),
+                    };
+                    let mut item = self
+                        .submenu_item(
                             SharedString::from(format!("context-sub-{index}")),
-                            on.then(|| {
-                                icon("checkbox_check", 16., "--text-link").into_any_element()
-                            }),
+                            leading,
                             label,
-                            34.,
+                            height,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .opacity(if disabled { 0.5 } else { 1. });
+                    if role {
+                        // The role's check box (module 180798): brand and checked, or a faint empty square.
+                        item = item.child(div().flex_1()).child(
+                            div()
+                                .size(px(20.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .border_color(if on {
+                                    color("--checkbox-border-selected-default")
+                                } else {
+                                    color("--checkbox-border-default")
+                                })
+                                .bg(if on {
+                                    color("--checkbox-background-selected-default")
+                                } else {
+                                    color("--checkbox-background-default")
+                                })
+                                .when(on, |d| d.child(icon("checkbox_check", 16., "--white"))),
+                        );
+                    }
+                    if !plain && !disabled {
+                        item = item.on_click(cx.listener(move |this, _, _, cx| {
                             this.run_context_sub(act, target, index, cx);
                             this.close_context_menu(cx);
-                        }))
-                        .into_any_element(),
-                        34.,
-                    )
+                        }));
+                    }
+                    (item.into_any_element(), height)
                 })
                 .collect();
             Some(self.submenu_frame(rows, row, window))
         });
-        Some(div().child(menu).children(sub).into_any_element())
+        Some(
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .child(menu)
+                .children(sub)
+                .into_any_element(),
+        )
     }
 
     /// User Volume: the name, the percentage and a track a click sets (0 to 200%).
@@ -1893,6 +2760,31 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+
+    use super::{Act, Status, status};
+
+    #[test]
+    fn act_list_is_complete() {
+        let mut seen = vec![false; Act::ALL.len()];
+        for act in Act::ALL {
+            let slot = &mut seen[act.ordinal()];
+            assert!(!*slot, "{act:?} listed twice");
+            *slot = true;
+        }
+        assert!(seen.iter().all(|seen| *seen));
+    }
+
+    #[test]
+    fn missing_rows_are_disabled() {
+        for act in Act::ALL {
+            if let Status::Missing(_) = status(act) {
+                assert!(
+                    super::Row::new(act, "x").disabled,
+                    "{act:?} would look alive"
+                );
+            }
+        }
+    }
     use super::*;
 
     fn labels(entries: &[Entry]) -> Vec<String> {

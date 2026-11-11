@@ -18,6 +18,10 @@ pub struct Member {
     pub pending: bool,
     /// The member's own `display_name_styles`, which wins over the user's (609425).
     pub display_name_styles: Option<crate::display_name_styles::DisplayNameStyles>,
+    /// `communication_disabled_until`: when the member's timeout ends (ISO 8601), if one is set.
+    pub timeout_until: Option<String>,
+    /// Member flags (`flags`); bit 2 is `BYPASSES_VERIFICATION`, which Verify Member sets (module 340837).
+    pub flags: u64,
 }
 
 impl Member {
@@ -42,6 +46,8 @@ impl Member {
             display_name_styles: crate::display_name_styles::DisplayNameStyles::from_value(
                 &member["display_name_styles"],
             ),
+            timeout_until: text(&member["communication_disabled_until"]),
+            flags: member["flags"].as_u64().unwrap_or(0),
         })
     }
 

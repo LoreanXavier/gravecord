@@ -371,6 +371,8 @@ mod tests {
             joined_at: None,
             pending: false,
             display_name_styles: None,
+            timeout_until: None,
+            flags: 0,
         }
     }
 

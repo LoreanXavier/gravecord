@@ -196,6 +196,8 @@ impl Root {
                 joined_at: None,
                 pending: false,
                 display_name_styles: None,
+                timeout_until: None,
+                flags: 0,
             },
         );
     }
@@ -212,6 +214,7 @@ impl Root {
                     color: 0x1abc9c,
                     mentionable: true,
                     guild_connection: false,
+                    managed: false,
                 },
             );
         }
@@ -241,6 +244,8 @@ impl Root {
                     joined_at: None,
                     pending: false,
                     display_name_styles: None,
+                    timeout_until: None,
+                    flags: 0,
                 },
             );
         }

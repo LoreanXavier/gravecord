@@ -42,6 +42,22 @@ pub(super) enum Action {
     MarkUnread,
     CopyLink,
     Speak,
+    /// "End Poll Now" (module 761304): the author of a poll that is still open.
+    EndPoll,
+    /// The text selected in a message (module 373963 and 826308): copy it, or search it.
+    CopySelection,
+    SearchGoogle,
+    /// The link or picture under the pointer (module 777933): copy it, copy the address inside a mail or phone
+    /// link, send a text message, open it.
+    CopyUrl,
+    CopyContact,
+    SendSms,
+    OpenUrl,
+    /// A picture of the message (module 115184).
+    CopyImage,
+    SaveImage,
+    /// "Report Message" (module 847342): other people's messages, a danger row at the bottom.
+    Report,
     Delete,
 }
 
@@ -66,6 +82,77 @@ pub(super) struct SavedState {
     pub pinned: bool,
     /// Has reactions: View Reactions follows Add Reaction (`message-reactions` in the capture).
     pub reacted: bool,
+    /// A poll of this account that has not closed: "End Poll Now" follows Speak Message.
+    pub poll_end: bool,
+    /// Text is selected in a message: Copy and Search with Google open the menu.
+    pub selection: bool,
+    /// What the pointer was on when the menu opened.
+    pub link: LinkKind,
+    /// The pointer was on a picture the app can copy and save.
+    pub image: bool,
+}
+
+/// How the link group of a message menu reads (module 777933).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum LinkKind {
+    #[default]
+    None,
+    Link,
+    /// A picture on Discord's CDN.
+    ImageLink,
+    /// A video, sound or animation by its extension.
+    MediaLink,
+    Mail,
+    Tel,
+}
+
+impl LinkKind {
+    /// `b`, `k` and `_` of module 777933.
+    pub(super) fn of(url: &str) -> Self {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("mailto:") {
+            return Self::Mail;
+        }
+        if lower.starts_with("tel:") || lower.starts_with("sms:") {
+            return Self::Tel;
+        }
+        let path = lower.split(['?', '#']).next().unwrap_or("");
+        let host_cdn = path.contains("//cdn.discordapp.com/");
+        let ends = |list: &[&str]| list.iter().any(|ext| path.ends_with(ext));
+        let picture = [".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".svg"];
+        if host_cdn && ends(&picture) {
+            return Self::ImageLink;
+        }
+        let media = [
+            ".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".svg", ".gif", ".mp4", ".webm",
+            ".mov",
+        ];
+        if ends(&media) {
+            return Self::MediaLink;
+        }
+        Self::Link
+    }
+}
+
+/// What a right press landed on, recorded by the element under the pointer before the message's own handler runs.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Hit {
+    Link {
+        url: String,
+        label: String,
+    },
+    /// A picture of the message: its address, and the key its pixels are cached under.
+    Media {
+        url: String,
+        key: String,
+    },
+}
+
+/// What the menu that is open (or was) was opened on.
+#[derive(Clone, Debug, Default)]
+pub(super) struct MenuExtra {
+    pub hit: Option<Hit>,
+    pub selection: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,12 +178,30 @@ pub(super) fn message_items(own: bool) -> Vec<Item> {
 
 /// With the saved state: Remove Bookmark when bookmarked, no bookmark entry and Edit Reminder for a reminder.
 pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
-    let mut items = vec![Item::Entry(
+    let mut items = Vec::new();
+    if saved.selection {
+        // Modules 373963 and 826308: each of the two is a group of its own, ahead of the rest.
+        items.push(Item::Entry(
+            "Copy",
+            "menu_copy_text",
+            Action::CopySelection,
+            false,
+        ));
+        items.push(Item::Separator);
+        items.push(Item::Entry(
+            "Search with Google",
+            "search",
+            Action::SearchGoogle,
+            false,
+        ));
+        items.push(Item::Separator);
+    }
+    items.push(Item::Entry(
         "Add Reaction",
         "menu_add_reaction",
         Action::AddReaction,
         true,
-    )];
+    ));
     if saved.reacted {
         items.push(Item::Entry(
             "View Reactions",
@@ -175,6 +280,18 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
+    if saved.poll_end {
+        items.push(Item::Entry(
+            "End Poll Now", // grdwwt
+            "menu_end_poll",
+            Action::EndPoll,
+            false,
+        ));
+    }
+    if !own {
+        items.push(Item::Separator);
+        items.push(Item::Danger("Report Message", "menu_flag", Action::Report));
+    }
     if own {
         items.push(Item::Separator);
         items.push(Item::Danger(
@@ -182,6 +299,66 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             "menu_delete_message",
             Action::Delete,
         ));
+    }
+    // Module 761304 puts the picture rows (115184) and the link rows (777933) in a group of their own.
+    let mut media = Vec::new();
+    if saved.image {
+        media.push(Item::Entry(
+            "Copy Image",
+            "clips_image",
+            Action::CopyImage,
+            false,
+        ));
+        media.push(Item::Entry(
+            "Save Image",
+            "clips_image",
+            Action::SaveImage,
+            false,
+        ));
+    }
+    let (copy, open) = match saved.link {
+        LinkKind::None => (None, None),
+        LinkKind::ImageLink => (Some("Copy Image Link"), Some("Open Image Link")),
+        LinkKind::MediaLink => (Some("Copy Media Link"), Some("Open Media Link")),
+        _ => (Some("Copy Link"), Some("Open Link")),
+    };
+    if let Some(copy) = copy {
+        media.push(Item::Entry(
+            copy,
+            "menu_copy_message_link",
+            Action::CopyUrl,
+            false,
+        ));
+        match saved.link {
+            LinkKind::Mail => media.push(Item::Entry(
+                "Copy Email Address",
+                "menu_copy_message_link",
+                Action::CopyContact,
+                false,
+            )),
+            LinkKind::Tel => {
+                media.push(Item::Entry(
+                    "Copy Phone Number",
+                    "menu_copy_message_link",
+                    Action::CopyContact,
+                    false,
+                ));
+                media.push(Item::Entry(
+                    "Send Text Message",
+                    "menu_reply",
+                    Action::SendSms,
+                    false,
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(open) = open {
+        media.push(Item::Entry(open, "open_external", Action::OpenUrl, false));
+    }
+    if !media.is_empty() {
+        items.push(Item::Separator);
+        items.extend(media);
     }
     items
 }
@@ -220,6 +397,13 @@ impl Root {
             empty,
             pinned,
             reacted,
+            poll_end: found.is_some_and(|known| self.poll_endable(known)),
+            selection: !self.menu_extra.selection.is_empty(),
+            link: match &self.menu_extra.hit {
+                Some(Hit::Link { url, .. } | Hit::Media { url, .. }) => LinkKind::of(url),
+                None => LinkKind::None,
+            },
+            image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
         }
     }
 
@@ -832,6 +1016,18 @@ impl Root {
         own: bool,
         cx: &mut Context<Self>,
     ) {
+        // The element under a right press recorded what it was before this handler ran; only for the same press.
+        let hit = self.menu_hit.take().and_then(|(at, hit)| {
+            matches!(anchor, Anchor::Pointer(pointer) if pointer == at).then_some(hit)
+        });
+        self.menu_extra = MenuExtra {
+            hit,
+            selection: if matches!(anchor, Anchor::Pointer(_)) {
+                self.selected_text()
+            } else {
+                String::new()
+            },
+        };
         self.menu = Some(OpenMenu {
             anchor,
             message,
@@ -895,6 +1091,7 @@ mod tests {
         let items = labels(false);
         assert!(!items.contains(&"Edit Message"));
         assert!(!items.contains(&"Delete Message"));
+        assert_eq!(items.last(), Some(&"Report Message"));
     }
 
     #[test]

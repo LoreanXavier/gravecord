@@ -320,6 +320,9 @@ fn shorten(piece: &Piece, whole: &ShapedLine, width: Pixels, window: &Window) ->
 type PieceClick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// Called with the index of the piece a click landed on and where that piece is drawn, in window coordinates.
+/// A right press on a piece, with where the pointer is.
+type PieceContext = Rc<dyn Fn(usize, Point<Pixels>, &mut Window, &mut App)>;
+
 type PieceClickAt = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 
 /// Called when the pointer moves onto another piece (with where it is drawn) or leaves them all.
@@ -334,6 +337,7 @@ pub struct Inline {
     on_piece_click: Option<PieceClick>,
     on_piece_click_at: Option<PieceClickAt>,
     on_piece_hover: Option<PieceHover>,
+    on_piece_context: Option<PieceContext>,
 }
 
 #[derive(Clone)]
@@ -353,6 +357,7 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         on_piece_click: None,
         on_piece_click_at: None,
         on_piece_hover: None,
+        on_piece_context: None,
     }
 }
 
@@ -381,6 +386,16 @@ impl Inline {
         handler: impl Fn(Option<(usize, Bounds<Pixels>)>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_piece_hover = Some(Rc::new(handler));
+        self
+    }
+
+    /// Reports a right press on a piece with the pointer position (for the menu of a link). It does not stop the
+    /// event, so the surrounding message menu still opens, and can read what this recorded.
+    pub fn on_piece_context(
+        mut self,
+        handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_piece_context = Some(Rc::new(handler));
         self
     }
 
@@ -511,6 +526,21 @@ impl Inline {
                         window,
                         cx,
                     );
+                }
+            });
+        }
+        if let Some(handler) = self.on_piece_context.clone() {
+            let laid = self.laid.clone();
+            let line_height = self.line_height;
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Right
+                    && bounds.contains(&event.position)
+                    && let Some(piece) = laid
+                        .borrow()
+                        .piece_at(event.position - bounds.origin, line_height)
+                {
+                    handler(piece, event.position, window, cx);
                 }
             });
         }
