@@ -2,6 +2,7 @@
 name = "dc-setup"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 # The Windows installer: one native Win32 window, no runtime beyond the system's. The payload (gravecord.exe and
 # app/assets) is appended to the end of the built exe by `cargo xtask package`, so the stub never needs a rebuild.

@@ -2,6 +2,7 @@
 name = "dc-rpc"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 # The local RPC server games talk to (`\.\pipe\discord-ipc-N`): framing, handshake, `SET_ACTIVITY` and the removal
 # of a client's activity when its pipe closes, after the official client's RPC server (modules 998921, 223769,

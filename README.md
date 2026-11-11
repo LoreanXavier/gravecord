@@ -151,6 +151,12 @@ comparing builds with captures of it, identifying discrepancies, testing real ca
 
 Noise suppression uses the DeepFilterNet machine-learning model when enabled.
 
+## License
+
+gravecord is free software under the GNU General Public License, version 3 or (at your option) any later version. See
+[LICENSE](LICENSE). Anyone may use, change and share it; a changed version that is shared must stay open under the
+same terms.
+
 ## Support
 
 gravecord is built in spare time. If you want to see it finished, this is the way to help:

@@ -2,6 +2,7 @@
 name = "dc-media"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 # Camera and screen capture, H.264 encoding and decoding, and system-audio capture. No network and no Discord code.
 # Adapted from Serein's discord-voice and platform crates (MIT OR Apache-2.0); see DECISIONS.md. The OS calls live

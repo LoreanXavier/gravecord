@@ -2,6 +2,7 @@
 name = "dc-clips"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 # Clips engine, no UI and no network: the rolling buffer of the encoded stream, the MP4 writer and reader, the clip
 # metadata (schema version 6) and the directory loader. The OS-facing capture stays in dc-media and dc-voice.
