@@ -314,6 +314,29 @@ impl Extra {
     }
 }
 
+/// What the `NO_AUDIO_INPUT_DETECTED` notice (822209 `q`) looks at.
+struct SilenceInputs {
+    connected: bool,
+    warning_on: bool,
+    push_to_talk: bool,
+    input_detected: Option<bool>,
+    heard_this_connection: bool,
+    muted_or_deaf: bool,
+    dismissed_here: bool,
+}
+
+/// True when the notice shows: connected, warning on, voice activity mode, the microphone silent for good, not heard
+/// once since the connection began, not muted or deafened, and not dismissed for this connection and microphone.
+fn silence_notice_decision(inputs: &SilenceInputs) -> bool {
+    inputs.connected
+        && inputs.warning_on
+        && !inputs.push_to_talk
+        && inputs.input_detected == Some(false)
+        && !inputs.heard_this_connection
+        && !inputs.muted_or_deaf
+        && !inputs.dismissed_here
+}
+
 /// The setting keys this module owns and shows as switches or the slider.
 pub(super) fn owns(key: &str) -> bool {
     matches!(
@@ -520,13 +543,15 @@ impl Root {
     fn silence_notice_shown(&self) -> bool {
         let extra = &self.voice.extra;
         let prefs = dc_voice::prefs();
-        self.call.as_ref().is_some_and(|call| call.connected)
-            && extra.silence_warning
-            && !self.voice.stored.effective().push_to_talk
-            && prefs.input_detected() == Some(false)
-            && !prefs.input_detected_this_connection()
-            && !(self.self_mute || self.self_deaf)
-            && extra.dismissed.as_ref() != Some(&extra.context())
+        silence_notice_decision(&SilenceInputs {
+            connected: self.call.as_ref().is_some_and(|call| call.connected),
+            warning_on: extra.silence_warning,
+            push_to_talk: self.voice.stored.effective().push_to_talk,
+            input_detected: prefs.input_detected(),
+            heard_this_connection: prefs.input_detected_this_connection(),
+            muted_or_deaf: self.self_mute || self.self_deaf,
+            dismissed_here: extra.dismissed.as_ref() == Some(&extra.context()),
+        })
     }
 
     /// The danger notice (`ut`): the sentence, "Error: 3002" opening the article, "Visit Settings", and the close
@@ -1353,6 +1378,37 @@ impl super::VoiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn silent_call() -> SilenceInputs {
+        SilenceInputs {
+            connected: true,
+            warning_on: true,
+            push_to_talk: false,
+            input_detected: Some(false),
+            heard_this_connection: false,
+            muted_or_deaf: false,
+            dismissed_here: false,
+        }
+    }
+
+    #[test]
+    fn the_silence_notice_shows_only_for_a_silent_connected_call_in_voice_activity() {
+        assert!(silence_notice_decision(&silent_call()));
+        for change in [
+            |i: &mut SilenceInputs| i.connected = false,
+            |i: &mut SilenceInputs| i.warning_on = false,
+            |i: &mut SilenceInputs| i.push_to_talk = true,
+            |i: &mut SilenceInputs| i.input_detected = Some(true),
+            |i: &mut SilenceInputs| i.input_detected = None,
+            |i: &mut SilenceInputs| i.heard_this_connection = true,
+            |i: &mut SilenceInputs| i.muted_or_deaf = true,
+            |i: &mut SilenceInputs| i.dismissed_here = true,
+        ] {
+            let mut inputs = silent_call();
+            change(&mut inputs);
+            assert!(!silence_notice_decision(&inputs));
+        }
+    }
 
     #[test]
     fn the_upload_is_good_only_when_every_part_was_stored() {

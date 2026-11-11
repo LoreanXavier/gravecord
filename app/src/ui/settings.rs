@@ -4,9 +4,11 @@
 
 mod account_dialogs;
 mod account_panels;
+mod mfa;
 pub(in crate::ui) use account_dialogs::FORM_KEY as ACCOUNT_FORM_KEY;
 pub(in crate::ui) use account_dialogs::USERNAME_KEY as ACCOUNT_USERNAME_KEY;
 pub(in crate::ui) use account_panels::LOGOUT_KEY as SESSIONS_LOGOUT_KEY;
+pub(in crate::ui) use mfa::{CREDENTIALS_KEY as MFA_CREDENTIALS_KEY, MFA_KEY};
 pub(in crate::ui) use streamer::HIDDEN_LINK as HIDDEN_INVITE_LINK;
 mod actions;
 mod appearance;
@@ -16,6 +18,7 @@ mod clips;
 mod connections;
 mod content_filters;
 mod controls;
+mod custom_theme;
 mod gift_inventory_page;
 mod keybinds;
 mod languages;
@@ -1438,6 +1441,7 @@ impl Root {
                         "account-mfa",
                         cx.listener(|this, _, _, cx| {
                             this.settings_extra.panel = Some(account_panels::Panel::Mfa);
+                            let _ = this.requests.send(mfa::credentials());
                             cx.notify();
                         }),
                     ),

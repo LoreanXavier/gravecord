@@ -7,6 +7,7 @@
 //! account write (`net.rs`), so a test script fills the fields with placeholder text and stops at the answer the
 //! refusal gives.
 
+use super::mfa;
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::ui::{Root, color, editor_style, icon, modal};
@@ -43,6 +44,17 @@ pub(in crate::ui) enum Step {
     PhoneManage,
     PhoneRemove,
     Remove,
+    /// Module 333737: the secret, its QR code and the field for the first code.
+    MfaEnable,
+    /// `bn`: the confirmation before the authenticator app goes.
+    MfaRemove,
+    /// Module 662758 for `disableSMS`.
+    MfaSmsPassword,
+    /// Module 662758 for `sendMFABackupCodesVerificationKeyEmail`, then module 518142 for the emailed key.
+    MfaCodesPassword,
+    MfaCodesKey,
+    /// Module 549404: the codes of a new authenticator app.
+    MfaCodes,
 }
 
 /// A request in the shape the official client sends it.
@@ -54,6 +66,16 @@ pub(in crate::ui) struct Call {
 }
 
 impl Call {
+    /// The same request under another answer key.
+    pub(in crate::ui) fn request_in(&self, key: &str) -> Request {
+        Request::Rest {
+            key: Some(key.to_owned()),
+            method: self.method.parse().unwrap_or(reqwest::Method::POST),
+            route: self.route.to_owned(),
+            body: self.body.clone(),
+        }
+    }
+
     fn request(&self) -> Request {
         Request::Rest {
             key: Some(FORM_KEY.to_owned()),
@@ -279,6 +301,7 @@ pub(in crate::ui) struct Form {
     /// The debounce of the username check, and the name the request in flight asked about.
     check_wait: Option<gpui::Task<()>>,
     check_asked: String,
+    mfa: mfa::Draft,
 }
 
 /// The reasons of module 162282 in `FL` order, with the strings `naBTFO`, `LQ0RUP`, `oOqQjw`, `p38n1b`.
@@ -361,6 +384,7 @@ impl Root {
             focus_pending: false,
             check_wait: None,
             check_asked: String::new(),
+            mfa: mfa::Draft::default(),
         };
         let verified = self.stores.account.verified && self.stores.account.email.is_some();
         let has_phone = self.stores.account.phone.is_some();
@@ -370,6 +394,10 @@ impl Root {
             "phone" if has_phone => Step::PhoneManage,
             "phone" => Step::PhoneNumber,
             "password" => Step::Password,
+            "mfa-enable" => Step::MfaEnable,
+            "mfa-remove" => Step::MfaRemove,
+            "mfa-sms-remove" => Step::MfaSmsPassword,
+            "mfa-codes" => Step::MfaCodesPassword,
             "disable" | "delete" => {
                 form.delete = kind == "delete";
                 // `b3`: an owner of servers is told to transfer them first.
@@ -450,6 +478,26 @@ impl Root {
             Step::PhonePassword | Step::PhoneRemove | Step::Remove => {
                 fields.push(self.account_field("password", "Password", true, cx));
             }
+            Step::MfaSmsPassword | Step::MfaCodesPassword => {
+                // `CIGa+7`.
+                fields.push(self.account_field("password", "Password", true, cx));
+            }
+            Step::MfaEnable => {
+                // `HZPBOd` is the hidden label, `000 000` the placeholder, `maxLength: 7`.
+                let field = self.account_field("code", "", false, cx);
+                field
+                    .editor
+                    .update(cx, |e, _| e.set_placeholder("000 000".to_owned()));
+                fields.push(field);
+                if let Some(form) = self.settings_extra.form.as_mut() {
+                    form.mfa.secret = mfa::new_secret();
+                }
+            }
+            Step::MfaCodesKey => {
+                // `TjGb4Q`, `maxLength: 8`.
+                fields.push(self.account_field("code", "Verification key", false, cx));
+            }
+            Step::MfaRemove | Step::MfaCodes => {}
             Step::EmailSend
             | Step::EmailReason
             | Step::EmailScam
@@ -620,7 +668,39 @@ impl Root {
                 }
                 remove_call(&text("password"), form.delete)
             }
-            Step::EmailReason | Step::EmailScam | Step::EmailDone | Step::PhoneManage => return,
+            Step::MfaEnable => {
+                let code: String = text("code").chars().filter(char::is_ascii_digit).collect();
+                if code.is_empty() {
+                    return;
+                }
+                mfa::totp_enable_call(&code, &form.mfa.secret)
+            }
+            Step::MfaRemove => mfa::totp_disable_call(),
+            Step::MfaSmsPassword => {
+                if text("password").is_empty() {
+                    return;
+                }
+                mfa::sms_disable_call(&text("password"))
+            }
+            Step::MfaCodesPassword => {
+                if text("password").is_empty() {
+                    return;
+                }
+                form.mfa.password = text("password");
+                mfa::backup_key_call(&form.mfa.password)
+            }
+            Step::MfaCodesKey => {
+                if text("code").trim().is_empty() {
+                    return;
+                }
+                form.mfa.key = text("code").trim().to_owned();
+                mfa::backup_codes_call(&form.mfa.key, &form.mfa.view_nonce, false)
+            }
+            Step::EmailReason
+            | Step::EmailScam
+            | Step::EmailDone
+            | Step::PhoneManage
+            | Step::MfaCodes => return,
         };
         let _ = user;
         form.working = true;
@@ -677,11 +757,17 @@ impl Root {
                 && form.fields.iter().all(|f| f.error.is_none())
             {
                 match step {
-                    Step::PhoneCode | Step::PhoneNumber | Step::EmailCode => {
-                        let name = if step == Step::PhoneNumber {
-                            "phone"
-                        } else {
-                            "code"
+                    Step::PhoneCode
+                    | Step::PhoneNumber
+                    | Step::EmailCode
+                    | Step::MfaEnable
+                    | Step::MfaCodesKey
+                    | Step::MfaSmsPassword
+                    | Step::MfaCodesPassword => {
+                        let name = match step {
+                            Step::PhoneNumber => "phone",
+                            Step::MfaSmsPassword | Step::MfaCodesPassword => "password",
+                            _ => "code",
                         };
                         form.set_error(name, Some(message.to_owned()));
                     }
@@ -737,7 +823,50 @@ impl Root {
                 self.settings_extra.form = None;
                 cx.emit(crate::ui::logout::RootEvent::LogOut);
             }
-            Step::EmailReason | Step::EmailScam | Step::EmailDone | Step::PhoneManage => {}
+            // `MFA_ENABLE_SUCCESS`: the account has the authenticator app and its first backup codes.
+            Step::MfaEnable => {
+                self.stores.account.mfa_enabled = true;
+                form.mfa.codes = mfa::codes_of(answer);
+                let key = String::new();
+                let mut stored = answer.clone();
+                stored["key"] = json!(key);
+                self.fetched.insert(mfa::CODES_KEY.to_owned(), stored);
+                next = Some(Step::MfaCodes);
+            }
+            Step::MfaRemove => {
+                self.stores.account.mfa_enabled = false;
+                self.fetched.remove(mfa::CODES_KEY);
+                self.settings_extra.form = None;
+            }
+            Step::MfaSmsPassword => {
+                if let Some(user) = self.stores.current_user.as_mut() {
+                    user.flags &= !mfa::SMS_FLAG;
+                }
+                self.settings_extra.form = None;
+            }
+            Step::MfaCodesPassword => {
+                form.mfa.set_nonces(answer);
+                next = Some(Step::MfaCodesKey);
+            }
+            Step::MfaCodesKey => {
+                if answer["backup_codes"].is_array() {
+                    // `MFA_VIEW_BACKUP_CODES`: the codes and the key that asked for them stay for the panel.
+                    let mut stored = answer.clone();
+                    stored["key"] = json!(form.mfa.key);
+                    stored["regenerate_nonce"] = json!(form.mfa.regenerate_nonce);
+                    self.fetched.insert(mfa::CODES_KEY.to_owned(), stored);
+                    self.settings_extra.form = None;
+                } else {
+                    // The answer of "Resend it": a new key with new nonces.
+                    form.mfa.set_nonces(answer);
+                    form.mfa.resent = true;
+                }
+            }
+            Step::EmailReason
+            | Step::EmailScam
+            | Step::EmailDone
+            | Step::PhoneManage
+            | Step::MfaCodes => {}
         }
         if let Some(step) = next {
             self.account_form_step(step, cx);
@@ -980,11 +1109,78 @@ impl Root {
                         ),
                     ],
                 ),
+                // Module 333737: the three steps, the last with the code field and its Activate button.
+                Step::MfaEnable => (
+                    "Enable Authenticator App",
+                    Some("Make your account safer in 3 easy steps:".to_owned()),
+                    vec![self.mfa_enable_body(form, cx)],
+                    Vec::new(),
+                ),
+                // `bn`: `D+aE7g` over `EA4ZEk`, a critical `Remove`.
+                Step::MfaRemove => (
+                    "Remove Authenticator App",
+                    // `xlA7Tl` or `EA4ZEk` by the security keys of the account (module 705147).
+                    Some(
+                        mfa::remove_text(
+                            self.fetched
+                                .get(mfa::CREDENTIALS_KEY)
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len),
+                        )
+                        .to_owned(),
+                    ),
+                    Vec::new(),
+                    vec![
+                        cancel("account-cancel"),
+                        primary("account-ok", "Remove", busy(modal::Tone::Critical)),
+                    ],
+                ),
+                // `KLWnit` over `W0/Duf` in the warning notice of module 662758.
+                Step::MfaSmsPassword => (
+                    "Remove SMS Authentication",
+                    None,
+                    vec![self.warning_notice(
+                        "This removes the ability to log in with an authentication code through SMS. Are you sure you want to remove this?",
+                    )],
+                    vec![cancel("account-cancel"), primary("account-ok", "Confirm", busy(modal::Tone::Primary))],
+                ),
+                Step::MfaCodesPassword => (
+                    "Enter Your Password",
+                    None,
+                    Vec::new(),
+                    vec![cancel("account-cancel"), primary("account-ok", "Next", busy(modal::Tone::Primary))],
+                ),
+                // Module 518142.
+                Step::MfaCodesKey => (
+                    "Enter Verification Key",
+                    None,
+                    vec![text(
+                        "As an added security measure, please enter the key we just sent to your email address. You should see it in a minute or two.",
+                        false,
+                    )
+                    .into_any_element()],
+                    vec![
+                        cancel("account-cancel"),
+                        primary("account-ok", "Submit", busy(modal::Tone::Primary)),
+                    ],
+                ),
+                // Module 549404 `renderTotp`.
+                Step::MfaCodes => (
+                    "2FA is activated! \u{1f389}",
+                    Some("Here is something you should do!".to_owned()),
+                    vec![self.mfa_codes_body(form, cx)],
+                    Vec::new(),
+                ),
             };
         // Fields: a column, or the username and its tag in one row.
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut inline: Vec<AnyElement> = Vec::new();
-        for (index, field) in form.fields.iter().enumerate() {
+        for (index, field) in form
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|_| form.step != Step::MfaEnable)
+        {
             let element = self.account_field_element(field, index, cx);
             if field.width.is_some() && matches!(form.step, Step::Username | Step::PhoneNumber) {
                 inline.push(element);
@@ -1018,6 +1214,37 @@ impl Root {
                     .line_height(px(16.))
                     .text_color(color("--text-feedback-critical"))
                     .child(notice.clone())
+                    .into_any_element(),
+            );
+        }
+        if form.step == Step::MfaCodesKey {
+            if form.mfa.resent {
+                // `j4qu8n`.
+                rows.push(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-feedback-positive"))
+                        .child("Verification email resent, please check your email.")
+                        .into_any_element(),
+                );
+            }
+            rows.push(
+                div()
+                    .id("mfa-resend-key")
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-link"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(form) = this.settings_extra.form.as_ref() {
+                            let _ = this.requests.send(
+                                mfa::backup_key_call(&form.mfa.password).request_in(FORM_KEY),
+                            );
+                        }
+                        cx.notify();
+                    }))
+                    .child("Don\u{2019}t see an email? Resend it.")
                     .into_any_element(),
             );
         }
@@ -1055,13 +1282,62 @@ impl Root {
                 .children(body)
                 .into_any_element()
         });
+        // Module 549404 `handleCloseModal`: until the codes were downloaded the close button asks first.
+        if form.step == Step::MfaCodes && form.mfa.skip_ask {
+            let back = |this: &mut Root, _: &mut Window, _: &mut Context<Root>| {
+                if let Some(form) = this.settings_extra.form.as_mut() {
+                    form.mfa.skip_ask = false;
+                }
+            };
+            return Some(modal::render(
+                modal::Spec {
+                    id: "settings-mfa-skip",
+                    title: SharedString::from("Continue without Backup"),
+                    subtitle: None,
+                    body: Some(text(mfa::SKIP_BACKUP_TEXT, false).into_any_element()),
+                    buttons: vec![
+                        modal::button("mfa-skip-cancel", "Cancel", modal::Tone::Secondary, back),
+                        modal::button(
+                            "mfa-skip-ok",
+                            "I\u{2019}m sure",
+                            modal::Tone::Critical,
+                            |this, _, _| {
+                                // `MFA_SEEN_BACKUP_CODE_PROMPT`, then the dialog closes.
+                                mfa::mark_prompt_seen();
+                                this.settings_extra.form = None;
+                            },
+                        ),
+                    ],
+                    close: Box::new(back),
+                },
+                cx,
+            ));
+        }
+        let subtitle_element = if form.step == Step::MfaCodes {
+            // `/Nhi8R`: "Here is something you <b>should do</b>!".
+            let text = "Here is something you should do!";
+            let start = "Here is something you ".len();
+            Some(
+                gpui::StyledText::new(text)
+                    .with_highlights([(
+                        start..start + "should do".len(),
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight(600.)),
+                            ..Default::default()
+                        },
+                    )])
+                    .into_any_element(),
+            )
+        } else {
+            subtitle.map(|s| div().child(s).into_any_element())
+        };
         let spec = modal::Spec {
             id: "settings-account-dialog",
             title: SharedString::from(title.to_owned()),
-            subtitle: subtitle.map(|s| div().child(s).into_any_element()),
+            subtitle: subtitle_element,
             body,
             buttons,
-            close: Box::new(|this, _, _| this.settings_extra.form = None),
+            close: Box::new(|this, _, _| this.settings_extra.close_form()),
         };
         Some(if form.step == Step::PhoneCode {
             modal::render_small(spec, cx)
@@ -1070,7 +1346,402 @@ impl Root {
         })
     }
 
-    fn warning_notice(&self, message: &'static str) -> AnyElement {
+    /// `b` of module 333737 with `section_uV72M-`: the image column (156 wide, the image centred in it), 20px gap and
+    /// 20px below; beside it a column with the heading (`heading-xs/semibold`, 14/18, `--text-strong`), the text and
+    /// what goes under it.
+    fn mfa_section(
+        &self,
+        image: AnyElement,
+        label: &'static str,
+        text: AnyElement,
+        children: Vec<AnyElement>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .gap(px(20.))
+            .mb(px(20.))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .w(px(156.))
+                    .items_center()
+                    .justify_center()
+                    .child(image),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .child(text)
+                    .children(children),
+            )
+            .into_any_element()
+    }
+
+    /// `d.c` with `divider_uV72M-`: a 1px `--border-subtle` rule with 20px above and below; the section's own 20px
+    /// above it is the same margin (they collapse), so only the 20px below is added.
+    fn mfa_rule(&self) -> AnyElement {
+        div()
+            .mb(px(20.))
+            .h(px(1.))
+            .w_full()
+            .bg(color("--border-subtle"))
+            .into_any_element()
+    }
+
+    /// Body text (`body-md/normal`, 16/20, `--text-default`) whose linked runs open their address.
+    fn mfa_links(&self, id: &'static str, parts: &[(&str, Option<&'static str>)]) -> AnyElement {
+        let mut text = String::new();
+        let mut highlights = Vec::new();
+        let mut urls = Vec::new();
+        for (part, url) in parts {
+            let start = text.len();
+            text.push_str(part);
+            if let Some(url) = url {
+                highlights.push((
+                    start..text.len(),
+                    gpui::HighlightStyle {
+                        color: Some(color("--text-link").into()),
+                        ..Default::default()
+                    },
+                ));
+                urls.push((start..text.len(), *url));
+            }
+        }
+        let ranges: Vec<_> = urls.iter().map(|(range, _)| range.clone()).collect();
+        div()
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .text_color(color("--text-default"))
+            .child(
+                gpui::InteractiveText::new(
+                    SharedString::from(id),
+                    gpui::StyledText::new(text).with_highlights(highlights),
+                )
+                .on_click(ranges, move |at, _, cx| {
+                    if let Some((_, url)) = urls.get(at) {
+                        cx.open_url(url);
+                    }
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// A `sm` button of the design system (32 high): `family` is the token family (`connected`, `secondary`).
+    fn mfa_small_button(
+        id: &'static str,
+        label: &'static str,
+        family: &'static str,
+        cx: &mut Context<Self>,
+        run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .flex_none()
+            .h(px(32.))
+            .px(px(11.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color(&format!("--control-{family}-border-default")))
+            .bg(color(&format!("--control-{family}-background-default")))
+            .hover(|style| {
+                style
+                    .bg(color(&format!("--control-{family}-background-hover")))
+                    .border_color(color(&format!("--control-{family}-border-hover")))
+            })
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(color(&format!("--control-{family}-text-default")))
+            .whitespace_nowrap()
+            .on_click(cx.listener(move |this, _, _, cx| run(this, cx)))
+            .child(label)
+            .into_any_element()
+    }
+
+    /// Module 333737 `render`: download an app, scan the code, log in with it. Images: step one's picture
+    /// (`c0a09bd4b521cbd2.png`, 100x100) and step three's (`2e11aacc339bafc1.svg`) are not in the snapshot's assets,
+    /// so their places stay empty.
+    fn mfa_enable_body(&self, form: &Form, cx: &mut Context<Self>) -> AnyElement {
+        let body = |text: &str| {
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-default"))
+                .child(text.to_owned())
+                .into_any_element()
+        };
+        let email = self.stores.account.email.clone().unwrap_or_default();
+        // `g.Ay` without a size: 128, level M, `qrCodeContainer_d4-PpI` (`--space-8` padding, `--radius-xs`).
+        let qr = crate::ui::login::qr_code_card(
+            &mfa::otpauth_url(&email, &form.mfa.secret),
+            128.,
+            8.,
+            4.,
+        )
+        .unwrap_or_else(|| div().size(px(128.)).into_any_element());
+        let field = form
+            .fields
+            .first()
+            .map(|field| self.account_field_element(field, 0, cx));
+        let activate = div()
+            .id("mfa-activate")
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.account_form_submit(cx)))
+            .child(super::button(
+                "mfa-activate-button",
+                "Activate",
+                if form.working {
+                    super::ButtonKind::Secondary
+                } else {
+                    super::ButtonKind::Primary
+                },
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .child(self.mfa_section(
+                div().size(px(100.)).into_any_element(),
+                "Download an authenticator app",
+                self.mfa_links(
+                    "mfa-apps",
+                    &[
+                        ("Download and install ", None),
+                        ("Authy", Some("https://www.authy.com/")),
+                        (" or ", None),
+                        (
+                            "Google Authenticator",
+                            Some("https://support.google.com/accounts/answer/1066447?hl=en"),
+                        ),
+                        (" for your phone or tablet.", None),
+                    ],
+                ),
+                Vec::new(),
+            ))
+            .child(self.mfa_rule())
+            .child(self.mfa_section(
+                qr,
+                "Scan the QR code",
+                body("Open the authentication app and scan the image to the left using your phone\u{2019}s camera."),
+                // `topSpacing_uV72M-`: 20 above the manual key, whose value is `secret_uV72M-` (`--font-code`).
+                vec![div()
+                    .mt(px(20.))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child("2FA Key (Manual entry)"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_family("Consolas")
+                            .text_color(color("--text-default"))
+                            .child(form.mfa.secret.clone()),
+                    )
+                    .into_any_element()],
+            ))
+            .child(self.mfa_rule())
+            .child(self.mfa_section(
+                div().size(px(100.)).into_any_element(),
+                "Log in with your code",
+                body("Enter the 6-digit verification code generated."),
+                // `inputContainer_uV72M-`: the field and the button in a row, 8 apart and 8 below the text.
+                vec![div()
+                    .mt(px(8.))
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w(px(0.)).children(field))
+                    .child(activate)
+                    .into_any_element()],
+            ))
+            .into_any_element()
+    }
+
+    /// Module 549404 `renderTotp`: the passkey section (only while the account has no security key), a divider, and
+    /// the backup codes download. `f` is `modalSection_XAorGN` (column) with a `heading-sm/semibold` label, the text
+    /// in `sectionBody_XAorGN` (`--text-muted`, 20 below) and the button under it. The dialog has no footer
+    /// (`actions: []`): it closes through its close button, which asks first until the codes were downloaded.
+    fn mfa_codes_body(&self, form: &Form, cx: &mut Context<Self>) -> AnyElement {
+        let email = self.stores.account.email.clone().unwrap_or_default();
+        let contents = mfa::backup_file(&email, &form.mfa.codes);
+        let has_keys = self
+            .fetched
+            .get(mfa::CREDENTIALS_KEY)
+            .and_then(Value::as_array)
+            .is_some_and(|list| !list.is_empty());
+        let label = |text: &'static str| {
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(600.))
+                .text_color(color("--text-strong"))
+                .child(text)
+        };
+        let muted = || {
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .mb(px(20.))
+                .text_color(color("--text-muted"))
+        };
+        let passkey = (!has_keys).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .child(label("Add a Passkey"))
+                .child(muted().child(
+                    "Skip passwords entirely. Sign in with your face, fingerprint, device PIN, or password manager for the ultimate convenience and security.",
+                ))
+                .child(muted().child(self.mfa_links(
+                    "mfa-passkey-learn",
+                    &[(
+                        "Learn more about Passkeys",
+                        Some("https://support.discord.com/hc/en-us/articles/219576828"),
+                    )],
+                )))
+                .child(div().flex().child(Self::mfa_small_button(
+                    "mfa-add-passkey",
+                    "Add a Passkey",
+                    "connected",
+                    cx,
+                    // `handleAddPasskey`: the dialog closes and the browser's key creation starts; the platform
+                    // dialog is blocked (BLOCKED.md, "Login passkey and WebAuthn second factor").
+                    |this, cx| {
+                        this.settings_extra.form = None;
+                        cx.notify();
+                    },
+                )))
+                .into_any_element()
+        });
+        let download = Self::mfa_small_button(
+            "mfa-download-codes",
+            "Download Backup Codes",
+            "connected",
+            cx,
+            move |this, cx| {
+                this.mfa_save_codes(&contents, cx);
+                // `onDownload`: `MFA_SEEN_BACKUP_CODE_PROMPT`.
+                mfa::mark_prompt_seen();
+            },
+        );
+        div()
+            .flex()
+            .flex_col()
+            .children(passkey)
+            .children((!has_keys).then(|| self.mfa_rule()))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(label("Download Backup Codes"))
+                    .child(muted().child("Without your backup codes, you are at risk of losing your account permanently if you lose access to your authenticator! Save these somewhere safe on and off your device to reduce the risk of losing your account!"))
+                    .child(div().flex().child(download)),
+            )
+            .into_any_element()
+    }
+
+    /// Capture only, the harness's `mfa <state>` steps: every dialog of the two-factor flow with the answers of the
+    /// service injected, so nothing is sent and no password is typed. The codes are made-up placeholders.
+    /// `enable`, `remove`, `sms-remove`, `codes-password`, `codes-key`, `codes-key-resent`, `activated`,
+    /// `activated-seen`, `panel` (the nested panel with codes and an authenticator), `panel-sms`, `keys` (one security
+    /// key listed, which changes the removal text and hides the passkey section).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_mfa(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        let placeholder_codes = json!({"backup_codes": [
+            {"code": "ab12cd34", "consumed": false},
+            {"code": "ef56gh78", "consumed": false},
+            {"code": "ij90kl12", "consumed": true},
+            {"code": "mn34op56", "consumed": false},
+        ]});
+        match words {
+            ["enable"] => self.open_account_form("mfa-enable", cx),
+            ["remove"] => self.open_account_form("mfa-remove", cx),
+            ["sms-remove"] => self.open_account_form("mfa-sms-remove", cx),
+            ["codes-password"] => self.open_account_form("mfa-codes", cx),
+            ["codes-key"] | ["codes-key-resent"] => {
+                self.open_account_form("mfa-codes", cx);
+                self.account_form_step(Step::MfaCodesKey, cx);
+                if let Some(form) = self.settings_extra.form.as_mut() {
+                    form.mfa.resent = words[0] == "codes-key-resent";
+                }
+            }
+            ["activated"] | ["activated-seen"] => {
+                self.open_account_form("mfa-enable", cx);
+                self.stores.account.mfa_enabled = true;
+                if let Some(form) = self.settings_extra.form.as_mut() {
+                    form.mfa.codes = mfa::codes_of(&placeholder_codes);
+                }
+                self.account_form_step(Step::MfaCodes, cx);
+                if words[0] == "activated-seen" {
+                    mfa::mark_prompt_seen();
+                } else {
+                    mfa::forget_prompt_seen();
+                }
+            }
+            ["keys"] => {
+                self.fetched.insert(
+                    mfa::CREDENTIALS_KEY.to_owned(),
+                    json!([{"name": "Placeholder key", "last_used": null}]),
+                );
+            }
+            ["panel"] | ["panel-sms"] => {
+                self.stores.account.mfa_enabled = true;
+                self.stores.account.verified = true;
+                if words[0] == "panel-sms" {
+                    if let Some(user) = self.stores.current_user.as_mut() {
+                        user.flags |= mfa::SMS_FLAG;
+                    }
+                    self.stores.account.phone = Some("+15555550100".to_owned());
+                }
+                self.fetched
+                    .insert(mfa::CODES_KEY.to_owned(), placeholder_codes);
+                self.settings_extra.panel = Some(super::account_panels::Panel::Mfa);
+            }
+            _ => return "usage: mfa enable|remove|sms-remove|codes-password|codes-key|activated|keys|panel".to_owned(),
+        }
+        cx.notify();
+        "ok".to_owned()
+    }
+
+    /// `getDownloadFileContents`: the codes go to `discord_backup_codes.txt` in the Downloads folder.
+    pub(in crate::ui) fn mfa_save_codes(&mut self, contents: &str, cx: &mut Context<Self>) {
+        let folder = std::env::var_os("USERPROFILE")
+            .map(|home| std::path::PathBuf::from(home).join("Downloads"));
+        #[cfg(feature = "capture")]
+        let folder = std::env::var_os("GRAVECORD_EXPORT_DIR")
+            .map(std::path::PathBuf::from)
+            .or(folder);
+        if let Some(folder) = folder {
+            let _ = std::fs::create_dir_all(&folder);
+            let _ = std::fs::write(folder.join("discord_backup_codes.txt"), contents);
+        }
+        cx.notify();
+    }
+
+    pub(in crate::ui) fn warning_notice(&self, message: &'static str) -> AnyElement {
         div()
             .p(px(12.))
             .rounded(px(8.))
@@ -1165,14 +1836,16 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child(field.label),
-            )
+            .when(!field.label.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(field.label),
+                )
+            })
             .child(
                 div()
                     .h(px(40.))
@@ -1239,6 +1912,26 @@ impl Root {
                     }),
             )
             .into_any_element()
+    }
+}
+
+impl super::actions::State {
+    /// The close button, a press on the scrim or Escape on the form: the "2FA is activated" dialog asks first until
+    /// the codes were downloaded (module 549404 `handleCloseModal`) and Escape on that question goes back to the
+    /// dialog; every other step just closes.
+    pub(in crate::ui) fn close_form(&mut self) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        if form.step != Step::MfaCodes {
+            self.form = None;
+        } else if form.mfa.skip_ask {
+            form.mfa.skip_ask = false;
+        } else if mfa::prompt_seen() {
+            self.form = None;
+        } else {
+            form.mfa.skip_ask = true;
+        }
     }
 }
 

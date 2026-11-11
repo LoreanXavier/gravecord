@@ -130,7 +130,7 @@ impl State {
     /// Escape or an outside press: the dialog goes away and nothing it asked for happens.
     pub(in crate::ui) fn close_dialog(&mut self) {
         self.dialog = None;
-        self.form = None;
+        self.close_form();
     }
 }
 

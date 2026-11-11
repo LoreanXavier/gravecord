@@ -1857,6 +1857,11 @@ pub fn region_driver() -> AnyElement {
 /// The operating system's "animation effects" switch turned off (Windows: `SPI_GETCLIENTAREAANIMATION`).
 #[cfg(windows)]
 pub fn system_prefers_reduced_motion() -> bool {
+    // Capture builds can stand in for the operating system's value: `GRAVECORD_SYSTEM_REDUCED_MOTION=1` or `0`.
+    #[cfg(feature = "capture")]
+    if let Ok(forced) = std::env::var("GRAVECORD_SYSTEM_REDUCED_MOTION") {
+        return forced == "1";
+    }
     use windows::Win32::UI::WindowsAndMessaging::{
         SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
     };

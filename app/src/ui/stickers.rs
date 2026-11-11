@@ -242,6 +242,11 @@ impl Root {
         }
     }
 
+    /// `SENDABLE` here: what the autocomplete's sticker results are filtered by.
+    pub(super) fn sticker_is_sendable(&self, sticker: &Sticker) -> bool {
+        self.sticker_sendability(sticker) == Sendability::Sendable
+    }
+
     fn sticker_sendability(&self, sticker: &Sticker) -> Sendability {
         self.sticker_context().sendability(
             sticker,
@@ -784,7 +789,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn sticker_picture(&self, id: Id, size: f32) -> Option<AnyElement> {
+    pub(super) fn sticker_picture(&self, id: Id, size: f32) -> Option<AnyElement> {
         self.images
             .get(&art_key(id))
             .cloned()

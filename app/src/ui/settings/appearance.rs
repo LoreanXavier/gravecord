@@ -296,7 +296,7 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn custom_theme_card(&self) -> AnyElement {
+    pub(super) fn custom_theme_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let banner = self.images.get("theme_upsell_banner").cloned();
         div()
             .py(px(8.))
@@ -340,7 +340,20 @@ impl Root {
                                     .child("Create your own custom theme to make Discord uniquely yours. Only with Nitro."),
                             ),
                     )
-                    .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
+                    // "Try it out" (`uw9zI7`, module 569386): the same Preview Theme mode a free account gets from the
+                    // colour themes panel (`nf(CUSTOM_THEME)` turns the upsell preview on and closes settings).
+                    .child(
+                        div()
+                            .id("theme-try-click")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.premium() == dc_state::premium::PremiumType::None {
+                                    this.open_custom_theme_editor(cx);
+                                } else {
+                                    this.pick_client_theme("Mint Apple", cx);
+                                }
+                            }))
+                            .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
+                    ),
             )
             .into_any_element()
     }

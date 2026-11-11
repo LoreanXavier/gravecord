@@ -165,6 +165,8 @@ pub struct Editor {
     keeps_text: bool,
     /// Underlines misspelled words (the composer).
     spell: Option<Spell>,
+    /// Styles the typed markdown while the preview setting is on (the composer).
+    markdown: bool,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -209,7 +211,14 @@ impl Editor {
             masked: false,
             keeps_text: false,
             spell: None,
+            markdown: false,
         }
+    }
+
+    /// The field styles typed markdown as the message will read while "Preview emoji, mentions, and markdown syntax
+    /// as you type" is on (`crate::markup_preview::enabled`).
+    pub fn set_markdown_preview(&mut self, on: bool) {
+        self.markdown = on;
     }
 
     /// Marks misspelled words with the system spell checker, as the official composer's text area does.
@@ -740,6 +749,75 @@ fn runs_for(
         .collect()
 }
 
+/// The runs of a paragraph under the markdown preview: each stretch with the weight, slant, colour, decoration and
+/// font of its flags (`.syntaxBefore`, `.bold`, `.italics`, `.underline`, `.strikethrough`, `.inlineCode`,
+/// `.fakeLink` of CSS 358931), and the composition underlined as `runs_for` does.
+fn styled_runs(
+    start: usize,
+    paragraph: &str,
+    marked: Option<&Range<usize>>,
+    style: &EditorStyle,
+) -> Vec<TextRun> {
+    use crate::markup_preview as mp;
+    let flags = mp::flags(paragraph);
+    let composing = |at: usize| marked.is_some_and(|m| m.contains(&(start + at)));
+    // Split where the flags or the composition change.
+    let mut parts: Vec<(usize, u16, bool)> = Vec::new();
+    for (at, flag) in flags.iter().enumerate() {
+        let under = composing(at);
+        match parts.last_mut() {
+            Some((length, last, was)) if last == flag && *was == under => *length += 1,
+            _ => parts.push((1, *flag, under)),
+        }
+    }
+    parts
+        .into_iter()
+        .map(|(length, flag, under)| {
+            let mut font = style.font.clone();
+            let mut tint = style.text;
+            let mut strike = false;
+            let mut underline = under;
+            if flag & mp::BOLD != 0 {
+                font.weight = gpui::FontWeight(700.);
+            }
+            if flag & mp::ITALIC != 0 {
+                font.style = gpui::FontStyle::Italic;
+            }
+            if flag & mp::CODE != 0 {
+                font.family = "gg sans mono".into();
+            }
+            if flag & mp::UNDERLINE != 0 {
+                underline = true;
+            }
+            if flag & mp::STRIKE != 0 {
+                strike = true;
+            }
+            if flag & mp::LINK != 0 {
+                tint = crate::ui::color("--text-link").into();
+            }
+            if flag & mp::SYNTAX != 0 {
+                tint = crate::ui::color("--textbox-markdown-syntax").into();
+                font.weight = gpui::FontWeight(if flag & mp::LIGHT_SYNTAX != 0 {
+                    400.
+                } else {
+                    600.
+                });
+            }
+            let mut out = run(length, &font, tint, underline);
+            if strike {
+                out.strikethrough = Some(gpui::StrikethroughStyle {
+                    thickness: px(1.),
+                    color: Some(tint),
+                });
+            }
+            if flag & mp::CODE != 0 {
+                out.background_color = Some(crate::ui::color("--background-code").into());
+            }
+            out
+        })
+        .collect()
+}
+
 fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(WrappedLine, usize)> {
     let system = window.text_system();
     let mut lines = Vec::new();
@@ -754,6 +832,8 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Wrappe
         };
         let runs = if editor.masked {
             runs_for(0, shown.len(), None, &editor.style)
+        } else if editor.markdown && crate::markup_preview::enabled() {
+            styled_runs(offset, paragraph, marked.as_ref(), &editor.style)
         } else {
             runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style)
         };

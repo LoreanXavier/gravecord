@@ -1393,7 +1393,7 @@ impl Root {
             }
             Node::Custom { key, height } => match *key {
                 "appearance_default_themes" => self.default_themes(cx),
-                "appearance_custom_themes_upsell" => self.custom_theme_card(),
+                "appearance_custom_themes_upsell" => self.custom_theme_card(cx),
                 "appearance_client_themes" => self.color_themes(cx),
                 "appearance_in_app_icon" => self.app_icon_grid(),
                 _ => self

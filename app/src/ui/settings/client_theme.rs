@@ -24,6 +24,14 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// Preview Theme mode is on (a free account trying a colour theme; nothing is saved).
 static PREVIEW: AtomicBool = AtomicBool::new(false);
+/// The Custom Theme editor is open (a preview mode of its own: the panel on the right is the editor).
+static EDITING: AtomicBool = AtomicBool::new(false);
+/// Counts every change of the custom theme, so the pictures and mixes made from it are made again.
+static GENERATION: AtomicUsize = AtomicUsize::new(0);
+/// `ACTIVE` while the custom theme of the editor is the one on screen.
+const CUSTOM_ACTIVE: usize = usize::MAX;
+/// The name of the swatch the editor builds.
+pub(in crate::ui) const CUSTOM_NAME: &str = "Custom Theme";
 /// What Exit Preview restores: the palette and the colour theme from before the preview.
 static SAVED_THEME: AtomicU8 = AtomicU8::new(2);
 static SAVED_ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -66,8 +74,93 @@ fn swatch_of_preset(id: u64) -> Option<usize> {
     SWATCHES.iter().position(|swatch| swatch.name == name)
 }
 
+/// What the editor's colours, direction and intensity make (`customUserThemeSettings`: colours, gradientAngle, baseMix).
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::ui) struct Custom {
+    /// 0xRRGGBB.
+    pub colors: Vec<u32>,
+    pub angle: f32,
+    /// `baseMix` / `chassisMixAmount`, 0 to 100 (74 by default).
+    pub base_mix: f32,
+    /// The editor's Appearance pair: light mode, or dark.
+    pub light: bool,
+}
+
+thread_local! {
+    static CUSTOM: std::cell::RefCell<Option<(&'static Swatch, Custom)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Puts the editor's theme on screen: a swatch built from its colours (`linear-gradient(<angle>deg, <colours>)`, one
+/// colour doubled, the stops evenly spaced). The swatch is leaked: one per change, a few bytes.
+pub(in crate::ui) fn show_custom(custom: &Custom) {
+    let mut colors = custom.colors.clone();
+    if colors.len() == 1 {
+        colors.push(colors[0]);
+    }
+    let last = colors.len().saturating_sub(1).max(1) as f32;
+    let stops: Vec<(u32, f32)> = colors
+        .iter()
+        .enumerate()
+        .map(|(index, colour)| (colour << 8, index as f32 / last))
+        .collect();
+    let layers: Vec<super::model::Layer> = vec![super::model::Layer {
+        angle: custom.angle,
+        stops: Box::leak(stops.into_boxed_slice()),
+    }];
+    let swatch: &'static Swatch = Box::leak(Box::new(Swatch {
+        name: CUSTOM_NAME,
+        group: "custom",
+        base: None,
+        layers: Box::leak(layers.into_boxed_slice()),
+    }));
+    CUSTOM.with(|slot| *slot.borrow_mut() = Some((swatch, custom.clone())));
+    ACTIVE.store(CUSTOM_ACTIVE, Ordering::Relaxed);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    set_theme(base_of(swatch));
+}
+
+fn custom_params() -> Option<Custom> {
+    CUSTOM.with(|slot| slot.borrow().as_ref().map(|(_, custom)| custom.clone()))
+}
+
+pub(in crate::ui) fn editing() -> bool {
+    EDITING.load(Ordering::Relaxed)
+}
+
+/// What the regions' cache has to key on besides the preset: changes with every edit of the custom theme.
+pub(in crate::ui) fn generation() -> usize {
+    GENERATION.load(Ordering::Relaxed)
+}
+
+/// Width of the panel on the right of the preview modes.
+pub(in crate::ui) fn panel_width() -> f32 {
+    if editing() {
+        super::custom_theme::PANEL_WIDTH
+    } else {
+        PANEL_WIDTH
+    }
+}
+
+/// The key the pictures and mixes of the active theme are kept under.
+fn cache_id() -> usize {
+    ACTIVE
+        .load(Ordering::Relaxed)
+        .wrapping_add(GENERATION.load(Ordering::Relaxed).wrapping_mul(1000))
+}
+
+/// `--custom-background-gradient-opacity-mix-amount` of a custom theme: (30 + 0.7 * (100 - baseMix)) / 100.
+fn custom_mix_amount() -> Option<f32> {
+    let custom = custom_params()?;
+    Some((30. + 0.7 * (100. - custom.base_mix)) / 100.)
+}
+
 pub(in crate::ui) fn active() -> Option<&'static Swatch> {
-    SWATCHES.get(ACTIVE.load(Ordering::Relaxed).checked_sub(1)?)
+    let index = ACTIVE.load(Ordering::Relaxed);
+    if index == CUSTOM_ACTIVE {
+        return CUSTOM.with(|slot| slot.borrow().as_ref().map(|(swatch, _)| *swatch));
+    }
+    SWATCHES.get(index.checked_sub(1)?)
 }
 
 /// Puts a colour theme on screen by its preset id (none: the plain palette).
@@ -85,6 +178,9 @@ pub(in crate::ui) fn previewing() -> bool {
 /// The presets of `385803` with `theme: LIGHT` are the first eight (Mint Apple to Desert Khaki); their tile carries
 /// a white layer over the gradient, the dark ones a black one.
 pub(in crate::ui) fn is_light(swatch: &Swatch) -> bool {
+    if swatch.name == CUSTOM_NAME {
+        return custom_params().is_some_and(|custom| custom.light);
+    }
     swatch
         .layers
         .first()
@@ -107,16 +203,22 @@ pub(in crate::ui) fn base_of(swatch: &Swatch) -> Theme {
 /// and `highest` (chat input, user panel) use the token each is built from here.
 fn level(name: &str, light: bool) -> Option<f32> {
     // (dark, light)
-    let (dark_opacity, light_opacity) = match name {
+    // (dark offset, dark factor, light offset, light factor): opacity = offset + mix amount * 0.4 * factor; a preset's
+    // mix amount is 1, a custom theme's comes from its intensity.
+    let (dark, light_opacity) = match name {
         // `lowest` is the frame behind everything and the sidebars (`high`: 0.45 + 0.4 * 0.75, light 0.42 + 0.4 * 0.7).
-        "--background-base-lowest" => (0.75, 0.70),
+        "--background-base-lowest" => ((0.45, 0.75), (0.42, 0.70)),
         // `chat`: 0.48 + 0.4 * 0.8, light 0.85 * (0.6 + 0.4).
-        "--background-base-lower" | "--channel-background-default" => (0.80, 0.85),
+        "--background-base-lower" | "--channel-background-default" => ((0.48, 0.80), (0.51, 0.85)),
         // `highest`: 0.39 + 0.4 * 0.65, light 0.95.
-        "--background-base-low" | "--chat-background-default" | "--chat-background" => (0.65, 0.95),
+        "--background-base-low" | "--chat-background-default" | "--chat-background" => {
+            ((0.39, 0.65), (0.95, 0.))
+        }
         _ => return None,
     };
-    Some(if light { light_opacity } else { dark_opacity })
+    let amount = custom_mix_amount().unwrap_or(1.);
+    let (offset, factor) = if light { light_opacity } else { dark };
+    Some(offset + amount * 0.4 * factor)
 }
 
 /// The colour a surface token resolves to while a colour theme is on, or `None` to use the palette's own.
@@ -236,7 +338,7 @@ fn cover_with(radius: f32, light_opacity: f32, dark_opacity: f32) -> Option<AnyE
 fn backdrop_for(swatch: &'static Swatch, width: f32, height: f32) -> Arc<gpui::RenderImage> {
     BACKDROP.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let key = (ACTIVE.load(Ordering::Relaxed), width as u32, height as u32);
+        let key = (cache_id(), width as u32, height as u32);
         if cache.as_ref().map(|(known, _)| *known) != Some(key) {
             *cache = Some((key, backdrop_image(swatch, width, height)));
         }
@@ -437,7 +539,7 @@ fn active_mix(swatch: &'static Swatch) -> std::rc::Rc<ThemeMix> {
     thread_local! {
         static CACHE: std::cell::RefCell<Option<(usize, std::rc::Rc<ThemeMix>)>> = const { std::cell::RefCell::new(None) };
     }
-    let index = ACTIVE.load(Ordering::Relaxed);
+    let index = cache_id();
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().map(|(known, _)| *known) != Some(index) {
@@ -470,7 +572,7 @@ fn mixed(name: &str, swatch: &'static Swatch) -> Option<Rgba> {
 }
 
 /// A panel colour of the palette with the theme's base colour mixed in, as the preview panel of the captures.
-fn tinted(name: &str) -> Rgba {
+pub(super) fn tinted(name: &str) -> Rgba {
     let own = rgba(theme().color(name));
     let Some(swatch) = active() else {
         return own;
@@ -524,11 +626,26 @@ impl Root {
         cx.refresh_windows();
     }
 
+    /// Settings close and the whole app takes the editor's theme, with the editor panel on the right.
+    pub(super) fn enter_custom_theme_editor(&mut self, custom: &Custom, cx: &mut Context<Self>) {
+        if !previewing() {
+            SAVED_THEME.store(theme_value(theme()), Ordering::Relaxed);
+            SAVED_ACTIVE.store(ACTIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+            PREVIEW.store(true, Ordering::Relaxed);
+        }
+        EDITING.store(true, Ordering::Relaxed);
+        show_custom(custom);
+        self.close_settings(cx);
+        cx.refresh_windows();
+    }
+
     /// "Exit Preview": the palette and colour theme from before.
     pub(in crate::ui) fn exit_theme_preview(&mut self, cx: &mut Context<Self>) {
         if !PREVIEW.swap(false, Ordering::Relaxed) {
             return;
         }
+        EDITING.store(false, Ordering::Relaxed);
+        self.custom_theme_closed();
         ACTIVE.store(SAVED_ACTIVE.load(Ordering::Relaxed), Ordering::Relaxed);
         set_theme(theme_from(SAVED_THEME.load(Ordering::Relaxed)));
         cx.refresh_windows();
@@ -600,7 +717,7 @@ impl Root {
 
     /// The right panel of Preview Theme mode (`design/golden/windows/settings/appearance-theme-preview-*`): 298 wide.
     pub(in crate::ui) fn theme_preview_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !previewing() {
+        if !previewing() || editing() {
             return None;
         }
         let chosen = ACTIVE.load(Ordering::Relaxed);
@@ -672,10 +789,7 @@ impl Root {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.exit_theme_preview(cx);
-                this.open_purchase(false, cx);
-            }))
+            .on_click(cx.listener(|this, _, _, cx| this.open_custom_theme_editor(cx)))
             .child(mask_icon("theme_palette", 24., "--text-default"))
             .child(div().absolute().top(px(-5.)).left(px(-5.)).child(mask_icon(
                 "theme_new_ring",
@@ -794,8 +908,7 @@ impl Root {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
-                                        this.exit_theme_preview(cx);
-                                        this.open_purchase(false, cx);
+                                        this.open_custom_theme_editor(cx);
                                     }),
                                 )
                                 .child(

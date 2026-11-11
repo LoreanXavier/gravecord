@@ -2243,24 +2243,22 @@ impl Root {
             .child(div().relative().child(field).when(open, |this| {
                 this.child(
                     deferred(
-                        div()
-                            .id(SharedString::from(format!("voice-device-list-{side:?}")))
-                            .occlude()
-                            .absolute()
-                            .top(px(48.))
-                            .left_0()
-                            .right_0()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .overflow_hidden()
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.voice.device_open = None;
-                                this.voice_sync_select_flag();
-                                cx.notify();
-                            }))
-                            .child(div().flex().flex_col().children(rows)),
+                        super::super::keyboard::outside(
+                            div().id(SharedString::from(format!("voice-device-list-{side:?}"))),
+                            super::super::keyboard::Layer::SettingsSelect,
+                            cx,
+                        )
+                        .occlude()
+                        .absolute()
+                        .top(px(48.))
+                        .left_0()
+                        .right_0()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-higher"))
+                        .overflow_hidden()
+                        .child(div().flex().flex_col().children(rows)),
                     )
                     .with_priority(2),
                 )

@@ -2,7 +2,7 @@
 //! and Multi-Factor Authentication (`ACCOUNT_MFA_NESTED_PANEL`, `bv`). The device list is the `GET /auth/sessions`
 //! answer; logging a device out posts `{session_id_hashes}` to `/auth/sessions/logout` (module 200921 `U0`).
 
-use super::{ButtonKind, Row, button, category, color, mask_icon, value};
+use super::{ButtonKind, Row, button, color, mask_icon, mfa, value};
 use crate::net::Request;
 use crate::ui::Root;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
@@ -140,7 +140,7 @@ impl Root {
         let mut out = vec![back, heading];
         match panel {
             Panel::Sessions => out.extend(self.sessions_body(cx)),
-            Panel::Mfa => out.extend(self.mfa_body()),
+            Panel::Mfa => out.extend(self.mfa_body(cx)),
         }
         out
     }
@@ -311,20 +311,450 @@ impl Root {
         out
     }
 
-    /// Module 158935 `by`: Security Keys, Authenticator App, SMS Authentication and Backup Codes. The setup flows of
-    /// the app, the key and the codes need the account's second factor and are not built; only what the account
-    /// already holds is shown.
-    fn mfa_body(&self) -> Vec<AnyElement> {
+    /// Module 158935 `by`: Security Keys, Authenticator App, SMS Authentication and Backup Codes, in that order.
+    /// Adding a security key needs the platform's WebAuthn dialog (BLOCKED.md), so that button is not drawn.
+    fn mfa_body(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let account = &self.stores.account;
-        let status = if account.mfa_enabled {
-            "Enabled"
-        } else {
-            "Set up"
+        let flags = self
+            .stores
+            .current_user
+            .as_ref()
+            .map_or(0, |user| user.flags);
+        let sms_on = flags & mfa::SMS_FLAG != 0;
+        let opens = |kind: &'static str,
+                     id: &'static str,
+                     label: &'static str,
+                     tone: ButtonKind,
+                     cx: &mut Context<Self>| {
+            div()
+                .id(SharedString::from(format!("mfa-{kind}")))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_account_form(kind, cx);
+                    cx.notify();
+                }))
+                .child(button(id, label, tone))
+                .into_any_element()
         };
-        vec![category(
-            Some("Authenticator App"),
-            vec![Row::new("Status").trailing(value(status))],
-        )]
+        let mut out = Vec::new();
+
+        // Security Keys (`bb`): `IBq4Y3` over `yK9edS`, the list of `GET /users/@me/mfa/webauthn/credentials`.
+        let keys = match self
+            .fetched
+            .get(mfa::CREDENTIALS_KEY)
+            .and_then(Value::as_array)
+        {
+            None => vec![value("Loading...").into_any_element()],
+            Some(list) => {
+                let now = chrono::Utc::now();
+                list.iter()
+                    .map(|credential| {
+                        let name = credential["name"].as_str().unwrap_or_default().to_owned();
+                        let used = credential["last_used"]
+                            .as_str()
+                            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                            .map(|at| {
+                                last_used((now - at.with_timezone(&chrono::Utc)).num_seconds())
+                            });
+                        div()
+                            .flex()
+                            .flex_col()
+                            .py(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(name),
+                            )
+                            .children(used.map(|ago| {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(format!("Last used {ago}"))
+                            }))
+                            .into_any_element()
+                    })
+                    .collect()
+            }
+        };
+        out.push(mfa_category(
+            "Security Keys",
+            Some(
+                div()
+                    .child(
+                        "Use your fingerprint, face, screenlock, or security key when logging in.",
+                    )
+                    .into_any_element(),
+            ),
+            None,
+            keys,
+        ));
+
+        // Authenticator App (`bi`, `bn`).
+        let mut header = None;
+        let mut body = Vec::new();
+        if !account.verified {
+            body.push(self.warning_notice(
+                "You must verify your account before you can enable two-factor authentication.",
+            ));
+        } else if account.mfa_enabled {
+            body.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child("Enabled"),
+                    )
+                    .child(opens(
+                        "mfa-remove",
+                        "mfa-remove-button",
+                        "Remove",
+                        ButtonKind::CriticalSecondary,
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
+        } else {
+            header = Some(opens(
+                "mfa-enable",
+                "mfa-enable-button",
+                "Enable Authenticator App",
+                ButtonKind::Primary,
+                cx,
+            ));
+        }
+        out.push(mfa_category(
+            "Authenticator App",
+            Some(div().child("Use an app to generate a one-time code when logging in. This adds an extra layer of security to your Discord account, making sure that only you have the ability to log in.").into_any_element()),
+            header,
+            body,
+        ));
+
+        if account.mfa_enabled && account.verified {
+            // SMS Authentication (`bS`, `bh`): `N4` blocks staff, partners and accounts without an email.
+            let blocked = self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.flags & 3 != 0)
+                || account.email.is_none();
+            let mut header = None;
+            let mut body = Vec::new();
+            if sms_on {
+                let revealed = self.fetched.contains_key(mfa::REVEAL_KEY);
+                let phone = account.phone.clone().unwrap_or_default();
+                let shown = if revealed {
+                    format!("Phone number: {phone}")
+                } else {
+                    let tail: String = phone
+                        .chars()
+                        .rev()
+                        .take(4)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    format!("Phone number ending in ****{tail}")
+                };
+                body.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child("Enabled"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(4.))
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(shown)
+                                        .child(
+                                            div()
+                                                .id("mfa-sms-reveal")
+                                                .cursor_pointer()
+                                                .text_color(color("--text-link"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if this
+                                                        .fetched
+                                                        .remove(mfa::REVEAL_KEY)
+                                                        .is_none()
+                                                    {
+                                                        this.fetched.insert(
+                                                            mfa::REVEAL_KEY.to_owned(),
+                                                            Value::Bool(true),
+                                                        );
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                                .child(if revealed { "Hide" } else { "Reveal" }),
+                                        ),
+                                ),
+                        )
+                        .child(opens(
+                            "mfa-sms-remove",
+                            "mfa-sms-remove-button",
+                            "Remove",
+                            ButtonKind::CriticalSecondary,
+                            cx,
+                        ))
+                        .into_any_element(),
+                );
+            } else if !blocked {
+                header = Some(
+                    div()
+                        .id("mfa-sms-enable")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.mfa_enable_sms(cx);
+                        }))
+                        .child(button(
+                            "mfa-sms-enable-button",
+                            "Enable SMS Authentication",
+                            ButtonKind::Primary,
+                        ))
+                        .into_any_element(),
+                );
+            }
+            out.push(mfa_category("SMS Authentication", None, header, body));
+
+            // Backup Codes (`bA`, `bE`).
+            let codes = self
+                .fetched
+                .get(mfa::CODES_KEY)
+                .map(mfa::codes_of)
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            if codes.is_empty() {
+                // `Jc2myK`: a `sm` secondary button.
+                body.push(
+                    div()
+                        .id("mfa-codes")
+                        .flex_none()
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|style| {
+                            style
+                                .bg(color("--control-secondary-background-hover"))
+                                .border_color(color("--control-secondary-border-hover"))
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_account_form("mfa-codes", cx);
+                        }))
+                        .child("Show Backup Codes")
+                        .into_any_element(),
+                );
+            } else {
+                // `ul` `codeList_gRSMrg`: a column, `--space-sm` (12) between the rows, `--space-md` (16) below; each
+                // `li` (`code_gRSMrg`) a row 12 apart: the indicator checkbox (checked once consumed) and the code in
+                // `body-md/normal`. A press copies the code (`mGZ66D`).
+                body.push(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .mb(px(16.))
+                        .children(codes.iter().enumerate().map(|(index, (code, consumed))| {
+                            let shown = mfa::code_text(code);
+                            let copied = shown.clone();
+                            div()
+                                .id(SharedString::from(format!("mfa-code-{index}")))
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        copied.clone(),
+                                    ));
+                                    this.show_success_toast("Copied to clipboard.".into(), cx);
+                                }))
+                                .child(crate::ui::server_onboarding::checkbox(*consumed, false))
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-default"))
+                                        .child(shown),
+                                )
+                        }))
+                        .into_any_element(),
+                );
+                let email = account.email.clone().unwrap_or_default();
+                let contents = mfa::backup_file(&email, &codes);
+                // `s5.e` size sm: a row of `sm` secondary buttons with their icons, 8 apart.
+                let small = |id: &'static str,
+                             label: &'static str,
+                             icon: &'static str,
+                             run: PanelRun,
+                             cx: &mut Context<Self>| {
+                    div()
+                        .id(id)
+                        .flex_none()
+                        .h(px(32.))
+                        .px(px(11.))
+                        .gap(px(4.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|style| {
+                            style
+                                .bg(color("--control-secondary-background-hover"))
+                                .border_color(color("--control-secondary-border-hover"))
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .whitespace_nowrap()
+                        .on_click(cx.listener(move |this, _, _, cx| run(this, cx)))
+                        .child(mask_icon(icon, 16., "--control-secondary-text-default"))
+                        .child(label)
+                        .into_any_element()
+                };
+                body.push(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .child(small(
+                            "mfa-codes-download",
+                            "Download Backup Codes",
+                            "lb_download",
+                            Box::new(move |this, cx| {
+                                this.mfa_save_codes(&contents, cx);
+                            }),
+                            cx,
+                        ))
+                        .child(small(
+                            "mfa-codes-regenerate",
+                            "Generate New Backup Codes",
+                            "system_refresh",
+                            Box::new(|this, cx| this.mfa_regenerate_codes(cx)),
+                            cx,
+                        ))
+                        .into_any_element(),
+                );
+            }
+            // `tp7zEK` (two paragraphs, the second in bold) with codes, `LoOi4S` (the first alone) without.
+            let explain = div()
+                .flex()
+                .flex_col()
+                .child("These codes will allow you to enter your account if you lose your authenticator app. Protect them like you would protect your password. Do not share them with anyone, and keep them somewhere safe.")
+                .children((!codes.is_empty()).then(|| {
+                    div()
+                        .font_weight(FontWeight(600.))
+                        .child("Each code can only be used once. Any previously generated backup codes will no longer work.")
+                }))
+                .into_any_element();
+            out.push(mfa_category("Backup Codes", Some(explain), None, body));
+        }
+        out
+    }
+
+    /// `bT`: an account with a phone number turns SMS authentication on at once; one without adds the number first.
+    fn mfa_enable_sms(&mut self, cx: &mut Context<Self>) {
+        if self.stores.account.phone.is_none() {
+            self.open_account_form("phone", cx);
+            return;
+        }
+        let _ = self
+            .requests
+            .send(mfa::panel_request(mfa::sms_enable_call()));
+        cx.notify();
+    }
+
+    /// `bg`: with a verification key at hand the codes are regenerated at once, else the key is asked for first.
+    fn mfa_regenerate_codes(&mut self, cx: &mut Context<Self>) {
+        let stored = self.fetched.get(mfa::CODES_KEY);
+        let key = stored
+            .and_then(|body| body["key"].as_str())
+            .unwrap_or_default();
+        let nonce = stored
+            .and_then(|body| body["regenerate_nonce"].as_str())
+            .unwrap_or_default();
+        if key.is_empty() {
+            self.open_account_form("mfa-codes", cx);
+        } else {
+            let call = mfa::backup_codes_call(key, nonce, true);
+            let _ = self.requests.send(mfa::panel_request(call));
+        }
+        cx.notify();
+    }
+
+    /// The answers of the panel's own requests (`MFA_KEY`) and the security keys list.
+    pub(in crate::ui) fn mfa_answered(&mut self, key: &str, body: &Value, cx: &mut Context<Self>) {
+        if key == mfa::CREDENTIALS_KEY {
+            self.fetched.insert(key.to_owned(), body.clone());
+            cx.notify();
+            return;
+        }
+        let ok = body["ok"].as_bool() == Some(true);
+        let answer = &body["body"];
+        if body["refused"].as_bool() == Some(true) {
+            return;
+        }
+        if !ok {
+            // `F8FvUy` is the text when the answer has none.
+            let message = answer["message"]
+                .as_str()
+                .unwrap_or("Uh oh, something went wrong. Please try again later.")
+                .to_owned();
+            self.settings_extra.dialog = Some(super::actions::Dialog::Alert {
+                title: "Multi-Factor Authentication".to_owned(),
+                body: message,
+            });
+            cx.notify();
+            return;
+        }
+        if answer["backup_codes"].is_array() {
+            // A regenerated set: the key and its nonce stay.
+            let mut stored = answer.clone();
+            if let Some(old) = self.fetched.get(mfa::CODES_KEY) {
+                stored["key"] = old["key"].clone();
+                stored["regenerate_nonce"] = old["regenerate_nonce"].clone();
+            }
+            self.fetched.insert(mfa::CODES_KEY.to_owned(), stored);
+        } else if let Some(user) = self.stores.current_user.as_mut() {
+            // `MFA_SMS_TOGGLE_COMPLETE`: the answer of enabling SMS.
+            user.flags |= mfa::SMS_FLAG;
+        }
+        cx.notify();
     }
 
     /// The answer of a device logout: the list is read again.
@@ -336,6 +766,58 @@ impl Root {
             });
         }
     }
+}
+
+/// What a button of the panel runs on a press.
+type PanelRun = Box<dyn Fn(&mut Root, &mut Context<Root>)>;
+/// One category of the MFA panel (`zZ`): the 24px heading with its optional button on the right, the subtitle, then
+/// the rows 8px apart. 40px of space between categories.
+fn mfa_category(
+    title: &'static str,
+    subtitle: Option<AnyElement>,
+    header: Option<AnyElement>,
+    body: Vec<AnyElement>,
+) -> AnyElement {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .mb(px(40.))
+        .child(
+            div()
+                .pb(px(20.))
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(24.))
+                                .line_height(px(32.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .children(subtitle.map(|text| {
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-subtle"))
+                                .child(text)
+                        })),
+                )
+                .children(header),
+        )
+        .child(div().flex().flex_col().gap(px(8.)).children(body))
+        .into_any_element()
 }
 
 #[cfg(test)]

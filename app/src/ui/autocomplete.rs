@@ -41,6 +41,12 @@ pub(super) enum Entry {
         name: String,
         insert: String,
     },
+    /// A sticker the `:` list offers while "Show stickers in autocomplete results" is on (module 496533). The row's
+    /// right side names the server or pack it belongs to.
+    Sticker {
+        sticker: dc_state::stickers::Sticker,
+        source: String,
+    },
 }
 
 impl Entry {
@@ -52,6 +58,8 @@ impl Entry {
             Self::Global(global) => global.text().to_owned(),
             Self::Channel { hit, .. } => ac::channel_markup(hit.id),
             Self::Emoji { insert, .. } => insert.clone(),
+            // Choosing a sticker sends it; the text it replaces is removed.
+            Self::Sticker { .. } => String::new(),
         }
     }
 }
@@ -106,9 +114,10 @@ fn lines(open: &Open) -> Vec<Line> {
             Entry::Channel { hit, .. } if hit.kind == HitKind::Voice => 3,
             Entry::Channel { .. } => 4,
             Entry::Emoji { .. } => 5,
+            Entry::Sticker { .. } => 6,
         };
         if last_group != Some(group) {
-            if last_group.is_some() && matches!(group, 1 | 2) {
+            if last_group.is_some() && matches!(group, 1 | 2 | 6) {
                 out.push(Line::Divider);
             }
             let heading = match group {
@@ -117,6 +126,7 @@ fn lines(open: &Open) -> Vec<Line> {
                 3 => Some(matching("Voice Channels", "#!")),
                 4 => Some(matching("Text Channels", "#")),
                 5 => Some(format!("Emoji matching :{query}")),
+                6 => Some(format!("Stickers matching :{query}")),
                 _ => None,
             };
             out.extend(heading.map(Line::Heading));
@@ -134,6 +144,16 @@ impl Root {
             let composer = self.composer.read(cx);
             (composer.text().to_owned(), composer.collapsed_caret())
         };
+        // The sticker rows need the pack list, which is otherwise fetched when the picker's tab opens.
+        if self.pref_on("chat_stickers_autocomplete", false)
+            && !self.stores.stickers.has_loaded_packs()
+            && self.requested.insert(super::stickers::PACKS_KEY.to_owned())
+        {
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key: super::stickers::PACKS_KEY.to_owned(),
+                route: super::stickers::PACKS_ROUTE.to_owned(),
+            });
+        }
         let signature = caret.map(|caret| (text.clone(), caret));
         if !force && signature == self.autocomplete.signature {
             return;
@@ -310,7 +330,18 @@ impl Root {
                 });
             }
         }
+        let listed = entries.len() + found.globals.len();
         entries.extend(found.globals.into_iter().map(Entry::Global));
+        // `@game` (while the games setting is on) and `@time` follow `@everyone` and `@here`.
+        entries.extend(
+            ac::extra_globals(
+                query,
+                listed,
+                self.pref_on("chat_game_mentions_autocomplete", true),
+            )
+            .into_iter()
+            .map(Entry::Global),
+        );
         entries
     }
 
@@ -404,10 +435,65 @@ impl Root {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.1.cmp(&b.1))
         });
-        found
+        // `queryResults` of module 496533: with stickers on, at most 10 emoji are searched and the list keeps
+        // `max(6, 10 - stickers)` of them after `max(4, 8 - emoji)` stickers; off, 50 emoji.
+        let stickers_on =
+            self.pref_on("chat_stickers_autocomplete", false) && query.chars().count() > 1;
+        let limit = if stickers_on { 10 } else { EMOJI_LIMIT };
+        let mut emoji: Vec<Entry> = found
             .into_iter()
-            .take(EMOJI_LIMIT)
+            .take(limit)
             .map(|(_, _, entry)| entry)
+            .collect();
+        if !stickers_on {
+            return emoji;
+        }
+        let stickers = self.sticker_entries(query, 4.max(8usize.saturating_sub(emoji.len())));
+        emoji.truncate(6.max(limit.saturating_sub(stickers.len())));
+        emoji.extend(stickers);
+        emoji
+    }
+
+    /// `queryStickers([query], true, [channel, sendable])`: the stickers this account can send here.
+    fn sticker_entries(&self, query: &str, take: usize) -> Vec<Entry> {
+        let now = picker::now_ms();
+        self.stores
+            .stickers
+            .search(
+                query,
+                now,
+                |tags| {
+                    tags.split(',')
+                        .filter_map(|tag| {
+                            dc_tokens::emoji_by_name(tag.trim()).map(|e| e.surrogates.to_owned())
+                        })
+                        .collect()
+                },
+                |guild| self.stores.guild(guild).map(|guild| guild.name.clone()),
+                |sticker| self.sticker_is_sendable(sticker),
+            )
+            .into_iter()
+            .take(take)
+            .map(|hit| {
+                let source = match (hit.sticker.guild_id, hit.sticker.pack_id) {
+                    (Some(guild), _) => self
+                        .stores
+                        .guild(guild)
+                        .map(|guild| guild.name.clone())
+                        .unwrap_or_default(),
+                    (None, Some(pack)) => self
+                        .stores
+                        .stickers
+                        .pack(pack)
+                        .map(|pack| pack.name.clone())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                Entry::Sticker {
+                    sticker: hit.sticker,
+                    source,
+                }
+            })
             .collect()
     }
 
@@ -418,6 +504,7 @@ impl Root {
                     let (key, url) = avatar_source(user);
                     self.request_image(key, url);
                 }
+                Entry::Sticker { sticker, .. } => self.request_sticker_art(sticker),
                 Entry::Emoji { item, .. } => match item {
                     picker::Item::Custom { id, animated, .. } => {
                         let ext = if *animated { "gif" } else { "webp" };
@@ -569,6 +656,19 @@ impl Root {
         let Some(entry) = open.entries.get(index) else {
             return;
         };
+        if let Entry::Sticker { sticker, .. } = entry {
+            // `sendSticker` after `insertText("")`: the typed `:word` goes, the sticker is sent or staged.
+            let id = sticker.id;
+            let Trigger { start, end, .. } = open.trigger;
+            self.composer.update(cx, |composer, cx| {
+                composer.replace_range(start..end, "", cx);
+            });
+            self.choose_sticker(id, false, cx);
+            let focus = gpui::Focusable::focus_handle(self.composer.read(cx), cx);
+            window.focus(&focus, cx);
+            cx.notify();
+            return;
+        }
         let insert = format!("{} ", entry.markup());
         let Trigger { start, end, .. } = open.trigger;
         self.composer.update(cx, |composer, cx| {
@@ -651,15 +751,7 @@ impl Root {
                     None,
                     global.text(),
                     None,
-                    match global {
-                        Global::Everyone => {
-                            "Notify everyone who has permission to view this channel."
-                        }
-                        Global::Here => {
-                            "Notify everyone online who has permission to view this channel."
-                        }
-                    }
-                    .to_owned(),
+                    global.description().to_owned(),
                     selected,
                 ),
             ),
@@ -680,6 +772,22 @@ impl Root {
                     ),
                 )
             }
+            Entry::Sticker { sticker, source } => (
+                4.,
+                self.row_content(
+                    Some(
+                        div()
+                            .size(px(40.))
+                            .flex_none()
+                            .children(self.sticker_picture(sticker.id, 40.))
+                            .into_any_element(),
+                    ),
+                    &sticker.name,
+                    None,
+                    source.clone(),
+                    selected,
+                ),
+            ),
             Entry::Emoji { item, name, .. } => {
                 let picture = match item {
                     picker::Item::Unicode(at) => {

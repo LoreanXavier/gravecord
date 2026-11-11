@@ -1383,6 +1383,27 @@ fn wandering_cubes() -> impl IntoElement {
     .flex_none()
 }
 
+/// The QR component of module 414121 as the two-factor dialog uses it: `side` square on white, `padding` all round
+/// (`qrCodeContainer_d4-PpI`: `--space-8`) and corners of `radius` (`--radius-xs`, 4).
+pub(in crate::ui) fn qr_code_card(
+    text: &str,
+    side: f32,
+    padding: f32,
+    radius: f32,
+) -> Option<AnyElement> {
+    let matrix = qr::matrix(text)?;
+    Some(
+        div()
+            .flex_none()
+            .size(px(side))
+            .p(px(padding))
+            .rounded(px(radius))
+            .bg(rgba(0xffffffff))
+            .child(draw_matrix(matrix))
+            .into_any_element(),
+    )
+}
+
 fn draw_matrix(matrix: Matrix) -> impl IntoElement {
     canvas(
         |_, _, _| {},

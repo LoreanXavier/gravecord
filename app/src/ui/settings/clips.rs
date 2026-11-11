@@ -1172,6 +1172,8 @@ impl Root {
                                     .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
                                         if this.clips.open == Some(select) {
                                             this.clips.open = None;
+                                            // The closing press goes no further (layers.rs).
+                                            cx.stop_propagation();
                                             cx.notify();
                                         }
                                     }))

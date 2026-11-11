@@ -324,6 +324,10 @@ pub fn rank_members(query: &str, members: &[(&User, Option<&str>)], limit: usize
 pub enum Global {
     Everyone,
     Here,
+    /// `MENTION_GAME` (module 966382), offered while "Show games in autocomplete results" is on.
+    Game,
+    /// `MENTION_TIMESTAMP` (module 966382), always offered.
+    Time,
 }
 
 impl Global {
@@ -331,6 +335,8 @@ impl Global {
         match self {
             Self::Everyone => "@everyone",
             Self::Here => "@here",
+            Self::Game => "@game",
+            Self::Time => "@time",
         }
     }
 
@@ -339,8 +345,41 @@ impl Global {
         match self {
             Self::Everyone => "everyone",
             Self::Here => "here",
+            Self::Game => "game",
+            Self::Time => "time",
         }
     }
+
+    /// The row's description: `MENTION_GAME` and `MENTION_TIMESTAMP` carry the strings `1kR88y` and `V6L3TV`.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Everyone => "Notify everyone who has permission to view this channel.",
+            Self::Here => "Notify everyone online who has permission to view this channel.",
+            Self::Game => "Mention a game",
+            Self::Time => "Refer to a time dynamically in the viewer's time zone",
+        }
+    }
+}
+
+/// The `@game` and `@time` entries that follow `@everyone` and `@here` (`queryGuildMentionResults` of module 997625,
+/// helper `S`): each shows when the query matches its word and the list is not full (an empty query always shows
+/// them), and `@game` only while the games setting is on. `total` is how many rows the list already holds.
+pub fn extra_globals(query: &str, total: usize, games_enabled: bool) -> Vec<Global> {
+    let lower = query.to_lowercase();
+    let mut out = Vec::new();
+    let mut total = total;
+    for global in [Global::Game, Global::Time] {
+        if global == Global::Game && !games_enabled {
+            continue;
+        }
+        if ((total < LIMIT || lower.is_empty()) && fuzzy(&lower, global.word()))
+            || lower == global.word()
+        {
+            out.push(global);
+            total += 1;
+        }
+    }
+    out
 }
 
 /// What the account may mention in this channel (`getOptions` for the normal composer).
@@ -659,6 +698,17 @@ pub fn insert_at(text: &str, start: usize, end: usize, insert: &str) -> (String,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn game_and_time_rows_follow_the_query_and_the_setting() {
+        assert_eq!(extra_globals("", 0, true), [Global::Game, Global::Time]);
+        assert_eq!(extra_globals("", 0, false), [Global::Time]);
+        assert_eq!(extra_globals("gam", 0, true), [Global::Game]);
+        assert!(extra_globals("zzz", 0, true).is_empty());
+        // A full list only takes an exact word.
+        assert!(extra_globals("gam", LIMIT, true).is_empty());
+        assert_eq!(extra_globals("game", LIMIT, true), [Global::Game]);
+    }
+
     use super::*;
 
     fn user(id: Id, name: &str, global: Option<&str>) -> User {
