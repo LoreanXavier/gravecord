@@ -2,6 +2,7 @@
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
 pub mod autocomplete;
+pub mod automod_messages;
 pub mod calls;
 pub mod channel_status;
 pub mod collectibles;
@@ -10,6 +11,7 @@ pub mod confusables;
 pub mod content_inventory;
 pub mod content_inventory_manager;
 pub mod display_name_styles;
+pub mod entitlements;
 pub mod experiments;
 pub mod folders;
 pub mod frecency;
@@ -22,7 +24,9 @@ pub mod local_activity;
 pub mod member_list;
 pub mod members;
 pub mod message_kinds;
+pub mod message_requests;
 pub mod message_window;
+pub mod notification_center;
 pub mod notifications;
 pub mod permissions;
 pub mod pins_unread;
@@ -41,6 +45,7 @@ pub mod stage;
 pub mod stickers;
 pub mod thread_list;
 pub mod thread_members;
+pub mod thread_previews;
 pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
@@ -146,7 +151,12 @@ impl User {
     }
 
     /// `(id >> 22) % 6` for pomelo users, `discriminator % 5` for legacy ones.
+    /// A bot (a webhook's author) without an avatar and with discriminator "0000" always shows the first default
+    /// (486020 `getUserAvatarURL`: `if (bot && avatar == null && discriminator === "0000") return defaults[0]`).
     pub fn default_avatar_index(&self) -> u64 {
+        if self.bot && self.avatar.is_none() && self.discriminator == "0000" {
+            return 0;
+        }
         match self.discriminator.parse::<u64>() {
             Ok(discriminator) if discriminator != 0 => discriminator % 5,
             _ => (self.id >> 22) % 6,
@@ -300,6 +310,8 @@ pub struct Guild {
     pub lockdown_duration_hours: Option<u64>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
+    /// `premium_progress_bar_enabled`: the boost progress bar in the channel list.
+    pub premium_progress_bar_enabled: bool,
     pub emojis: Vec<GuildEmoji>,
     /// Active threads this session knows (READY's `threads`, then THREAD_* events).
     pub threads: Vec<Thread>,
@@ -607,6 +619,10 @@ impl Guild {
                 .as_u64()
                 .or(properties["premium_subscription_count"].as_u64())
                 .unwrap_or(0),
+            premium_progress_bar_enabled: value["premium_progress_bar_enabled"]
+                .as_bool()
+                .or(properties["premium_progress_bar_enabled"].as_bool())
+                .unwrap_or(false),
             emojis: GuildEmoji::list(&value["emojis"]),
         })
     }
@@ -640,6 +656,9 @@ impl Guild {
         self.premium_subscription_count = value["premium_subscription_count"]
             .as_u64()
             .unwrap_or(self.premium_subscription_count);
+        self.premium_progress_bar_enabled = value["premium_progress_bar_enabled"]
+            .as_bool()
+            .unwrap_or(self.premium_progress_bar_enabled);
         if let Some(roles) = value["roles"].as_array() {
             self.roles = roles
                 .iter()
@@ -1016,6 +1035,8 @@ pub struct Message {
     pub reference_id: Option<Id>,
     /// `message_reference.channel_id`: for THREAD_CREATED, the thread.
     pub reference_channel_id: Option<Id>,
+    /// `message_reference.guild_id`: for a crossposted announcement, the server it was published from.
+    pub reference_guild_id: Option<Id>,
     /// `sticker_items` (else `stickers`): the stickers sent with the message, as (id, name, `format_type`).
     pub sticker_items: Vec<(Id, String, u64)>,
     /// Data only some message types carry: group targets, calls, polls, purchases (see `message_kinds`).
@@ -1171,6 +1192,7 @@ impl Message {
             pinned: value["pinned"].as_bool().unwrap_or(false),
             reference_id: id(&value["message_reference"]["message_id"]),
             reference_channel_id: id(&value["message_reference"]["channel_id"]),
+            reference_guild_id: id(&value["message_reference"]["guild_id"]),
             extra: message_kinds::MessageExtra::from_value(value),
             sticker_items: value["sticker_items"]
                 .as_array()
@@ -1205,6 +1227,8 @@ pub struct PrivateChannel {
     pub name: Option<String>,
     pub icon: Option<String>,
     pub application_id: Option<Id>,
+    /// The group's owner (`owner_id`): the member list crowns them.
+    pub owner_id: Option<Id>,
     pub flags: u64,
     pub message_request: bool,
     pub spam: bool,
@@ -1221,6 +1245,7 @@ impl PrivateChannel {
             name: None,
             icon: None,
             application_id: None,
+            owner_id: None,
             flags: 0,
             message_request: false,
             spam: false,
@@ -1255,6 +1280,9 @@ impl PrivateChannel {
         }
         if value.get("application_id").is_some() {
             self.application_id = id(&value["application_id"]);
+        }
+        if value.get("owner_id").is_some() {
+            self.owner_id = id(&value["owner_id"]);
         }
         if let Some(flags) = value.get("flags") {
             self.flags = flags.as_u64().unwrap_or(0);
@@ -1409,6 +1437,14 @@ pub struct Stores {
     /// `safety_settings.ignore_profile_speedbump_disabled`.
     pub ignore_speedbump_disabled: bool,
     pub private_channels: Vec<PrivateChannel>,
+    /// Optimistic accepts and previews of message requests (`MessageRequestPreviewStore`).
+    pub message_requests: message_requests::MessageRequests,
+    /// `EntitlementStore`.
+    pub entitlements: entitlements::Entitlements,
+    /// `GuildAutomodMessageStore`.
+    pub automod: automod_messages::AutomodMessages,
+    /// `NotificationCenterItemsStore`.
+    pub notification_center: notification_center::NotificationCenter,
     pub member_lists: HashMap<Id, member_list::MemberList>,
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
@@ -1460,6 +1496,8 @@ pub struct Stores {
     pub members: members::GuildMembers,
     /// The threads the current user has joined (`JoinedThreadsStore`).
     pub thread_members: thread_members::ThreadMembers,
+    /// `ThreadMembersStore` (module 802958): member counts and previews of threads.
+    pub thread_previews: thread_previews::ThreadMemberPreviews,
     /// Newest and acknowledged pin times per channel (`hasUnreadPins`).
     pub pin_states: pins_unread::PinStates,
     /// Guild stickers and the standard packs (`GuildStickersStore`, `StickersPackStore`).
@@ -1507,6 +1545,7 @@ impl Stores {
         self.interactions.dispatch(name, data);
         let me = self.current_user.as_ref().map(|user| user.id);
         self.thread_members.dispatch(name, data, me);
+        self.thread_previews.dispatch(name, data);
         self.pin_states.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
@@ -1936,6 +1975,10 @@ impl Stores {
     ];
 
     fn after_dispatch(&mut self, name: &str, data: &Value) {
+        self.message_requests_dispatch(name, data);
+        self.entitlements_dispatch(name, data);
+        self.automod_dispatch(name, data);
+        self.notification_center_dispatch(name, data);
         match name {
             "READY" => self.rebuild_channel_index(),
             "GUILD_CREATE" => {
@@ -2537,6 +2580,22 @@ impl Stores {
             return String::new();
         }
         let (patch, updated) = settings::set_guild_folders(&self.settings_raw, &entries);
+        self.settings_raw = updated;
+        patch
+    }
+
+    /// The account's favourite channels (`FavoritesStore`, module 181079), read from the settings.
+    pub fn favorites(&self) -> settings::Favorites {
+        settings::read_favorites(&self.settings_raw)
+    }
+
+    /// Writes the favourites into the account's settings (`updateAsync("favorites", ...)`, module 146092 `K`). The
+    /// PATCH body value comes back; empty until the settings have arrived.
+    pub fn write_favorites(&mut self, favorites: &settings::Favorites) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_favorites(&self.settings_raw, favorites);
         self.settings_raw = updated;
         patch
     }
@@ -3227,6 +3286,7 @@ mod tests {
                 .collect(),
             premium_tier: 0,
             premium_subscription_count: 0,
+            premium_progress_bar_enabled: false,
             emojis: Vec::new(),
             threads: Vec::new(),
         };
@@ -3886,6 +3946,22 @@ mod tests {
             ..User::default()
         };
         assert_eq!(legacy.default_avatar_index(), 2);
+    }
+
+    #[test]
+    fn a_webhook_author_without_an_avatar_shows_the_first_default() {
+        let webhook = User {
+            id: 4 << 22,
+            discriminator: "0000".into(),
+            bot: true,
+            ..User::default()
+        };
+        assert_eq!(webhook.default_avatar_index(), 0);
+        let human = User {
+            bot: false,
+            ..webhook.clone()
+        };
+        assert_eq!(human.default_avatar_index(), 4);
     }
 
     #[test]

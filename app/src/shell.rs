@@ -15,7 +15,7 @@ use gpui::{
 };
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// How the app starts.
 pub enum Start {
@@ -44,6 +44,8 @@ pub struct Shell {
     _subscriptions: Vec<Subscription>,
     /// Capture builds never touch the credential store: a run with a test account must not drop the owner's login.
     persist: bool,
+    /// The next session replaces another account's: its main view announces the switch.
+    switched: bool,
 }
 
 impl Shell {
@@ -63,6 +65,7 @@ impl Shell {
             _art: None,
             _subscriptions: Vec::new(),
             persist: !cfg!(feature = "capture"),
+            switched: false,
         };
         match start {
             Start::Token(token) => this.start_session(token, window, cx),
@@ -92,6 +95,19 @@ impl Shell {
         match &self.screen {
             Screen::Main(root) => root.read(cx).ready_for_capture(),
             Screen::Login(login) => login.read(cx).has_art(),
+        }
+    }
+
+    /// Opens a `discord://` or discord.com link in the main view. False while there is no main view yet or it is
+    /// still starting: the caller tries again.
+    pub fn open_link(&mut self, url: &str, cx: &mut Context<Self>) -> bool {
+        match &self.screen {
+            Screen::Main(root) if root.read(cx).ready_for_capture() => {
+                let root = root.clone();
+                root.update(cx, |root, cx| root.open_deep_link(url, cx));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -141,10 +157,16 @@ impl Shell {
         );
         self.token = Some(token);
         let root = cx.new(|cx| Root::new(request_tx, hook_tx, cx));
+        if std::mem::take(&mut self.switched) {
+            root.update(cx, |root, _| root.announce_switch());
+        }
         crate::ui::bind_focus(&root, window, cx);
         crate::ui::memory_trim::start(&root, cx);
         self._subscriptions = vec![
             cx.subscribe_in(&root, window, |this, _, event, window, cx| match event {
+                RootEvent::AccountSeen(id) => this.keep_account_token(*id),
+                RootEvent::AccountRemoved(id) => this.forget_account_token(*id),
+                RootEvent::SwitchAccount(id) => this.switch_account(*id, window, cx),
                 RootEvent::LogOut => {
                     if !crate::inert::skip("log out") {
                         crate::ui::start_cache::forget();
@@ -253,6 +275,57 @@ impl Shell {
         self.screen = Screen::Login(login);
         self._pump = None;
         cx.notify();
+    }
+
+    /// The signed in account's token goes into its own credential entry, so Switch Accounts can come back to it.
+    fn keep_account_token(&self, id: u64) {
+        let (true, Some(token)) = (self.persist, self.token.clone()) else {
+            return;
+        };
+        let store = self.store.clone();
+        let entry = dc_auth::credentials::account_entry(&id.to_string());
+        self.handle.spawn_blocking(move || {
+            if let Err(error) = store.save(&entry, &token) {
+                warn!("the account's login could not be kept: {error:?}");
+            }
+        });
+    }
+
+    fn forget_account_token(&self, id: u64) {
+        if !self.persist {
+            return;
+        }
+        let store = self.store.clone();
+        let entry = dc_auth::credentials::account_entry(&id.to_string());
+        self.handle.spawn_blocking(move || {
+            if let Err(error) = store.forget(&entry) {
+                warn!("the account's login could not be removed: {error:?}");
+            }
+        });
+    }
+
+    /// Switch Accounts: the session of the account in use ends without retiring its token, and a session opens with
+    /// the chosen account's stored one. A harness run only reports what it would connect to.
+    fn switch_account(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.persist || crate::inert::skip("switch account") {
+            info!("would connect with account {id}");
+            return;
+        }
+        let entry = dc_auth::credentials::account_entry(&id.to_string());
+        let Ok(Some(token)) = self.store.load(&entry) else {
+            warn!("account {id} has no stored login, staying signed in");
+            if let Screen::Main(root) = &self.screen {
+                root.update(cx, |root, cx| root.switch_failed(cx));
+            }
+            return;
+        };
+        if let Some(session) = self.session.take() {
+            session.abort();
+        }
+        self._pump = None;
+        crate::ui::start_cache::forget();
+        self.switched = true;
+        self.signed_in(token, window, cx);
     }
 
     /// The account's token was renewed (a password change): the stored login and the one kept for this run switch

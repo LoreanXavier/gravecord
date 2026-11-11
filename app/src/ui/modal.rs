@@ -24,6 +24,9 @@ pub(super) enum Tone {
     CriticalSecondary,
     /// The `active` button variant (Start Event): the green connected control.
     Active,
+    /// Primary while its request is in flight (`loading`, module 657718): the label is hidden (`opacity:0`), three
+    /// pulsing dots take its place, and the click does nothing.
+    PrimaryLoading,
 }
 
 pub(super) type Handler = Box<dyn Fn(&mut Root, &mut Window, &mut Context<Root>)>;
@@ -120,7 +123,7 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
             color("--border-muted"),
             color("--control-secondary-text-default"),
         ),
-        Tone::Primary | Tone::PrimaryDisabled => (
+        Tone::Primary | Tone::PrimaryDisabled | Tone::PrimaryLoading => (
             color("--control-primary-background-default"),
             color("--control-primary-border-default"),
             color("--white"),
@@ -144,7 +147,7 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
     // The `:hover` and `:active` colours of the variant, as the design system button sets them.
     let family = match spec.tone {
         Tone::Secondary => "secondary",
-        Tone::Primary | Tone::PrimaryDisabled => "primary",
+        Tone::Primary | Tone::PrimaryDisabled | Tone::PrimaryLoading => "primary",
         Tone::Active => "connected",
         Tone::Critical => "critical-primary",
         Tone::CriticalSecondary => "critical-secondary",
@@ -160,7 +163,9 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
     let active = state_colors("active");
     let run = std::rc::Rc::new(spec.run);
     let keyboard_run = run.clone();
-    let disabled = spec.tone == Tone::PrimaryDisabled;
+    let loading = spec.tone == Tone::PrimaryLoading;
+    // A loading button swallows clicks and hover (`ea = disabled || loading`), but keeps full opacity.
+    let disabled = spec.tone == Tone::PrimaryDisabled || loading;
     // The primary button of a dialog keeps a handle across frames: it is what a dialog takes focus on when it opens,
     // so that Enter confirms it (the footer's submit button of the official confirm modals).
     let spec_focus = spec.focus.clone().or_else(|| {
@@ -180,7 +185,7 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
             spec_focus.map(|handle| handle.tab_index(0)),
             |button, focus| button.track_focus(&focus),
         )
-        .when(disabled, |this| this.opacity(0.5))
+        .when(disabled && !loading, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(15.)))
         // A secondary button beside an action bar input is 100 wide (Cancel in Filters).
@@ -197,7 +202,7 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .justify_center()
         .cursor_pointer()
         // `.button_9OQtot:disabled, [aria-disabled=true]{cursor:not-allowed;opacity:.5}` (193433).
-        .when(disabled, |this| this.cursor_not_allowed())
+        .when(disabled && !loading, |this| this.cursor_not_allowed())
         .text_size(px(16.))
         .line_height(px(20.))
         .font_weight(FontWeight(500.))
@@ -220,7 +225,22 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
                     .text_color(color(token)),
             )
         })
-        .child(spec.label)
+        .when(!loading, |this| this.child(spec.label.clone()))
+        .when(loading, |this| {
+            // `.buttonChildren.loading{opacity:0}` keeps the label's width; the dots sit centred over it
+            // (`.spinnerWrapper` absolute, 100% size; `.spinner-md{transform:scale(.9)}`).
+            this.relative()
+                .child(div().opacity(0.).child(spec.label.clone()))
+                .child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(super::components::dots(spec.id, "--white")),
+                )
+        })
         .on_key_down(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                 if focus.as_ref().is_some_and(|focus| focus.is_focused(window))
@@ -260,6 +280,18 @@ pub(super) fn render_pinned(
     render_sized(spec, width, false, None, Some((top, height)), cx)
 }
 
+/// The pinned dialog with an input in its action bar (Add Account: a Back text button beside Continue).
+pub(super) fn render_pinned_with_input(
+    spec: Spec,
+    width: f32,
+    top: f32,
+    height: f32,
+    input: AnyElement,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized(spec, width, false, Some(input), Some((top, height)), cx)
+}
+
 /// The dialog with an input in its action bar (`actionBarInput`): a checkbox or a text button on the left, the
 /// buttons as wide as their text on the right (`actionBarLeading` grows, `actionBarTrailing` sits at the end).
 pub(super) fn render_with_input(
@@ -289,6 +321,7 @@ fn render_sized(
     cx: &mut Context<Root>,
 ) -> AnyElement {
     let fill = input.is_none();
+    let pinned_bar = pinned.is_some() && input.is_some();
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
     let close_scrim = close.clone();
@@ -315,7 +348,11 @@ fn render_sized(
         .occlude()
         .w(px(width))
         .pt(px(8.))
-        .pb(px(if pinned.is_some() { 0. } else { 16. }))
+        .pb(px(if pinned.is_some() && !pinned_bar {
+            0.
+        } else {
+            16.
+        }))
         .when_some(pinned, |this, (_, height)| {
             this.h(px(height)).overflow_hidden()
         })

@@ -34,6 +34,7 @@ mod activity_launch;
 mod activity_shelf;
 mod add_server;
 mod alt_text;
+mod announcements;
 mod apps;
 mod attachment_modal;
 mod audio_attachment;
@@ -61,6 +62,7 @@ mod context_menu;
 #[cfg(feature = "capture")]
 mod crawl_reset;
 mod create_channel;
+mod deep_link_route;
 mod dm;
 mod dm_profile;
 mod embed;
@@ -76,6 +78,7 @@ mod games_spec;
 mod gifs;
 mod go_live;
 mod group_dm;
+mod group_manage;
 mod guild_menu;
 mod guild_notifications;
 mod history;
@@ -97,11 +100,14 @@ mod logout;
 mod member_actions;
 mod message_header;
 mod message_kinds;
+mod message_requests;
 mod message_tips;
 mod presence;
 mod role_dot;
 mod role_popout;
 mod schedule_message;
+mod sent_attachment;
+mod stage;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
@@ -112,11 +118,14 @@ mod unread_dms;
 mod update_button;
 mod voice_message;
 pub use logout::RootEvent;
+mod account_switcher;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
+mod boost_page;
 mod channel_browser;
 mod discover;
+mod favorites;
 mod fetch_failures;
 mod forums;
 pub(crate) mod frame_clock;
@@ -161,6 +170,7 @@ mod profile_menu;
 mod profile_other;
 mod quests;
 mod quickswitcher;
+mod rail_folder_menu;
 mod rail_folders;
 mod reaction_tip;
 mod reactions_modal;
@@ -173,6 +183,7 @@ mod saved;
 mod screening;
 mod search;
 mod search_filters;
+mod send_state;
 mod server_access;
 mod server_audit;
 mod server_automod;
@@ -383,6 +394,8 @@ pub struct Root {
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
+    /// The full-window Server Boost page (`boost_page.rs`).
+    boost_page: Option<boost_page::BoostPage>,
     /// The scroll position of the open context menu (a menu taller than the window scrolls).
     pub(crate) menu_scroll: gpui::ScrollHandle,
     channel_browser_open: bool,
@@ -392,6 +405,10 @@ pub struct Root {
     hovered_welcome: bool,
     slowmode_emphasis: Option<Instant>,
     slowmode_rejected: HashMap<Id, std::collections::VecDeque<crate::net::RejectedDraft>>,
+    /// The messages this account is sending and the failed ones (`send_state`).
+    send_ui: send_state::State,
+    /// Set while a failed message's content is built: its text, links and inline code take the critical colour.
+    failed_tint: std::cell::Cell<bool>,
     notification_runtime: crate::notifications::Runtime,
     /// Game detection and the Registered Games page (`running_games`).
     detect: running_games::Games,
@@ -404,6 +421,7 @@ pub struct Root {
     capture_dm_rail: Option<(u64, bool)>,
     hovered_rail_dm: Option<Id>,
     rail_folders: rail_folders::State,
+    account_switcher: account_switcher::State,
     #[cfg(feature = "capture")]
     capture_friend_nickname: bool,
     notification_focused: bool,
@@ -453,6 +471,8 @@ pub struct Root {
     member_view: Option<server_members::MemberView>,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    /// The member list beside a group DM: on by default.
+    group_members: bool,
     friends_tab: friends::FriendsTab,
     skin_tone: u8,
     skin_menu: bool,
@@ -474,9 +494,20 @@ pub struct Root {
     guild_notifications: Option<Id>,
     raid_alerts_off: HashSet<(Id, u8)>,
     create_channel: Option<create_channel::CreateChannel>,
+    channel_status: Option<channel_status::StatusModal>,
+    follow: Option<announcements::FollowModal>,
+    start_stage: Option<stage::StartStage>,
+    publish_confirm: Option<(Id, Id)>,
+    follower_stats: announcements::StatsMap,
+    /// Capture only (`ch blocker on`): the Follow bar as a member without Send Messages sees it.
+    follow_blocker_forced: bool,
     guild_events: Option<guild_events::GuildEvents>,
     guild_menu: bool,
+    /// The Favorites server is open (`/channels/@favorites/<channel>`): its sidebar replaces the server's.
+    favorites_view: bool,
     thread_browser: Option<threads::ThreadBrowser>,
+    /// "All Active Threads" (`threads.rs`, from the server menu).
+    thread_modal: bool,
     new_thread: Option<threads::NewThread>,
     pending_thread_message: Option<String>,
     inbox: Option<inbox::InboxTab>,
@@ -495,6 +526,8 @@ pub struct Root {
     friend_menu: Option<friends::FriendMenu>,
     confirm_remove_friend: Option<friends::RemoveFriend>,
     friend_nickname: Option<friend_nickname::Dialog>,
+    group_edit: Option<group_manage::Edit>,
+    group_leave: Option<group_manage::Leave>,
     /// Kick, Ban, Timeout and Remove Timeout of a member's menu.
     member_action: Option<member_actions::Dialog>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
@@ -554,6 +587,8 @@ pub struct Root {
     custom_status: Option<status_menu::CustomStatusModal>,
     plus_menu: bool,
     modify_attachment: Option<attachment_modal::ModifyAttachment>,
+    /// The pencil or trash of a sent attachment's hover group (`sent_attachment.rs`).
+    sent_edit: Option<sent_attachment::SentEdit>,
     snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
     click_at: gpui::Point<gpui::Pixels>,
     leave_guild: Option<Id>,
@@ -642,6 +677,8 @@ pub struct Root {
     discover: discover::State,
     shop: shop::State,
     quests: quests::State,
+    /// The Message Requests page (`/message-requests`).
+    message_requests: message_requests::State,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
@@ -686,6 +723,7 @@ impl Root {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_spellcheck(true);
             editor.set_markdown_preview(true);
+            editor.set_ellipsis_placeholder(true);
             editor
         });
         cx.subscribe(&composer, |this, composer, event, cx| match event {
@@ -737,6 +775,7 @@ impl Root {
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
+            boost_page: None,
             menu_scroll: gpui::ScrollHandle::new(),
             channel_browser_open: false,
             channel_browser: None,
@@ -744,6 +783,8 @@ impl Root {
             hovered_welcome: false,
             slowmode_emphasis: None,
             slowmode_rejected: HashMap::new(),
+            send_ui: send_state::State::default(),
+            failed_tint: std::cell::Cell::new(false),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
             detect: running_games::Games::new(updates.clone()),
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
@@ -755,6 +796,7 @@ impl Root {
             capture_dm_rail: None,
             hovered_rail_dm: None,
             rail_folders: rail_folders::State::default(),
+            account_switcher: account_switcher::State::default(),
             #[cfg(feature = "capture")]
             capture_friend_nickname: false,
             notification_focused: false,
@@ -788,6 +830,7 @@ impl Root {
             show_members: false,
             member_view: None,
             show_dm_profile: true,
+            group_members: true,
             friends_tab: friends::FriendsTab::default(),
             skin_tone: picker::stored_tone(),
             skin_menu: false,
@@ -808,9 +851,17 @@ impl Root {
             guild_notifications: None,
             raid_alerts_off: HashSet::new(),
             create_channel: None,
+            channel_status: None,
+            follow: None,
+            start_stage: None,
+            publish_confirm: None,
+            follower_stats: Default::default(),
+            follow_blocker_forced: false,
             guild_events: None,
             guild_menu: false,
+            favorites_view: false,
             thread_browser: None,
+            thread_modal: false,
             new_thread: None,
             pending_thread_message: None,
             inbox: None,
@@ -828,6 +879,8 @@ impl Root {
             friend_menu: None,
             confirm_remove_friend: None,
             friend_nickname: None,
+            group_edit: None,
+            group_leave: None,
             member_action: None,
             quick_switcher: None,
             activity_shelf: None,
@@ -872,6 +925,7 @@ impl Root {
             plus_menu: false,
             schedule: Default::default(),
             modify_attachment: None,
+            sent_edit: None,
             snooze_menu: None,
             click_at: gpui::Point::default(),
             leave_guild: None,
@@ -925,6 +979,7 @@ impl Root {
             discover: discover::State::default(),
             shop: shop::State::default(),
             quests: quests::State::default(),
+            message_requests: message_requests::State::default(),
             tip_anchors: Rc::default(),
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
@@ -979,9 +1034,17 @@ impl Root {
                     self.put_app_toast(reason, false, cx);
                 }
             }
+            Update::SendResult {
+                channel,
+                nonce,
+                outcome,
+            } => self.send_finished(channel, &nonce, outcome, cx),
             Update::Dispatch { name, data } => {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
+                if name == "MESSAGE_CREATE" {
+                    self.send_echo(&data);
+                }
                 self.stores.dispatch(&name, &data);
                 self.channel_info_check();
                 self.calls_after_dispatch(&name, cx);
@@ -1006,6 +1069,18 @@ impl Root {
                     } else {
                         self.rebuild_rows();
                     }
+                }
+                if matches!(
+                    name.as_str(),
+                    "RECENT_MENTION_DELETE" | "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK"
+                ) {
+                    self.mentions_deleted(&name, &data, cx);
+                }
+                if name == "QUESTS_USER_STATUS_UPDATE" {
+                    self.quests.store.apply_gateway_status(&data);
+                }
+                if name == "QUESTS_USER_COMPLETION_UPDATE" {
+                    self.quests.store.apply_completion_update(&data);
                 }
                 if name == "CONTENT_INVENTORY_INBOX_STALE" {
                     self.inventory_stale(&data, cx);
@@ -1119,6 +1194,7 @@ impl Root {
             } => {
                 let anchor = self.scroll_anchor();
                 self.stores.load_messages_since(channel, &page, started_ms);
+                self.reinsert_local_sends(channel);
                 if Some(channel) == self.channel {
                     start_cache::save_messages(channel, &page);
                 }
@@ -1144,6 +1220,32 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
             Update::Fetched { key, body } => {
+                if key.starts_with(message_requests::KEY_PREFIX) {
+                    self.message_requests_fetched(&key, &body, cx);
+                    return;
+                }
+                if key == channel_status::STATUS_KEY {
+                    self.voice_status_answered(&body, cx);
+                    return;
+                }
+                if key == announcements::FOLLOW_KEY {
+                    self.follow_answered(&body, cx);
+                    return;
+                }
+                if key == announcements::CROSSPOST_KEY {
+                    return;
+                }
+                if key == stage::STAGE_KEY {
+                    self.stage_answered(&body, cx);
+                    return;
+                }
+                if let Some(channel) = key
+                    .strip_prefix(announcements::STATS_KEY)
+                    .and_then(|rest| rest.parse::<Id>().ok())
+                {
+                    self.follower_stats_answered(channel, &body, cx);
+                    return;
+                }
                 self.thread_members_fetched(&key, &body);
                 if key.starts_with(voice_message::VOICE_SEND_KEY) {
                     self.voice_sent(&body, cx);
@@ -1185,6 +1287,9 @@ impl Root {
                 }
                 if key == settings::ACCOUNT_FORM_KEY {
                     self.account_form_fetched(&body, cx);
+                    return;
+                }
+                if self.connection_authorize_answered(&key, &body, cx) {
                     return;
                 }
                 if self.settings_fetched(&key, &body) {
@@ -1658,6 +1763,7 @@ impl Root {
                 discover: None,
                 quests: false,
                 shop: false,
+                message_requests: false,
             },
         );
         self.discover.open = false;
@@ -2706,21 +2812,9 @@ impl Root {
             if let Some(sticker) = staged {
                 // `STICKER_TRACK_USAGE` follows the send.
                 self.stores.stickers.track(&[sticker], picker::now_ms());
-                let _ = self.requests.send(Request::SendSticker {
-                    channel,
-                    content,
-                    files,
-                    reply,
-                    sticker_ids: vec![sticker],
-                });
-            } else {
-                let _ = self.requests.send(Request::Send {
-                    channel,
-                    content,
-                    files,
-                    reply,
-                });
             }
+            // The row shows at once and the message waits in the send queue (`send_state`).
+            self.start_local_send(channel, content, files, reply, staged.into_iter().collect());
         }
     }
 
@@ -2875,6 +2969,7 @@ impl Root {
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
         list.extend(self.custom_status.as_ref().map(|open| open.input.clone()));
         list.extend(self.friend_nickname.as_ref().map(|open| open.input.clone()));
+        list.extend(self.group_edit.as_ref().map(|open| open.input.clone()));
         list.extend(self.member_action_input());
         list.extend(self.modify_attachment_editors());
         if let Some(form) = self.poll.as_ref() {
@@ -2988,6 +3083,7 @@ impl Root {
         list.extend(self.gifs.as_ref().map(|gifs| gifs.search.clone()));
         list.extend(self.sticker_ui.search());
         list.extend(self.create_channel.as_ref().map(|form| form.name.clone()));
+        list.extend(self.channel_status_fields());
         list.extend(self.guild_events_editors());
         list.extend(self.schedule_editors());
         list.extend(self.search.as_ref().map(|search| search.field.clone()));
@@ -3020,11 +3116,14 @@ impl Root {
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
+            _ if self.in_favorites() => "Favorites".to_owned(),
             (Some(guild), _) => guild.name.clone(),
             (None, None) if self.discover_active() => "Discover".to_owned(),
             (None, None) if self.nitro_open => "Nitro".to_owned(),
             (None, None) if self.quests_active() => "Quests".to_owned(),
             (None, None) if self.shop_active() => "Shop".to_owned(),
+            // The title bar of /message-requests carries no title (golden message-requests/requests-empty).
+            (None, None) if self.message_requests_active() => String::new(),
             (None, None) => "Friends".to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
             (None, Some(_)) => "Direct Messages".to_owned(),
@@ -3076,6 +3175,8 @@ impl Root {
                         icon("home_quests", 18., "--text-default").into_any_element()
                     } else if self.shop_active() {
                         icon("home_shop", 18., "--text-default").into_any_element()
+                    } else if self.message_requests_active() {
+                        div().into_any_element()
                     } else {
                         icon("home_friends", 16., "--text-default").into_any_element()
                     })
@@ -3124,7 +3225,7 @@ impl Root {
 
     fn rail_item(&self, guild: &Guild, cx: &mut Context<Self>) -> impl IntoElement {
         let id = guild.id;
-        let selected = self.guild == Some(id);
+        let selected = self.guild == Some(id) && !self.in_favorites();
         let counts = self.guild_rail_counts(guild);
         let image = self.images.get(&format!("guild:{id}")).cloned();
         let row_key = format!("guild-{id}");
@@ -3249,6 +3350,7 @@ impl Root {
                 .items_center()
                 .gap(px(8.))
                 .child(self.home_tile(cx))
+                .children(self.favorites_tile(cx))
                 .children(self.unread_dm_rail(cx))
                 .child(
                     div()
@@ -3485,6 +3587,8 @@ impl Root {
         let name = channel_icon::name(&facts);
         let group = SharedString::from(format!("channel-{}", channel.id));
         let voice = channel.kind == ChannelKind::Voice;
+        // The status line under the name (`linkBottom_TNyK-N`) makes the row 50 tall.
+        let two_line = self.voice_row_has_line(channel);
         let actions: &[&str] = if voice {
             &["voice_action_1", "voice_action_2", "voice_action_3"]
         } else {
@@ -3501,7 +3605,7 @@ impl Root {
         let timer = in_call.then(|| self.call_timer()).flatten().map(|text| {
             div()
                 .absolute()
-                .right(px(8.))
+                .right(px(0.))
                 .text_size(px(12.))
                 .line_height(px(16.))
                 .font_family(MONO)
@@ -3540,7 +3644,7 @@ impl Root {
         div()
             .flex_none()
             .relative()
-            .h(px(if in_call {
+            .h(px(if two_line {
                 50.
             } else {
                 34. + self.name_line_extra()
@@ -3603,7 +3707,7 @@ impl Root {
                     }
                 }))
                 .group(group)
-                .h(px(if in_call {
+                .h(px(if two_line {
                     48.
                 } else {
                     32. + self.name_line_extra()
@@ -3612,7 +3716,7 @@ impl Root {
                 .pl(px(8.))
                 .pr(px(8.))
                 .rounded(px(8.))
-                .when(in_call, |this| this.pt(px(4.)))
+                .when(two_line, |this| this.pt(px(4.)))
                 .flex()
                 .flex_col()
                 // `.modeSelected .link`, `.wrapper:hover .link` and `.wrapper:active .link`: the pressed look wins over
@@ -3628,7 +3732,7 @@ impl Root {
                 .child(
                     div()
                         .w_full()
-                        .h(px(if in_call {
+                        .h(px(if two_line {
                             24.
                         } else {
                             32. + self.name_line_extra()
@@ -3720,7 +3824,11 @@ impl Root {
                                 ),
                         ),
                 )
-                .when(in_call, |this| this.child(voice::status_line())),
+                .children(
+                    two_line
+                        .then(|| self.voice_status_line(channel, cx))
+                        .flatten(),
+                ),
             )
             .into_any_element()
     }
@@ -3768,8 +3876,24 @@ impl Root {
                             .collapsed
                     })
                 };
-                guild
-                    .sidebar_rows()
+                // Pinned channels (`FAVORITED`) leave their category for the favourites section above the rest
+                // (`favoritesCategory` of module 791513; `eg` hides them in their own category).
+                let mut ordered = guild.sidebar_rows();
+                let pinned: Vec<&Channel> = ordered
+                    .iter()
+                    .copied()
+                    .filter(|row| {
+                        row.kind != ChannelKind::Category
+                            && self.stores.guild_settings.channel(guild.id, row.id).flags & 2048
+                                != 0
+                    })
+                    .collect();
+                ordered.retain(|row| !pinned.iter().any(|known| known.id == row.id));
+                ordered.splice(0..0, pinned.iter().copied());
+                let collapsed = |row: &Channel| {
+                    !pinned.iter().any(|known| known.id == row.id) && collapsed(row.parent_id)
+                };
+                ordered
                     .into_iter()
                     .filter(|row| self.followed_sidebar_row(guild, row))
                     // Selected channels and mentions precede mute/collapse filtering (791513.eA).
@@ -3785,7 +3909,7 @@ impl Root {
                     })
                     .filter(|row| {
                         row.kind == ChannelKind::Category
-                            || !collapsed(row.parent_id)
+                            || !collapsed(row)
                             || self.sidebar_channel_attention(guild, row)
                     })
                     .flat_map(|row| {
@@ -3794,7 +3918,10 @@ impl Root {
                             rows.extend(self.thread_rows(row.id, cx));
                         }
                         if row.kind == ChannelKind::Voice {
-                            rows.extend(self.voice_members(guild.id, row.id, cx));
+                            // Hide Names collapses the channel (`CollapsedVoiceChannelStore`): no participant rows.
+                            if !self.names_hidden(row.id) {
+                                rows.extend(self.voice_members(guild.id, row.id, cx));
+                            }
                             rows.extend(self.voice_activity_rows(row.id, cx));
                             rows.extend(self.voice_invite_row(guild.id, row.id, cx));
                         }
@@ -3897,6 +4024,7 @@ impl Root {
             )
             .child(div().flex_none().h(px(12.)))
             .children(self.guild_guide_rows(cx))
+            .children(self.boost_progress_row(cx))
             .children(self.channel_browser_row(cx))
             .when(self.sidebar_has_events(), |sidebar| {
                 sidebar.child(self.guild_events_row(cx))
@@ -4289,6 +4417,10 @@ impl Root {
             .current_dm()
             .and_then(|channel| self.stores.dm_recipient(channel))
             .cloned();
+        let group_channel = self
+            .current_dm()
+            .filter(|channel| channel.kind == 3)
+            .cloned();
         let muted = self.channel_muted_now();
         let search = format!(
             "Search {}",
@@ -4406,28 +4538,35 @@ impl Root {
                         .child(status_dot_small(&presence, "--background-base-lower")),
                 )
             })
-            .child(
-                div()
-                    .ml(px(if dm_user.is_some() { 8. } else { 9. }))
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    // 181254: a DM's title draws the other person's name style, the effect only under the pointer, and
-                    // the bold fonts at 0.9 opacity.
-                    .child(
-                        name_styles::name(
-                            "dm-title",
-                            name,
-                            dm_user
-                                .as_ref()
-                                .and_then(|user| self.name_styles(user, None))
-                                .as_ref(),
-                            name_styles::Display::FontOnHover,
-                        )
-                        .bold_opacity(0.9),
-                    ),
-            )
+            .when_some(group_channel.clone(), |this, channel| {
+                this.child(self.group_header_name(&channel, cx))
+            })
+            .when(group_channel.is_none(), |this| {
+                this.child(
+                    div()
+                        .ml(px(if dm_user.is_some() { 8. } else { 9. }))
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        // 181254: a DM's title draws the other person's name style, the effect only under the pointer, and
+                        // the bold fonts at 0.9 opacity.
+                        .child(
+                            name_styles::name(
+                                "dm-title",
+                                name,
+                                dm_user
+                                    .as_ref()
+                                    .and_then(|user| self.name_styles(user, None))
+                                    .as_ref(),
+                                name_styles::Display::FontOnHover,
+                            )
+                            .bold_opacity(0.9),
+                        ),
+                )
+            })
+            // `renderFollowButton` (module 353428 `zF`): right after the title of an announcement channel.
+            .children(self.follow_button(cx))
             // `dmHeaderActivityStatus_z_gUBg`: 8px after the title, 4px gap, the clickable part 2px 4px with an 8px
             // radius holding the activity's glyph and text (14px / 18px medium).
             .children(
@@ -4601,7 +4740,7 @@ impl Root {
                             self.header_stop(div().id("toggle-members"), "toggle-members", cx)
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.show_members = !this.show_members;
+                                    this.group_members = !this.group_members;
                                     cx.notify();
                                 }))
                                 .child(
@@ -4613,7 +4752,7 @@ impl Root {
                                         .child(icon(
                                             "members",
                                             20.,
-                                            if self.show_members {
+                                            if self.group_members {
                                                 "--text-strong"
                                             } else {
                                                 "--text-muted"
@@ -4838,6 +4977,7 @@ impl Root {
             run_font.weight = FontWeight(weight);
         }
         let tint = match span.kind {
+            Kind::Link(_) if self.failed_tint.get() => hsla("--text-feedback-critical"),
             Kind::Link(_) => hsla("--text-link"),
             _ if mention => hsla("--mention-foreground"),
             // A hidden spoiler paints its text in the box's own color.
@@ -5682,7 +5822,11 @@ impl Root {
     }
 
     fn content(&self, message: &Message) -> impl IntoElement {
-        let text = hsla("--text-default");
+        let text = hsla(if self.failed_tint.get() {
+            "--text-feedback-critical"
+        } else {
+            "--text-default"
+        });
         let blocks = parse(&message.content);
         let gaps = block_gaps(&blocks);
         // The last item's bottom margin stays inside the message.
@@ -5877,11 +6021,16 @@ impl Root {
                     .current_user
                     .as_ref()
                     .is_some_and(|user| user.id == message.author.id);
-                let hovered = self.hovered == Some(id);
+                // The row whose context menu is open keeps its hover tint and toolbar (the `contextMenuOpen` message
+                // state; frames message-menu/*, audio-attachment/context-menu).
+                let menu_open = self.menu.is_some_and(|open| open.message == id);
+                let hovered = self.hovered == Some(id) || menu_open;
                 // `.replying` and `.highlighted` (524434): the highlight tint with a 2px brand bar; `.mentioned`: the
                 // warning tint with a 2px warning bar. The hover tints differ per state.
                 let replying = self.replying.as_ref().is_some_and(|reply| reply.id == id);
                 let mentioned = !replying && self.mentions_me(message);
+                let ephemeral =
+                    !replying && message.flags & dc_state::components::FLAG_EPHEMERAL != 0;
                 let (rest, over, bar) = if replying {
                     (
                         Some("--message-highlight-background-default"),
@@ -5897,6 +6046,16 @@ impl Root {
                         Some("--message-mentioned-background-default"),
                         color("--message-mentioned-background-hover"),
                         Some("--icon-feedback-warning"),
+                    )
+                } else if ephemeral {
+                    // `.ephemeral`: `--brand-05a` with a 2px `--brand-500` bar; hover `--brand-10a` (SY_P2T).
+                    (
+                        None,
+                        gpui::Rgba {
+                            a: 0.1,
+                            ..color("--brand-500")
+                        },
+                        Some("--brand-500"),
                     )
                 } else {
                     (None, color("--message-background-hover"), None)
@@ -5916,6 +6075,13 @@ impl Root {
                     .relative()
                     .children(self.flash_layers(id))
                     .when_some(rest, |this, token| this.bg(color(token)))
+                    .when(ephemeral && !mentioned, |this| {
+                        this.bg(gpui::Rgba {
+                            a: 0.05,
+                            ..color("--brand-500")
+                        })
+                    })
+                    .when(menu_open, |this| this.bg(over))
                     .children(bar.map(|token| {
                         div()
                             .absolute()
@@ -5948,7 +6114,16 @@ impl Root {
                         )
                     })
                     .when(hovered && editing.is_none() && !is_starter, |this| {
-                        this.child(self.message_toolbar(message, own, cx))
+                        // No bar while a message is sending, Retry and Delete once it failed, and none on a private
+                        // message (module 891522).
+                        match self.send_state_of(id) {
+                            Some(send_state::SendState::Sending) => this,
+                            Some(send_state::SendState::Failed) => {
+                                this.child(self.failed_toolbar(id, cx))
+                            }
+                            None if message.flags & 64 != 0 => this,
+                            None => this.child(self.message_toolbar(message, own, cx)),
+                        }
                     });
                 let content = match editing {
                     Some(editor) => self.edit_box(editor).into_any_element(),
@@ -5957,7 +6132,24 @@ impl Root {
                         .when(
                             !message.content_is_inline_media()
                                 && !self.command_replaces_content(message),
-                            |this| this.child(self.content(message)),
+                            |this| {
+                                // `isFailed` colours the text, the links and the inline code; `isSending` fades the
+                                // content (module 74096).
+                                let state = self.send_state_of(id);
+                                self.failed_tint
+                                    .set(state == Some(send_state::SendState::Failed));
+                                let content = self.content(message);
+                                self.failed_tint.set(false);
+                                this.child(
+                                    div()
+                                        .when(
+                                            state == Some(send_state::SendState::Sending)
+                                                && !matches!(message.kind, 20 | 23),
+                                            |this| this.opacity(0.5),
+                                        )
+                                        .child(content),
+                                )
+                            },
                         )
                         .children(self.command_status(message))
                         .children(self.forwarded_block(message, cx))
@@ -6383,6 +6575,7 @@ impl Root {
                     })
                 }),
             )
+            .children(self.publish_button(message, &button, cx))
             .child(
                 self.with_tip(
                     "toolbar-more",
@@ -6473,6 +6666,8 @@ impl Root {
                 ""
             } else if self.guild.is_some() {
                 "#"
+            } else if self.current_dm().is_some_and(|channel| channel.kind == 3) {
+                ""
             } else {
                 "@"
             };
@@ -6783,7 +6978,15 @@ impl Root {
                                     .child(
                                         div()
                                             .flex_1()
-                                            .min_w(px(80.))
+                                            // The text area has no minimum of its own (`.textArea_2x8-Qn` fills the
+                                            // scroller): a narrow window clips the hint under the buttons instead of
+                                            // pushing it over them. After a command's chip the editor keeps 80px so
+                                            // it wraps onto its own line.
+                                            .min_w(px(if self.slash.pending.is_some() {
+                                                80.
+                                            } else {
+                                                0.
+                                            }))
                                             .on_mouse_down(
                                                 MouseButton::Right,
                                                 cx.listener(
@@ -7107,6 +7310,12 @@ fn window_controls() -> impl IntoElement {
 
 fn avatar_source(user: &User) -> (String, String) {
     match &user.avatar {
+        // Clyde's local notices: the bot's own image, a client asset (`/assets/9380e4b5bd8d267c.png` in the row of
+        // design/dom/failed-message/clyde-notice-darker-cozy.json).
+        Some(hash) if user.bot && user.id == 1 && hash == "clyde" => (
+            "avatar:clyde".to_owned(),
+            "https://discord.com/assets/9380e4b5bd8d267c.png".to_owned(),
+        ),
         Some(hash) => (
             format!("avatar:{}:{hash}", user.id),
             format!(
@@ -7160,7 +7369,9 @@ impl Render for Root {
         self.sync_focus(window, cx);
         self.pump_window(window);
         self.request_rail_dm_images();
+        self.request_group_images();
         self.rail_folders_frame(cx);
+        self.accounts_frame(cx);
         self.prepare_nameplate_animations(window, cx);
         self.profile_effects_sweep(window, cx);
         self.sticker_player_sweep(window, cx);
@@ -7228,10 +7439,13 @@ impl Render for Root {
             .and_then(|channel| self.stores.dm_recipient(channel))
         {
             Some(user) => user.username.clone(),
-            None => self
-                .current_guild()
-                .map(|guild| guild.name.clone())
-                .unwrap_or_default(),
+            None => match self.current_dm().filter(|channel| channel.kind == 3) {
+                Some(channel) => self.private_channel_name(channel),
+                None => self
+                    .current_guild()
+                    .map(|guild| guild.name.clone())
+                    .unwrap_or_default(),
+            },
         };
         self.search_field(format!("Search {place}"), cx);
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
@@ -7243,6 +7457,8 @@ impl Render for Root {
             320.
         } else if self.show_members && self.guild.is_some() {
             self.member_list_width()
+        } else if self.group_members_shown() {
+            self.member_list_width() + 1.
         } else {
             0.
         };
@@ -7424,6 +7640,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.thread_modal {
+                    this.thread_modal = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.sent_edit.is_some() {
+                    this.sent_edit = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.modify_attachment.is_some() {
                     this.modify_attachment = None;
                     cx.notify();
@@ -7433,6 +7661,14 @@ impl Render for Root {
                 if keys.key == "escape" && this.settings_extra.has_dialog() {
                     this.settings_extra.close_dialog();
                     cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.account_switcher_escape(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.folder_settings_escape(cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -7518,7 +7754,8 @@ impl Render for Root {
                         && open.sticker_dialog.is_some()
                     {
                         open.sticker_dialog = None;
-                    } else if this.close_access_overlay()
+                    } else if this.close_boost_page()
+                        || this.close_access_overlay()
                         || this.close_onboarding_overlay()
                         || this.close_automod_overlay()
                         || this.close_safety_overlay()
@@ -7623,8 +7860,12 @@ impl Render for Root {
                     && (this.friend_menu.is_some()
                         || this.confirm_remove_friend.is_some()
                         || this.friend_nickname.is_some()
+                        || this.group_edit.is_some()
+                        || this.group_leave.is_some()
                         || this.member_action.is_some())
                 {
+                    this.group_edit = None;
+                    this.group_leave = None;
                     this.friend_menu = None;
                     this.confirm_remove_friend = None;
                     this.friend_nickname = None;
@@ -7713,7 +7954,7 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.settings.is_some() {
-                    this.close_settings(cx);
+                    this.settings_escape(cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.escape_chain(window, cx) {
                     cx.stop_propagation();
@@ -7800,6 +8041,7 @@ impl Render for Root {
             .children(self.community_select_layer(cx))
             .children(self.overview_select_layer(cx))
             .children(self.boost_perks_modal(cx))
+            .children(self.boost_page_overlay(cx))
             .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
             .children(self.discovery_select_layer(cx))
@@ -7863,6 +8105,8 @@ impl Render for Root {
                     self.quests_page(window, cx)
                 } else if self.shop_active() {
                     self.shop_page(window, cx)
+                } else if self.message_requests_active() {
+                    self.message_requests_page(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(window, cx).into_any_element()
                 } else if self
@@ -7873,6 +8117,8 @@ impl Render for Root {
                     self.member_safety_view(cx)
                 } else if self.voice_view_open() {
                     self.voice_view(window, cx)
+                } else if self.stage_view_open() {
+                    self.stage_view(cx)
                 } else if self.guild_guide_open && self.guild.is_some() {
                     self.guild_guide_view(cx)
                 } else if self.channel_browser_open && self.guild.is_some() {
@@ -7945,6 +8191,9 @@ impl Render for Root {
                                                         None if self.screening_pending() => {
                                                             self.screening_composer(cx)
                                                         }
+                                                        None if self.follow_blocker_applies() => {
+                                                            self.follow_composer(cx)
+                                                        }
                                                         None => self
                                                             .regions
                                                             .place_composer()
@@ -7978,7 +8227,8 @@ impl Render for Root {
                                                 ))
                                             },
                                         )
-                                        .children(self.dm_profile(window, cx)),
+                                        .children(self.dm_profile(window, cx))
+                                        .children(self.group_members_panel(cx)),
                                 ),
                         )
                         .children(self.new_thread_panel(cx))
@@ -8015,15 +8265,22 @@ impl Render for Root {
             .children(self.invite_modal(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
+            .children(self.channel_status_modal(window, cx))
+            .children(self.follow_modal(cx))
+            .children(self.start_stage_modal(window, cx))
+            .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
             .children(self.thread_browser_popout(window, cx))
+            .children(self.active_threads_modal(cx))
             .children(self.inbox_popout(window, cx))
             .children(self.mentions_filter_layer(cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
+            .children(self.group_edit_layer(window, cx))
+            .children(self.group_leave_layer(cx))
             .children(self.member_action_layer(window, cx))
             .children(self.inventory_about_layer(cx))
             .children(self.group_dm_modal(window, cx))
@@ -8051,8 +8308,15 @@ impl Render for Root {
             .children(self.plus_menu_layer(window, cx))
             .children(self.leave_modal(cx))
             .children(self.logout_modal(cx))
+            .children(self.manage_accounts_modal(cx))
+            .children(self.add_account_modal(cx))
+            .children(self.account_more_menu(cx))
+            .children(self.folder_settings_modal(cx))
+            .children(self.folder_picker_layer(cx))
+            .children(self.folder_menu_layer(cx))
             .children(self.settings_dialogs(cx))
             .children(self.modify_attachment_modal(cx))
+            .children(self.sent_edit_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))
             .children(self.schedule_modal_layer(window, cx))

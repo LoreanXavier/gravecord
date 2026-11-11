@@ -195,6 +195,11 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
             }
+            ["accounts", rest @ ..] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_accounts(rest, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             ["rail", rest @ ..] => {
                 let note = cx.update(|cx| root.update(cx, |root, cx| root.script_rail(rest, cx)));
                 let _ = writeln!(output, "{note}");
@@ -320,6 +325,30 @@ pub async fn run(
                     })
                 });
                 let _ = writeln!(output, "{note:?}");
+            }
+            // Message Requests: fixture events only, nothing is sent (`ui/message_requests.rs`).
+            ["mr", rest @ ..] => {
+                let note = cx.update(|cx| {
+                    root.update(cx, |root, cx| root.script_message_requests(rest, cx))
+                });
+                let _ = writeln!(output, "{note}");
+            }
+            // Capture only: `gw <NAME> <json>` hands the root a gateway dispatch, as the socket would.
+            ["gw", name, json @ ..] => {
+                let text = json.join(" ");
+                let note = match serde_json::from_str(&text) {
+                    Ok(data) => {
+                        let name = (*name).to_owned();
+                        cx.update(|cx| {
+                            root.update(cx, |root, cx| {
+                                root.update(crate::net::Update::Dispatch { name, data }, cx)
+                            })
+                        });
+                        "gw: dispatched".to_owned()
+                    }
+                    Err(error) => format!("gw: not json: {error}"),
+                };
+                let _ = writeln!(output, "{note}");
             }
             ["friends", tab] => {
                 let note = cx.update(|cx| {
@@ -575,6 +604,11 @@ pub async fn run(
                 let page = (*page).to_owned();
                 root.update(cx, |root, cx| root.open_settings_page(&page, cx));
             }
+            // `settings-url`: the last address a settings link or connection button would have opened.
+            ["settings-url"] => {
+                let url = root.update(cx, |root, _| root.settings_last_url());
+                let _ = writeln!(output, "settings url: {}", url.unwrap_or_default());
+            }
             // Go Live from the synthetic pattern, only when nobody else is in the channel; ends by itself after ten
             // seconds. The outcome goes to the log.
             ["stream", "start"] => {
@@ -709,6 +743,25 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // Capture only: `window minimize` / `window activate` change the window's own state, so the caret's wake
+            // count can be read with the window minimised (`motion idle`).
+            ["window", state @ ("minimize" | "activate")] => {
+                let minimize = *state == "minimize";
+                let _ = window.update(cx, |_, window, _| {
+                    if minimize {
+                        window.minimize_window();
+                    } else {
+                        window.activate_window();
+                    }
+                });
+                let active = window.update(cx, |_, window, _| window.is_window_active());
+                let _ = writeln!(output, "window: {state}, active={active:?}");
+            }
+            // Capture only: `link <url>` opens a `discord://` or discord.com link in the app, as a click on it would.
+            ["link", url] => {
+                let line = root.update(cx, |root, cx| root.script_deep_link(url, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // Capture only: `webhook demo` posts the component messages of `webhook_demo.rs` to the fixture channel.
             ["webhook", "demo"] => {
                 root.update(cx, |root, _| root.send_webhook_demo());
@@ -717,6 +770,11 @@ pub async fn run(
             // Capture only: `interaction press|create|success|failure|state` (`ui/interaction_flow.rs`).
             ["interaction", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_interaction(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|state` (`ui/send_state.rs`).
+            ["send", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_send(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
             // Capture only: `poll demo|create|delete|gateway|state|voters|end` (`ui/poll.rs`).

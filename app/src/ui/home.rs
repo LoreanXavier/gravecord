@@ -23,11 +23,13 @@ impl Root {
                 discover: None,
                 quests: false,
                 shop: false,
+                message_requests: false,
             },
         );
         self.discover.open = false;
         self.shop.open = false;
         self.quests.open = false;
+        self.message_requests.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
@@ -67,7 +69,7 @@ impl Root {
     }
 
     pub(super) fn home_tile(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.guild.is_none() && !self.discover.open;
+        let selected = self.guild.is_none() && !self.discover.open && !self.in_favorites();
         let requests = self.friend_request_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
         let row_key = "home";
@@ -160,6 +162,7 @@ impl Root {
                             "nitro" => "nitro-link",
                             "shop" => "shop-link",
                             "quests" => "quests-link",
+                            "message-requests" => "message-requests-link",
                             _ => "friends-link",
                         })
                         .bg(color("--interactive-background-selected"))
@@ -172,7 +175,9 @@ impl Root {
                     .child(icon(name, 20., tint))
                     .child(
                         div()
-                            .when(id == "friends", |label| label.flex_1())
+                            .when(id == "friends" || id == "message-requests", |label| {
+                                label.flex_1()
+                            })
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
@@ -188,11 +193,32 @@ impl Root {
                             )
                             .mr(px(16.)),
                         )
-                    }),
+                    })
+                    // `IL`: the badge counts message requests, not spam, and only above zero.
+                    .when(
+                        id == "message-requests" && self.stores.message_requests_count() > 0,
+                        |row| {
+                            row.child(
+                                super::unread_badges::number(
+                                    self.stores.message_requests_count() as u64,
+                                    "--badge-notification-background",
+                                    Some("message-requests-badge"),
+                                )
+                                .mr(px(16.)),
+                            )
+                        },
+                    ),
             )
     }
 
-    fn dm_row(&self, channel: &PrivateChannel, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn dm_row(
+        &self,
+        channel: &PrivateChannel,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if channel.kind == 3 {
+            return Some(self.group_list_row(channel, cx));
+        }
         let recipient = self.stores.dm_recipient(channel)?.clone();
         // Blocked or ignored people carry their mark where the close button would be.
         let marked = self.is_blocked(recipient.id) || self.stores.is_ignored(recipient.id);
@@ -423,6 +449,12 @@ impl Root {
     }
 
     pub(super) fn close_dm(&mut self, channel: Id, cx: &mut Context<Self>) {
+        self.close_dm_with(channel, false, cx);
+    }
+
+    /// `closePrivateChannel(id, _, silent)`: the channel goes at once, then the service is told (`silent` leaves a group
+    /// without a system message).
+    pub(super) fn close_dm_with(&mut self, channel: Id, silent: bool, cx: &mut Context<Self>) {
         self.stores
             .private_channels
             .retain(|known| known.id != channel);
@@ -432,7 +464,7 @@ impl Root {
         let _ = self.requests.send(crate::net::Request::Rest {
             key: None,
             method: reqwest::Method::DELETE,
-            route: format!("/channels/{channel}?silent=false"),
+            route: format!("/channels/{channel}?silent={silent}"),
             body: None,
         });
         cx.notify();
@@ -441,16 +473,27 @@ impl Root {
     pub(super) fn home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let shop_selected = self.shop_active();
         let quests_selected = self.quests_active();
+        let requests_selected = self.message_requests_active();
         let friends_selected = self.guild.is_none()
             && self.channel.is_none()
             && !self.nitro_open
             && !shop_selected
-            && !quests_selected;
+            && !quests_selected
+            && !requests_selected;
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
-        let rows: Vec<AnyElement> = self
+        // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
+        // "@me" override flag) come first, each group newest first.
+        let mut listed: Vec<_> = self
             .stores
             .private_channels
             .iter()
+            .filter(|channel| !channel.is_request())
+            .collect();
+        listed.sort_by_key(|channel| {
+            self.stores.guild_settings.channel(0, channel.id).flags & 2048 == 0
+        });
+        let rows: Vec<AnyElement> = listed
+            .into_iter()
             .filter_map(|channel| self.dm_row(channel, cx))
             .collect();
         div()
@@ -510,6 +553,17 @@ impl Root {
                         cx.notify();
                     })),
             )
+            // 596339 `Iy` sits after Friends; 309199 `SM`: it shows while the requests or the spam list is not empty.
+            .children(self.stores.message_requests_entry_visible().then(|| {
+                self.home_link(
+                    "message-requests",
+                    "message_requests_envelope",
+                    "Message Requests",
+                    requests_selected,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
+            }))
             .child(
                 self.home_link("nitro", "home_nitro", "Nitro", nitro_selected)
                     .cursor_pointer()

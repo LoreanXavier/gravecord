@@ -127,14 +127,14 @@ impl Root {
                     body: json!({"guilds": {guild.to_string(): {"hide_muted_channels": hide}}}),
                 });
             }
+            // "Active Threads" opens the "All Active Threads" modal (module 400954).
             Entry::ActiveThreads => {
-                if self.thread_browser.is_none() {
-                    self.toggle_thread_browser(window, cx);
-                }
+                self.thread_modal = true;
+                cx.notify();
             }
             Entry::Profile => self.open_settings_section("Account", cx),
             Entry::Privacy => self.open_settings_section("Data & Privacy", cx),
-            Entry::Boost => self.open_settings_section("Server Boost", cx),
+            Entry::Boost => self.open_boost_page(cx),
             Entry::CreateChannel => self.open_create_channel(false, window, cx),
             Entry::CreateCategory => self.open_create_channel(true, window, cx),
             Entry::Notifications => self.open_guild_notifications(cx),

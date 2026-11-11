@@ -4,6 +4,7 @@ mod autostart;
 mod branding;
 #[cfg(windows)]
 mod clips_capture;
+mod deep_link;
 mod editor;
 mod fonts;
 mod games;
@@ -24,6 +25,7 @@ mod parity;
 mod perf;
 mod rive;
 mod rpc;
+mod send_policy;
 mod shell;
 mod sounds;
 mod speech;
@@ -292,6 +294,23 @@ fn initial_start() -> shell::Start {
     }
 }
 
+/// Opens a link of the app in the main view. The view may still be starting (or showing the login), so this waits for
+/// it, a minute at most.
+async fn open_link_when_ready(
+    shell: gpui::Entity<shell::Shell>,
+    url: String,
+    cx: &mut gpui::AsyncApp,
+) {
+    for _ in 0..300 {
+        if shell.update(cx, |shell, cx| shell.open_link(&url, cx)) {
+            return;
+        }
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(200))
+            .await;
+    }
+}
+
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -311,6 +330,14 @@ fn run() -> Result<()> {
     // Read once by gpui's renderer. Set before any other thread exists.
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
+    }
+    // The installer's call: register `discord://` for this executable and exit. A capture run never does.
+    if std::env::args().any(|arg| arg == deep_link::ARG_REGISTER) {
+        if !storage::is_capture_run() {
+            deep_link::register_protocol()
+                .context("the discord:// protocol could not be registered")?;
+        }
+        return Ok(());
     }
     let (mut instance, instance_error) = match instance::claim() {
         Ok(instance::Launch::Forwarded) => return Ok(()),
@@ -415,7 +442,17 @@ fn run() -> Result<()> {
                 cx.activate(true);
             }
 
+            // A `discord://` link this launch was started with opens once the main view is ready.
+            if !storage::is_capture_run()
+                && let Some(url) = deep_link::url_from_args(std::env::args())
+                && deep_link::parse(&url).is_some()
+            {
+                let target = shell.clone();
+                cx.spawn(async move |cx| open_link_when_ready(target, url, cx).await)
+                    .detach();
+            }
             if let Some(mut requests) = restore_requests {
+                let link_target = shell.clone();
                 cx.spawn(async move |cx| {
                     while requests.recv().await.is_some() {
                         if window
@@ -423,6 +460,14 @@ fn run() -> Result<()> {
                             .is_err()
                         {
                             break;
+                        }
+                        // A second launch that carried a link left it in a file before signalling.
+                        if let Some(dir) = storage::data_dir()
+                            && let Some(url) = deep_link::take_pending(&dir)
+                        {
+                            let target = link_target.clone();
+                            cx.spawn(async move |cx| open_link_when_ready(target, url, cx).await)
+                                .detach();
                         }
                         // Tells the launch that asked that this instance is alive and handled it.
                         if let Some(acknowledger) = &acknowledger {

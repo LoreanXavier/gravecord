@@ -37,6 +37,8 @@ pub(super) enum Target {
     Composer,
     /// The "..." of an application's page in the directory (module 586193 `l4`).
     AppDirectory(Id),
+    /// The Favorites server's star in the rail (module 132598): Thread Settings, Hide Favorites.
+    Favorites,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +88,9 @@ pub(super) enum Act {
     Ignore,
     Block,
     CloseDm,
+    /// "Edit Group" and "Leave Group" of a group DM (module 4027).
+    EditGroup,
+    LeaveGroup,
     PinDm,
     InviteToServer,
     ModView,
@@ -121,13 +126,18 @@ pub(super) enum Act {
     Cut,
     Copy,
     Paste,
+    /// The Favorites server (module 132598): its rail menu and the menu of a channel inside it.
+    GoToServer,
+    FavoritesNickname,
+    FavoritesSettings,
+    HideFavorites,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 69] = [
+    pub(super) const ALL: [Act; 75] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -171,6 +181,8 @@ impl Act {
         Act::Ignore,
         Act::Block,
         Act::CloseDm,
+        Act::EditGroup,
+        Act::LeaveGroup,
         Act::PinDm,
         Act::InviteToServer,
         Act::ModView,
@@ -197,6 +209,10 @@ impl Act {
         Act::MoveMember,
         Act::ChangeNickname,
         Act::RemoveTimeout,
+        Act::GoToServer,
+        Act::FavoritesNickname,
+        Act::FavoritesSettings,
+        Act::HideFavorites,
     ];
 
     #[cfg(test)]
@@ -245,6 +261,8 @@ impl Act {
             Act::Ignore => 38,
             Act::Block => 39,
             Act::CloseDm => 40,
+            Act::EditGroup => 69,
+            Act::LeaveGroup => 70,
             Act::PinDm => 41,
             Act::InviteToServer => 42,
             Act::ModView => 43,
@@ -271,6 +289,10 @@ impl Act {
             Act::MoveMember => 64,
             Act::ChangeNickname => 65,
             Act::RemoveTimeout => 66,
+            Act::GoToServer => 71,
+            Act::FavoritesNickname => 72,
+            Act::FavoritesSettings => 73,
+            Act::HideFavorites => 74,
         }
     }
 }
@@ -287,9 +309,7 @@ pub(super) enum Status {
 pub(super) fn status(act: Act) -> Status {
     use Status::{Missing, Wired};
     match act {
-        Act::Favorite => Missing("favorite channels (user settings proto)"),
-        Act::PinDm => Missing("pinned direct messages (user settings proto)"),
-        Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
+        Act::PinDm | Act::Favorite | Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
         Act::Apps => Wired,
         Act::ModView => Missing("Mod View"),
         Act::InventoryAbout
@@ -330,6 +350,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::Ignore
         | Act::Block
         | Act::CloseDm
+        | Act::EditGroup
+        | Act::LeaveGroup
         | Act::Timeout
         | Act::Kick
         | Act::Ban
@@ -353,7 +375,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::SpellLanguages
         | Act::Cut
         | Act::Copy
-        | Act::Paste => Wired,
+        | Act::Paste
+        | Act::GoToServer
+        | Act::FavoritesNickname
+        | Act::FavoritesSettings
+        | Act::HideFavorites => Wired,
     }
 }
 
@@ -573,7 +599,7 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     )];
     group(
         &mut out,
-        vec![Row::new(Act::Favorite, "Add to Favorites").icon("sb_star")],
+        vec![Row::new(Act::Favorite, "Add to Favorites").icon("clips_star")],
     );
     let mut share = Vec::new();
     if facts.can_invite {
@@ -633,6 +659,52 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     tidy(out)
 }
 
+/// The menu of the Favorites star (frame menus2/favorites-rail-menu).
+pub(super) fn favorites_items() -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::FavoritesSettings, "Thread Settings").icon("menu_create_thread"),
+    )];
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::HideFavorites, "Hide Favorites")
+                .icon("eye_slash")
+                .danger(),
+        ],
+    );
+    tidy(out)
+}
+
+/// The menu of a channel inside the Favorites server (frame menus2/favorites-channel-menu): the unread mark, the way
+/// back to its own server, the favourite's nickname, then the usual link, mute and notification rows, and the removal.
+pub(super) fn favorite_channel_items(unread: bool, level: &str) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+    )];
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::GoToServer, "Go to Server"),
+            Row::new(Act::FavoritesNickname, "Change Nickname"),
+        ],
+    );
+    group(&mut out, vec![Row::new(Act::CopyLink, "Copy Link")]);
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::Mute, "Mute Channel").caret(),
+            Row::new(Act::Notifications, "Notification Settings")
+                .sub(level)
+                .caret(),
+        ],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::Favorite, "Remove from Favorites").danger()],
+    );
+    tidy(out)
+}
+
 pub(super) fn category_items(
     unread: bool,
     collapsed: bool,
@@ -688,7 +760,7 @@ pub(super) fn thread_items(
     )];
     group(
         &mut out,
-        vec![Row::new(Act::Favorite, "Add to Favorites").icon("sb_star")],
+        vec![Row::new(Act::Favorite, "Add to Favorites").icon("clips_star")],
     );
     let mut own = Vec::new();
     if manage || owner {
@@ -858,6 +930,34 @@ fn label_width(window: &Window, text: &str) -> f32 {
     )
 }
 
+/// The menu of a group DM (module 4027 `f`): mark as read, pin and favourite, Edit Group, mute, Leave Group, and the
+/// channel id for developers. Invites (owner only) and Apps are not offered yet.
+pub(super) fn group_items(unread: bool, developer: bool) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+    )];
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::PinDm, "Pin").icon("menu_pin_message"),
+            Row::new(Act::Favorite, "Add to Favorites").icon("clips_star"),
+        ],
+    );
+    group(&mut out, vec![Row::new(Act::EditGroup, "Edit Group")]);
+    group(
+        &mut out,
+        vec![Row::new(Act::Mute, "Mute Conversation").caret()],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::LeaveGroup, "Leave Group").danger()],
+    );
+    if developer {
+        group(&mut out, vec![Row::new(Act::CopyId, "Copy Channel ID")]);
+    }
+    tidy(out)
+}
+
 pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     if let Some(unread) = facts.dm {
@@ -868,7 +968,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
             &mut out,
             vec![
                 Row::new(Act::PinDm, "Pin").icon("menu_pin_message"),
-                Row::new(Act::Favorite, "Add to Favorites").icon("sb_star"),
+                Row::new(Act::Favorite, "Add to Favorites").icon("clips_star"),
             ],
         );
     }
@@ -1077,8 +1177,20 @@ const LEVELS: [(u64, &str); 3] = [(0, "All Messages"), (1, "Only @mentions"), (2
 const INHERIT: u64 = 3;
 /// `UserGuildSettingsChannelFlags.FAVORITED`: the channel is pinned to the top of the list.
 const PINNED: u64 = 2048;
+/// `OPT_IN_ENABLED`: set along with a pin.
+const OPT_IN_ENABLED: u64 = 4096;
 /// The store the official client keeps Hide Names in (`CollapsedVoiceChannelStore`, persisted as `collapsedChannels`).
 const HIDDEN_NAMES: &str = "collapsedChannels";
+
+/// The channel type number the API uses (`channel_type` of a favourite).
+fn channel_type_number(kind: ChannelKind) -> u64 {
+    match kind {
+        ChannelKind::Text => 0,
+        ChannelKind::Voice => 2,
+        ChannelKind::Category => 4,
+        ChannelKind::Other(number) => number,
+    }
+}
 
 /// Which list a channel is ordered in: categories, voice and stage channels, or the text kinds (`a` of module 44757).
 fn order_group(kind: ChannelKind) -> u8 {
@@ -1109,9 +1221,9 @@ fn ordered_group(channels: &[Channel], kind: ChannelKind, parent: Option<Id>) ->
     list
 }
 
-/// Where a channel can go: No Category (id 0) and every category, the one it is in disabled.
+/// Where a channel can go: Uncategorized (id 0, the null category of module 808728) and every category, the one it is in disabled.
 fn move_destinations(channels: &[Channel], me: &Channel) -> Vec<(Id, String, bool)> {
-    let mut list = vec![("No Category".to_owned(), 0, me.parent_id.is_none())];
+    let mut list = vec![("Uncategorized".to_owned(), 0, me.parent_id.is_none())];
     list.extend(
         ordered_group(channels, ChannelKind::Category, None)
             .into_iter()
@@ -1480,13 +1592,17 @@ impl Root {
                     None => (false, None),
                 }
             }
+            Target::Dm(id) => {
+                let entry = self.stores.guild_settings.channel(0, id);
+                (entry.muted, entry.mute_end)
+            }
             _ => (false, None),
         };
         let expired = end.is_some_and(|end| end <= chrono::Utc::now());
         (muted && !expired, end)
     }
 
-    fn names_hidden(&self, channel: Id) -> bool {
+    pub(super) fn names_hidden(&self, channel: Id) -> bool {
         crate::storage::get(HIDDEN_NAMES)
             .is_some_and(|stored| stored[channel.to_string()].as_bool() == Some(true))
     }
@@ -1499,6 +1615,14 @@ impl Root {
         if self.guild_of_channel(id).is_some_and(|guild| {
             self.stores.guild_settings.channel(guild, id).flags & PINNED != 0
         }));
+        let favorite = match target {
+            Target::Channel(id) | Target::Thread(id) | Target::Dm(id) => {
+                self.stores.favorites().is_favorite(id)
+            }
+            _ => false,
+        };
+        let dm_pinned = matches!(target, Target::Dm(id)
+            if self.stores.guild_settings.channel(0, id).flags & PINNED != 0);
         let mut out = Vec::with_capacity(items.len());
         for entry in items {
             let Entry::Row(mut row) = entry else {
@@ -1512,11 +1636,14 @@ impl Root {
                     row.sub = end.map(|end| {
                         format!(
                             "Muted until {}",
-                            end.with_timezone(&chrono::Local).format("%-I:%M %p")
+                            end.with_timezone(&chrono::Local)
+                                .format("%-m/%-d, %-I:%M %p")
                         )
                     });
                 }
                 Act::PinChannel if pinned => row.label = "Unpin Channel".to_owned(),
+                Act::Favorite if favorite => row.label = "Remove from Favorites".to_owned(),
+                Act::PinDm if dm_pinned => row.label = "Unpin".to_owned(),
                 Act::HideNames => {
                     if let Target::Channel(id) = target {
                         row.check = Some(self.names_hidden(id));
@@ -1558,6 +1685,7 @@ impl Root {
             ],
             Target::Composer => composer_items(&self.context.composer.clone().unwrap_or_default()),
             Target::AppDirectory(_) => app_directory_items(developer),
+            Target::Favorites => favorites_items(),
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -1598,6 +1726,8 @@ impl Root {
                             .any(|child| self.stores.is_unread(child.id))
                     });
                     category_items(unread, collapsed, can_manage, developer, level)
+                } else if self.in_favorites() {
+                    favorite_channel_items(self.stores.is_unread(id), level)
                 } else {
                     let facts = ChannelFacts {
                         voice: matches!(known.kind, ChannelKind::Voice | ChannelKind::Other(13)),
@@ -1655,28 +1785,32 @@ impl Root {
                 else {
                     return;
                 };
-                let Some(user) = self.stores.dm_recipient(dm).cloned() else {
-                    return;
-                };
-                let facts = UserFacts {
-                    name: self.private_channel_name(dm),
-                    me: self
-                        .stores
-                        .current_user
-                        .as_ref()
-                        .is_some_and(|me| me.id == user.id),
-                    bot: user.bot,
-                    in_guild: false,
-                    friend: self.stores.relationships.get(&user.id) == Some(&1),
-                    nickname: self.nickname_for(user.id).is_some(),
-                    blocked: self.stores.relationships.get(&user.id) == Some(&2),
-                    ignored: self.stores.is_ignored(user.id),
-                    developer,
-                    dm: Some(self.stores.is_unread(channel)),
-                    invite_servers: !self.invite_servers(self.dm_user(channel)).is_empty(),
-                    ..UserFacts::default()
-                };
-                user_items(&facts)
+                if dm.kind == 3 {
+                    group_items(self.stores.is_unread(channel), developer)
+                } else {
+                    let Some(user) = self.stores.dm_recipient(dm).cloned() else {
+                        return;
+                    };
+                    let facts = UserFacts {
+                        name: self.private_channel_name(dm),
+                        me: self
+                            .stores
+                            .current_user
+                            .as_ref()
+                            .is_some_and(|me| me.id == user.id),
+                        bot: user.bot,
+                        in_guild: false,
+                        friend: self.stores.relationships.get(&user.id) == Some(&1),
+                        nickname: self.nickname_for(user.id).is_some(),
+                        blocked: self.stores.relationships.get(&user.id) == Some(&2),
+                        ignored: self.stores.is_ignored(user.id),
+                        developer,
+                        dm: Some(self.stores.is_unread(channel)),
+                        invite_servers: !self.invite_servers(self.dm_user(channel)).is_empty(),
+                        ..UserFacts::default()
+                    };
+                    user_items(&facts)
+                }
             }
             Target::User { user, guild } => {
                 let Some(known) = self
@@ -1804,6 +1938,37 @@ impl Root {
         .detach();
     }
 
+    /// Harness: runs the open right-click menu's row with this label, as a click on it would.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_context_run(
+        &mut self,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let Some(open) = self.context.open.as_ref() else {
+            return "no menu".to_owned();
+        };
+        let target = open.target;
+        let Some(row) = open.items.iter().find_map(|entry| match entry {
+            Entry::Row(row) if row.label == label => Some(row.clone()),
+            _ => None,
+        }) else {
+            return format!("no row {label}");
+        };
+        if row.disabled {
+            return format!("row {label} is disabled");
+        }
+        let before = crate::inert::line_count();
+        super::actions::take_effects();
+        self.close_context_menu(cx);
+        self.run_context(row.act, target, window, cx);
+        let mut lines = vec![format!("ran {label}")];
+        lines.extend(super::actions::take_effects());
+        lines.extend(crate::inert::lines_since(before));
+        lines.join(" | ")
+    }
+
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         if self.context.open.take().is_some() {
             cx.notify();
@@ -1923,7 +2088,10 @@ impl Root {
                     | Target::Dm(id) => id,
                     Target::User { user, .. } | Target::InventoryAuthor { user } => user,
                     Target::AppDirectory(id) => id,
-                    Target::InventoryFeed | Target::InventoryFeedAtPointer | Target::Composer => {
+                    Target::InventoryFeed
+                    | Target::InventoryFeedAtPointer
+                    | Target::Composer
+                    | Target::Favorites => {
                         return;
                     }
                 };
@@ -2228,6 +2396,8 @@ impl Root {
                 }
             }
             (Act::CloseDm, Target::Dm(channel)) => self.close_dm(channel, cx),
+            (Act::EditGroup, Target::Dm(channel)) => self.open_group_edit(channel, window, cx),
+            (Act::LeaveGroup, Target::Dm(channel)) => self.open_group_leave(channel, false, cx),
             (Act::VoiceMute, Target::User { user, .. }) => {
                 let (volume, muted) = self.context.mix.get(&user).copied().unwrap_or((1., false));
                 self.set_user_mix(user, volume, !muted);
@@ -2303,7 +2473,11 @@ impl Root {
             // The caret of a muted target's row is gone: the row itself turns the mute off.
             (
                 Act::Mute,
-                Target::Guild(_) | Target::Channel(_) | Target::Category(_) | Target::Thread(_),
+                Target::Guild(_)
+                | Target::Channel(_)
+                | Target::Category(_)
+                | Target::Thread(_)
+                | Target::Dm(_),
             ) => match target {
                 Target::Guild(guild) => {
                     self.patch_guild_setting(guild, "muted", json!(false));
@@ -2322,13 +2496,75 @@ impl Root {
                         );
                     }
                 }
+                Target::Dm(id) => {
+                    self.patch_channel_override(
+                        0,
+                        id,
+                        json!({"muted": false, "mute_config": null}),
+                    );
+                }
                 _ => {}
             },
+            // Pinning also opts the channel in (`jA` of module 816662); unpinning only clears the pin.
             (Act::PinChannel, Target::Channel(id)) => {
                 if let Some(guild) = self.guild_of_channel(id) {
-                    let flags = self.stores.guild_settings.channel(guild, id).flags ^ PINNED;
+                    let flags = self.stores.guild_settings.channel(guild, id).flags;
+                    let flags = if flags & PINNED != 0 {
+                        flags & !PINNED
+                    } else {
+                        flags | PINNED | OPT_IN_ENABLED
+                    };
                     self.patch_channel_override(guild, id, json!({"flags": flags}));
                 }
+            }
+            (Act::Favorite, Target::Channel(id) | Target::Thread(id) | Target::Dm(id)) => {
+                let kind = match target {
+                    Target::Dm(_) => self
+                        .stores
+                        .private_channels
+                        .iter()
+                        .find(|known| known.id == id)
+                        .map_or(1, |known| known.kind),
+                    _ => self
+                        .guild_of_channel(id)
+                        .and_then(|guild| self.stores.guild(guild))
+                        .and_then(|guild| guild.channels.iter().find(|known| known.id == id))
+                        .map_or(0, |known| channel_type_number(known.kind)),
+                };
+                let mut favorites = self.stores.favorites();
+                let changed = if favorites.is_favorite(id) {
+                    favorites.remove_channel(id)
+                } else {
+                    favorites.add_channel(id, Some(kind))
+                };
+                if changed {
+                    let patch = self.stores.write_favorites(&favorites);
+                    super::actions::log_effect(
+                        "Add to Favorites",
+                        "PATCH /users/@me/settings-proto/1",
+                        patch.len(),
+                    );
+                    if let Some(request) = super::rail_folders::guild_folders_request(&patch) {
+                        let _ = self.requests.send(request);
+                    }
+                }
+            }
+            // "Go to Server" of a favourite: the channel in its own server, outside the Favorites view.
+            (Act::GoToServer, Target::Channel(id)) => {
+                if let Some(guild) = self.guild_of_channel(id) {
+                    self.favorites_view = false;
+                    self.select(guild, Some(id));
+                    self.request_images();
+                    cx.notify();
+                }
+            }
+            (Act::HideFavorites, Target::Favorites) => self.set_favorites_guild(false, cx),
+            (Act::FavoritesSettings, Target::Favorites) => self.open_favorites_settings(cx),
+            (Act::FavoritesNickname, Target::Channel(id)) => self.open_favorite_nickname(id, cx),
+            // A direct message is pinned by its own override on the "@me" settings (`xl` of module 816662).
+            (Act::PinDm, Target::Dm(id)) => {
+                let flags = self.stores.guild_settings.channel(0, id).flags ^ PINNED;
+                self.patch_channel_override(0, id, json!({"flags": flags}));
             }
             (Act::HideNames, Target::Channel(id)) => {
                 let mut stored = crate::storage::get(HIDDEN_NAMES).unwrap_or_else(|| json!({}));
@@ -2566,7 +2802,7 @@ impl Root {
         }
     }
 
-    /// The list a channel's "Category" row opens: No Category, then every category; the one it is in is disabled.
+    /// The list a channel's "Category" row opens: Uncategorized, then every category; the one it is in is disabled.
     fn category_rows(&self, target: Target) -> Vec<SubRow> {
         let Target::Channel(id) = target else {
             return Vec::new();
@@ -2779,6 +3015,13 @@ impl Root {
                             );
                         }
                     }
+                    Target::Dm(id) => {
+                        self.patch_channel_override(
+                            0,
+                            id,
+                            json!({"muted": true, "mute_config": config}),
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -2901,6 +3144,9 @@ impl Root {
             if labels.is_empty() {
                 return None;
             }
+            // A radio list is the text plus the 22px radio, 7px apart, with 17px and 15px of padding (the notification
+            // submenus: 190 for 129 of text).
+            let radio_list = labels.iter().any(|sub| sub.radio);
             let widest_label = labels
                 .iter()
                 .filter(|sub| sub.dot.is_none())
@@ -2928,7 +3174,9 @@ impl Root {
                             .id(SharedString::from(format!("context-sub-{index}")))
                             .relative()
                             .h(px(height))
-                            .p(px(8.))
+                            .py(px(8.))
+                            .pl(px(8.))
+                            .pr(px(6.))
                             .rounded(px(2.))
                             .cursor_pointer()
                             .hover(|style| {
@@ -2951,6 +3199,7 @@ impl Root {
                                             .text_size(px(14.))
                                             .line_height(px(18.))
                                             .font_weight(FontWeight(500.))
+                                            .whitespace_nowrap()
                                             .text_color(color("--text-strong"))
                                             .child(label),
                                     )
@@ -2966,7 +3215,7 @@ impl Root {
                         if radio {
                             item = item.child(
                                 div()
-                                    .ml(px(16.))
+                                    .ml(px(7.))
                                     .flex_none()
                                     .size(px(22.))
                                     .rounded_full()
@@ -3090,7 +3339,12 @@ impl Root {
                 .collect();
             // 14px medium labels with 16px of padding either side and the 1px border (invite-sub: 212 for 179 of text).
             let widest = widest_label.max(0.);
-            Some(self.submenu_frame_wide(rows, row, window, (widest + 34.).max(188.)))
+            let width = if radio_list {
+                widest + 61.
+            } else {
+                widest + 34.
+            };
+            Some(self.submenu_frame_wide(rows, row, window, width.max(188.)))
         });
         let nested = open.nested.and_then(|(_, row)| {
             if open.sub.map(|(act, _)| act) != Some(Act::MoveTo) {
