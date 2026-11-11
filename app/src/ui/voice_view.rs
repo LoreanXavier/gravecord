@@ -3,6 +3,7 @@
 //! `timeout: 2e3`), the More Options and tile Options menus, the disconnected state and the docked chat.
 //! Geometry is measured in `design/dom/channel/voice-view-*-darker-cozy.json`; the grid sizing is module 511205.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::tooltip::{Side, Tip};
 use super::video_tiles::{self, Candidate, TileKind};
 use super::{Root, color, icon};
@@ -1995,6 +1996,7 @@ impl Root {
                         div().absolute().left(px(left)).top(px(top)).child(
                             self.menu_panel(MORE_WIDTH, true)
                                 .id("voice-more-menu")
+                                .popout("voice-more-menu", PopKind::Fade, PopSide::Top)
                                 .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
                                     close(this, cx);
                                 }))
@@ -2096,6 +2098,7 @@ impl Root {
                             .child(
                                 self.menu_panel(TILE_MENU_WIDTH, false)
                                     .id("voice-tile-menu")
+                                    .popout("voice-tile-menu", PopKind::Fade, PopSide::Top)
                                     .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
                                         close(this, cx);
                                     }))

@@ -534,8 +534,27 @@ pub async fn run(
             // product is read with a GET): `profile-effect <sku> [at <ms>]`, `profile-effect off`, `profile-effect state`.
             // Capture only: `sticker clock <ms>|off` freezes every playing sticker at that time, `sticker state` prints
             // what the sticker player holds.
+            // Capture only: `messages demo <set>` puts message kinds the fixture server lacks into the open channel (memory only).
+            ["messages", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            ["stickerpopout", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_sticker_popout(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["sticker", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_sticker_player(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only, the motion layer (`ui/motion.rs`): `motion clock <ms>` stands the animation clock still at
+            // that many ms (a frame is drawn at the old time first, so what the last input started has begun), the
+            // time of every later input; `motion clock real` lets it run. `motion shot <path>` writes the frame at
+            // the current time. `motion reduced on|off|system` forces the reduced-motion decision. `motion idle <ms>`
+            // waits and prints how many renders and frames the driver asked for in that time. `motion state` prints
+            // the clock.
+            ["motion", rest @ ..] => {
+                let line = crate::ui::motion::step(rest, window, &root, cx).await;
                 let _ = writeln!(output, "{line}");
             }
             ["profile-effect", rest @ ..] => {
@@ -553,6 +572,232 @@ pub async fn run(
             ["profile-editor", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_profile_editor(rest, cx));
                 let _ = writeln!(output, "{line}");
+            }
+            // Measurements, see `perf.rs`: `perf sample <label>` (process counters), `perf caches` (sizes of the app's
+            // own caches), `perf start` (when the content and the loading screen's end showed).
+            ["perf", "sample", label @ ..] => {
+                let renders = crate::perf::RENDERS.load(std::sync::atomic::Ordering::Relaxed);
+                let (working, private) = crate::perf::memory();
+                let (heap, heap_peak) = crate::perf::heap();
+                let (image, mapped, committed_private) = crate::perf::committed();
+                let _ = writeln!(
+                    output,
+                    "perf sample {}: wall_ms={} cpu_ms={} working_set={working} private={private} heap={heap} heap_peak={heap_peak} commit_image={image} commit_mapped={mapped} commit_private={committed_private} threads={} renders={renders}",
+                    label.join(" "),
+                    crate::perf::since_process_start_ms(),
+                    crate::perf::cpu_ms(),
+                    crate::perf::threads(),
+                );
+            }
+            ["perf", "start"] => {
+                let _ = writeln!(
+                    output,
+                    "perf start: fonts_ms={} window_ms={} ready_ms={} content_ms={} splash_done_ms={} {}",
+                    crate::perf::FONTS_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::perf::WINDOW_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::perf::READY_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::perf::CONTENT_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::perf::SPLASH_DONE_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    crate::perf::checkpoints(),
+                );
+            }
+            ["perf", "ws"] => {
+                for line in crate::perf::working_set_report() {
+                    let _ = writeln!(output, "perf ws: {line}");
+                }
+            }
+            ["perf", "heap"] => {
+                for line in crate::perf::big_allocations() {
+                    let _ = writeln!(output, "perf heap: {line}");
+                }
+            }
+            ["perf", "badge"] => {
+                let line = cx.update(|cx| root.update(cx, |root, _| root.perf_badge()));
+                let _ = writeln!(output, "perf {line}");
+            }
+            ["perf", "caches", label @ ..] => {
+                let line = cx.update(|cx| root.read(cx).perf_caches());
+                let _ = writeln!(output, "perf caches {}: {line}", label.join(" "));
+            }
+            // `go home|dm|shop|discover|quests|settings <page>`: the places the rail and the sidebars open.
+            ["go", rest @ ..] => {
+                let line = cx.update(|cx| root.update(cx, |root, cx| root.script_go(rest, cx)));
+                let _ = writeln!(output, "go {}: {line}", rest.join(" "));
+            }
+            // `frames scroll <x> <y> <dy> <count> <label>`: `count` wheel ticks of `dy` pixels, and the time each took to
+            // reach a finished frame (the event, the render and the paint, not the GPU).
+            ["frames", "scroll", x, y, dy, count, label @ ..] => {
+                if let (Some(position), Ok(dy), Ok(count)) =
+                    (at(x, y), dy.parse::<f32>(), count.parse::<usize>())
+                {
+                    let mut samples = Vec::with_capacity(count);
+                    cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                    for _ in 0..count {
+                        let started = std::time::Instant::now();
+                        cx.update(|cx| {
+                            dispatch(
+                                cx,
+                                window,
+                                PlatformInput::Scroll(ScrollEvent {
+                                    position,
+                                    delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+                                    modifiers: Modifiers::default(),
+                                    touch_phase: TouchPhase::Moved,
+                                    source: ScrollSource::Pointer,
+                                }),
+                            );
+                            let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                        });
+                        samples.push(started.elapsed().as_secs_f64() * 1000.);
+                        cx.background_executor()
+                            .timer(Duration::from_millis(16))
+                            .await;
+                    }
+                    let _ = writeln!(
+                        output,
+                        "frames scroll {}: {}",
+                        label.join(" "),
+                        crate::perf::summary(&mut samples, 16.7)
+                    );
+                }
+            }
+            // `frames watch <ms> <label>`: finished frames drawn back to back for `ms`, as a window does while things
+            // load in, and the time each took.
+            ["frames", "watch", ms, label @ ..] => {
+                let ms: u64 = ms.parse().unwrap_or(1000);
+                let until = std::time::Instant::now() + Duration::from_millis(ms);
+                let mut samples = Vec::new();
+                while std::time::Instant::now() < until {
+                    let started = std::time::Instant::now();
+                    cx.update(|cx| {
+                        let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                    });
+                    samples.push(started.elapsed().as_secs_f64() * 1000.);
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                }
+                let _ = writeln!(
+                    output,
+                    "frames watch {}: {}",
+                    label.join(" "),
+                    crate::perf::summary(&mut samples, 16.7)
+                );
+            }
+            // `frames sweep <x> <y1> <y2> <steps> <label>`: the pointer moves from `y1` to `y2` down the column at `x` in
+            // `steps` moves, one every 16 ms, and the time each took to reach a finished frame (what a pointer sweeping
+            // a list costs, hover transitions included). The frames are drawn the way the window does after an event.
+            ["frames", "sweep", x, y1, y2, steps, label @ ..] => {
+                if let (Ok(x), Ok(y1), Ok(y2), Ok(steps)) = (
+                    x.parse::<f32>(),
+                    y1.parse::<f32>(),
+                    y2.parse::<f32>(),
+                    steps.parse::<usize>(),
+                ) {
+                    let mut samples = Vec::with_capacity(steps);
+                    for step in 0..steps {
+                        let y = y1 + (y2 - y1) * step as f32 / steps.max(1) as f32;
+                        let position = point(px(x), px(y));
+                        let started = std::time::Instant::now();
+                        cx.update(|cx| {
+                            dispatch(cx, window, moved(position, None));
+                            let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                        });
+                        samples.push(started.elapsed().as_secs_f64() * 1000.);
+                        cx.background_executor()
+                            .timer(Duration::from_millis(16))
+                            .await;
+                    }
+                    let _ = writeln!(
+                        output,
+                        "frames sweep {}: {}",
+                        label.join(" "),
+                        crate::perf::summary(&mut samples, 16.7)
+                    );
+                }
+            }
+            // `frames alternate <count> <x1> <y1> <x2> <y2> <label>`: clicks the two places in turn, `count` times each, the
+            // way a fast server switch does, and the time from each click to the finished frame after it.
+            ["frames", "alternate", count, x1, y1, x2, y2, label @ ..] => {
+                if let (Ok(count), Some(first), Some(second)) =
+                    (count.parse::<usize>(), at(x1, y1), at(x2, y2))
+                {
+                    let mut samples = Vec::new();
+                    for _ in 0..count {
+                        for position in [first, second] {
+                            cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                            let started = std::time::Instant::now();
+                            cx.update(|cx| {
+                                dispatch(cx, window, down(position));
+                                dispatch(cx, window, up(position));
+                                let _ =
+                                    window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                            });
+                            samples.push(started.elapsed().as_secs_f64() * 1000.);
+                            cx.background_executor()
+                                .timer(Duration::from_millis(120))
+                                .await;
+                        }
+                    }
+                    let _ = writeln!(
+                        output,
+                        "frames watch {}: {}",
+                        label.join(" "),
+                        crate::perf::summary(&mut samples, 16.7)
+                    );
+                }
+            }
+            // `frames click <x> <y> <label>`: the time from a click to the finished frame that follows it.
+            ["frames", "click", x, y, label @ ..] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| dispatch(cx, window, moved(position, None)));
+                    let started = std::time::Instant::now();
+                    cx.update(|cx| {
+                        dispatch(cx, window, down(position));
+                        dispatch(cx, window, up(position));
+                        let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                    });
+                    let _ = writeln!(
+                        output,
+                        "frames click {}: ms={:.2}",
+                        label.join(" "),
+                        started.elapsed().as_secs_f64() * 1000.
+                    );
+                }
+            }
+            // `frames type <text>`: each character goes in through the input handler, as the system's keyboard
+            // delivers it, and the time to the finished frame that shows it is taken.
+            ["frames", "type", ..] => {
+                let text = step.trim_start_matches("frames").trim_start();
+                let text = text.trim_start_matches("type").trim_start();
+                let mut samples = Vec::new();
+                for value in text.chars() {
+                    let started = std::time::Instant::now();
+                    with_composer(cx, window, &root, |composer, window, cx| {
+                        composer.replace_text_in_range(None, &value.to_string(), window, cx);
+                    });
+                    cx.update(|cx| {
+                        let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                    });
+                    samples.push(started.elapsed().as_secs_f64() * 1000.);
+                    cx.background_executor()
+                        .timer(Duration::from_millis(30))
+                        .await;
+                }
+                let _ = writeln!(
+                    output,
+                    "frames type: {}",
+                    crate::perf::summary(&mut samples, 16.0)
+                );
+            }
+            // Which element has focus, by name and kind, for asserting keyboard focus in the run log.
+            ["focus", label @ ..] => {
+                let report = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.focus_report(window, cx))
+                    })
+                    .unwrap_or_else(|_| "focus=unknown".to_owned());
+                let _ = writeln!(output, "{}: {report}", label.join(" "));
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

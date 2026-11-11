@@ -7,6 +7,7 @@
 //! from `GET /guilds/{id}/prune`, then `POST` with `compute_prune_count: false`.
 //! Not drawn yet: the column filters, row selection, Add Roles, Open Mod View and More Options.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -730,6 +731,7 @@ impl Root {
             gpui::deferred(
                 div()
                     .id("server-members-sort-menu")
+                    .popout("server-members-sort-menu", PopKind::Fade, PopSide::Bottom)
                     .occlude()
                     .absolute()
                     .left(anchor.right() - px(240.))

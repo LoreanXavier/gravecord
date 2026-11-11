@@ -2,10 +2,12 @@
 //! language select, and the lurk request a card click sends (`joinGuild` with `lurker: true`, module 778858).
 use super::data::{self, Category, GuildCard, SearchPage, ServersTab};
 use super::{Load, Place, Root, SearchMode, text};
+use crate::ui::motion::Transitions as _;
 use crate::ui::{color, icon};
 use crate::{net::Request, parity::Parity};
 use gpui::{
     AnyElement, Context, IntoElement, ObjectFit, SharedString, div, img, point, prelude::*, px,
+    rgba,
 };
 use std::collections::HashMap;
 
@@ -53,6 +55,13 @@ pub(in crate::ui) struct Servers {
     pub pending: Vec<u64>,
     /// Servers this run opened as a preview and has not left yet.
     pub lurked: Vec<u64>,
+    /// The profile popout in view (the button's bounds and the server).
+    pub popout: Option<super::profile::Popout>,
+    /// What each profile request answered, and when it did.
+    pub profiles: HashMap<u64, super::profile::Fetch>,
+    pub profile_times: HashMap<u64, std::time::Instant>,
+    /// The Student Hub dialog.
+    pub hub: Option<super::hubs::HubDialog>,
 }
 
 impl Root {
@@ -343,7 +352,7 @@ impl Root {
     }
 
     /// Columns of `auto-fill, minmax(280px, 1fr)` with a 16px gap in `width`.
-    fn grid_columns(width: f32) -> usize {
+    pub(super) fn grid_columns(width: f32) -> usize {
         (((width + GAP) / (280. + GAP)).floor() as usize).max(1)
     }
 
@@ -370,8 +379,7 @@ impl Root {
         };
         let mut page = div().w_full().flex().flex_col().child(hero);
         if tab == ServersTab::Hubs {
-            // The hub list and its "Join Hub" dialog were not captured; the hero stands alone.
-            return page.into_any_element();
+            return page.child(self.hubs_section(width, cx)).into_any_element();
         }
         if let Some(title) = tab.section_title() {
             page = page.child(
@@ -623,6 +631,7 @@ impl Root {
                     } else {
                         "--input-border-default"
                     }))
+                    .rule(crate::ui::motion::Rule::TextField)
                     .flex()
                     .items_center()
                     .cursor_pointer()
@@ -879,8 +888,29 @@ impl Root {
                                 banner.map(|image| {
                                     img(image).size_full().object_fit(ObjectFit::Cover)
                                 }),
-                            ), // The corner button that opens the server's profile popout (`eA` of module 300290) is left
-                               // out: that popout is not built (BLOCKED.md), and a button that does nothing must not show.
+                            )
+                            // `maximizeIcon_BTjcfU` (`eA` of module 300290): 8px in from the banner's top right, it
+                            // opens the server's profile popout without joining.
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("discover-card-more-{id}")))
+                                    .absolute()
+                                    .top(px(8.))
+                                    .right(px(8.))
+                                    .size(px(32.))
+                                    .rounded(px(4.))
+                                    .bg(rgba(0x000000b8))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .child(self.anchor_probe(format!("discover-card-more-{id}")))
+                                    .child(icon("discover_maximize", 16., "--text-subtle"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.servers_open_profile(id, cx);
+                                    })),
+                            ),
                     )
                     .child(
                         div()

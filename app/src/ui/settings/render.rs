@@ -6,6 +6,7 @@ use super::model::{ButtonKind, Choice, Node, RadioOption, Runs};
 use super::voice;
 use super::{Root, SANS, button, category_header, color, divider, info_notice, kerning, mask_icon};
 use crate::parity::Parity;
+use crate::ui::motion;
 use gpui::{
     AnyElement, Context, Font, FontWeight, HighlightStyle, IntoElement, Pixels, SharedString,
     StyledText, TextRun, Window, div, font, prelude::*, px, relative,
@@ -170,6 +171,16 @@ fn switch(
     cx: &mut Context<Root>,
     key: &'static str,
 ) -> impl IntoElement {
+    // Module 489718: the thumb slides (and stretches) and the colours run over 300 ms, from the switch's own state.
+    let reduced = motion::reduced();
+    let state = motion::controls::switch_state(&id, on, reduced);
+    let thumb = motion::controls::thumb(state, on, reduced);
+    let background = motion::controls::switch_background(
+        state,
+        color("--input-background-default"),
+        color("--switch-background-active"),
+        color("--background-brand"),
+    );
     div()
         .id(id)
         .flex_none()
@@ -179,11 +190,7 @@ fn switch(
         .rounded(px(16.))
         .border_1()
         .border_color(color("--input-border-default"))
-        .bg(if on {
-            color("--background-brand")
-        } else {
-            color("--input-background-default")
-        })
+        .bg(background)
         // `disabled_9AraPt`: half opacity, no clicks.
         .when(disabled, |this| this.opacity(0.5))
         .when(!disabled, |this| {
@@ -197,42 +204,78 @@ fn switch(
         .child(
             div()
                 .absolute()
-                .top(px(3.))
-                .left(px(if on { 27. } else { 3. }))
-                .size(px(16.))
-                .rounded_full()
+                .top(px(3. + (thumb.y - 4.) as f32))
+                .left(px(3. + 24. * thumb.travel as f32 + (thumb.x - 4.) as f32))
+                .w(px(thumb.width as f32))
+                .h(px(thumb.height as f32))
+                .rounded(px(thumb.radius as f32))
                 .bg(gpui::white()),
         )
 }
 
-/// `radioIndicator_oJuRbG`: a 20px ring, 2px stroke, filled with an 8px dot when chosen.
+/// `radioIndicator_oJuRbG`: a 20px ring, 2px stroke, with a fill and an 8px dot that grow in and out (the
+/// `fillIn`, `dotIn`, `fillOut` and `dotOut` keyframes, in `motion::controls`).
 pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
+    use gpui::InteractiveElement as _;
+    let ring_border = color("--radio-border-selected-default");
+    let ring_background = color("--radio-background-selected-default");
     div()
+        .id("radio-indicator")
+        .relative()
         .flex_none()
         .size(px(20.))
         .rounded_full()
         .border_2()
-        .border_color(color(if selected {
-            "--radio-border-selected-default"
-        } else {
-            "--radio-border-default"
-        }))
-        .bg(color(if selected {
-            "--radio-background-selected-default"
-        } else {
-            "--radio-background-default"
-        }))
+        .border_color(color("--radio-border-default"))
+        .bg(color("--radio-background-default"))
         .flex()
         .items_center()
         .justify_center()
-        .when(selected, |this| {
-            this.child(
-                div()
-                    .size(px(8.))
-                    .rounded_full()
-                    .bg(color("--radio-thumb-background-active")),
-            )
+        // The fill covers the ring while it is chosen, so the ring itself is not drawn under it.
+        .style_transition(move |style, id, _, _| {
+            let fill = motion::controls::radio_fill(id ^ 0x21, selected);
+            if selected && fill.opacity >= 1. && fill.scale >= 1. {
+                style.border_color = Some(gpui::transparent_black());
+                style.background = Some(gpui::Fill::Color(gpui::transparent_black().into()));
+            }
         })
+        .child(
+            div()
+                .id("radio-fill")
+                .absolute()
+                .left(px(-2.))
+                .top(px(-2.))
+                .size(px(20.))
+                .rounded_full()
+                .border_2()
+                .border_color(ring_border)
+                .bg(ring_background)
+                .style_transition(move |style, id, _, _| {
+                    style.opacity = Some(motion::controls::radio_fill(id, selected).opacity);
+                })
+                .paint_scale_with(move |id, _| {
+                    (
+                        motion::controls::radio_fill(id, selected).scale,
+                        gpui::point(0.5, 0.5),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .id("radio-dot")
+                .size(px(8.))
+                .rounded_full()
+                .bg(color("--radio-thumb-background-active"))
+                .style_transition(move |style, id, _, _| {
+                    style.opacity = Some(motion::controls::radio_dot(id, selected).opacity);
+                })
+                .paint_scale_with(move |id, _| {
+                    (
+                        motion::controls::radio_dot(id, selected).scale,
+                        gpui::point(0.5, 0.5),
+                    )
+                }),
+        )
 }
 
 /// `selectField_vWC4bk`: 40 tall with a 1px border, the value 13px in, a 20px chevron 8px from the right.

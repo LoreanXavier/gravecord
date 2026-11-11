@@ -1152,6 +1152,24 @@ impl super::Root {
     }
 }
 
+/// The rasters of styled names the cache holds, for the perf harness.
+#[cfg(feature = "capture")]
+pub(super) fn perf_size() -> crate::perf::Size {
+    let mut size = crate::perf::Size::default();
+    if let Ok(images) = image_cache().lock() {
+        for entry in images.values() {
+            size.add(
+                1,
+                entry
+                    .image
+                    .as_ref()
+                    .map_or(0, |image| crate::perf::render_bytes(image)),
+            );
+        }
+    }
+    size
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -73,7 +73,7 @@ impl Root {
         self.rebuild_rows();
     }
 
-    fn mark_current_read(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn mark_current_read(&mut self, cx: &mut Context<Self>) {
         let Some(channel) = self.channel else {
             return;
         };

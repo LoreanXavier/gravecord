@@ -202,7 +202,7 @@ pub(super) struct OpenMenu {
 }
 
 impl Root {
-    fn saved_flags(&self, message: Id) -> SavedState {
+    pub(super) fn saved_flags(&self, message: Id) -> SavedState {
         let state = self
             .channel
             .and_then(|channel| self.saved_state(channel, message));
@@ -233,7 +233,7 @@ impl Root {
             .collect()
     }
 
-    fn run_action(
+    pub(super) fn run_action(
         &mut self,
         action: Action,
         message: Id,
@@ -271,7 +271,7 @@ impl Root {
         cx.notify();
     }
 
-    fn run_unconfirmed(&mut self, action: Action, message: Id, cx: &mut Context<Self>) {
+    pub(super) fn run_unconfirmed(&mut self, action: Action, message: Id, cx: &mut Context<Self>) {
         self.menu = None;
         if let Some(channel) = self.channel {
             let pinned = self
@@ -334,101 +334,105 @@ impl Root {
         let probe_key = format!("menu-row-{index}");
         let hover_key = probe_key.clone();
         let click_key = probe_key.clone();
-        div()
-            .id(SharedString::from(format!("menu-{index}")))
-            .relative()
-            .child(self.anchor_probe(probe_key))
-            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                if !*inside {
-                    return;
-                }
-                // Hovering the reminder row opens its submenu; any other row closes it.
-                let row = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
-                let kind = match run {
-                    Action::AddReaction => Some(SubmenuKind::Reaction),
-                    Action::Reminder => Some(SubmenuKind::Reminder),
-                    Action::Apps => Some(SubmenuKind::Apps),
-                    _ => None,
-                };
-                if kind == Some(SubmenuKind::Apps) {
-                    this.request_command_index();
-                }
-                this.submenu = match (kind, row) {
-                    (Some(kind), Some(row)) => Some(Submenu {
-                        kind,
-                        message: target,
-                        row,
-                    }),
-                    _ => None,
-                };
-                cx.notify();
-            }))
-            .group(group.clone())
-            .h(px(36.))
-            .p(px(8.))
-            .rounded(px(2.))
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover_bg).rounded(px(4.)))
-            .on_click(
-                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                    // Shift skips the confirmation of Delete and Pin, as the protip says.
-                    if event.modifiers().shift && matches!(run, Action::Delete | Action::Pin) {
-                        this.run_unconfirmed(run, target, cx);
-                    } else {
-                        if matches!(run, Action::Reminder | Action::Apps) {
-                            // These rows open their submenus, on a click as on a hover.
-                            let kind = if run == Action::Apps {
-                                this.request_command_index();
-                                SubmenuKind::Apps
-                            } else {
-                                SubmenuKind::Reminder
-                            };
-                            let row = this.tip_anchors.borrow().get(click_key.as_str()).copied();
-                            this.submenu = row.map(|row| Submenu {
-                                kind,
-                                message: target,
-                                row,
-                            });
-                            cx.notify();
-                            return;
-                        }
-                        this.run_action(run, target, window, cx);
-                    }
+        self.menu_stop(
+            div().id(SharedString::from(format!("menu-{index}"))),
+            &format!("menu-{index}"),
+            hover_bg,
+            cx,
+        )
+        .relative()
+        .child(self.anchor_probe(probe_key))
+        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+            if !*inside {
+                return;
+            }
+            // Hovering the reminder row opens its submenu; any other row closes it.
+            let row = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
+            let kind = match run {
+                Action::AddReaction => Some(SubmenuKind::Reaction),
+                Action::Reminder => Some(SubmenuKind::Reminder),
+                Action::Apps => Some(SubmenuKind::Apps),
+                _ => None,
+            };
+            if kind == Some(SubmenuKind::Apps) {
+                this.request_command_index();
+            }
+            this.submenu = match (kind, row) {
+                (Some(kind), Some(row)) => Some(Submenu {
+                    kind,
+                    message: target,
+                    row,
                 }),
-            )
-            .child(
+                _ => None,
+            };
+            cx.notify();
+        }))
+        .group(group.clone())
+        .h(px(36.))
+        .p(px(8.))
+        .rounded(px(2.))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg).rounded(px(4.)))
+        .on_click(
+            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                // Shift skips the confirmation of Delete and Pin, as the protip says.
+                if event.modifiers().shift && matches!(run, Action::Delete | Action::Pin) {
+                    this.run_unconfirmed(run, target, cx);
+                } else {
+                    if matches!(run, Action::Reminder | Action::Apps) {
+                        // These rows open their submenus, on a click as on a hover.
+                        let kind = if run == Action::Apps {
+                            this.request_command_index();
+                            SubmenuKind::Apps
+                        } else {
+                            SubmenuKind::Reminder
+                        };
+                        let row = this.tip_anchors.borrow().get(click_key.as_str()).copied();
+                        this.submenu = row.map(|row| Submenu {
+                            kind,
+                            message: target,
+                            row,
+                        });
+                        cx.notify();
+                        return;
+                    }
+                    this.run_action(run, target, window, cx);
+                }
+            }),
+        )
+        .child(
+            svg()
+                .path(format!("icons/{icon_name}.svg"))
+                .size(px(20.))
+                .flex_none()
+                .mr(px(8.))
+                .text_color(icon_tint)
+                .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(label_tint)
+                .child(label),
+        )
+        .when(caret, |this| {
+            this.child(
                 svg()
-                    .path(format!("icons/{icon_name}.svg"))
+                    .path("icons/menu_caret.svg")
                     .size(px(20.))
                     .flex_none()
-                    .mr(px(8.))
-                    .text_color(icon_tint)
-                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+                    .ml(px(8.))
+                    .text_color(color("--text-muted"))
+                    .group_hover(group, |style| style.text_color(color("--white"))),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(label_tint)
-                    .child(label),
-            )
-            .when(caret, |this| {
-                this.child(
-                    svg()
-                        .path("icons/menu_caret.svg")
-                        .size(px(20.))
-                        .flex_none()
-                        .ml(px(8.))
-                        .text_color(color("--text-muted"))
-                        .group_hover(group, |style| style.text_color(color("--white"))),
-                )
-            })
-            .into_any_element()
+        })
+        .into_any_element()
     }
 
     fn quick_row(&self, message: Id, cx: &mut Context<Self>) -> Option<AnyElement> {

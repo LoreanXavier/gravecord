@@ -23,11 +23,22 @@ const ALPHA_FLOOR: f32 = 0.03;
 /// The clip's frame rate; the official page plays it at its own 60 fps.
 pub const FPS: f32 = 60.0;
 
-/// Frames of the loop, each `width * height` pixels of straight BGRA, as gpui's atlas takes them.
+/// Frames of the loop, each `width * height` bytes of alpha. The mark is white, so alpha is all a frame holds; a
+/// quarter of the size of the BGRA picture that [`Clip::bgra`] makes of one when it is drawn.
 pub struct Clip {
     pub width: u32,
     pub height: u32,
     pub frames: Vec<Vec<u8>>,
+}
+
+impl Clip {
+    /// Frame `index` as straight BGRA, as gpui's atlas takes it.
+    pub fn bgra(&self, index: usize) -> Vec<u8> {
+        self.frames[index]
+            .iter()
+            .flat_map(|alpha| [255, 255, 255, *alpha])
+            .collect()
+    }
 }
 
 // ---- the file ----
@@ -413,13 +424,13 @@ fn alpha(luma: u8, matte: u8) -> u8 {
     }
 }
 
-/// Straight BGRA of a white mark from one luma plane.
+/// The alpha of a white mark from one luma plane.
 fn frame(plane: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8> {
     let matte = plane.first().copied().unwrap_or(0);
-    let mut out = Vec::with_capacity(width * height * 4);
+    let mut out = Vec::with_capacity(width * height);
     for row in 0..height {
         for luma in &plane[row * stride..row * stride + width] {
-            out.extend_from_slice(&[255, 255, 255, alpha(*luma, matte)]);
+            out.push(alpha(*luma, matte));
         }
     }
     out
@@ -498,11 +509,9 @@ mod tests {
         assert_eq!((clip.width, clip.height), (400, 400));
         assert_eq!(clip.frames.len(), 64);
         assert!(
-            clip.frames.iter().all(|frame| frame
-                .as_chunks::<4>()
-                .0
+            clip.frames
                 .iter()
-                .any(|pixel| pixel[3] > 128))
+                .all(|frame| frame.iter().any(|alpha| *alpha > 128))
         );
     }
 
@@ -528,10 +537,21 @@ mod tests {
         // A 2 x 2 picture in a stride of 3: the matte, white, and two midtones.
         let plane = [40, 235, 99, 40, 137, 99];
         let out = frame(&plane, 3, 2, 2);
-        assert_eq!(out.len(), 16);
-        assert_eq!(&out[..8], &[255, 255, 255, 0, 255, 255, 255, 255]);
-        assert_eq!(out[7], 255);
-        assert_eq!(out[11], alpha(40, 40));
+        assert_eq!(out.len(), 4);
+        assert_eq!(&out[..2], &[0, 255]);
+        assert_eq!(out[2], alpha(40, 40));
+        assert_eq!(out[3], alpha(137, 40));
+    }
+
+    #[test]
+    fn a_frame_is_drawn_as_white_with_its_alpha() {
+        let clip = Clip {
+            width: 2,
+            height: 1,
+            frames: vec![vec![0, 255], vec![9, 128]],
+        };
+        assert_eq!(clip.bgra(0), [255, 255, 255, 0, 255, 255, 255, 255]);
+        assert_eq!(clip.bgra(1), [255, 255, 255, 9, 255, 255, 255, 128]);
     }
 
     #[test]

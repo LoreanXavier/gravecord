@@ -5,6 +5,7 @@
 //! The official noise popout names Krisp. gravecord does not run Krisp (BLOCKED.md): the same popout names what runs,
 //! DeepFilterNet, the owner's decision in DECISIONS.md.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, icon, tooltip};
 use dc_state::Id;
 use gpui::{
@@ -516,6 +517,7 @@ impl Root {
         };
         div()
             .id("voice-connection-popout")
+            .popout("voice-connection-popout", PopKind::Translate, PopSide::Top)
             .absolute()
             .left(px(20.))
             .bottom(px(POPOUT_BOTTOM))
@@ -596,6 +598,7 @@ impl Root {
         let test_button = self.small_mic_test(window, cx);
         div()
             .id("voice-noise-popout")
+            .popout("voice-noise-popout", PopKind::Translate, PopSide::Top)
             .absolute()
             .left(px(164.))
             .bottom(px(POPOUT_BOTTOM))

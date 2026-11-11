@@ -4,6 +4,7 @@
 //! `PUT /users/@me/relationships/{id}`, ignore, cancel and remove with `DELETE` on the same route; a DM opens with
 //! `POST /users/@me/channels {recipients}` when none exists.
 
+use super::motion::{self, Transitions as _};
 use super::{Root, avatar_source, color, editor_style, icon, status_dot, status_label};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -549,6 +550,7 @@ impl Root {
                     .items_center()
                     .when(menu_open, |this| this.bg(color("--background-mod-normal")))
                     .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .rule(motion::Rule::PeopleRow)
                     .when(kind == RELATIONSHIP_FRIEND, |this| {
                         this.on_click(cx.listener(move |this, _, _, cx| this.open_dm_with(id, cx)))
                     })
@@ -646,6 +648,7 @@ impl Root {
                     this.text_color(color("--interactive-text-default"))
                         .hover(|style| style.bg(color("--background-mod-subtle")))
                 })
+                .rule(motion::Rule::TabItem)
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.set_friends_tab(which, window, cx)),
                 )
@@ -1021,6 +1024,7 @@ impl Root {
                     } else {
                         "--input-border-default"
                     }))
+                    .rule(crate::ui::motion::Rule::TextField)
                     .flex()
                     .items_center()
                     .pl(px(if search_focused { 10. } else { 11. }))

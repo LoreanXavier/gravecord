@@ -3,6 +3,7 @@
 //! App Directory and Privacy Settings, and Hide Muted Channels with its checkbox. Hide Muted Channels patches
 //! `hide_muted_channels` through `PATCH /users/@me/guilds/settings`, as the bell menu's overrides do.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -251,6 +252,8 @@ impl Root {
                     div()
                         .parity_with_border("guild-menu", 1.)
                         .id("guild-menu")
+                        // The server header menu opens with `animation: SCALE` below its target (module 260269).
+                        .popout("guild-menu", PopKind::Scale, PopSide::Bottom)
                         .occlude()
                         .w(px(220.))
                         .p(px(8.))

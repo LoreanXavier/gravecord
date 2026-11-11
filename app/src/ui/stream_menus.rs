@@ -6,6 +6,7 @@
 //! Report Problem (module 74329) opens a feedback form this client has no counterpart for, so the row is left out.
 
 use super::go_live::{self, Prefs, Preset};
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color};
 use dc_media::screen::{self, Resolution};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, deferred, div, prelude::*, px};
@@ -103,6 +104,7 @@ impl Root {
                 div().absolute().left(px(left)).top(px(top)).child(
                     self.menu_panel(WIDTH, true)
                         .id("voice-share-menu")
+                        .popout("voice-share-menu", PopKind::Fade, PopSide::Top)
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                             this.vv.menu = None;
                             this.vv.quality_open = false;

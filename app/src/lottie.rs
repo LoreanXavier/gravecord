@@ -3,7 +3,7 @@
 //! The approach follows Serein's avatar worker, which uses the same crate.
 
 use image::ImageEncoder;
-use rasterlottie::{Animation, RenderConfig, Renderer, Rgba8};
+use rasterlottie::{Animation, RasterFrame, RenderConfig, Renderer, Rgba8};
 
 /// The largest sticker file read (the official files are a few tens of KiB).
 const MAX_JSON: usize = 512 * 1024;
@@ -44,11 +44,19 @@ fn parse(json: &[u8]) -> Option<Animation> {
 
 /// One frame as straight-alpha RGBA, `size` pixels on the longer side of the canvas.
 fn straight_pixels(animation: &Animation, size: u32, at: f32) -> Option<(Vec<u8>, u32, u32)> {
-    let scale = size as f32 / animation.width.max(animation.height) as f32;
     let rendered = Renderer::default()
-        .render_frame(animation, at, RenderConfig::new(Rgba8::TRANSPARENT, scale))
+        .render_frame(animation, at, config_for(animation, size))
         .ok()?;
-    // The renderer returns premultiplied pixels; PNG and GPUI's images hold straight alpha.
+    Some(unpremultiply(rendered))
+}
+
+fn config_for(animation: &Animation, size: u32) -> RenderConfig {
+    let scale = size as f32 / animation.width.max(animation.height) as f32;
+    RenderConfig::new(Rgba8::TRANSPARENT, scale)
+}
+
+/// The renderer returns premultiplied pixels; PNG and GPUI's images hold straight alpha.
+fn unpremultiply(rendered: RasterFrame) -> (Vec<u8>, u32, u32) {
     let mut pixels = rendered.pixels;
     for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
@@ -60,22 +68,30 @@ fn straight_pixels(animation: &Animation, size: u32, at: f32) -> Option<(Vec<u8>
             }
         }
     }
-    Some((pixels, rendered.width, rendered.height))
+    (pixels, rendered.width, rendered.height)
 }
 
-/// A parsed Lottie file played frame by frame. The official player (module 445972, rlottie) reads the frame count
+/// A Lottie file played frame by frame. The official player (module 445972, rlottie) reads the frame count
 /// and rate from the file: `lottie_frame_count` is the in point to the out point, and frame `i` is drawn at the in
 /// point plus `i`.
+///
+/// Only the file itself is kept. The parsed animation is about thirty times the size of the JSON, so it lives for
+/// one render job and is dropped with it.
 pub struct Source {
-    animation: Animation,
+    json: Vec<u8>,
     frames: usize,
+    frame_rate: f32,
 }
 
 impl Source {
     pub fn parse(json: &[u8]) -> Option<Self> {
         let animation = parse(json)?;
         let frames = (animation.duration_frames().floor() as usize).max(1);
-        (animation.frame_rate > 0.).then_some(Self { animation, frames })
+        (animation.frame_rate > 0.).then(|| Self {
+            json: json.to_vec(),
+            frames,
+            frame_rate: animation.frame_rate,
+        })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -84,14 +100,38 @@ impl Source {
 
     /// The file's frame rate in frames per second.
     pub fn frame_rate(&self) -> f32 {
-        self.animation.frame_rate
+        self.frame_rate
     }
 
+    #[cfg(test)]
     /// Frame `index` as straight-alpha RGBA pixels, `size` on the longer side.
     pub fn render(&self, index: usize, size: u32) -> Option<image::RgbaImage> {
-        let at = self.animation.in_point + index.min(self.frames - 1) as f32;
-        let (pixels, width, height) = straight_pixels(&self.animation, size, at)?;
-        image::RgbaImage::from_raw(width, height, pixels)
+        self.render_many(&[index], size).pop()?.1
+    }
+
+    /// The frames `indices`, each as straight-alpha RGBA pixels, `size` on the longer side. The file is parsed and
+    /// prepared once for the whole batch.
+    pub fn render_many(
+        &self,
+        indices: &[usize],
+        size: u32,
+    ) -> Vec<(usize, Option<image::RgbaImage>)> {
+        let prepared = parse(&self.json)
+            .and_then(|animation| Some((Renderer::default().prepare(&animation).ok()?, animation)));
+        indices
+            .iter()
+            .map(|index| {
+                let frame = prepared.as_ref().and_then(|(prepared, animation)| {
+                    let at = animation.in_point + (*index).min(self.frames - 1) as f32;
+                    let rendered = prepared
+                        .render_frame(at, config_for(animation, size))
+                        .ok()?;
+                    let (pixels, width, height) = unpremultiply(rendered);
+                    image::RgbaImage::from_raw(width, height, pixels)
+                });
+                (*index, frame)
+            })
+            .collect()
     }
 }
 

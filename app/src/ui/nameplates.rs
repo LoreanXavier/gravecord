@@ -522,6 +522,29 @@ impl Root {
     }
 }
 
+/// The pictures, clips and painted frames this cache holds, for the perf harness.
+#[cfg(feature = "capture")]
+impl Cache {
+    pub(super) fn perf_size(&self) -> crate::perf::Size {
+        let mut size = crate::perf::Size::default();
+        for image in self.decoded.values().flatten() {
+            size.add(1, image.as_raw().len());
+        }
+        for frame in self.frames.values() {
+            size.add(1, crate::perf::render_bytes(&frame.image));
+        }
+        for bytes in self.encoded.values() {
+            size.add(1, bytes.len());
+        }
+        for clip in self.animations.values().flatten() {
+            for frame in &clip.frames {
+                size.add(1, frame.as_raw().len());
+            }
+        }
+        size
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

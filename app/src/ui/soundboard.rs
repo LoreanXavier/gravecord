@@ -13,11 +13,13 @@
 //! upsell modal, the tooltip delay (app tooltips open at once), and a per-user "mute soundboard" (no setting for it).
 
 use super::audio_menu::{slider_to_volume, volume_to_slider};
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::tooltip::{Body, Side, Tip};
 use super::voice_panel::Popout;
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::{Request, Update};
+use crate::ui::motion::Transitions as _;
 use dc_state::{Id, permissions};
 use dc_voice::sound::{self, Decoded, Handle, Output};
 use gpui::{
@@ -1299,6 +1301,7 @@ impl Root {
                     } else {
                         color("--input-border-default")
                     })
+                    .rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .flex()
                     .items_center()
@@ -1384,6 +1387,7 @@ impl Root {
 
         let wrapper = div()
             .id("soundboard-popout")
+            .popout("soundboard-popout", PopKind::Fade, PopSide::Right)
             .absolute()
             .left(px(PICKER_LEFT))
             .bottom(px(PICKER_BOTTOM))

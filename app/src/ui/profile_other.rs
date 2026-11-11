@@ -3,6 +3,7 @@
 //! servers, the bio, and "Message @name" (module 784886: Enter sends to their DM, opens it and closes the popout).
 //! Measured in `design/dom/popouts/user-popout-other-darker-cozy.json`.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::profile::Popout;
 use super::profile_menu::Which;
 use super::{Root, color, icon};
@@ -535,7 +536,17 @@ impl Root {
                         anchored()
                             .position(at)
                             .snap_to_window_with_margin(px(12.))
-                            .child(card),
+                            // `animatorLeft` for a member, `animatorRight` for a message author, both translate
+                            // (design/dom/popouts/pt-decorated-member, channel/profile-popout).
+                            .child(card.popout(
+                                "user-popout",
+                                PopKind::Translate,
+                                if popout.left {
+                                    PopSide::Left
+                                } else {
+                                    PopSide::Right
+                                },
+                            )),
                     ),
             )
             .with_priority(1)

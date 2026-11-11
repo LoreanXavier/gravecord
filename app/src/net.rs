@@ -271,6 +271,13 @@ pub enum Request {
 
 pub(crate) const MESSAGE_PAGE: u32 = 50;
 /// Held while a settings-proto PATCH is in flight.
+/// Pictures downloaded at once. Opening a picker or a shop asks for hundreds together; without a limit they all start
+/// at once and the connections, the memory and the CPU are shared out among them.
+static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(24);
+/// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
+/// forty stickers starts forty threads that each render a frame.
+static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+
 static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The routes that change the account itself: its settings, its per-server notification settings, its relationships,
@@ -288,6 +295,10 @@ fn account_route(route: &str) -> bool {
         || path.starts_with("/oauth2/")
         || path.starts_with("/store/")
         || path.contains("/billing/")
+        // Student Hub: the email lookup mails a code and the waitlist signup stores the address.
+        || path == "/guilds/automations/email-domain-lookup"
+        || path.starts_with("/guilds/automations/email-domain-lookup/")
+        || path == "/hub-waitlist/signup"
 }
 
 /// A harness run (the `capture` feature, or `--capture`) never writes to the account by accident: such a request is
@@ -306,6 +317,12 @@ fn account_write_refused(
     let empty_settings = route.starts_with("/users/@me/settings-proto/")
         && body.is_some_and(|body| body["settings"].as_str().is_some_and(str::is_empty));
     empty_settings || (capture && !allowed && account_route(route))
+}
+
+/// Whether a harness run refuses this request: an account write, with no override.
+#[cfg(test)]
+pub(crate) fn refuses_in_capture(method: &reqwest::Method, route: &str) -> bool {
+    account_write_refused(true, false, method, route, None)
 }
 
 fn refuses_account_write(method: &reqwest::Method, route: &str, body: Option<&Value>) -> bool {
@@ -1282,7 +1299,11 @@ pub async fn run(
             }
             Request::Image { key, url } => {
                 tokio::spawn(async move {
-                    match client.fetch_public(&url).await {
+                    let fetched = {
+                        let _slot = IMAGE_FETCHES.acquire().await;
+                        client.fetch_public(&url).await
+                    };
+                    match fetched {
                         Ok(bytes)
                             if url
                                 .split(['?', '#'])
@@ -1294,6 +1315,7 @@ pub async fn run(
                             let artboard = url
                                 .split_once('#')
                                 .map_or(String::new(), |(_, name)| name.replace('_', " "));
+                            let _slot = IMAGE_DRAWS.acquire().await;
                             match tokio::task::spawn_blocking(move || {
                                 crate::rive::first_frame_png(&bytes, &artboard, 512)
                             })
@@ -1317,6 +1339,7 @@ pub async fn run(
                                 && !key.starts_with("stickeranim:") =>
                         {
                             // Lottie sticker art: one frame at twice the picker's cell, drawn off the UI thread.
+                            let _slot = IMAGE_DRAWS.acquire().await;
                             match tokio::task::spawn_blocking(move || {
                                 crate::lottie::first_frame_png(&bytes, 192)
                             })

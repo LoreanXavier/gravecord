@@ -3,6 +3,7 @@
 //! `design/dom/modals/leaving-discord-darker-cozy.json` and `pin-confirm-darker-cozy.json`; the scrim is black at
 //! 0.72 (`scrim_od1dl1`).
 
+use super::motion::{self, Transitions as _};
 use super::{Root, avatar_source, color, header_time, icon};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -106,12 +107,32 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
             color("--control-critical-secondary-text-default"),
         ),
     };
+    // The `:hover` and `:active` colours of the variant, as the design system button sets them.
+    let family = match spec.tone {
+        Tone::Secondary => "secondary",
+        Tone::Primary | Tone::PrimaryDisabled => "primary",
+        Tone::Active => "connected",
+        Tone::Critical => "critical-primary",
+        Tone::CriticalSecondary => "critical-secondary",
+    };
+    let state_colors = |state: &str| {
+        (
+            color(&format!("--control-{family}-background-{state}")),
+            color(&format!("--control-{family}-border-{state}")),
+            color(&format!("--control-{family}-text-{state}")),
+        )
+    };
+    let hover = state_colors("hover");
+    let active = state_colors("active");
     let run = std::rc::Rc::new(spec.run);
     let keyboard_run = run.clone();
     let focus = spec.focus.clone();
     let disabled = spec.tone == Tone::PrimaryDisabled;
-    div()
-        .id(spec.id)
+    super::keyboard::ring_when_focused(div().id(spec.id))
+        // A button of a dialog is a tab stop; Enter and Space click it (gpui turns them into the click below).
+        .when(spec.focus.is_none(), |button| {
+            button.focusable().tab_index(0)
+        })
         .when_some(spec.focus, |button, focus| button.track_focus(&focus))
         .when(disabled, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
@@ -133,6 +154,16 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .line_height(px(20.))
         .font_weight(FontWeight(500.))
         .text_color(text)
+        .when(!disabled, |this| {
+            this.hover(move |style| style.bg(hover.0).border_color(hover.1).text_color(hover.2))
+                .active(move |style| {
+                    style
+                        .bg(active.0)
+                        .border_color(active.1)
+                        .text_color(active.2)
+                })
+        })
+        .rule(motion::Rule::Button)
         .when_some(spec.icon, |this, (name, size, token)| {
             this.gap(px(4.)).child(
                 gpui::svg()
@@ -211,9 +242,14 @@ fn render_sized(
             }
         })
         .collect();
+    // The scrim and the dialog fade in on the official spring (modules 462824 and 150591).
+    let pose = super::motion::modal_pose(spec.id);
+    let (scrim, body_opacity) = (pose.scrim, pose.opacity);
     let modal = div()
         .parity_with_border(spec.id, 1.)
         .id(spec.id)
+        .opacity(body_opacity)
+        .paint_scale(pose.scale, gpui::point(0.5, 0.5))
         .occlude()
         .w(px(width))
         .pt(px(8.))
@@ -253,21 +289,26 @@ fn render_sized(
                                 .child(spec.title),
                         )
                         .child(
-                            div()
-                                .id(SharedString::from(format!("{}-close", spec.id)))
-                                .mt(px(-16.))
-                                .mr(px(-16.))
-                                .size(px(40.))
-                                .rounded(px(8.))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                            super::keyboard::inset_ring_when_focused(
+                                div().id(SharedString::from(format!("{}-close", spec.id))),
+                            )
+                            .focusable()
+                            .tab_index(0)
+                            .mt(px(-16.))
+                            .mr(px(-16.))
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
                                     close_button(this, window, cx);
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         ),
                 )
                 .children(spec.subtitle.map(|subtitle| {
@@ -307,7 +348,10 @@ fn render_sized(
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x000000b8))
+            .bg(gpui::Rgba {
+                a: f32::from(0xb8u8) / 255. * scrim,
+                ..rgba(0x000000ff)
+            })
             .flex()
             .items_center()
             .justify_center()

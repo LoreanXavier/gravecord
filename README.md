@@ -122,7 +122,19 @@ And after that: Stage channels, Game Overlay, quest cards, Rich Presence for bro
 
 ## Building
 
-Windows, with a current stable Rust:
+Windows, with a current stable Rust. The interface library (GPUI) is built from a pinned Zed commit with one patch on top, checked out beside the code:
+
+```bash
+git clone https://github.com/zed-industries/zed vendor/zed
+```
+
+```bash
+git -C vendor/zed checkout b5cd310b3b54dfc659fcc06453e6358843dfe216
+```
+
+```bash
+git -C vendor/zed apply ../../patches/gpui.patch
+```
 
 ```bash
 cargo build --release -p gravecord

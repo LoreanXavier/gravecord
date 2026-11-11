@@ -1031,7 +1031,7 @@ impl Root {
         }
     }
 
-    fn mark_channel_read(&mut self, channel: Id) {
+    pub(super) fn mark_channel_read(&mut self, channel: Id) {
         if !self.stores.is_unread(channel) {
             return;
         }
@@ -1737,147 +1737,155 @@ impl Root {
                     )
                 }),
         );
-        div()
-            .id(SharedString::from(key))
-            .relative()
-            .child(self.anchor_probe(probe))
-            .h(px(row.height()))
-            .flex_none()
-            .p(px(8.))
-            .rounded(px(2.))
-            .flex()
-            .items_center()
-            .when(!disabled, |this| {
-                this.cursor_pointer().hover(move |style| {
-                    style
-                        .bg(if danger {
-                            color("--background-feedback-mod-critical")
-                        } else {
-                            color("--interactive-background-hover")
-                        })
-                        .rounded(px(4.))
-                })
-            })
-            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                if !*inside {
-                    return;
-                }
-                let bounds = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
-                if let Some(open) = this.context.open.as_mut() {
-                    open.sub = if has_sub {
-                        bounds.map(|bounds| (act, bounds))
+        self.menu_stop(
+            div().id(SharedString::from(key.clone())),
+            &key,
+            if danger {
+                color("--background-feedback-mod-critical")
+            } else {
+                color("--interactive-background-hover")
+            },
+            cx,
+        )
+        .relative()
+        .child(self.anchor_probe(probe))
+        .h(px(row.height()))
+        .flex_none()
+        .p(px(8.))
+        .rounded(px(2.))
+        .flex()
+        .items_center()
+        .when(!disabled, |this| {
+            this.cursor_pointer().hover(move |style| {
+                style
+                    .bg(if danger {
+                        color("--background-feedback-mod-critical")
                     } else {
-                        None
-                    };
+                        color("--interactive-background-hover")
+                    })
+                    .rounded(px(4.))
+            })
+        })
+        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+            if !*inside {
+                return;
+            }
+            let bounds = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
+            if let Some(open) = this.context.open.as_mut() {
+                open.sub = if has_sub {
+                    bounds.map(|bounds| (act, bounds))
+                } else {
+                    None
+                };
+            }
+            cx.notify();
+        }))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if disabled {
+                return;
+            }
+            if has_sub {
+                // A click opens the submenu, as the hover does.
+                let bounds = this
+                    .tip_anchors
+                    .borrow()
+                    .get(format!("context-row-{index}").as_str())
+                    .copied();
+                if let (Some(open), Some(bounds)) = (this.context.open.as_mut(), bounds) {
+                    open.sub = Some((act, bounds));
+                }
+                if matches!(act, Act::Notifications) && matches!(target, Target::Guild(_)) {
+                    // The server's levels live on its own modal too; the submenu is the quick path.
                 }
                 cx.notify();
-            }))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if disabled {
-                    return;
-                }
-                if has_sub {
-                    // A click opens the submenu, as the hover does.
-                    let bounds = this
-                        .tip_anchors
-                        .borrow()
-                        .get(format!("context-row-{index}").as_str())
-                        .copied();
-                    if let (Some(open), Some(bounds)) = (this.context.open.as_mut(), bounds) {
-                        open.sub = Some((act, bounds));
-                    }
-                    if matches!(act, Act::Notifications) && matches!(target, Target::Guild(_)) {
-                        // The server's levels live on its own modal too; the submenu is the quick path.
-                    }
-                    cx.notify();
-                    return;
-                }
-                this.close_context_menu(cx);
-                this.run_context(act, target, window, cx);
-                cx.notify();
-            }))
-            .children(row.icon.map(|name| {
-                div().mr(px(8.)).child(icon(
-                    name,
+                return;
+            }
+            this.close_context_menu(cx);
+            this.run_context(act, target, window, cx);
+            cx.notify();
+        }))
+        .children(row.icon.map(|name| {
+            div().mr(px(8.)).child(icon(
+                name,
+                if matches!(
+                    target,
+                    Target::InventoryFeed | Target::InventoryFeedAtPointer
+                ) {
+                    20.
+                } else {
+                    18.
+                },
+                "--interactive-text-default",
+            ))
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(tint)
+                        .child(label),
+                )
+                .children(row.sub.clone().map(|sub| {
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(400.))
+                        .text_color(color("--text-muted"))
+                        .child(sub)
+                })),
+        )
+        .children(row.shortcut.map(|keys| {
+            div()
+                .ml(px(8.))
+                .flex_none()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(tint)
+                .child(keys)
+        }))
+        .children(row.check.map(|on| {
+            div()
+                .ml(px(
                     if matches!(
                         target,
                         Target::InventoryFeed | Target::InventoryFeedAtPointer
                     ) {
-                        20.
+                        8.
                     } else {
-                        18.
+                        16.
                     },
-                    "--interactive-text-default",
                 ))
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(tint)
-                            .child(label),
-                    )
-                    .children(row.sub.clone().map(|sub| {
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight(400.))
-                            .text_color(color("--text-muted"))
-                            .child(sub)
-                    })),
-            )
-            .children(row.shortcut.map(|keys| {
-                div()
-                    .ml(px(8.))
-                    .flex_none()
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(tint)
-                    .child(keys)
-            }))
-            .children(row.check.map(|on| {
-                div()
-                    .ml(px(
-                        if matches!(
-                            target,
-                            Target::InventoryFeed | Target::InventoryFeedAtPointer
-                        ) {
-                            8.
-                        } else {
-                            16.
-                        },
+                .size(px(20.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(color("--interactive-text-default"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(on, |this| {
+                    this.bg(color("--control-brand-foreground")).child(icon(
+                        "checkbox_check",
+                        14.,
+                        "--white",
                     ))
-                    .size(px(20.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(color("--interactive-text-default"))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(on, |this| {
-                        this.bg(color("--control-brand-foreground")).child(icon(
-                            "checkbox_check",
-                            14.,
-                            "--white",
-                        ))
-                    })
-            }))
-            .when(row.caret, |this| {
-                this.child(div().ml(px(10.)).child(icon(
-                    "menu_caret",
-                    18.,
-                    "--interactive-text-default",
-                )))
-            })
-            .into_any_element()
+                })
+        }))
+        .when(row.caret, |this| {
+            this.child(div().ml(px(10.)).child(icon(
+                "menu_caret",
+                18.,
+                "--interactive-text-default",
+            )))
+        })
+        .into_any_element()
     }
 }
 

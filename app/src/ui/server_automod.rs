@@ -32,6 +32,7 @@ use super::tooltip::{Body, Side, Tip};
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::net::Request;
+use crate::ui::motion::Transitions as _;
 use dc_state::{Channel, ChannelKind, Id, permissions};
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, Focusable, FontWeight, IntoElement, KeyDownEvent,
@@ -548,7 +549,7 @@ fn check_rule(rule: &AutoRule, others: &[AutoRule]) -> Result<(), String> {
 }
 
 /// `LG.getAnyErrorMessage`: the first field error down the tree, or the response's message.
-fn any_error_message(body: &Value) -> String {
+pub(in crate::ui) fn any_error_message(body: &Value) -> String {
     let message = body["message"].as_str();
     if message.is_none() && body.is_object() {
         // A body of `{field: ["words"]}` (the constructor's first branch).
@@ -2810,8 +2811,9 @@ impl Root {
     }
 
     /// `ni.P`.
-    fn automod_checkbox(checked: bool, disabled: bool) -> gpui::Div {
+    fn automod_checkbox(checked: bool, disabled: bool) -> gpui::Stateful<gpui::Div> {
         div()
+            .id("checkbox")
             .relative()
             .flex_none()
             .size(px(20.))
@@ -2828,13 +2830,11 @@ impl Root {
                 color("--checkbox-background-default")
             })
             .when(disabled, |this| this.opacity(0.5))
-            .when(checked, |this| {
-                this.child(div().absolute().left(px(0.)).top(px(0.)).child(icon(
-                    "automod_check",
-                    18.,
-                    "--checkbox-icon-active",
-                )))
-            })
+            .child(super::motion::controls::checkbox_marks(
+                checked,
+                icon("automod_check", 18., "--checkbox-icon-active"),
+                color("--checkbox-icon-active").into(),
+            ))
     }
 
     /// `nZ`'s first step.
@@ -4804,6 +4804,7 @@ impl Root {
                     .rounded(px(4.))
                     .cursor_pointer()
                     .hover(|style| style.bg(color("--background-mod-normal")))
+                    .rule(crate::ui::motion::Rule::ListBoxItem)
                     .flex()
                     .items_center()
                     .child(

@@ -3,6 +3,7 @@
 //! preview is highlighted in the chosen one), Expand (the file in a 1024px dialog), and More (Download, Wrap Text).
 //! Download saves the file into the user's Downloads folder.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use dc_state::{Attachment, Id};
@@ -357,6 +358,15 @@ impl Root {
                     .child(
                         div()
                             .id("file-menu")
+                            .popout(
+                                "file-menu",
+                                PopKind::Translate,
+                                if menu.kind == FileMenuKind::More {
+                                    PopSide::Top
+                                } else {
+                                    PopSide::Left
+                                },
+                            )
                             .occlude()
                             .absolute()
                             .left(

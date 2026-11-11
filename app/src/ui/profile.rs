@@ -2,6 +2,7 @@
 //! Measured in `design/dom/channel/profile-popout-darker-cozy.json` (this client's own popout). The banner falls back
 //! to the avatar palette (`crate::palette`), as module 515718 does.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon, status_dot_large};
 use crate::net::Request;
 use crate::palette::avatar_palette;
@@ -447,7 +448,15 @@ impl Root {
                         anchored()
                             .position(at)
                             .snap_to_window_with_margin(px(8.))
-                            .child(card),
+                            .child(card.popout(
+                                "user-popout",
+                                PopKind::Translate,
+                                if popout.left {
+                                    PopSide::Left
+                                } else {
+                                    PopSide::Right
+                                },
+                            )),
                     ),
             )
             .with_priority(1)
@@ -551,6 +560,7 @@ fn status_text() -> impl IntoElement {
             strike: false,
             boxed: None,
             image,
+            hover: None,
         };
     div().w(px(155.)).child(crate::inline::inline(
         vec![

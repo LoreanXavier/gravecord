@@ -9,6 +9,7 @@
 use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use chrono::{Duration, Local, NaiveDate, TimeZone};
 use dc_state::Id;
 use gpui::{
@@ -936,6 +937,7 @@ impl Root {
             } else {
                 color("--input-border-default")
             })
+            .rule(crate::ui::motion::Rule::TextField)
             .bg(color("--input-background-default"))
             .flex()
             .cursor_pointer()
@@ -1069,6 +1071,7 @@ impl Root {
                     } else {
                         color("--input-border-default")
                     })
+                    .rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .flex()
                     .items_center()

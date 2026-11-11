@@ -3,6 +3,7 @@ use super::{Root, color, editor_style, modal};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::{Id, PrivateChannel, User};
 use gpui::{
     AnyElement, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, Subscription,
@@ -227,6 +228,7 @@ impl Root {
             } else {
                 "--input-border-default"
             }))
+            .rule(crate::ui::motion::Rule::TextField)
             .px(px(if focused { 11. } else { 12. }))
             .flex()
             .items_center()

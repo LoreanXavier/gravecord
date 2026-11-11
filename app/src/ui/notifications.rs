@@ -93,6 +93,37 @@ fn fallback_body(message: &Value) -> String {
 }
 
 impl Root {
+    /// `refresh_notification_badge` at most every `BADGE_EVERY`. It walks every channel of every server, and the client
+    /// runs it for each update it gets (a picture, a presence, a typing notice); a refresh asked for inside the interval
+    /// waits for the end of it, so the badge is never more than that late.
+    pub(super) fn refresh_notification_badge_soon(&mut self, cx: &mut Context<Self>) {
+        const BADGE_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+        #[allow(unused_mut)]
+        let mut due = self
+            .prepared
+            .badge_at
+            .is_none_or(|at| at.elapsed() >= BADGE_EVERY);
+        #[cfg(feature = "capture")]
+        if crate::perf::legacy("badge") {
+            due = true;
+        }
+        if due {
+            self.prepared.badge_at = Some(Instant::now());
+            self.refresh_notification_badge();
+        } else if !self.prepared.badge_waiting {
+            self.prepared.badge_waiting = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(BADGE_EVERY).await;
+                let _ = this.update(cx, |this, _| {
+                    this.prepared.badge_waiting = false;
+                    this.prepared.badge_at = Some(Instant::now());
+                    this.refresh_notification_badge();
+                });
+            })
+            .detach();
+        }
+    }
+
     pub(super) fn refresh_notification_badge(&mut self) {
         let counts = dc_state::unread::total_counts(&self.stores, chrono::Utc::now());
         let user = self.stores.current_user.as_ref().map(|user| user.id);

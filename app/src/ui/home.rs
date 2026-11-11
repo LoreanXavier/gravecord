@@ -1,7 +1,7 @@
 //! Home: the DM sidebar, the friends panel and direct messages. Geometry is from `design/dom/home/friends-darker-cozy.json`.
 
 use super::tooltip::{Body, Tip};
-use super::{Root, avatar_source, color, icon, status_dot};
+use super::{Root, avatar_source, color, icon, motion, status_dot};
 use crate::parity::Parity;
 use dc_state::{Id, PrivateChannel};
 use gpui::{
@@ -63,7 +63,7 @@ impl Root {
         let selected = self.guild.is_none() && !self.discover.open;
         let requests = self.friend_request_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
-        let group = SharedString::from("home-row");
+        let row_key = "home";
         div()
             .relative()
             .w(px(72.))
@@ -71,55 +71,42 @@ impl Root {
             .flex_none()
             .flex()
             .justify_center()
-            .group(group.clone())
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.))
-                    .top(px(if selected { 0. } else { 10. }))
-                    .w(px(4.))
-                    .h(px(if selected { 40. } else { 20. }))
-                    .rounded_r(px(4.))
-                    .bg(color("--text-strong"))
-                    .when(!selected, |this| {
-                        this.opacity(0.)
-                            .group_hover(group.clone(), |style| style.opacity(1.))
-                    }),
-            )
+            .child(motion::rail::pill(row_key, selected, false))
+            .child(motion::hover_probe(motion::rail::hover_key(row_key)))
             .child(
                 self.with_tip(
                     "home",
                     Tip::rail(Body::Heading("Direct Messages".into())),
-                    div()
-                        .id("home")
-                        .size(px(40.))
-                        .rounded(px(12.))
-                        .bg(if selected {
-                            color("--background-brand")
-                        } else {
-                            color("--background-mod-subtle")
-                        })
-                        .group_hover(group.clone(), |style| style.bg(color("--background-brand")))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_home(None);
-                            cx.notify();
-                        }))
-                        .child(
-                            svg()
-                                .path(crate::branding::home_path())
-                                .size(px(24.))
-                                .flex_none()
-                                .text_color(color(if selected {
-                                    "--white"
-                                } else {
-                                    "--text-default"
-                                }))
-                                .group_hover(group, |style| style.text_color(color("--white"))),
-                        ),
+                    self.group_stop(
+                        div().id("home"),
+                        "rail",
+                        super::keyboard::Nav::List,
+                        "home",
+                        self.guild.is_none(),
+                        cx,
+                    )
+                    .size(px(40.))
+                    .rounded(px(12.))
+                    .bg(motion::rail::tile_background(
+                        row_key,
+                        selected,
+                        "--background-mod-subtle",
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.select_home(None);
+                        cx.notify();
+                    }))
+                    .child(
+                        svg()
+                            .path(crate::branding::home_path())
+                            .size(px(24.))
+                            .flex_none()
+                            .text_color(motion::rail::tile_foreground(row_key, selected)),
+                    ),
                     cx,
                 ),
             )

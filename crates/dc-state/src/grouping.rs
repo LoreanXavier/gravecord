@@ -25,9 +25,9 @@ fn within_window(a: DateTime<Utc>, b: DateTime<Utc>) -> bool {
     (a - b).num_milliseconds().abs() < WINDOW_MS
 }
 
-/// `l.A`: whether a message renders as a user message for grouping.
+/// `l.A` (module 143413): whether a message is a system message, which is every type outside `USER_MESSAGE`.
 fn is_user_message(message: &Message) -> bool {
-    !matches!(message.kind, MESSAGE_DEFAULT | MESSAGE_REPLY)
+    crate::message_kinds::is_system(message.kind)
 }
 
 fn has(message: &Message, flag: u64) -> bool {
@@ -97,6 +97,7 @@ mod tests {
             reference_id: None,
             reference_channel_id: None,
             sticker_items: Vec::new(),
+            extra: Default::default(),
         }
     }
 

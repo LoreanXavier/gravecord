@@ -3,6 +3,8 @@
 //! `calendarContainer_tafmh`). Measured in `event-create-time-open`, `repeat-open` and `date-open`.
 
 use super::super::{Root, color, icon};
+use crate::ui::motion::Transitions as _;
+use crate::ui::motion::{PopKind, PopSide, Popout as _};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
     AnyElement, Bounds, Context, FontWeight, IntoElement, Pixels, ScrollHandle, SharedString,
@@ -84,6 +86,7 @@ pub(in super::super) fn dropdown(
                 .items_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(color("--background-mod-subtle")))
+                .rule(crate::ui::motion::Rule::ListBoxItem)
                 .text_size(px(16.))
                 .line_height(px(20.))
                 .text_color(color("--text-strong"))
@@ -282,6 +285,7 @@ pub(in super::super) fn calendar(
         .collect();
     div()
         .id("event-calendar")
+        .popout("event-calendar", PopKind::Translate, PopSide::Bottom)
         .occlude()
         .w(px(322.))
         .p(px(20.))

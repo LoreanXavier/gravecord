@@ -5,6 +5,7 @@
 use super::{Root, avatar_source, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::permissions::{Overwrite, VIEW_CHANNEL};
 use dc_state::{Channel, Id, User};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
@@ -176,6 +177,7 @@ impl Root {
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if open.select_open { color("--input-border-active") } else { color("--input-border-default") })
+.rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .cursor_pointer()
                     .flex()

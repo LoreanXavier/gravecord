@@ -15,6 +15,7 @@ pub mod guild_settings;
 pub mod local_activity;
 pub mod member_list;
 pub mod members;
+pub mod message_kinds;
 pub mod notifications;
 pub mod permissions;
 pub mod premium;
@@ -924,6 +925,8 @@ pub struct Message {
     pub reference_channel_id: Option<Id>,
     /// `sticker_items` (else `stickers`): the stickers sent with the message, as (id, name, `format_type`).
     pub sticker_items: Vec<(Id, String, u64)>,
+    /// Data only some message types carry: group targets, calls, polls, purchases (see `message_kinds`).
+    pub extra: message_kinds::MessageExtra,
 }
 
 /// What a forward carries: the original's content, files and embeds, and its `message_reference`.
@@ -1032,6 +1035,7 @@ impl Message {
             pinned: value["pinned"].as_bool().unwrap_or(false),
             reference_id: id(&value["message_reference"]["message_id"]),
             reference_channel_id: id(&value["message_reference"]["channel_id"]),
+            extra: message_kinds::MessageExtra::from_value(value),
             sticker_items: value["sticker_items"]
                 .as_array()
                 .or_else(|| value["stickers"].as_array())

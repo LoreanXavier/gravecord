@@ -4,10 +4,12 @@
 //! emoji named in a 48px inspector. Unicode emoji are cells of the sprite sheet (module 617057, `spriteIndex`).
 
 use super::actions::FRECENCY_KEY;
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, editor_style};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::Id;
 use dc_state::frecency::{Frecency, Kind, Usage};
 use dc_tokens::emoji_data::{CATEGORIES, EMOJIS};
@@ -1159,6 +1161,7 @@ impl Root {
                     } else {
                         color("--input-border-default")
                     })
+                    .rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .pl(px(4.))
                     .flex()
@@ -1384,6 +1387,12 @@ impl Root {
                 div()
                     .parity_with_border("emoji-picker", if inventory_reply { 0. } else { 1. })
                     .id("emoji-picker")
+                    // The reaction picker is a popout with `animation: FADE` on the left (`animatorLeft fade` in
+                    // design/dom/pickers/emoji-reaction); the composer's picker has no animator in its capture
+                    // (pickers/emoji-composer), so it appears at once.
+                    .when(reaction && !inventory_reply, |this| {
+                        this.popout("emoji-picker", PopKind::Fade, PopSide::Left)
+                    })
                     .occlude()
                     .absolute()
                     .left(px(left))

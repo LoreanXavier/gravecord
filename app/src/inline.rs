@@ -37,6 +37,9 @@ pub struct Piece {
     pub boxed: Option<BoxStyle>,
     /// An emoji drawn in place of text, with its size.
     pub image: Option<(Arc<Image>, Pixels)>,
+    /// The background and text colours while the pointer is over the piece (a mention's `:hover`), reached over
+    /// `.05s ease-out`.
+    pub hover: Option<(Hsla, Hsla)>,
 }
 
 /// A place in the document: a message id, a block inside it, and a byte offset in that block.
@@ -104,6 +107,17 @@ struct Fragment {
     piece: usize,
     /// Byte offset of this fragment in the whole text.
     start: usize,
+}
+
+/// The motion key of a piece's hover state: its text and where it sits on its line, so it holds across frames
+/// without growing when the list scrolls.
+fn hover_key(piece: &Piece, fragment: &Fragment) -> u64 {
+    crate::ui::motion::key(&(
+        "mention",
+        piece.text.as_str(),
+        fragment.line,
+        f32::from(fragment.x).round() as i32,
+    ))
 }
 
 #[derive(Default)]
@@ -388,6 +402,32 @@ impl Inline {
     }
 
     fn listen(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+        if self.pieces.iter().any(|piece| piece.hover.is_some()) {
+            let laid = self.laid.clone();
+            let pieces = self.pieces.clone();
+            let line_height = self.line_height;
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let over = bounds.contains(&event.position).then(|| {
+                    laid.borrow()
+                        .hover_piece_at(event.position - bounds.origin, line_height)
+                });
+                let laid = laid.borrow();
+                for fragment in &laid.fragments {
+                    if pieces[fragment.piece].hover.is_none() {
+                        continue;
+                    }
+                    let key = hover_key(&pieces[fragment.piece], fragment);
+                    let inside = over.flatten().is_some_and(|at| at == fragment.start);
+                    if crate::ui::motion::hovered(key) != inside {
+                        crate::ui::motion::set_hover(key, inside);
+                        window.refresh();
+                    }
+                }
+            });
+        }
         if let Some(handler) = self.on_piece_click.clone() {
             let laid = self.laid.clone();
             let line_height = self.line_height;
@@ -538,6 +578,7 @@ impl Element for Inline {
             let left = bounds.origin.x + fragment.x;
             if let Some((image, size)) = &piece.image {
                 if let Some(data) = image.clone().use_render_image(window, cx) {
+                    gpui::note_painted_image(window, image, &data);
                     // Chromium snaps replaced images to whole pixels.
                     let area =
                         Bounds::new(point(left.round(), top.round()), gpui::size(*size, *size));
@@ -545,6 +586,7 @@ impl Element for Inline {
                 }
                 continue;
             }
+            let mut recolored: Option<Hsla> = None;
             let (text_origin, text_height): (Point<Pixels>, Pixels) = match &piece.boxed {
                 Some(style) => {
                     if let Some((path, icon_size, _)) = &style.icon {
@@ -561,13 +603,37 @@ impl Element for Inline {
                             cx,
                         );
                     }
+                    let (background, text) = match piece.hover {
+                        Some((hover_background, hover_text)) => {
+                            let key = hover_key(piece, fragment);
+                            let target = crate::ui::motion::hovered(key);
+                            let ease =
+                                crate::ui::motion::css(50., crate::ui::motion::Ease::EaseOut);
+                            let shade = |base: Hsla, over: Hsla, tag: u64| {
+                                let shown = crate::ui::motion::color(
+                                    key ^ tag,
+                                    gpui::Rgba::from(if target { over } else { base }),
+                                    ease,
+                                );
+                                Hsla::from(shown)
+                            };
+                            (
+                                shade(style.background, hover_background, 0x11),
+                                shade(piece.color, hover_text, 0x12),
+                            )
+                        }
+                        None => (style.background, piece.color),
+                    };
+                    if text != piece.color {
+                        recolored = Some(text);
+                    }
                     window.paint_quad(quad(
                         Bounds::new(
                             point(left, top + style.top),
                             size(fragment.width, style.height),
                         ),
                         Corners::all(style.radius),
-                        Background::from(style.background),
+                        Background::from(background),
                         Edges::all(px(1.)),
                         style.border,
                         BorderStyle::Solid,
@@ -588,10 +654,19 @@ impl Element for Inline {
                     _ => (point(left, top), self.line_height),
                 },
             };
-            let _ =
-                fragment
-                    .shaped
-                    .paint(text_origin, text_height, TextAlign::Left, None, window, cx);
+            let shaped = recolored.map(|text| {
+                let mut shown = piece.clone();
+                shown.color = text;
+                shape(&shown, fragment.shaped.text.as_ref(), window)
+            });
+            let _ = shaped.as_ref().unwrap_or(&fragment.shaped).paint(
+                text_origin,
+                text_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
             paint_decorations(piece, fragment, text_origin, text_height, window);
         }
     }
@@ -664,6 +739,19 @@ impl Laid {
                     && position.x < fragment.x + fragment.width
             })
             .map(|fragment| fragment.piece)
+    }
+
+    /// The start of the fragment under a point, when it is one with a hover look.
+    fn hover_piece_at(&self, position: Point<Pixels>, line_height: Pixels) -> Option<usize> {
+        let line = (position.y / line_height).floor().max(0.) as usize;
+        self.fragments
+            .iter()
+            .find(|fragment| {
+                fragment.line == line
+                    && position.x >= fragment.x
+                    && position.x < fragment.x + fragment.width
+            })
+            .map(|fragment| fragment.start)
     }
 
     pub fn index_at(&self, position: Point<Pixels>, line_height: Pixels) -> usize {

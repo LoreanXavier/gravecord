@@ -1,24 +1,23 @@
 //! Tooltips. Box from `tooltip_ZDdyhE`, caret from module 160733, trigger from 402883, spring from 280336, guild body from 396655.
 
-use super::{Root, SANS, badge_paths as paths, color, kerning};
+use super::motion::{Drive, Presence, presets};
+use super::{Root, SANS, badge_paths as paths, color, icon, kerning};
 use dc_state::{Badge, Guild, Id};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Bounds, BoxShadow, Context, Display, Element,
-    ElementId, FontWeight, GlobalElementId, Image, ImageFormat, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Position, Radians, Rgba, SharedString, Stateful, Style, Transformation,
-    Window, canvas, deferred, div, hsla, img, point, prelude::*, px, svg,
+    AnyElement, App, Bounds, BoxShadow, Context, Display, Element, ElementId, FontWeight,
+    GlobalElementId, Image, ImageFormat, InspectorElementId, IntoElement, LayoutId, Pixels,
+    Position, Radians, Rgba, SharedString, Stateful, Style, Transformation, Window, canvas,
+    deferred, div, hsla, img, point, prelude::*, px, svg,
 };
+use std::cell::RefCell;
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// `spacing` default in module 160733.
 pub(super) const SPACING: f32 = 11.;
 /// `viewportPadding` default in module 508382.
 const VIEWPORT_PADDING: f32 = 8.;
 const MAX_WIDTH: f32 = 200.;
-/// Past this the spring from module 280336 has settled.
-const FADE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Side {
@@ -38,6 +37,17 @@ pub(super) enum Body {
     Guild(Id),
     /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
     Rich(SharedString, SharedString),
+    /// A sticker's name behind `StickerSmallIcon` (module 679636 `rH`): the icon is 16px with a 2px margin, 4px
+    /// from the text (`stickerIcon_y33UtT`, `stickerName_y33UtT`).
+    Sticker(SharedString),
+    /// The popout over a reaction pill (module 30492 `eT`): the emoji, then who reacted, from the reactors fetched
+    /// under `fetch_key`. It has no caret and nothing to show until a name is known.
+    Reaction {
+        emoji: String,
+        fetch_key: String,
+        label: String,
+        count: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -45,6 +55,8 @@ pub(super) struct Tip {
     pub body: Body,
     pub side: Side,
     pub spacing: f32,
+    /// How long the pointer rests on the target before the tooltip opens, in milliseconds (`delay` in module 280336).
+    pub delay: u64,
 }
 
 impl Tip {
@@ -53,6 +65,7 @@ impl Tip {
             body: Body::Text(text.into()),
             side,
             spacing: SPACING,
+            delay: 0,
         }
     }
 
@@ -61,7 +74,20 @@ impl Tip {
             body,
             side,
             spacing: SPACING,
+            delay: 0,
         }
+    }
+
+    /// The same tip, opening after the pointer has rested for `milliseconds`.
+    pub fn after(mut self, milliseconds: u64) -> Self {
+        self.delay = milliseconds;
+        self
+    }
+
+    /// The same tip, `spacing` pixels from its target.
+    pub fn spaced(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
     }
 
     /// The server rail keeps its tooltips 12px from the icon.
@@ -70,10 +96,12 @@ impl Tip {
             body,
             side: Side::Right,
             spacing: 12.,
+            delay: 0,
         }
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Active {
     key: SharedString,
     tip: Tip,
@@ -89,20 +117,6 @@ impl Active {
     pub fn key(&self) -> &str {
         &self.key
     }
-}
-
-/// `{tension:2400,friction:52}` with react-spring's default mass, clamped because opacity cannot pass 1.
-fn spring(delta: f32) -> f32 {
-    if delta >= 1. {
-        return 1.;
-    }
-    let time = delta * FADE.as_secs_f32();
-    let natural = 2400f32.sqrt();
-    let decay = 52. / 2.;
-    let damped = (natural * natural - decay * decay).sqrt();
-    let envelope = (-decay * time).exp();
-    let value = 1. - envelope * ((damped * time).cos() + decay / damped * (damped * time).sin());
-    value.clamp(0., 1.)
 }
 
 /// Where the box goes around its target, pushed along the target's edge to stay in the viewport.
@@ -161,6 +175,8 @@ struct Placed {
     spacing: Pixels,
     body: AnyElement,
     caret: AnyElement,
+    /// The scale the tooltip draws at (`.95` to 1 with its opacity, module 280336), about its body's centre.
+    scale: f32,
 }
 
 impl IntoElement for Placed {
@@ -173,7 +189,7 @@ impl IntoElement for Placed {
 
 impl Element for Placed {
     type RequestLayoutState = (LayoutId, LayoutId);
-    type PrepaintState = ();
+    type PrepaintState = gpui::Point<Pixels>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -209,7 +225,7 @@ impl Element for Placed {
         (body, caret): &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         let laid_body = window.layout_bounds(*body);
         let laid_caret = window.layout_bounds(*caret);
         let origin = place(
@@ -227,6 +243,7 @@ impl Element for Placed {
         window.with_element_offset(caret_at - laid_caret.origin, |window| {
             self.caret.prepaint(window, cx);
         });
+        placed.center()
     }
 
     fn paint(
@@ -235,12 +252,14 @@ impl Element for Placed {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        centre: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.body.paint(window, cx);
-        self.caret.paint(window, cx);
+        window.with_paint_scale(self.scale, *centre, |window| {
+            self.body.paint(window, cx);
+            self.caret.paint(window, cx);
+        });
     }
 }
 
@@ -407,20 +426,49 @@ impl Root {
                 .size_full(),
             )
             .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                if *inside {
+                if *inside && tip.delay > 0 {
+                    // The tooltip opens once the pointer has stayed; leaving or pressing first cancels it.
+                    this.tip_pending = Some(hovered.clone());
+                    let (key, tip, wait) = (hovered.clone(), tip.clone(), tip.delay);
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(wait))
+                            .await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.tip_pending.as_ref() != Some(&key) {
+                                return;
+                            }
+                            this.tip_pending = None;
+                            let anchor = this.tip_anchors.borrow().get(&key).copied();
+                            this.tip = anchor.map(|anchor| Active {
+                                key: key.clone(),
+                                tip: tip.clone(),
+                                anchor,
+                            });
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                } else if *inside {
                     let anchor = this.tip_anchors.borrow().get(&hovered).copied();
                     this.tip = anchor.map(|anchor| Active {
                         key: hovered.clone(),
                         tip: tip.clone(),
                         anchor,
                     });
-                } else if this.tip.as_ref().is_some_and(|tip| tip.key == hovered) {
-                    this.tip = None;
+                } else {
+                    if this.tip_pending.as_ref() == Some(&hovered) {
+                        this.tip_pending = None;
+                    }
+                    if this.tip.as_ref().is_some_and(|tip| tip.key == hovered) {
+                        this.tip = None;
+                    }
                 }
                 cx.notify();
             }))
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.tip = None;
+                this.tip_pending = None;
                 cx.notify();
             }))
     }
@@ -456,6 +504,79 @@ impl Root {
                         .child(body.clone()),
                 )
                 .into_any_element(),
+            Body::Sticker(name) => frame()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .child(
+                    div()
+                        .max_w(px(MAX_WIDTH - 24.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .mr(px(2.))
+                                .child(icon("sticker_small", 16., "--text-default")),
+                        )
+                        .child(name.clone()),
+                )
+                .into_any_element(),
+            Body::Reaction {
+                emoji,
+                fetch_key,
+                label,
+                count,
+            } => {
+                let names = super::reaction_tip::names(self.fetched.get(fetch_key)?);
+                let text = super::reaction_tip::text(label, &names, *count)?;
+                let image = self.images.get(emoji).cloned();
+                // `reactionTooltip_5l5ajC` and `reactionTooltipInner_5l5ajC`.
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .max_w(px(288.))
+                    .p(px(16.))
+                    .overflow_hidden()
+                    .rounded(px(4.))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![
+                        BoxShadow {
+                            color: hsla(0., 0., 1., 0.08),
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(1.),
+                            inset: false,
+                        },
+                        BoxShadow {
+                            color: hsla(0., 0., 0., 0.24),
+                            offset: point(px(0.), px(12.)),
+                            blur_radius: px(24.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        },
+                    ])
+                    .font_family(SANS)
+                    .font_features(kerning())
+                    .text_color(color("--text-default"))
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .children(image.map(|image| gpui::img(image).size(px(32.)))),
+                    )
+                    .child(
+                        div()
+                            .ml(px(12.))
+                            .min_w(px(0.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(400.))
+                            .child(text),
+                    )
+                    .into_any_element()
+            }
             Body::Guild(id) => {
                 let guild = self.stores.guild(*id)?;
                 frame()
@@ -477,49 +598,82 @@ impl Root {
         })
     }
 
-    pub(super) fn tip_layer(&self) -> Option<AnyElement> {
-        let active = self.tip.as_ref()?;
-        let body = self.tip_body(&active.tip.body)?;
-        let key = active.key.clone();
-        // Reduced motion shows a tip at once instead of fading it in.
-        let fade = if self.pref_on("reduced_motion", false) {
-            Duration::from_millis(1)
-        } else {
-            FADE
-        };
-        let body = div()
-            .child(body)
-            .with_animation(
-                ElementId::Name(format!("tip-body-{key}").into()),
-                Animation::new(fade).with_easing(spring),
-                |element, delta| element.opacity(delta),
-            )
-            .into_any_element();
-        let caret = div()
-            .child(caret(active.tip.side))
-            .with_animation(
-                ElementId::Name(format!("tip-caret-{key}").into()),
-                Animation::new(fade).with_easing(spring),
-                |element, delta| element.opacity(delta),
-            )
-            .into_any_element();
-        Some(
-            deferred(Placed {
-                anchor: active.anchor,
-                side: active.tip.side,
-                spacing: px(active.tip.spacing),
-                body,
-                caret,
+    /// The tooltips on screen: the one under the pointer and any that is still leaving. Module 280336 runs
+    /// `useTransition` with `{tension: 2400, friction: 52}`, from `{scale: .95, opacity: 0}` to `{1, 1}`; the opacity
+    /// of that spring is applied here (an element cannot be scaled in this renderer). Under reduced motion the
+    /// official `from` and `leave` keep scale 1 and still fade, which is what this does.
+    pub(super) fn tip_layer(&self) -> Vec<AnyElement> {
+        let frames: Vec<(Active, f32)> = TIPS.with(|tips| {
+            let mut tips = tips.borrow_mut();
+            let wanted = self.tip.as_ref();
+            for (key, presence) in tips.iter_mut() {
+                if wanted.is_none_or(|active| active.key != *key) {
+                    presence.set(None);
+                }
+            }
+            if let Some(active) = wanted {
+                match tips.iter_mut().find(|(key, _)| *key == active.key) {
+                    Some((_, presence)) => presence.set(Some(active.clone())),
+                    None => {
+                        let mut presence = Presence::new(
+                            &("tooltip", active.key.clone()),
+                            Drive::Spring(presets::TOOLTIP),
+                        );
+                        presence.set(Some(active.clone()));
+                        tips.push((active.key.clone(), presence));
+                    }
+                }
+            }
+            let mut frames = Vec::new();
+            tips.retain_mut(|(_, presence)| match presence.frame() {
+                Some(frame) => {
+                    frames.push(frame);
+                    true
+                }
+                None => false,
+            });
+            frames
+        });
+        frames
+            .into_iter()
+            .filter_map(|(active, progress)| {
+                let body = self.tip_body(&active.tip.body)?;
+                let opacity = progress.clamp(0., 1.);
+                let body = div().child(body).opacity(opacity).into_any_element();
+                let has_caret = !matches!(active.tip.body, Body::Reaction { .. });
+                let caret = div()
+                    .when(has_caret, |this| this.child(caret(active.tip.side)))
+                    .opacity(opacity)
+                    .into_any_element();
+                Some(
+                    deferred(Placed {
+                        anchor: active.anchor,
+                        side: active.tip.side,
+                        spacing: px(active.tip.spacing),
+                        body,
+                        caret,
+                        scale: if super::motion::reduced() {
+                            1.
+                        } else {
+                            0.95 + 0.05 * progress
+                        },
+                    })
+                    .with_priority(2)
+                    .into_any_element(),
+                )
             })
-            .with_priority(2)
-            .into_any_element(),
-        )
+            .collect()
     }
+}
+
+thread_local! {
+    /// One presence per tooltip key, so a tooltip that is leaving fades while the next one comes in.
+    static TIPS: RefCell<Vec<(SharedString, Presence<Active>)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Side, caret_origin, place, spring};
+    use super::{Side, caret_origin, place};
     use gpui::{Bounds, point, px, size};
 
     fn anchor() -> Bounds<gpui::Pixels> {
@@ -549,12 +703,5 @@ mod tests {
             viewport,
         );
         assert_eq!(origin.x, px(192.));
-    }
-
-    #[test]
-    fn the_spring_starts_at_zero_and_ends_at_one() {
-        assert_eq!(spring(0.), 0.);
-        assert_eq!(spring(1.), 1.);
-        assert!(spring(0.2) > 0.5);
     }
 }

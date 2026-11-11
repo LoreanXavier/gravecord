@@ -7,9 +7,12 @@
 mod app_data;
 mod apps;
 mod data;
+mod hubs;
+mod profile;
 mod servers;
 
 use super::{Root, color, editor_style, icon};
+use crate::ui::motion::Transitions as _;
 use crate::{
     editor::{Editor, EditorEvent},
     net::Request,
@@ -151,6 +154,8 @@ impl Root {
         self.discover.place = place;
         self.discover.scroll.set_offset(point(px(0.), px(0.)));
         self.discover.notice = None;
+        self.discover.servers.popout = None;
+        self.discover.servers.hub = None;
         self.discover_search_editor(cx);
         match place {
             Place::Servers => self.servers_enter(cx),
@@ -185,6 +190,10 @@ impl Root {
             self.apps_fetched(key);
         } else if let Some(id) = key.strip_prefix("discover:lurk:") {
             self.servers_lurked(id, key);
+        } else if let Some(id) = key.strip_prefix("discover:profile:") {
+            self.servers_profile_fetched(id, key);
+        } else if key == hubs::LOOKUP_KEY {
+            self.hub_fetched(key);
         }
         cx.notify();
     }
@@ -765,6 +774,7 @@ impl Root {
             } else {
                 "--input-border-default"
             }))
+            .rule(crate::ui::motion::Rule::TextField)
             .rounded(px(8.))
             .bg(color("--input-background-default"))
             .pl(px(4. - border))

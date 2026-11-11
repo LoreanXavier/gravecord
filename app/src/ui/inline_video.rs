@@ -17,8 +17,8 @@ use std::{
 };
 
 pub(super) const PREFIX: &str = "gifv:";
-const TOTAL_DECODED: usize = 128 * 1024 * 1024;
-const TOTAL_ENCODED: usize = 64 * 1024 * 1024;
+const TOTAL_DECODED: usize = 48 * 1024 * 1024;
+const TOTAL_ENCODED: usize = 16 * 1024 * 1024;
 /// What a decode that is still running counts for against `TOTAL_DECODED` (its real size is only known when it
 /// ends, and at most `MAX_DECODED`).
 const DECODE_RESERVE: usize = 16 * 1024 * 1024;
@@ -587,6 +587,19 @@ impl Root {
                 .count(),
             cache.retired
         )
+    }
+}
+
+/// The downloads and decoded clips this cache holds, for the perf harness.
+#[cfg(feature = "capture")]
+impl Cache {
+    pub(super) fn perf_size(&self) -> crate::perf::Size {
+        let mut size = crate::perf::Size::default();
+        size.add(
+            self.entries.len(),
+            self.encoded_used() + self.decoded_used(),
+        );
+        size
     }
 }
 

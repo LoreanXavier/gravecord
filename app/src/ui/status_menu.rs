@@ -8,6 +8,7 @@
 //! (`dc_proto::settings::set_status`), as `updateStatus` in module 827827 does.
 
 use super::modal::{self, Tone};
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon, status_dot_large};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -555,6 +556,8 @@ impl Root {
 
         let card = div()
             .id("status-popout")
+            // The account popout opens with `animation: FADE` above its target (module 993382).
+            .popout("status-popout", PopKind::Fade, PopSide::Top)
             .occlude()
             .w(px(300.))
             .rounded(px(8.))

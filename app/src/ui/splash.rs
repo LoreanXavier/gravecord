@@ -305,7 +305,9 @@ pub(super) struct Splash {
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     hold: bool,
     tip: usize,
-    frames: Vec<Arc<RenderImage>>,
+    /// The spinner's loop, as alpha planes, and the one frame turned into a picture right now.
+    clip: Option<Arc<Clip>>,
+    shown: Option<(usize, Arc<RenderImage>)>,
     /// The width of a space in the tip's 16px text, for tips that flow as words.
     space: Option<f32>,
 }
@@ -321,7 +323,8 @@ impl Splash {
             done: false,
             hold: false,
             tip: nanos % TIPS.len(),
-            frames: Vec::new(),
+            clip: None,
+            shown: None,
             space: None,
         }
     }
@@ -538,24 +541,53 @@ fn problem_link(
         .child(label)
 }
 
+/// Whether the loop is kept once the screen is gone. A capture can hold the screen up again (`splash hold`); a
+/// measuring run, like the app itself, lets it go.
+fn keeps_frames_after_done() -> bool {
+    #[cfg(feature = "capture")]
+    {
+        !crate::perf::measuring()
+    }
+    #[cfg(not(feature = "capture"))]
+    {
+        false
+    }
+}
+
 impl Root {
     pub(crate) fn ready_for_capture(&self) -> bool {
         self.ready && self.splash.done
     }
 
-    /// The spinner's frames came in: gpui images, drawn at 200px.
-    pub(super) fn splash_clip(&mut self, clip: &Clip) {
-        if self.splash.done && !cfg!(feature = "capture") {
+    /// The spinner's loop came in. Its frames become pictures one at a time as they are drawn at 200px.
+    pub(super) fn splash_clip(&mut self, clip: Arc<Clip>) {
+        if self.splash.done && !keeps_frames_after_done() {
             return;
         }
-        self.splash.frames = clip
-            .frames
-            .iter()
-            .filter_map(|bgra| {
-                let buffer = image::RgbaImage::from_raw(clip.width, clip.height, bgra.clone())?;
-                Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
-            })
-            .collect();
+        self.splash.clip = Some(clip);
+    }
+
+    /// The picture of the spinner frame to draw at `elapsed`, made when the frame changes; the one before it is
+    /// released from the atlas.
+    fn splash_frame(
+        &mut self,
+        elapsed: std::time::Duration,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Option<Arc<RenderImage>> {
+        let clip = self.splash.clip.clone()?;
+        let at = (elapsed.as_secs_f32() * spinner::FPS) as usize % clip.frames.len().max(1);
+        if let Some((shown, image)) = &self.splash.shown
+            && *shown == at
+        {
+            return Some(image.clone());
+        }
+        let buffer = image::RgbaImage::from_raw(clip.width, clip.height, clip.bgra(at))?;
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+        if let Some((_, old)) = self.splash.shown.replace((at, image.clone())) {
+            cx.drop_image(old, Some(window));
+        }
+        Some(image)
     }
 
     /// Whether the first content is in: READY is applied, and the channel it opened has its first messages (or none
@@ -566,7 +598,13 @@ impl Root {
 
     /// Called after every update: starts the fade once the content is ready.
     pub(super) fn splash_check(&mut self) {
+        #[cfg(feature = "capture")]
+        if self.stores.current_user.is_some() {
+            crate::perf::mark(&crate::perf::READY_MS);
+        }
         if self.splash.loaded_at.is_none() && self.content_ready() {
+            #[cfg(feature = "capture")]
+            crate::perf::mark(&crate::perf::CONTENT_MS);
             self.splash.loaded_at = Some(Instant::now());
         }
     }
@@ -606,13 +644,16 @@ impl Root {
         let faded = self.splash.loaded_at.map(|at| at.elapsed());
         let look = look(elapsed, faded, self.splash.hold);
         if look.gone {
+            #[cfg(feature = "capture")]
+            crate::perf::mark(&crate::perf::SPLASH_DONE_MS);
             self.splash.done = true;
-            if !cfg!(feature = "capture") {
-                // Dropping the Vec leaves the 64 frames in the GPU atlas for the session: release them there.
-                let frames = std::mem::take(&mut self.splash.frames);
+            if !keeps_frames_after_done() {
+                // Dropping the picture leaves it in the GPU atlas for the session: release it there.
+                self.splash.clip = None;
+                let shown = self.splash.shown.take();
                 // The window is back in App's window map when deferred effects run.
                 cx.defer(move |cx| {
-                    for image in frames {
+                    if let Some((_, image)) = shown {
                         cx.drop_image(image, None);
                     }
                 });
@@ -622,10 +663,7 @@ impl Root {
         // The spinner and the slide are animations: ask for the next frame.
         window.request_animation_frame();
         let space = *self.splash.space.get_or_insert_with(|| space_width(window));
-        let frame = (!self.splash.frames.is_empty()).then(|| {
-            let at = (elapsed.as_secs_f32() * spinner::FPS) as usize % self.splash.frames.len();
-            self.splash.frames[at].clone()
-        });
+        let frame = self.splash_frame(elapsed, window, cx);
         let tip = TIPS[self.splash.tip];
         // The content is 292px tall, centred in the window less the 22px the official bar keeps. The tip block rides
         // 20px up (`top: -20px`) from where the inline video's line box leaves it, 3px below the spinner.

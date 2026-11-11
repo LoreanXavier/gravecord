@@ -3,6 +3,8 @@
 //! `design/dom/modals/custom-reminder*-darker-cozy.json`.
 
 use super::{Root, color};
+use crate::ui::motion::Transitions as _;
+use crate::ui::motion::{PopKind, PopSide, Popout as _};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime, TimeZone};
 use dc_state::Id;
 use gpui::{
@@ -70,6 +72,7 @@ impl Root {
                 } else {
                     color("--input-border-default")
                 })
+                .rule(crate::ui::motion::Rule::TextField)
                 .bg(color("--input-background-default"))
                 .cursor_pointer()
                 .flex()
@@ -299,6 +302,7 @@ impl Root {
                             .when(available, |this| {
                                 this.cursor_pointer()
                                     .hover(|style| style.bg(color("--background-mod-normal")))
+                                    .rule(crate::ui::motion::Rule::ListBoxItem)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if let Some(state) = this.custom_reminder.as_mut() {
                                             state.date = day;
@@ -325,6 +329,7 @@ impl Root {
             .collect();
         deferred(
             div()
+                .popout("reminder-calendar", PopKind::Translate, PopSide::Top)
                 .absolute()
                 .left(px(0.))
                 .bottom(px(48.))

@@ -138,6 +138,7 @@ impl Shell {
         self.token = Some(token);
         let root = cx.new(|cx| Root::new(request_tx, hook_tx, cx));
         crate::ui::bind_focus(&root, window, cx);
+        crate::ui::memory_trim::start(&root, cx);
         self._subscriptions = vec![
             cx.subscribe_in(&root, window, |this, _, event, window, cx| match event {
                 RootEvent::LogOut => this.end_session(true, window, cx),

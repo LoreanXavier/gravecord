@@ -5,6 +5,7 @@ mod headless;
 mod layout;
 mod package;
 mod parity;
+mod perf;
 mod report;
 mod snapshot;
 
@@ -29,6 +30,7 @@ fn main() -> Result<()> {
         ["report"] => report::run(&repo_root()),
         ["parity", rest @ ..] => parity::run(&repo_root(), rest),
         ["package"] => package::run(&repo_root()),
+        ["perf", rest @ ..] => perf::run(&repo_root(), rest),
         ["headless", rest @ ..] => headless::run(&repo_root(), rest),
         [] => bail!("usage: cargo xtask <command>"),
         other => bail!("not implemented yet: {}", other.join(" ")),

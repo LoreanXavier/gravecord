@@ -77,7 +77,7 @@ impl MentionFilter {
         route
     }
 }
-const UNREAD_PREFIX: &str = "inbox-unread:";
+pub(super) const UNREAD_PREFIX: &str = "inbox-unread:";
 /// The Unreads tutorial card stays dismissed once "Got it!" is pressed.
 const TUTORIAL_SEEN: &str = "inbox-unreads-tutorial-seen";
 /// The join line's green arrow, a CSS background in the capture (`icon_bLMKT5`).
@@ -111,7 +111,7 @@ pub(super) fn saved_entries(body: &Value) -> Vec<(Message, Option<String>)> {
 
 impl Root {
     /// Unread, unmuted text channels in rail order, as the Unreads tab lists them.
-    fn unread_channels(&self) -> Vec<(Id, Id)> {
+    pub(super) fn unread_channels(&self) -> Vec<(Id, Id)> {
         let now = chrono::Utc::now();
         self.stores
             .guilds
@@ -1147,11 +1147,16 @@ impl Root {
                         .size(px(16.))
                         .text_color(color("--text-subtle"))
                         // Folded, the chevron turns a quarter to the left.
-                        .when(collapsed, |this| {
-                            this.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                -std::f32::consts::FRAC_PI_2,
-                            )))
-                        }),
+                        // `chevron_UpFw5t`: `transform .2s`.
+                        .with_transformation(super::motion::rotation(
+                            super::motion::key(&("inbox-chevron", channel)),
+                            if collapsed {
+                                -std::f32::consts::FRAC_PI_2
+                            } else {
+                                0.
+                            },
+                            super::motion::css(200., super::motion::Ease::Ease),
+                        )),
                 )
                 .into_any_element(),
         ];
@@ -1208,7 +1213,7 @@ impl Root {
     }
 
     /// Mark As Read on a card: ack its newest message, and drop the card.
-    fn ack_channel(&mut self, channel: Id, message: Id) {
+    pub(super) fn ack_channel(&mut self, channel: Id, message: Id) {
         self.stores.read_states.ack_local(channel, message, false);
         self.data_revision += 1;
         self.inbox_read.insert(channel);

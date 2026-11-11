@@ -49,6 +49,7 @@ use super::tooltip::{Side, Tip};
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::net::Request;
+use crate::ui::motion::Transitions as _;
 use dc_state::{Channel, ChannelKind, Guild, Id, permissions};
 use gpui::{
     AnyElement, Context, Entity, EntityId, Focusable, FontWeight, HighlightStyle, IntoElement,
@@ -3390,8 +3391,9 @@ fn icon_button(
 }
 
 /// `ni.P`, the indicator 20 square with its 18 check.
-pub(super) fn checkbox(checked: bool, disabled: bool) -> gpui::Div {
+pub(super) fn checkbox(checked: bool, disabled: bool) -> gpui::Stateful<gpui::Div> {
     div()
+        .id("checkbox")
         .relative()
         .flex_none()
         .size(px(20.))
@@ -3408,13 +3410,11 @@ pub(super) fn checkbox(checked: bool, disabled: bool) -> gpui::Div {
             color("--checkbox-background-default")
         })
         .when(disabled, |this| this.opacity(0.5))
-        .when(checked, |this| {
-            this.child(div().absolute().left(px(0.)).top(px(0.)).child(icon(
-                "automod_check",
-                18.,
-                "--checkbox-icon-active",
-            )))
-        })
+        .child(super::motion::controls::checkbox_marks(
+            checked,
+            icon("automod_check", 18., "--checkbox-icon-active"),
+            color("--checkbox-icon-active").into(),
+        ))
 }
 
 /// `mh.gm`.
@@ -5676,6 +5676,7 @@ impl Root {
             } else {
                 "--input-border-default"
             }))
+            .rule(crate::ui::motion::Rule::TextField)
             .bg(color("--input-background-default"))
             .flex()
             .items_center()
@@ -7653,6 +7654,7 @@ impl Root {
                 } else {
                     "--input-border-default"
                 }))
+                .rule(crate::ui::motion::Rule::TextField)
                 .bg(color("--input-background-default"))
                 .cursor_pointer()
                 .flex()
@@ -7824,6 +7826,7 @@ impl Root {
             } else {
                 "--input-border-default"
             }))
+            .rule(crate::ui::motion::Rule::TextField)
             .bg(color("--input-background-default"))
             .overflow_hidden()
             .when(empty, |this| {

@@ -169,6 +169,23 @@ pub struct Editor {
 
 impl EventEmitter<EditorEvent> for Editor {}
 
+thread_local! {
+    /// The focus handles of the text fields that exist now, so the keyboard layer can tell whether typing is going to
+    /// a field (the official global handler skips keys while an input has focus).
+    static FIELDS: RefCell<Vec<gpui::WeakFocusHandle>> = RefCell::default();
+}
+
+/// Whether `handle` is the focus handle of a live text field.
+pub fn is_field(handle: &FocusHandle) -> bool {
+    FIELDS.with(|fields| fields.borrow().iter().any(|field| handle == field))
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        FIELDS.with(|fields| fields.borrow_mut().retain(|field| self.focus != *field));
+    }
+}
+
 impl Focusable for Editor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -177,8 +194,10 @@ impl Focusable for Editor {
 
 impl Editor {
     pub fn new(style: EditorStyle, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        FIELDS.with(|fields| fields.borrow_mut().push(focus.downgrade()));
         Self {
-            focus: cx.focus_handle(),
+            focus,
             buffer: TextBuffer::default(),
             placeholder: SharedString::default(),
             ellipsis_placeholder: false,

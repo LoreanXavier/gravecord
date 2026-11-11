@@ -8,6 +8,7 @@ use super::{Root, color, icon, window_controls};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::{ChannelKind, Id};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window,
@@ -394,6 +395,7 @@ impl Root {
             } else {
                 color("--input-border-default")
             })
+            .rule(crate::ui::motion::Rule::TextField)
             .bg(color("--input-background-default"))
             .cursor_pointer()
             .flex()
@@ -412,11 +414,12 @@ impl Root {
                         .path("icons/combo_chevron.svg")
                         .size(px(20.))
                         .text_color(color("--text-strong"))
-                        .when(open, |this| {
-                            this.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            )))
-                        }),
+                        .with_transformation(crate::ui::motion::flip(
+                            crate::ui::motion::key(key),
+                            open,
+                            crate::ui::motion::css(200., crate::ui::motion::Ease::EaseOut)
+                                .full_motion(),
+                        )),
                 ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {

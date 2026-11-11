@@ -16,6 +16,8 @@ mod net;
 mod notifications;
 mod palette;
 mod parity;
+#[cfg(feature = "capture")]
+mod perf;
 mod rive;
 mod rpc;
 mod shell;
@@ -193,6 +195,12 @@ fn capture_args() -> Option<Capture> {
             .iter()
             .position(|arg| arg == "--script")
             .and_then(|at| args.get(at + 1))
+            .inspect(|script| {
+                #[cfg(feature = "capture")]
+                perf::set_measuring(script);
+                #[cfg(not(feature = "capture"))]
+                let _ = script;
+            })
             .cloned(),
         follow: args
             .iter()
@@ -289,6 +297,10 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
+    #[cfg(feature = "capture")]
+    perf::start_heap_profile();
+    #[cfg(feature = "capture")]
+    perf::checkpoint("main");
     // Read once by gpui's renderer. Set before any other thread exists.
     if std::env::var_os("GRAVECORD_TEXT_GAMMA").is_none() {
         unsafe { std::env::set_var("GRAVECORD_TEXT_GAMMA", TEXT_GAMMA) };
@@ -320,6 +332,8 @@ fn run() -> Result<()> {
     )?;
     let capture = capture_args();
 
+    #[cfg(feature = "capture")]
+    perf::checkpoint("pre_runtime");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -327,6 +341,10 @@ fn run() -> Result<()> {
     // The fonts are public files: no login is needed (or known) yet.
     let font_client = dc_http::Client::new(Token::new(""), Identity::new())?;
     let faces = runtime.block_on(fonts::load(&font_client))?;
+    #[cfg(feature = "capture")]
+    perf::mark(&perf::FONTS_MS);
+    #[cfg(feature = "capture")]
+    perf::checkpoint("fonts_read");
     let start = initial_start();
     let handle = runtime.handle().clone();
     // The Run value's arguments (`--start-minimized`, `--start-inactive`). Minimized only means anything with a signed
@@ -341,9 +359,13 @@ fn run() -> Result<()> {
         .run(move |cx: &mut App| {
             // Chromium draws this UI with grayscale antialiasing.
             cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
+            // Keeps the decoded pictures within their budget (`ui/image_cache.rs`).
+            ui::image_cache::start(cx);
             cx.text_system()
                 .add_fonts(faces.into_iter().map(Cow::Owned).collect())
                 .expect("gg sans must load");
+            #[cfg(feature = "capture")]
+            perf::checkpoint("fonts_added");
             let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
             let window = cx
                 .open_window(
@@ -365,6 +387,10 @@ fn run() -> Result<()> {
                     },
                 )
                 .expect("the window must open");
+            #[cfg(feature = "capture")]
+            perf::mark(&perf::WINDOW_MS);
+            #[cfg(feature = "capture")]
+            perf::checkpoint("window");
             let shell = window.entity(cx).expect("the shell exists");
             if hidden {
                 let _ = window.update(cx, |_, window, _| autostart::place_hidden(window, bounds));

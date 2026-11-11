@@ -30,11 +30,14 @@ pub(super) const PREFIX: &str = "stickeranim:";
 
 /// Most bytes of decoded frames kept at once, all clips together. Frames inside the playing window of a clip on
 /// screen are not evicted, so a screen of playing stickers can pass it by that window.
-const TOTAL_BUDGET: usize = 64 * 1024 * 1024;
+const TOTAL_BUDGET: usize = 32 * 1024 * 1024;
 /// Most bytes of one decoded APNG or GIF clip; a larger one is decoded at a smaller size.
 const CLIP_BUDGET: usize = 16 * 1024 * 1024;
-/// Most bytes of downloaded animations kept for reuse (a parsed Lottie file counts as its JSON).
-const ENCODED_BUDGET: usize = 16 * 1024 * 1024;
+/// Most bytes of downloaded animations kept for reuse (a Lottie file is kept as its JSON).
+const ENCODED_BUDGET: usize = 8 * 1024 * 1024;
+/// A downloaded animation no clip has asked for in this long is dropped even under the budget; it is fetched again
+/// when a sticker needs to play.
+const ART_IDLE: Duration = Duration::from_secs(30);
 /// Lottie frames rendered ahead of the playhead.
 const LOOKAHEAD: usize = 8;
 /// Lottie frames one background job renders.
@@ -229,6 +232,8 @@ struct Art {
     kind: ArtKind,
     bytes: usize,
     pass: u64,
+    /// When a clip last asked for this file.
+    seen: Instant,
 }
 
 /// Work `Cache::advance` asks the caller to start.
@@ -269,6 +274,8 @@ pub(super) struct Cache {
     /// Capture only: every playing clip is at this many milliseconds, whatever the clock says.
     frozen_ms: Option<f64>,
     rendered: u64,
+    /// Draws of a clip with a timeline that had no frame to show yet.
+    misses: u64,
     evicted: u64,
     released: u64,
     /// Lottie frames rendered and the microseconds they took, by device size.
@@ -305,6 +312,7 @@ impl Cache {
         self.formats.insert(id, format);
         let art = self.arts.get_mut(&id).map(|art| {
             art.pass = pass;
+            art.seen = now;
             match &art.kind {
                 ArtKind::Lottie(source) => ArtKind::Lottie(source.clone()),
                 ArtKind::Raster(bytes) => ArtKind::Raster(bytes.clone()),
@@ -355,10 +363,24 @@ impl Cache {
         let playhead = timeline.frame_at(elapsed);
         clip.playhead = playhead;
         // The frame itself, else the nearest one behind it (a late frame is skipped, as module 445972 skips them).
-        advance.image = (0..LOOKAHEAD.min(count))
-            .map(|back| (playhead + count - back) % count)
-            .find_map(|index| clip.frames.get(&index))
-            .map(|frame| frame.image.clone());
+        // While the clip is still filling in, the frame already shown is held rather than the still picture, so a
+        // sticker whose frames arrive slower than they play does not blink between the two.
+        advance.image = clip
+            .frames
+            .range(..=playhead)
+            .next_back()
+            .or_else(|| clip.frames.iter().next_back())
+            .map(|(_, frame)| frame.image.clone());
+        #[cfg(feature = "capture")]
+        if crate::perf::legacy("blink") {
+            advance.image = (0..LOOKAHEAD.min(count))
+                .map(|back| (playhead + count - back) % count)
+                .find_map(|index| clip.frames.get(&index))
+                .map(|frame| frame.image.clone());
+        }
+        if advance.image.is_none() {
+            self.misses += 1;
+        }
         if let (Some(ArtKind::Lottie(source)), true) = (&art, can_start) {
             let wanted: Vec<usize> = (0..LOOKAHEAD.min(count))
                 .map(|ahead| (playhead + ahead) % count)
@@ -520,6 +542,7 @@ impl Cache {
                     .extend(clip.frames.into_values().map(|frame| frame.image));
             }
         }
+        self.drop_idle_arts(Instant::now());
         // Downloads nothing drew are dropped oldest first while they are over their budget.
         let mut idle: Vec<(u64, Id)> = self
             .arts
@@ -540,6 +563,28 @@ impl Cache {
         }
         self.pass += 1;
         std::mem::take(&mut self.retired)
+    }
+
+    /// Drops the downloads no clip asked for within [`ART_IDLE`] of `now`.
+    fn drop_idle_arts(&mut self, now: Instant) {
+        let current = self.pass;
+        let gone: Vec<Id> = self
+            .arts
+            .iter()
+            .filter(|(_, art)| {
+                art.pass != current && now.saturating_duration_since(art.seen) >= ART_IDLE
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.arts.remove(&id);
+            self.asked.remove(&id);
+        }
+    }
+
+    /// Called on a timer, with no render to do it: lets go of what is idle.
+    pub(super) fn trim_idle(&mut self, now: Instant) {
+        self.drop_idle_arts(now);
     }
 
     /// Whether a redraw timer for `deadline` has to be started (an earlier one replaces a later one).
@@ -600,48 +645,47 @@ fn decode_within(bytes: &[u8], px: u32, budget: usize) -> Option<Decoded> {
 }
 
 /// `None` when the file is no animation, `Some(Err(width))` when it did not fit the budget at the width it was decoded at.
+/// Frames are scaled one at a time as the decoder yields them, so the file is never held whole at its own size.
 fn decode_at(bytes: &[u8], width: u32, budget: usize) -> Option<Result<Decoded, u32>> {
     use image::AnimationDecoder;
-    let frames: Vec<image::Frame> = match image::guess_format(bytes).ok()? {
+    let format = image::guess_format(bytes).ok()?;
+    let frames: image::Frames = match format {
         image::ImageFormat::Png => {
             let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
             if !decoder.is_apng().ok()? {
                 return None;
             }
-            decoder
-                .apng()
-                .ok()?
-                .into_frames()
-                .collect::<Result<_, _>>()
-                .ok()?
+            decoder.apng().ok()?.into_frames()
         }
         image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
             .ok()?
-            .into_frames()
-            .collect::<Result<_, _>>()
-            .ok()?,
+            .into_frames(),
         _ => return None,
     };
-    let first = frames.first()?;
-    let (source_width, source_height) = (first.buffer().width(), first.buffer().height());
-    let width = width.min(source_width).max(1);
-    let height = ((f64::from(width) * f64::from(source_height) / f64::from(source_width)).round()
-        as u32)
-        .max(1);
-    let each = (width * height * 4) as usize;
-    if each * frames.len() > budget {
-        return Some(Err(width));
-    }
     let mut decoded = Decoded {
-        frames: Vec::with_capacity(frames.len()),
-        delays: Vec::with_capacity(frames.len()),
-        plays: if image::guess_format(bytes).ok()? == image::ImageFormat::Png {
+        frames: Vec::new(),
+        delays: Vec::new(),
+        plays: if format == image::ImageFormat::Png {
             png_plays(bytes)
         } else {
             0
         },
     };
+    // The size every frame is scaled to, from the first frame.
+    let mut target: Option<(u32, u32, usize)> = None;
     for frame in frames {
+        let frame = frame.ok()?;
+        let (width, height, each) = *target.get_or_insert_with(|| {
+            let (source_width, source_height) = (frame.buffer().width(), frame.buffer().height());
+            let width = width.min(source_width).max(1);
+            let height = ((f64::from(width) * f64::from(source_height) / f64::from(source_width))
+                .round() as u32)
+                .max(1);
+            (width, height, (width * height * 4) as usize)
+        });
+        if each * (decoded.frames.len() + 1) > budget {
+            return Some(Err(width));
+        }
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let mut delay = f64::from(numerator) / f64::from(denominator.max(1));
         if delay <= 10. {
@@ -655,6 +699,9 @@ fn decode_at(bytes: &[u8], width: u32, budget: usize) -> Option<Result<Decoded, 
             micros: 0,
         });
     }
+    if decoded.frames.is_empty() {
+        return None;
+    }
     Some(Ok(decoded))
 }
 
@@ -667,19 +714,22 @@ fn render_frames(
     frames: &[usize],
     px: u32,
 ) -> Vec<(usize, Option<Frame>)> {
-    frames
-        .iter()
-        .map(|index| {
-            let started = Instant::now();
-            let frame = source.render(*index, px).map(|pixels: RgbaImage| {
+    // The file is parsed once for the batch; the time it took is shared by the frames.
+    let started = Instant::now();
+    let rendered = source.render_many(frames, px);
+    let micros = started.elapsed().as_micros() as u64 / frames.len().max(1) as u64;
+    rendered
+        .into_iter()
+        .map(|(index, pixels)| {
+            let frame = pixels.map(|pixels: RgbaImage| {
                 let bytes = (pixels.width() * pixels.height() * 4) as usize;
                 Frame {
                     image: profile_effects::render_image(pixels),
                     bytes,
-                    micros: started.elapsed().as_micros() as u64,
+                    micros,
                 }
             });
-            (*index, frame)
+            (index, frame)
         })
         .collect()
 }
@@ -824,6 +874,7 @@ impl Root {
                                         kind: ArtKind::Lottie(Arc::new(source)),
                                         bytes: length,
                                         pass,
+                                        seen: Instant::now(),
                                     },
                                 );
                             }
@@ -846,6 +897,7 @@ impl Root {
                         kind: ArtKind::Raster(Arc::new(bytes)),
                         bytes: length,
                         pass,
+                        seen: Instant::now(),
                     },
                 );
                 drop(cache);
@@ -928,7 +980,8 @@ impl Root {
                     .collect();
                 costs.sort();
                 format!(
-                    "stickers: costs=[{}] setting={:?} focused={} clips={} playing={playing} frames={frames} bytes={} arts={} encoded={} jobs={} rendered={} evicted={} released={} frozen={:?} [{}]",
+                    "stickers: misses={} costs=[{}] setting={:?} focused={} clips={} playing={playing} frames={frames} bytes={} arts={} encoded={} jobs={} rendered={} evicted={} released={} frozen={:?} [{}]",
+                    cache.misses,
                     costs.join(", "),
                     self.sticker_setting(),
                     cache.focused,
@@ -950,6 +1003,16 @@ impl Root {
 }
 
 pub(super) type Shared = Rc<RefCell<Cache>>;
+
+/// The decoded frames and downloads this cache holds, for the perf harness.
+#[cfg(feature = "capture")]
+impl Cache {
+    pub(super) fn perf_size(&self) -> crate::perf::Size {
+        let mut size = crate::perf::Size::default();
+        size.add(self.clips.len(), self.total_bytes() + self.encoded_bytes());
+        size
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -990,6 +1053,7 @@ mod tests {
                 kind: ArtKind::Lottie(source.clone()),
                 bytes: SQUARE.len(),
                 pass: 0,
+                seen: Instant::now(),
             },
         );
         cache.asked.insert(7);
@@ -1240,6 +1304,18 @@ mod tests {
     }
 
     #[test]
+    fn a_download_nobody_asked_for_in_a_while_is_dropped() {
+        let (mut cache, _) = lottie_cache();
+        let asked = cache.arts[&7].seen;
+        cache.pass = 5;
+        cache.trim_idle(asked + ART_IDLE - Duration::from_secs(1));
+        assert!(cache.arts.contains_key(&7));
+        cache.trim_idle(asked + ART_IDLE);
+        assert!(cache.arts.is_empty());
+        assert!(!cache.asked.contains(&7));
+    }
+
+    #[test]
     fn a_redraw_timer_is_started_only_for_an_earlier_deadline() {
         let mut cache = Cache::default();
         let now = Instant::now();
@@ -1286,6 +1362,7 @@ mod tests {
                 kind: ArtKind::Raster(Arc::new(bytes)),
                 bytes: 10,
                 pass: 0,
+                seen: Instant::now(),
             },
         );
         cache.asked.insert(4);

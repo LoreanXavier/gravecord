@@ -8,10 +8,12 @@ mod cards;
 pub(super) mod data;
 mod editor_wishlist;
 mod featured;
+pub(super) mod game_shop;
 mod modal;
 
 use super::discover::{gutter_scrollbar, text};
 use super::{Root, color, editor_style, icon};
+use crate::ui::motion::Transitions as _;
 use crate::{
     editor::{Editor, EditorEvent},
     parity::Parity,
@@ -64,6 +66,10 @@ pub(super) struct State {
     /// The wishlist's skus in the order the server listed them.
     pub wishlist_order: Vec<String>,
     pub scroll: ScrollHandle,
+    /// The Game Shop page in view: `/shop?tab=game-shops&applicationId=..` (module 980780).
+    pub game_shop: Option<game_shop::View>,
+    /// The storefronts read for the Game Shop pages, by application id.
+    pub storefronts: HashMap<String, game_shop::Storefront>,
     pub search: Option<Entity<Editor>>,
     pub events: Option<Subscription>,
     pub home: Home,
@@ -177,6 +183,7 @@ impl Root {
 
     pub(super) fn shop_set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.shop.tab = tab;
+        self.shop.game_shop = None;
         self.shop.wishlist_open = false;
         self.shop.menu_open = None;
         self.shop.pointer_in = None;
@@ -228,6 +235,11 @@ impl Root {
         }
         if body["fetch_failed"] == true {
             self.shop_forget(key);
+            cx.notify();
+            return;
+        }
+        if key.starts_with("shop:gameshop:") {
+            self.shop_gameshop_fetched(key, &body);
             cx.notify();
             return;
         }
@@ -477,10 +489,16 @@ impl Root {
     // ---- the page ----
 
     pub(super) fn shop_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let header = self.shop_header(window, cx);
+        let in_game_shop = self.shop.game_shop.is_some() && !self.shop.wishlist_open;
+        let header = if in_game_shop {
+            self.shop_game_header(cx)
+        } else {
+            self.shop_header(window, cx)
+        };
         let scroll = self.shop.scroll.clone();
         let body = match self.shop.tab {
             _ if self.shop.wishlist_open => self.shop_wishlist_page(window, cx),
+            _ if in_game_shop => self.shop_game_body(window, cx),
             Tab::Featured => self.shop_featured(false, window, cx),
             Tab::Orbs => self.shop_featured(true, window, cx),
             Tab::Browse => self.shop_browse(window, cx),
@@ -704,6 +722,7 @@ impl Root {
             } else {
                 "--input-border-default"
             }))
+            .rule(crate::ui::motion::Rule::TextField)
             .rounded(px(8.))
             .bg(color("--input-background-default"))
             .pl(px(4. - border))
@@ -880,7 +899,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         // What a row shows and does: its label, the icon in front of it, a beta badge, the tab it opens.
-        type Row = (String, Option<String>, bool, Option<Tab>);
+        type Row = (String, Option<String>, bool, Option<Tab>, Option<String>);
         let (left, entries): (f32, Vec<Row>) = match menu {
             Menu::Browse => (
                 179.,
@@ -894,7 +913,7 @@ impl Root {
                     "Shop All",
                 ]
                 .into_iter()
-                .map(|label| (label.to_owned(), None, false, Some(Tab::Browse)))
+                .map(|label| (label.to_owned(), None, false, Some(Tab::Browse), None))
                 .collect(),
             ),
             Menu::GameShops => {
@@ -903,7 +922,7 @@ impl Root {
                     self.shop_nav_left(window, "game-shops"),
                     games
                         .into_iter()
-                        .map(|game| (game.name, game.icon, false, None))
+                        .map(|game| (game.name, game.icon, false, None, Some(game.id)))
                         .collect(),
                 )
             }
@@ -919,6 +938,7 @@ impl Root {
                                 None,
                                 option.id == "game-servers",
                                 option.tab,
+                                None,
                             )
                         })
                         .collect(),
@@ -928,7 +948,7 @@ impl Root {
         };
         let rows: Vec<AnyElement> = entries
             .into_iter()
-            .map(|(label, icon_url, beta, tab)| {
+            .map(|(label, icon_url, beta, tab, game)| {
                 let art = icon_url.and_then(|url| self.shop_img(&url));
                 let shown = label.clone();
                 div()
@@ -939,13 +959,18 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    // A Game Shops row opens that game's storefront page and Game Servers its own tab; neither page
-                    // is built (BLOCKED.md), so those rows neither highlight nor take a click.
-                    .when(tab.is_some(), |row| {
+                    // A Game Shops row opens that game's storefront page; Game Servers has its own tab, which is not
+                    // built (BLOCKED.md), so that row neither highlights nor takes a click.
+                    .when(tab.is_some() || game.is_some(), |row| {
                         row.cursor_pointer()
                             .hover(|row| row.bg(color("--background-mod-subtle")))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.shop_menu_choose(menu, &label, tab, cx);
+                            .on_click(cx.listener(move |this, _, _, cx| match &game {
+                                Some(app) => {
+                                    this.shop.menu_open = None;
+                                    this.shop.pointer_in = None;
+                                    this.shop_open_game_shop(app, 0, cx);
+                                }
+                                None => this.shop_menu_choose(menu, &label, tab, cx),
                             }))
                     })
                     .children(art.map(|art| {

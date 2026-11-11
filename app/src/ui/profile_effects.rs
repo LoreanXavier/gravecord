@@ -48,11 +48,14 @@ const FADE_MS: f64 = 600.;
 /// `.hovered_ZjcCyW`.
 const HOVER_OPACITY: f32 = 0.35;
 /// Most decoded bytes of one clip. A clip that would be larger is drawn from smaller frames.
-const CLIP_BUDGET: usize = 40 * 1024 * 1024;
+const CLIP_BUDGET: usize = 32 * 1024 * 1024;
 /// Most decoded bytes of all clips together.
-const DECODED_BUDGET: usize = 96 * 1024 * 1024;
+const DECODED_BUDGET: usize = 64 * 1024 * 1024;
 /// Most downloaded bytes kept for reuse.
-const ENCODED_BUDGET: usize = 32 * 1024 * 1024;
+const ENCODED_BUDGET: usize = 16 * 1024 * 1024;
+/// With no effect on screen for this long, the downloaded layers are let go as well; they are fetched again when an
+/// effect is shown.
+const IDLE_RELEASE: Duration = Duration::from_secs(30);
 /// A layer is decoded this long before it starts.
 const LOOKAHEAD_MS: f64 = 1500.;
 /// A frame that claims no time is held this long, as browsers do.
@@ -404,6 +407,8 @@ pub(super) struct Cache {
     instances: HashMap<String, Instance>,
     hovered: HashSet<String>,
     encoded: HashMap<String, (Arc<Vec<u8>>, u64)>,
+    /// When an effect was last on screen or arrived.
+    last_shown: Option<Instant>,
     requested: HashSet<String>,
     failed: HashSet<String>,
     clips: HashMap<ClipKey, Slot>,
@@ -448,6 +453,18 @@ impl Cache {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |time| time.as_nanos() as u64);
         ((self.seed >> 33) as usize) % range
+    }
+
+    /// Lets go of the downloaded layers once no effect has been on screen for [`IDLE_RELEASE`] before `now`.
+    pub(super) fn trim_idle(&mut self, now: Instant) {
+        let idle = self
+            .last_shown
+            .is_some_and(|at| now.saturating_duration_since(at) >= IDLE_RELEASE);
+        if idle && self.instances.is_empty() && self.clips.is_empty() {
+            self.encoded.clear();
+            self.requested.clear();
+            self.last_shown = None;
+        }
     }
 
     fn evict_encoded(&mut self, keep: &HashSet<String>) {
@@ -904,6 +921,7 @@ impl Root {
         if let Some(url) = key.strip_prefix(ART_PREFIX) {
             let mut cache = self.profile_effects.borrow_mut();
             let pass = cache.pass;
+            cache.last_shown = Some(Instant::now());
             cache
                 .encoded
                 .insert(url.to_owned(), (Arc::new(bytes), pass));
@@ -929,6 +947,9 @@ impl Root {
     pub(super) fn profile_effects_sweep(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut cache = self.profile_effects.borrow_mut();
         cache.scale = window.scale_factor();
+        if !cache.instances.is_empty() || !cache.clips.is_empty() {
+            cache.last_shown = Some(Instant::now());
+        }
         if cache.instances.is_empty() && cache.clips.is_empty() {
             cache.hovered.clear();
             cache.pass += 1;
@@ -1032,6 +1053,19 @@ impl Root {
     }
 }
 
+/// The decoded clips and downloads this cache holds, for the perf harness.
+#[cfg(feature = "capture")]
+impl Cache {
+    pub(super) fn perf_size(&self) -> crate::perf::Size {
+        let mut size = crate::perf::Size::default();
+        size.add(
+            self.clips.len(),
+            self.decoded_bytes() + self.encoded_bytes(),
+        );
+        size
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1082,24 @@ mod tests {
             size: (1, 1),
             bytes: 0,
         }
+    }
+
+    #[test]
+    fn downloaded_layers_are_let_go_after_the_effects_were_off_screen_for_a_while() {
+        let shown = Instant::now();
+        let mut cache = Cache {
+            last_shown: Some(shown),
+            ..Cache::default()
+        };
+        cache
+            .encoded
+            .insert("layer".to_owned(), (Arc::new(vec![0; 8]), 0));
+        cache.requested.insert("layer".to_owned());
+        cache.trim_idle(shown + IDLE_RELEASE - Duration::from_secs(1));
+        assert_eq!(cache.encoded.len(), 1);
+        cache.trim_idle(shown + IDLE_RELEASE);
+        assert!(cache.encoded.is_empty());
+        assert!(cache.requested.is_empty());
     }
 
     #[test]

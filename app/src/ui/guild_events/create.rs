@@ -1952,11 +1952,12 @@ fn chevron(open: bool) -> AnyElement {
                 .path("icons/select_chevron.svg")
                 .size(px(20.))
                 .text_color(color("--text-strong"))
-                .when(open, |this| {
-                    this.with_transformation(gpui::Transformation::rotate(gpui::radians(
-                        std::f32::consts::PI,
-                    )))
-                }),
+                // `chevronIcon_vWC4bk`: `rotateX(180deg)` when open, `.full-motion` `transform .2s ease-out`.
+                .with_transformation(crate::ui::motion::flip(
+                    crate::ui::motion::key("event-select-chevron"),
+                    open,
+                    crate::ui::motion::css(200., crate::ui::motion::Ease::EaseOut).full_motion(),
+                )),
         )
         .into_any_element()
 }

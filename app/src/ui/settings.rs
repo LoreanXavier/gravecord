@@ -21,7 +21,8 @@ mod voice_camera;
 pub(super) use clips::ClipsState;
 pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
-use super::{Root, SANS, avatar_source, color, kerning, window_controls};
+use super::motion::Transitions as _;
+use super::{Root, SANS, avatar_source, color, kerning, motion, window_controls};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_proto::pin;
@@ -719,6 +720,8 @@ impl Root {
         cx.notify();
     }
 
+    /// Closes settings. The layer's exit (opacity to 0, scale to 1.1) is drawn from a copy of its last frame by
+    /// `motion::driver`.
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = None;
         crate::sounds::stop_preview();
@@ -766,6 +769,16 @@ impl Root {
                         .text_color(color("--text-strong"))
                 })
             })
+            // `.item_xyJHva.active`: `.full-motion` `background-color .3s ease`; the `:hover:not(.active)` rule is
+            // `transition: none`, so only an item that becomes active fades its fill in.
+            .transition(
+                motion::Props::BACKGROUND,
+                if active {
+                    motion::css(300., motion::Ease::Ease).full_motion()
+                } else {
+                    motion::css(0., motion::Ease::Linear)
+                },
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if page == Page::LogOut {
                     this.logout_confirm = true;
@@ -1466,6 +1479,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         self.settings.as_ref()?;
+        let pose = motion::layer_pose("settings");
         let modal = div()
             .parity_with_border("settings-modal", 1.)
             .id("settings-modal")
@@ -1493,6 +1507,8 @@ impl Root {
             deferred(
                 div()
                     .id("settings-layer")
+                    .opacity(pose.opacity)
+                    .paint_scale(pose.scale, point(0.5, 0.5))
                     .occlude()
                     .absolute()
                     .top_0()

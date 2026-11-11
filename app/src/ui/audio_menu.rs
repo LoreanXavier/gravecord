@@ -4,6 +4,7 @@
 //! its name and kind), Input Profile (Voice Isolation, Studio, Custom), the volume slider, and Voice Settings. Device
 //! and volume choices go to `dc_voice::prefs()` and are kept in storage.json.
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, icon};
 use crate::parity::Parity;
 use crate::storage;
@@ -562,6 +563,7 @@ impl Root {
         let panel = div()
             .parity_with_border("audio-menu", 1.)
             .id("audio-menu")
+            .popout("audio-menu", PopKind::Fade, PopSide::Top)
             .occlude()
             .w(px(MENU_WIDTH))
             .p(px(8.))

@@ -10,6 +10,7 @@ use super::{Root, avatar_source, color, editor_style, icon, modal, status_dot};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::{Id, User};
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, SharedString, Subscription,
@@ -522,6 +523,7 @@ impl Root {
                     } else {
                         color("--input-border-default")
                     })
+                    .rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .flex()
                     .flex_wrap()

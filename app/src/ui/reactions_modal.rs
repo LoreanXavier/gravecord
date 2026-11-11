@@ -20,7 +20,7 @@ fn route_name(reaction: &dc_state::Reaction) -> String {
     super::reaction_route_name(reaction)
 }
 
-fn encode(text: &str) -> String {
+pub(super) fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| {
             if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':') {

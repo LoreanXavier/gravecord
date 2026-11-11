@@ -14,6 +14,7 @@
 //! (Claimed Quests) and `H` of module 863705 (the balance pill).
 
 use super::discover::{gutter_scrollbar, text};
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -778,6 +779,12 @@ impl Root {
         div()
             .parity_with_border(parity_id, 1.)
             .id(id)
+            // `animatorTop translate` (design/dom/home/quests-sort-open).
+            .popout(
+                id,
+                PopKind::Translate,
+                if below { PopSide::Bottom } else { PopSide::Top },
+            )
             .occlude()
             .on_mouse_down_out(
                 cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {

@@ -1,0 +1,1088 @@
+diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
+index 8f980bd..f6040e9 100644
+--- a/crates/gpui/src/element.rs
++++ b/crates/gpui/src/element.rs
+@@ -250,6 +250,11 @@ impl GlobalElementId {
+         }
+     }
+ 
++    /// The hash of the whole id path, a key for per-element state kept outside gpui.
++    pub fn path_hash(&self) -> u64 {
++        self.hash
++    }
++
+     pub(crate) fn accesskit_node_id(&self) -> accesskit::NodeId {
+         accesskit::NodeId(self.hash)
+     }
+@@ -298,6 +303,8 @@ impl Display for GlobalElementId {
+ trait ElementObject {
+     fn inner_element(&mut self) -> &mut dyn Any;
+ 
++    fn element_id(&self) -> Option<ElementId>;
++
+     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
+ 
+     fn prepaint(&mut self, window: &mut Window, cx: &mut App);
+@@ -620,6 +627,10 @@ where
+         &mut self.element
+     }
+ 
++    fn element_id(&self) -> Option<ElementId> {
++        self.element.id()
++    }
++
+     #[inline]
+     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
+         Drawable::request_layout(self, window, cx)
+@@ -650,6 +661,11 @@ where
+ pub struct AnyElement(ArenaBox<dyn ElementObject>);
+ 
+ impl AnyElement {
++    /// The id of the element this wraps, when it has one.
++    pub fn element_id(&self) -> Option<ElementId> {
++        self.0.element_id()
++    }
++
+     pub(crate) fn new<E>(element: E) -> Self
+     where
+         E: 'static + Element,
+diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 9b34aa2..4216b3b 100644
+--- a/crates/gpui/src/elements/div.rs
++++ b/crates/gpui/src/elements/div.rs
+@@ -799,6 +799,35 @@ pub trait InteractiveElement: Sized {
+         self
+     }
+ 
++    /// Run `transition` on this element's finished style at paint time. It gets the hash of the element's id path,
++    /// so the element needs an id for it to run.
++    /// Paints this element and its subtree scaled by `scale` about the point `at` (fractions of its bounds).
++    /// Like [`Self::paint_scale`], with the scale worked out at paint time from the hash of the element id path
++    /// (a transition that is keyed by the element itself).
++    fn paint_scale_with(
++        mut self,
++        scale: impl Fn(u64, &mut Window) -> (f32, Point<f32>) + 'static,
++    ) -> Self {
++        self.interactivity().paint_scale_fn = Some(Rc::new(scale));
++        self
++    }
++
++    /// Paints this element and its children scaled by `scale` about `at` (fractions of its box).
++    fn paint_scale(mut self, scale: f32, at: Point<f32>) -> Self {
++        self.interactivity().paint_scale = Some((scale, at));
++        self
++    }
++
++    /// Runs `transition` on the finished style at paint time, with the hash of the element id path and whether the
++    /// pointer is over the element (CSS takes the `transition` of the state it moves into).
++    fn style_transition(
++        mut self,
++        transition: impl Fn(&mut Style, u64, bool, &mut Window) + 'static,
++    ) -> Self {
++        self.interactivity().style_transition = Some(Rc::new(transition));
++        self
++    }
++
+     /// Assign this element an ID, so that it can be used with interactivity
+     fn id(mut self, id: impl Into<ElementId>) -> Stateful<Self> {
+         self.interactivity().element_id = Some(id.into());
+@@ -2204,6 +2233,14 @@ pub struct Interactivity {
+     pub(crate) focus_style: Option<Box<StyleRefinement>>,
+     pub(crate) in_focus_style: Option<Box<StyleRefinement>>,
+     pub(crate) focus_visible_style: Option<Box<StyleRefinement>>,
++    /// Runs on the finished style of the element at paint time, with the hash of the element's id path. The app
++    /// uses it to run CSS-like transitions between the values a state change gives the style.
++    pub style_transition: Option<Rc<dyn Fn(&mut Style, u64, bool, &mut Window)>>,
++    /// A uniform paint scale for this element and its subtree, about a point given as fractions of its bounds
++    /// (`(0.5, 0.5)` is the centre). Layout and hit testing are unaffected.
++    pub paint_scale: Option<(f32, Point<f32>)>,
++    /// The scale and its centre from the element id path hash, evaluated at paint time; wins over `paint_scale`.
++    pub paint_scale_fn: Option<Rc<dyn Fn(u64, &mut Window) -> (f32, Point<f32>)>>,
+     pub(crate) hover_style: Option<Box<StyleRefinement>>,
+     pub(crate) group_hover_style: Option<GroupStyle>,
+     pub(crate) active_style: Option<Box<StyleRefinement>>,
+@@ -2575,7 +2612,16 @@ impl Interactivity {
+                 let mut element_state =
+                     element_state.map(|element_state| element_state.unwrap_or_default());
+ 
+-                let style = self.compute_style_internal(hitbox, element_state.as_mut(), window, cx);
++                let mut style =
++                    self.compute_style_internal(hitbox, element_state.as_mut(), window, cx);
++                if let (Some(transition), Some(id)) = (self.style_transition.clone(), global_id) {
++                    transition(
++                        &mut style,
++                        id.path_hash(),
++                        self.hovered.unwrap_or(false),
++                        window,
++                    );
++                }
+ 
+                 #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+                 if let Some(debug_selector) = &self.debug_selector {
+@@ -2595,6 +2641,20 @@ impl Interactivity {
+                     tab_group = self.tab_index;
+                 }
+ 
++                let dynamic_scale = match (self.paint_scale_fn.clone(), global_id) {
++                    (Some(scale), Some(id)) => Some(scale(id.path_hash(), window)),
++                    _ => None,
++                };
++                let scaled = match dynamic_scale.or(self.paint_scale) {
++                    Some((scale, at)) => window.push_paint_scale(
++                        scale,
++                        point(
++                            bounds.origin.x + bounds.size.width * at.x,
++                            bounds.origin.y + bounds.size.height * at.y,
++                        ),
++                    ),
++                    None => false,
++                };
+                 window.with_element_opacity(style.opacity, |window| {
+                     style.paint(bounds, window, cx, |window: &mut Window, cx: &mut App| {
+                         window.with_text_style(style.text_style().cloned(), |window| {
+@@ -2686,6 +2746,9 @@ impl Interactivity {
+                         });
+                     });
+                 });
++                if scaled {
++                    window.pop_paint_scale();
++                }
+ 
+                 ((), element_state)
+             },
+diff --git a/crates/gpui/src/elements/img.rs b/crates/gpui/src/elements/img.rs
+index a9878f4..3695099 100644
+--- a/crates/gpui/src/elements/img.rs
++++ b/crates/gpui/src/elements/img.rs
+@@ -24,6 +24,37 @@ use thiserror::Error;
+ 
+ use super::{Stateful, StatefulInteractiveElement};
+ 
++/// A picture an `Img` or a custom element painted: the encoded image and the decoded one the sprite atlas holds.
++pub type PaintedImage = (Arc<Image>, Arc<RenderImage>);
++
++thread_local! {
++    static PAINTED_IMAGES: std::cell::RefCell<collections::FxHashMap<u64, collections::FxHashMap<u64, PaintedImage>>> =
++        std::cell::RefCell::new(Default::default());
++}
++
++/// Records that `window` painted `image` (decoded as `data`) in the frame being drawn, for [`take_painted_images`].
++pub fn note_painted_image(window: &Window, image: &Arc<Image>, data: &Arc<RenderImage>) {
++    let window_id = window.window_handle().window_id().as_u64();
++    PAINTED_IMAGES.with(|painted| {
++        painted
++            .borrow_mut()
++            .entry(window_id)
++            .or_default()
++            .insert(image.id, (image.clone(), data.clone()));
++    });
++}
++
++/// The pictures painted since the last call, by window id (`WindowId::as_u64`). An application uses it to learn
++/// which decoded pictures are on screen and to release the ones that are not.
++pub fn take_painted_images() -> Vec<(u64, Vec<PaintedImage>)> {
++    PAINTED_IMAGES.with(|painted| {
++        std::mem::take(&mut *painted.borrow_mut())
++            .into_iter()
++            .map(|(window, images)| (window, images.into_values().collect()))
++            .collect()
++    })
++}
++
+ /// The delay before showing the loading state.
+ pub const LOADING_DELAY: Duration = Duration::from_millis(200);
+ 
+@@ -483,6 +514,9 @@ impl Element for Img {
+                     if data.frame_count() == 0 {
+                         return;
+                     }
++                    if let ImageSource::Image(image) = &source {
++                        note_painted_image(window, image, &data);
++                    }
+                     let new_bounds = self
+                         .style
+                         .object_fit
+diff --git a/crates/gpui/src/elements/svg.rs b/crates/gpui/src/elements/svg.rs
+index 176072f..c5928b6 100644
+--- a/crates/gpui/src/elements/svg.rs
++++ b/crates/gpui/src/elements/svg.rs
+@@ -138,6 +138,9 @@ impl Element for Svg {
+             window,
+             cx,
+             |style, window, cx| {
++                // An SVG without a colour of its own takes the text colour it sits in, as `currentColor` does, so a
++                // parent's colour (and a transition on it) reaches the icon.
++                let inherited = style.text.color.or_else(|| Some(window.text_style().color));
+                 let transformation = self
+                     .transformation
+                     .as_ref()
+@@ -147,7 +150,7 @@ impl Element for Svg {
+                     .unwrap_or_default();
+ 
+                 if let Some((data, path)) = self.data.as_ref().zip(self.data_path.as_ref()) {
+-                    if let Some(color) = style.text.color {
++                    if let Some(color) = inherited {
+                         window
+                             .paint_svg(
+                                 bounds,
+@@ -160,7 +163,7 @@ impl Element for Svg {
+                             .log_err();
+                     }
+                 } else if let Some((path, color)) =
+-                    self.external_path.as_ref().zip(style.text.color)
++                    self.external_path.as_ref().zip(inherited)
+                 {
+                     let Some(bytes) = window
+                         .use_asset::<SvgAsset>(path, cx)
+@@ -179,7 +182,7 @@ impl Element for Svg {
+                             cx,
+                         )
+                         .log_err();
+-                } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
++                } else if let Some((path, color)) = self.path.as_ref().zip(inherited) {
+                     window
+                         .paint_svg(bounds, path.clone(), None, transformation, color, cx)
+                         .log_err();
+diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
+index a4116aa..0b3bb0b 100644
+--- a/crates/gpui/src/scene.rs
++++ b/crates/gpui/src/scene.rs
+@@ -138,6 +138,11 @@ impl Scene {
+             .push(PaintOperation::Primitive(primitive));
+     }
+ 
++    /// The primitives of a range of paint operations, and their union bounds.
++    pub(crate) fn operations(&self, range: Range<usize>) -> Vec<PaintOperation> {
++        self.paint_operations[range].to_vec()
++    }
++
+     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+         for operation in &prev_scene.paint_operations[range] {
+             match operation {
+@@ -211,12 +216,115 @@ pub(crate) enum PrimitiveKind {
+     Surface,
+ }
+ 
++#[derive(Clone)]
+ pub(crate) enum PaintOperation {
+     Primitive(Primitive),
+     StartLayer(Bounds<ScaledPixels>),
+     EndLayer,
+ }
+ 
++impl Primitive {
++    /// A copy faded by `opacity` and, when `scale` is not 1, scaled about `origin` (device pixels). Used to
++    /// draw a layer that has just closed while its exit animation runs.
++    pub(crate) fn ghosted(
++        &self,
++        opacity: f32,
++        scale: f32,
++        origin: Point<ScaledPixels>,
++    ) -> Primitive {
++        let sb = |b: Bounds<ScaledPixels>| Bounds {
++            origin: Point::new(
++                ScaledPixels(origin.x.0 + (b.origin.x.0 - origin.x.0) * scale),
++                ScaledPixels(origin.y.0 + (b.origin.y.0 - origin.y.0) * scale),
++            ),
++            size: Size {
++                width: ScaledPixels(b.size.width.0 * scale),
++                height: ScaledPixels(b.size.height.0 * scale),
++            },
++        };
++        let sp = |p: Point<ScaledPixels>| {
++            Point::new(
++                ScaledPixels(origin.x.0 + (p.x.0 - origin.x.0) * scale),
++                ScaledPixels(origin.y.0 + (p.y.0 - origin.y.0) * scale),
++            )
++        };
++        let sv = |v: ScaledPixels| ScaledPixels(v.0 * scale);
++        let sc = |c: Corners<ScaledPixels>| Corners {
++            top_left: sv(c.top_left),
++            top_right: sv(c.top_right),
++            bottom_right: sv(c.bottom_right),
++            bottom_left: sv(c.bottom_left),
++        };
++        let sm = |m: ContentMask<ScaledPixels>| ContentMask {
++            bounds: sb(m.bounds),
++        };
++        match self {
++            Primitive::Quad(q) => Primitive::Quad(Quad {
++                bounds: sb(q.bounds),
++                content_mask: sm(q.content_mask),
++                background: q.background.opacity(opacity),
++                border_color: q.border_color.opacity(opacity),
++                corner_radii: sc(q.corner_radii),
++                border_widths: Edges {
++                    top: sv(q.border_widths.top),
++                    right: sv(q.border_widths.right),
++                    bottom: sv(q.border_widths.bottom),
++                    left: sv(q.border_widths.left),
++                },
++                ..*q
++            }),
++            Primitive::Shadow(s) => Primitive::Shadow(Shadow {
++                blur_radius: sv(s.blur_radius),
++                bounds: sb(s.bounds),
++                corner_radii: sc(s.corner_radii),
++                content_mask: sm(s.content_mask),
++                color: s.color.opacity(opacity),
++                element_bounds: sb(s.element_bounds),
++                element_corner_radii: sc(s.element_corner_radii),
++                ..*s
++            }),
++            Primitive::Underline(u) => Primitive::Underline(Underline {
++                bounds: sb(u.bounds),
++                content_mask: sm(u.content_mask),
++                color: u.color.opacity(opacity),
++                thickness: sv(u.thickness),
++                ..*u
++            }),
++            Primitive::MonochromeSprite(s) => Primitive::MonochromeSprite(MonochromeSprite {
++                bounds: sb(s.bounds),
++                content_mask: sm(s.content_mask),
++                color: s.color.opacity(opacity),
++                ..s.clone()
++            }),
++            Primitive::SubpixelSprite(s) => Primitive::SubpixelSprite(SubpixelSprite {
++                bounds: sb(s.bounds),
++                content_mask: sm(s.content_mask),
++                color: s.color.opacity(opacity),
++                ..s.clone()
++            }),
++            Primitive::PolychromeSprite(s) => Primitive::PolychromeSprite(PolychromeSprite {
++                bounds: sb(s.bounds),
++                content_mask: sm(s.content_mask),
++                corner_radii: sc(s.corner_radii),
++                opacity: s.opacity * opacity,
++                ..s.clone()
++            }),
++            Primitive::Path(p) => {
++                let mut p = p.clone();
++                p.bounds = sb(p.bounds);
++                p.content_mask = sm(p.content_mask);
++                p.color = p.color.opacity(opacity);
++                for vertex in &mut p.vertices {
++                    vertex.xy_position = sp(vertex.xy_position);
++                    vertex.content_mask = sm(vertex.content_mask);
++                }
++                Primitive::Path(p)
++            }
++            Primitive::Surface(s) => Primitive::Surface(s.clone()),
++        }
++    }
++}
++
+ #[derive(Clone)]
+ #[expect(missing_docs)]
+ pub enum Primitive {
+@@ -817,6 +925,19 @@ impl Path<Pixels> {
+         }
+     }
+ 
++    /// Maps every point of this path (bounds, vertices, start and current points) through `f`, which must be
++    /// an axis-aligned scale plus translation.
++    pub fn transform_points(&mut self, f: impl Fn(Point<Pixels>) -> Point<Pixels>) {
++        let far = f(self.bounds.bottom_right());
++        let near = f(self.bounds.origin);
++        self.bounds = Bounds::from_corners(near, far);
++        for vertex in &mut self.vertices {
++            vertex.xy_position = f(vertex.xy_position);
++        }
++        self.start = f(self.start);
++        self.current = f(self.current);
++    }
++
+     /// Scale this path by the given factor.
+     pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
+         Path {
+diff --git a/crates/gpui/src/text_system/line.rs b/crates/gpui/src/text_system/line.rs
+index 5691782..737dc7a 100644
+--- a/crates/gpui/src/text_system/line.rs
++++ b/crates/gpui/src/text_system/line.rs
+@@ -545,8 +545,12 @@ fn paint_line(
+         wrap_boundaries,
+     );
+     window.paint_layer(line_bounds, |window| {
+-        let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+-        let baseline_offset = point(px(0.), padding_top + layout.ascent);
++        // gravecord: Chromium's rule. It rounds ascent and descent separately and floors the half-leading,
++        // so text sits on the same pixel row as the official client.
++        let rounded_ascent = layout.ascent.round();
++        let rounded_descent = layout.descent.round();
++        let padding_top = ((line_height - rounded_ascent - rounded_descent) / 2.).floor();
++        let baseline_offset = point(px(0.), padding_top + rounded_ascent);
+         let underline_y_offset = underline_y_offset(line_height, layout.ascent, layout.descent);
+         let mut decoration_runs = decoration_runs.iter();
+         let mut wraps = wrap_boundaries.iter().peekable();
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 4e2e1a7..5c55d43 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
+     /// The entities the deferred element accessed while it was last drawn, in
+     /// any phase, restored when its prepaint is reused.
+     accessed_entities: FxHashSet<EntityId>,
++    layer_id: Option<ElementId>,
+ }
+ 
+ pub(crate) struct Frame {
+@@ -1049,6 +1050,8 @@ pub(crate) struct Frame {
+     pub(crate) hitboxes: Vec<Hitbox>,
+     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
+     pub(crate) deferred_draws: Vec<DeferredDraw>,
++    /// The deferred layers whose root element has an id, with the paint operations they made.
++    pub(crate) layer_records: Vec<LayerRecord>,
+     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+@@ -1105,6 +1108,7 @@ impl Frame {
+             hitboxes: Vec::new(),
+             window_control_hitboxes: Vec::new(),
+             deferred_draws: Vec::new(),
++            layer_records: Vec::new(),
+             input_handlers: Vec::new(),
+             tooltip_requests: Vec::new(),
+             cursor_styles: Vec::new(),
+@@ -1135,6 +1139,7 @@ impl Frame {
+         self.hitboxes.clear();
+         self.window_control_hitboxes.clear();
+         self.deferred_draws.clear();
++        self.layer_records.clear();
+         self.tab_stops.clear();
+         self.focus = None;
+ 
+@@ -1216,6 +1221,95 @@ enum InputModality {
+     Touch,
+ }
+ 
++pub(crate) struct LayerRecord {
++    key: u64,
++    id: ElementId,
++    operations: Range<usize>,
++}
++
++/// What a deferred layer painted, kept to draw it again while it leaves; see [`Window::snapshot_layer`].
++pub struct LayerSnapshot {
++    operations: Vec<crate::scene::PaintOperation>,
++}
++
++impl LayerSnapshot {
++    #[doc(hidden)]
++    pub fn describe(&self) -> String {
++        let mut out = String::new();
++        for operation in &self.operations {
++            match operation {
++                crate::scene::PaintOperation::Primitive(p) => {
++                    let kind = match p {
++                        crate::scene::Primitive::Quad(_) => "quad",
++                        crate::scene::Primitive::Shadow(_) => "shadow",
++                        crate::scene::Primitive::Underline(_) => "underline",
++                        crate::scene::Primitive::MonochromeSprite(_) => "mono",
++                        crate::scene::Primitive::SubpixelSprite(_) => "subpixel",
++                        crate::scene::Primitive::PolychromeSprite(_) => "poly",
++                        crate::scene::Primitive::Path(_) => "path",
++                        crate::scene::Primitive::Surface(_) => "surface",
++                    };
++                    let b = p.bounds();
++                    out.push_str(&format!(
++                        "{kind}({},{},{},{}) ",
++                        b.origin.x.0, b.origin.y.0, b.size.width.0, b.size.height.0
++                    ));
++                }
++                crate::scene::PaintOperation::StartLayer(_) => out.push_str("[ "),
++                crate::scene::PaintOperation::EndLayer => out.push_str("] "),
++            }
++        }
++        out
++    }
++
++    /// Whether some primitive of the layer covers the whole window (a scrim), and the bounds, in window pixels,
++    /// of the union of the primitives that do not (the dialog on it).
++    pub fn scrim_and_content(&self, window: &Window) -> (bool, Option<Bounds<Pixels>>) {
++        let factor = window.scale_factor();
++        let viewport = window.viewport_size().scale(factor);
++        let mut scrim = false;
++        let mut content: Option<Bounds<ScaledPixels>> = None;
++        for operation in &self.operations {
++            if let crate::scene::PaintOperation::Primitive(primitive) = operation {
++                let bounds = *primitive.bounds();
++                if bounds.size.width >= viewport.width && bounds.size.height >= viewport.height {
++                    scrim = true;
++                } else {
++                    content = Some(content.map_or(bounds, |c| c.union(&bounds)));
++                }
++            }
++        }
++        let content = content.map(|b| Bounds {
++            origin: point(Pixels(b.origin.x.0 / factor), Pixels(b.origin.y.0 / factor)),
++            size: size(
++                Pixels(b.size.width.0 / factor),
++                Pixels(b.size.height.0 / factor),
++            ),
++        });
++        (scrim, content)
++    }
++}
++
++/// The composed transform of the enclosing [`Window::with_paint_scale`] scopes: a point `p` paints at
++/// `p * scale + offset`.
++#[derive(Clone, Copy, Debug)]
++pub struct PaintScale {
++    /// Uniform scale.
++    pub scale: f32,
++    /// Translation applied after the scale.
++    pub offset: Point<Pixels>,
++}
++
++impl PaintScale {
++    const IDENTITY: Self = Self {
++        scale: 1.,
++        offset: Point {
++            x: Pixels(0.),
++            y: Pixels(0.),
++        },
++    };
++}
++
+ /// Holds the state for a specific window.
+ pub struct Window {
+     pub(crate) handle: AnyWindowHandle,
+@@ -1242,6 +1336,7 @@ pub struct Window {
+     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+     pub(crate) rendered_entity_stack: Vec<EntityId>,
+     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
++    pub(crate) paint_scale_stack: Vec<PaintScale>,
+     pub(crate) element_opacity: f32,
+     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
+     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
+@@ -2369,6 +2464,7 @@ impl Window {
+             text_style_stack: Vec::new(),
+             rendered_entity_stack: Vec::new(),
+             element_offset_stack: Vec::new(),
++            paint_scale_stack: Vec::new(),
+             content_mask_stack: Vec::new(),
+             element_opacity: 1.0,
+             requested_autoscroll: None,
+@@ -3507,6 +3603,12 @@ impl Window {
+     }
+ 
+     fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
++        let s = self.paint_scale_factor();
++        let origin = self.paint_scale_point(origin);
++        let width = width * s;
++        let mut scaled_style = style.clone();
++        scaled_style.thickness = scaled_style.thickness * s;
++        let style = &scaled_style;
+         Underline {
+             order: 0,
+             pad: 0,
+@@ -4202,6 +4304,10 @@ impl Window {
+ 
+             let paint_start = self.paint_index();
+             let content_mask = deferred_draw.content_mask;
++            let layer_id = deferred_draw
++                .element
++                .as_ref()
++                .and_then(|element| element.element_id());
+             if let Some(element) = deferred_draw.element.as_mut() {
+                 let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
+                     self.with_rendered_view(deferred_draw.current_view, |window| {
+@@ -4217,6 +4323,19 @@ impl Window {
+                 self.reuse_paint(deferred_draw.paint_range.clone());
+             }
+             let paint_end = self.paint_index();
++            if let Some(id) = layer_id.or_else(|| deferred_draw.layer_id.clone()) {
++                let mut hasher = std::collections::hash_map::DefaultHasher::new();
++                std::hash::Hash::hash(
++                    &(&deferred_draw.element_id_stack.hashes[..], &id),
++                    &mut hasher,
++                );
++                self.next_frame.layer_records.push(LayerRecord {
++                    key: std::hash::Hasher::finish(&hasher),
++                    id: id.clone(),
++                    operations: paint_start.scene_index..paint_end.scene_index,
++                });
++                deferred_draw.layer_id = Some(id);
++            }
+             deferred_draw.paint_range = paint_start..paint_end;
+         }
+         self.next_frame.deferred_draws = deferred_draws;
+@@ -4289,6 +4408,7 @@ impl Window {
+                     prepaint_range: deferred_draw.prepaint_range.clone(),
+                     paint_range: deferred_draw.paint_range.clone(),
+                     accessed_entities: deferred_draw.accessed_entities.clone(),
++                    layer_id: deferred_draw.layer_id.clone(),
+                 }),
+         );
+     }
+@@ -4416,6 +4536,9 @@ impl Window {
+     ) -> R {
+         self.invalidator.debug_assert_paint_or_prepaint();
+         if let Some(mask) = mask {
++            let mask = ContentMask {
++                bounds: self.paint_scale_bounds(mask.bounds),
++            };
+             let mask = mask.intersect(&self.content_mask());
+             self.content_mask_stack.push(mask);
+             let result = f(self);
+@@ -4772,6 +4895,7 @@ impl Window {
+             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
+             paint_range: PaintIndex::default()..PaintIndex::default(),
+             accessed_entities: FxHashSet::default(),
++            layer_id: None,
+         });
+     }
+ 
+@@ -4780,10 +4904,183 @@ impl Window {
+     /// for performance reasons.
+     ///
+     /// This method should only be called as part of the paint phase of element drawing.
++    /// Paints everything `f` paints scaled by `scale` about `origin` (a point in the current paint space), the way
++    /// a CSS `transform: scale()` does. Every paint call made inside honours it: quads, shadows, paths, underlines,
++    /// strikethroughs, images, SVGs, glyphs (rasterized at the scaled size, so text stays sharp) and content
++    /// masks. Layout and hit testing are not affected. Scopes nest by composing their transforms. Only call it
++    /// during the paint phase.
++    pub fn with_paint_scale<R>(
++        &mut self,
++        scale: f32,
++        origin: Point<Pixels>,
++        f: impl FnOnce(&mut Self) -> R,
++    ) -> R {
++        let pushed = self.push_paint_scale(scale, origin);
++        let result = f(self);
++        if pushed {
++            self.pop_paint_scale();
++        }
++        result
++    }
++
++    /// The deferred layers painted in the last frame that finished and are not painted in the frame being built:
++    /// those that have just closed. Each is its key (stable while its root element id and place stay) and its id.
++    /// Call it from a deferred element of the highest priority, which paints after every other layer.
++    pub fn closed_layers(&self) -> Vec<(u64, ElementId)> {
++        self.rendered_frame
++            .layer_records
++            .iter()
++            .filter(|previous| {
++                !self
++                    .next_frame
++                    .layer_records
++                    .iter()
++                    .any(|now| now.key == previous.key)
++            })
++            .map(|previous| (previous.key, previous.id.clone()))
++            .collect()
++    }
++
++    /// The layers painted in the frame being built, as keys and ids.
++    pub fn painted_layers(&self) -> Vec<(u64, ElementId)> {
++        self.next_frame
++            .layer_records
++            .iter()
++            .map(|now| (now.key, now.id.clone()))
++            .collect()
++    }
++
++    /// Copies what the layer `key` painted in the last finished frame, so it can be drawn after it has closed.
++    pub fn snapshot_layer(&self, key: u64) -> Option<LayerSnapshot> {
++        let record = self
++            .rendered_frame
++            .layer_records
++            .iter()
++            .find(|record| record.key == key)?;
++        let operations = self
++            .rendered_frame
++            .scene
++            .operations(record.operations.clone());
++        Some(LayerSnapshot { operations })
++    }
++
++    /// Draws a snapshot faded by `opacity` and scaled by `scale` about `origin` (window pixels). Primitives that
++    /// cover the whole window (a scrim) are faded but not scaled. The snapshot takes no input.
++    pub fn paint_layer_snapshot(
++        &mut self,
++        snapshot: &LayerSnapshot,
++        opacity: f32,
++        scale: f32,
++        origin: Point<Pixels>,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let factor = self.scale_factor();
++        let origin = origin.scale(factor);
++        let viewport = self.viewport_size().scale(factor);
++        for operation in &snapshot.operations {
++            if let crate::scene::PaintOperation::Primitive(primitive) = operation {
++                let covers = primitive.bounds().size.width >= viewport.width
++                    && primitive.bounds().size.height >= viewport.height;
++                let ghost = primitive.ghosted(opacity, if covers { 1. } else { scale }, origin);
++                self.next_frame.scene.insert_primitive(ghost);
++            }
++        }
++    }
++
++    /// Pushes a paint scale like [`Self::with_paint_scale`] without a closure; returns whether it pushed
++    /// anything, and [`Self::pop_paint_scale`] must follow when it did.
++    pub fn push_paint_scale(&mut self, scale: f32, origin: Point<Pixels>) -> bool {
++        self.invalidator.debug_assert_paint();
++        if scale == 1. {
++            return false;
++        }
++        let outer = self
++            .paint_scale_stack
++            .last()
++            .copied()
++            .unwrap_or(PaintScale::IDENTITY);
++        let inner_offset = origin * (1. - scale);
++        self.paint_scale_stack.push(PaintScale {
++            scale: outer.scale * scale,
++            offset: Point::new(
++                inner_offset.x * outer.scale + outer.offset.x,
++                inner_offset.y * outer.scale + outer.offset.y,
++            ),
++        });
++        true
++    }
++
++    /// Pops what [`Self::push_paint_scale`] pushed.
++    pub fn pop_paint_scale(&mut self) {
++        self.paint_scale_stack.pop();
++    }
++
++    #[inline]
++    fn paint_scale_factor(&self) -> f32 {
++        self.paint_scale_stack.last().map_or(1., |t| t.scale)
++    }
++
++    #[inline]
++    fn paint_scale_point(&self, point: Point<Pixels>) -> Point<Pixels> {
++        match self.paint_scale_stack.last() {
++            None => point,
++            Some(t) => Point::new(
++                point.x * t.scale + t.offset.x,
++                point.y * t.scale + t.offset.y,
++            ),
++        }
++    }
++
++    #[inline]
++    fn paint_scale_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
++        match self.paint_scale_stack.last() {
++            None => bounds,
++            Some(t) => Bounds {
++                origin: Point::new(
++                    bounds.origin.x * t.scale + t.offset.x,
++                    bounds.origin.y * t.scale + t.offset.y,
++                ),
++                size: size(bounds.size.width * t.scale, bounds.size.height * t.scale),
++            },
++        }
++    }
++
++    #[inline]
++    fn paint_scale_corners(&self, corners: Corners<Pixels>) -> Corners<Pixels> {
++        match self.paint_scale_stack.last() {
++            None => corners,
++            Some(t) => corners.map(|c| *c * t.scale),
++        }
++    }
++
++    #[inline]
++    fn paint_scale_edges(&self, edges: Edges<Pixels>) -> Edges<Pixels> {
++        match self.paint_scale_stack.last() {
++            None => edges,
++            Some(t) => edges.map(|c| *c * t.scale),
++        }
++    }
++
++    #[inline]
++    fn paint_scale_shadow(&self, shadow: &BoxShadow) -> BoxShadow {
++        match self.paint_scale_stack.last() {
++            None => shadow.clone(),
++            Some(t) => BoxShadow {
++                color: shadow.color,
++                offset: shadow.offset * t.scale,
++                blur_radius: shadow.blur_radius * t.scale,
++                spread_radius: shadow.spread_radius * t.scale,
++                inset: shadow.inset,
++            },
++        }
++    }
++
++    /// Paints `f` into its own layer clipped to `bounds`.
+     pub fn paint_layer<R>(&mut self, bounds: Bounds<Pixels>, f: impl FnOnce(&mut Self) -> R) -> R {
+         self.invalidator.debug_assert_paint();
+ 
+         let content_mask = self.content_mask();
++        let bounds = self.paint_scale_bounds(bounds);
+         let clipped_bounds = bounds.intersect(&content_mask.bounds);
+         if !clipped_bounds.is_empty() {
+             self.next_frame
+@@ -4816,9 +5113,12 @@ impl Window {
+         let scale_factor = self.scale_factor();
+         let content_mask = self.snapped_content_mask();
+         let opacity = self.element_opacity();
++        let bounds = self.paint_scale_bounds(bounds);
++        let corner_radii = self.paint_scale_corners(corner_radii);
+         let element_bounds = self.cover_bounds(bounds);
+         let element_corner_radii = corner_radii.scale(scale_factor);
+         for shadow in shadows {
++            let shadow = &self.paint_scale_shadow(shadow);
+             if shadow.inset {
+                 continue;
+             }
+@@ -4852,9 +5152,12 @@ impl Window {
+         let scale_factor = self.scale_factor();
+         let content_mask = self.snapped_content_mask();
+         let opacity = self.element_opacity();
++        let bounds = self.paint_scale_bounds(bounds);
++        let corner_radii = self.paint_scale_corners(corner_radii);
+         let element_bounds = self.cover_bounds(bounds);
+         let element_corner_radii = corner_radii.scale(scale_factor);
+         for shadow in shadows {
++            let shadow = &self.paint_scale_shadow(shadow);
+             if !shadow.inset {
+                 continue;
+             }
+@@ -4935,6 +5238,12 @@ impl Window {
+         self.invalidator.debug_assert_paint();
+ 
+         let opacity = self.element_opacity();
++        let quad = PaintQuad {
++            bounds: self.paint_scale_bounds(quad.bounds),
++            corner_radii: self.paint_scale_corners(quad.corner_radii),
++            border_widths: self.paint_scale_edges(quad.border_widths),
++            ..quad
++        };
+         let snapped_bounds = self.snap_bounds(quad.bounds);
+         let snapped_border_widths = self.snap_border_widths(quad.border_widths);
+         let quad = Quad {
+@@ -5009,6 +5318,11 @@ impl Window {
+         let content_mask = self.content_mask();
+         let opacity = self.element_opacity();
+         path.content_mask = content_mask;
++        if let Some(t) = self.paint_scale_stack.last() {
++            path.transform_points(|p| {
++                Point::new(p.x * t.scale + t.offset.x, p.y * t.scale + t.offset.y)
++            });
++        }
+         let color: Background = color.into();
+         path.color = color.opacity(opacity);
+         self.next_frame
+@@ -5042,7 +5356,10 @@ impl Window {
+         self.invalidator.debug_assert_paint();
+ 
+         let scale_factor = self.scale_factor();
+-        let height = style.thickness;
++        let s = self.paint_scale_factor();
++        let origin = self.paint_scale_point(origin);
++        let width = width * s;
++        let height = style.thickness * s;
+         let bounds = Bounds {
+             origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
+             size: size(self.snap_stroke(width), self.snap_stroke(height)),
+@@ -5054,7 +5371,7 @@ impl Window {
+             pad: 0,
+             bounds,
+             content_mask: self.snapped_content_mask(),
+-            thickness: self.snap_stroke(style.thickness),
++            thickness: self.snap_stroke(height),
+             color: style.color.unwrap_or_default().opacity(opacity),
+             wavy: false.into(),
+         });
+@@ -5080,6 +5397,9 @@ impl Window {
+ 
+         let element_opacity = self.element_opacity();
+         let scale_factor = self.scale_factor();
++        let origin = self.paint_scale_point(origin);
++        // The glyph is rasterized at the scaled size: the scale goes into the raster's scale factor.
++        let raster_scale_factor = scale_factor * self.paint_scale_factor();
+         let glyph_origin = origin.scale(scale_factor);
+ 
+         let quantized_origin = Point::new(
+@@ -5100,7 +5420,7 @@ impl Window {
+             glyph_id,
+             font_size,
+             subpixel_variant,
+-            scale_factor,
++            scale_factor: raster_scale_factor,
+             is_emoji: false,
+             subpixel_rendering,
+             dilation,
+@@ -5183,6 +5503,8 @@ impl Window {
+         self.invalidator.debug_assert_paint();
+ 
+         let scale_factor = self.scale_factor();
++        let origin = self.paint_scale_point(origin);
++        let raster_scale_factor = scale_factor * self.paint_scale_factor();
+         let glyph_origin = origin.scale(scale_factor);
+         let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
+         let params = RenderGlyphParams {
+@@ -5190,7 +5512,7 @@ impl Window {
+             glyph_id,
+             font_size,
+             subpixel_variant: Default::default(),
+-            scale_factor,
++            scale_factor: raster_scale_factor,
+             is_emoji: true,
+             subpixel_rendering: false,
+             dilation: 0,
+@@ -5242,7 +5564,7 @@ impl Window {
+         self.invalidator.debug_assert_paint();
+ 
+         let element_opacity = self.element_opacity();
+-        let bounds = self.snap_bounds(bounds);
++        let bounds = self.snap_bounds(self.paint_scale_bounds(bounds));
+ 
+         let params = RenderSvgParams {
+             path,
+@@ -5311,6 +5633,9 @@ impl Window {
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+ 
++        let bounds = self.paint_scale_bounds(bounds);
++        let image_bounds = self.paint_scale_bounds(image_bounds);
++        let corner_radii = self.paint_scale_corners(corner_radii);
+         let visible_bounds = bounds.intersect(&image_bounds);
+         if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
+             return Ok(());
+@@ -5411,7 +5736,7 @@ impl Window {
+ 
+         self.invalidator.debug_assert_paint();
+ 
+-        let bounds = self.snap_bounds(bounds);
++        let bounds = self.snap_bounds(self.paint_scale_bounds(bounds));
+         let content_mask = self.snapped_content_mask();
+         self.next_frame.scene.insert_primitive(PaintSurface {
+             order: 0,
+@@ -10677,4 +11002,95 @@ mod inspector_tests {
+         })
+         .expect("closed inspector has no bookkeeping and no style overrides");
+     }
++
++    struct PaintScaleView;
++
++    impl Render for PaintScaleView {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            crate::canvas(
++                |_, _, _| {},
++                |_, _, window, _| {
++                    let quad = |window: &mut Window| {
++                        window.paint_quad(crate::PaintQuad {
++                            bounds: Bounds::new(point(px(10.), px(20.)), size(px(100.), px(50.))),
++                            corner_radii: crate::Corners::all(px(8.)),
++                            background: crate::hsla(0., 0., 1., 1.).into(),
++                            border_widths: crate::Edges::all(px(2.)),
++                            border_color: crate::hsla(0., 0., 0., 1.).into(),
++                            border_style: crate::BorderStyle::Solid,
++                        });
++                    };
++                    quad(window);
++                    // Half size about the centre of the quad (60, 45).
++                    window.with_paint_scale(0.5, point(px(60.), px(45.)), |window| {
++                        quad(window);
++                        // Nested scopes compose: a further .5 about the window origin.
++                        window.with_paint_scale(0.5, point(px(0.), px(0.)), |window| quad(window));
++                        // A content mask inside the scope is scaled with it.
++                        window.with_content_mask(
++                            Some(ContentMask {
++                                bounds: Bounds::new(
++                                    point(px(10.), px(20.)),
++                                    size(px(40.), px(50.)),
++                                ),
++                            }),
++                            quad,
++                        );
++                    });
++                    // Scale 1 is no scope at all, and the stack is empty again afterwards.
++                    window.with_paint_scale(1., point(px(0.), px(0.)), quad);
++                    assert!(window.paint_scale_stack.is_empty());
++                },
++            )
++            .size_full()
++        }
++    }
++
++    #[gpui::test]
++    fn test_paint_scale_transforms_quads(cx: &mut TestAppContext) {
++        let window = cx.add_window(|_, _| PaintScaleView);
++        let quads = cx
++            .update_window(window.into(), |_, window, cx| {
++                window.draw(cx).clear(cx);
++                (window.painted_quads(), window.scale_factor())
++            })
++            .unwrap();
++        let (quads, f) = quads;
++        assert_eq!(quads.len(), 5);
++        let rect = |q: &crate::Quad| {
++            [
++                q.bounds.origin.x.0 / f,
++                q.bounds.origin.y.0 / f,
++                q.bounds.size.width.0 / f,
++                q.bounds.size.height.0 / f,
++            ]
++        };
++        // Unscaled.
++        assert_eq!(rect(&quads[0]), [10., 20., 100., 50.]);
++        assert_eq!(quads[0].corner_radii.top_left.0 / f, 8.);
++        // Half size about (60, 45): the quad's own centre stays put.
++        assert_eq!(rect(&quads[1]), [35., 32.5, 50., 25.]);
++        assert_eq!(quads[1].corner_radii.top_left.0 / f, 4.);
++        assert_eq!(quads[1].border_widths.top.0 / f, 1.);
++        // Nested: .5 * .5 = .25, about the window origin after the outer transform: 2.5, 5, 25, 12.5
++        // composed with the outer scale: p' = .25 p + 60 * .5 * ... (see the algebra in with_paint_scale).
++        let inner = rect(&quads[2]);
++        assert_eq!(inner[2], 25.);
++        assert_eq!(inner[3], 12.5);
++        assert_eq!(inner[0], 10. * 0.25 + 30.);
++        assert_eq!(inner[1], 20. * 0.25 + 22.5);
++        // The mask (10, 20, 40, 50) scales to (35, 32.5, 20, 25) and clips the quad's mask: its bounds at (35,
++        // 32.5, 50, 25) intersect it.
++        let mask = quads[3].content_mask.bounds;
++        assert_eq!(
++            [
++                mask.origin.x.0 / f,
++                mask.origin.y.0 / f,
++                mask.size.width.0 / f,
++                mask.size.height.0 / f
++            ],
++            [35., 32.5, 20., 25.]
++        );
++        assert_eq!(rect(&quads[4]), [10., 20., 100., 50.]);
++    }
+ }
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index 4cce3e0..f6ee7c1 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -29,6 +29,14 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+ const PATH_MULTISAMPLE_COUNT: u32 = 4;
+ const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+ 
++/// gravecord: lets the text calibration override what the system reports.
++fn text_setting(name: &str, system: f32) -> f32 {
++    std::env::var(name)
++        .ok()
++        .and_then(|value| value.parse().ok())
++        .unwrap_or(system)
++}
++
+ pub(crate) struct FontInfo {
+     pub gamma_ratios: [f32; 4],
+     pub grayscale_enhanced_contrast: f32,
+@@ -857,8 +865,14 @@ impl DirectXRenderer {
+             let render_params: IDWriteRenderingParams1 =
+                 factory.CreateRenderingParams().unwrap().cast().unwrap();
+             FontInfo {
+-                gamma_ratios: gpui::get_gamma_correction_ratios(render_params.GetGamma()),
+-                grayscale_enhanced_contrast: render_params.GetGrayscaleEnhancedContrast(),
++                gamma_ratios: gpui::get_gamma_correction_ratios(text_setting(
++                    "GRAVECORD_TEXT_GAMMA",
++                    render_params.GetGamma(),
++                )),
++                grayscale_enhanced_contrast: text_setting(
++                    "GRAVECORD_TEXT_CONTRAST",
++                    render_params.GetGrayscaleEnhancedContrast(),
++                ),
+                 subpixel_enhanced_contrast: render_params.GetEnhancedContrast(),
+                 is_bgr: render_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_BGR,
+             }

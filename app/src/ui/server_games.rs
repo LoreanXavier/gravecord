@@ -12,6 +12,7 @@ use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Window, deferred, div, img,
@@ -432,6 +433,7 @@ impl Root {
                             } else {
                                 color("--input-border-default")
                             })
+                            .rule(crate::ui::motion::Rule::TextField)
                             .bg(color("--input-background-default"))
                             .when(full, |this| this.opacity(0.5))
                             .pl(px(12.))

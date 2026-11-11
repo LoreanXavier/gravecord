@@ -70,15 +70,19 @@ mod inventory_feed;
 mod inventory_popout;
 mod invite;
 mod invite_embed;
+mod keyboard;
 mod lightbox;
 mod links;
 mod live_activity;
 pub mod login;
 mod logout;
+mod message_kinds;
 mod presence;
 mod schedule_message;
 mod sticker_player;
+mod sticker_popout;
 mod stickers;
+mod timestamps;
 mod tray;
 mod unread_badges;
 mod unread_dms;
@@ -91,12 +95,15 @@ mod forums;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
+pub(crate) mod image_cache;
 mod inline_video;
 mod media_image;
 mod member_avatars;
+pub(crate) mod memory_trim;
 mod menu;
 mod modal;
 mod mosaic;
+pub(crate) mod motion;
 mod name_styles;
 mod nameplate_animation;
 mod nameplates;
@@ -107,6 +114,8 @@ mod notify;
 mod oauth;
 mod oauth_spec;
 mod paste;
+#[cfg(feature = "capture")]
+mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
@@ -119,6 +128,7 @@ mod profile_menu;
 mod profile_other;
 mod quests;
 mod quickswitcher;
+mod reaction_tip;
 mod reactions_modal;
 mod remediation;
 mod reminder_modal;
@@ -151,6 +161,7 @@ mod server_welcome;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
 mod member_safety;
+mod member_window;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -180,6 +191,7 @@ mod voice_sounds;
 mod voice_video;
 mod voice_view;
 
+use motion::Transitions as _;
 use tooltip::{Body, Side, Tip};
 
 const SANS: &str = "gg sans";
@@ -202,6 +214,9 @@ struct Prepared {
     avatars: Option<(u64, Option<Id>, Option<Id>)>,
     inventory: Option<(u64, Option<Id>, bool)>,
     badge: Option<u64>,
+    /// When the unread badge was last refreshed, and whether a refresh is waiting for its turn.
+    badge_at: Option<Instant>,
+    badge_waiting: bool,
 }
 
 /// Whether a step keyed by `now` has anything new to read since it last ran at `last`.
@@ -286,6 +301,7 @@ pub struct Root {
     nameplates: Rc<RefCell<nameplates::Cache>>,
     profile_effects: Rc<RefCell<profile_effects::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
+    member_window: member_window::State,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     /// When each failed `Request::Fetch` key failed (`fetch_failures`).
     fetch_failures: HashMap<String, std::time::Instant>,
@@ -330,6 +346,8 @@ pub struct Root {
     /// A message over the length limit, held while the "too long" dialog asks what to do.
     too_long: Option<String>,
     focus: FocusHandle,
+    /// Focus bookkeeping and keyboard modality (`keyboard`).
+    keys: keyboard::State,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
     selection: SharedSelection,
@@ -466,6 +484,8 @@ pub struct Root {
     leaving: Option<links::Leaving>,
     last_typing_sent: Option<Instant>,
     tip: Option<tooltip::Active>,
+    /// The target whose delayed tooltip is waiting for the pointer to rest.
+    tip_pending: Option<SharedString>,
     /// Channels whose first message has been loaded: the welcome goes above it.
     complete_history: HashSet<Id>,
     /// Width of a message's content column, set each frame: media never grows past it (`max-width: 100%`).
@@ -519,6 +539,8 @@ pub struct Root {
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
     inventory_popout: inventory_popout::State,
+    /// The popout a sticker in a message opens.
+    sticker_popout: Option<sticker_popout::StickerPopout>,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
@@ -589,6 +611,7 @@ impl Root {
             nameplates: Default::default(),
             profile_effects: Default::default(),
             member_avatars: Default::default(),
+            member_window: member_window::State::default(),
             inline_videos: Default::default(),
             fetch_failures: HashMap::new(),
             data_revision: 0,
@@ -624,6 +647,7 @@ impl Root {
             context: context_menu::State::default(),
             too_long: None,
             focus: cx.focus_handle(),
+            keys: Default::default(),
             images: HashMap::new(),
             requested: HashSet::new(),
             selection: SharedSelection::default(),
@@ -729,6 +753,7 @@ impl Root {
             leaving: None,
             last_typing_sent: None,
             tip: None,
+            tip_pending: None,
             complete_history: HashSet::new(),
             content_width: 793.,
             profile: None,
@@ -763,6 +788,7 @@ impl Root {
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
             inventory_popout: inventory_popout::State::default(),
+            sticker_popout: None,
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -774,7 +800,7 @@ impl Root {
         self.data_revision += 1;
         self.splash_check();
         // Native indicators must update even while the window is hidden and not rendering.
-        self.refresh_notification_badge();
+        self.refresh_notification_badge_soon(cx);
     }
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
@@ -1346,7 +1372,7 @@ impl Root {
                 self.images
                     .insert(key, Arc::new(Image::from_bytes(format, bytes)));
             }
-            Update::Spinner(clip) => self.splash_clip(&clip),
+            Update::Spinner(clip) => self.splash_clip(clip),
             Update::Images(images) => {
                 for (key, bytes) in images {
                     self.images
@@ -1454,11 +1480,27 @@ impl Root {
                 .cloned(),
         );
         let mut media = Vec::new();
+        // The messages thread starters stand for are drawn in their place, so their people and media are needed too.
+        let starters: Vec<Message> = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .into_iter()
+            .flatten()
+            .filter(|message| message.kind == dc_state::message_kinds::THREAD_STARTER_MESSAGE)
+            .filter_map(|message| self.starter_target(message))
+            .collect();
         if let Some(messages) = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
         {
             users.extend(messages.iter().map(|message| message.author.clone()));
+            users.extend(starters.iter().map(|message| message.author.clone()));
+            users.extend(
+                messages
+                    .iter()
+                    .filter_map(|message| Some(message.extra.interaction.as_ref()?.1.clone())),
+            );
+            media.extend(message_kinds::wanted(messages));
             if messages.iter().any(|message| message.kind == dm::USER_JOIN) {
                 media.push(("inbox:join".to_owned(), dm::JOIN_ARROW.to_owned()));
             }
@@ -1475,12 +1517,16 @@ impl Root {
                         .send(Request::LoadMessages { channel: thread });
                 }
             }
-            for message in messages.iter() {
+            for message in messages.iter().chain(&starters) {
                 media.extend(embed::wanted(message));
                 media.extend(files::wanted(message));
                 media.extend(stickers::wanted(message));
             }
-            for attachment in messages.iter().flat_map(|message| &message.attachments) {
+            for attachment in messages
+                .iter()
+                .chain(&starters)
+                .flat_map(|message| &message.attachments)
+            {
                 if attachment.is_image() {
                     let (width, height) = fit_media(
                         attachment.width.unwrap_or(1),
@@ -1495,7 +1541,11 @@ impl Root {
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
         {
-            for block in messages.iter().flat_map(|message| parse(&message.content)) {
+            for block in messages
+                .iter()
+                .chain(&starters)
+                .flat_map(|message| parse(&message.content))
+            {
                 for span in block_spans(&block) {
                     match &span.kind {
                         Kind::Unicode => {
@@ -1614,9 +1664,7 @@ impl Root {
         let roles = self.current_guild().map(|guild| &guild.roles);
         let first_activity = list.and_then(|list| {
             list.rows.iter().find_map(|row| match row {
-                MemberRow::Member { user, .. }
-                    if self.presence_line(user, self.guild, true).is_some() =>
-                {
+                MemberRow::Member { user, .. } if self.has_presence_line(user, self.guild) => {
                     Some(user.id)
                 }
                 _ => None,
@@ -1644,11 +1692,42 @@ impl Root {
                 _ => None,
             })
         });
-        let rows: Vec<AnyElement> = list
-            .map(|list| list.rows.as_slice())
-            .unwrap_or_default()
+        let all_rows = list.map(|list| list.rows.as_slice()).unwrap_or_default();
+        // Only the rows near the visible part are built; spacers of the exact height stand in for the rest.
+        let heights: Vec<f32> = all_rows
             .iter()
             .map(|row| match row {
+                MemberRow::Member { user, .. } if self.has_presence_line(user, self.guild) => 44.,
+                _ => 42.,
+            })
+            .collect();
+        let scroll = &self.member_window.scroll;
+        let view = match f32::from(scroll.bounds().size.height) {
+            known if known > 0. => known,
+            _ => self.viewport.1,
+        };
+        let rows_total: f32 = heights.iter().sum();
+        // What sits above the first row (the inventory section): the content's height less the rows'.
+        let before = if scroll.bounds().size.height > px(0.) {
+            (f32::from(scroll.max_offset().y) + view - rows_total).max(0.)
+        } else {
+            0.
+        };
+        #[allow(unused_mut)]
+        let mut built =
+            member_window::visible(&heights, -f32::from(scroll.offset().y), view, before);
+        #[cfg(feature = "capture")]
+        if crate::perf::legacy("members") {
+            built = 0..heights.len();
+        }
+        let above: f32 = heights[..built.start].iter().sum();
+        let below: f32 = heights[built.end..].iter().sum();
+        let rows: Vec<AnyElement> = all_rows
+            .iter()
+            .enumerate()
+            .skip(built.start)
+            .take(built.len())
+            .map(|(_, row)| match row {
                 MemberRow::Group { id, count } => div()
                     .flex_none()
                     .h(px(42.))
@@ -1811,8 +1890,15 @@ impl Root {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
+                    .track_scroll(&self.member_window.scroll)
                     .children(self.inventory_section(cx))
-                    .children(rows),
+                    .when(above > 0., |this| {
+                        this.child(div().flex_none().h(px(above)))
+                    })
+                    .children(rows)
+                    .when(below > 0., |this| {
+                        this.child(div().flex_none().h(px(below)))
+                    }),
             )
     }
 
@@ -2080,11 +2166,6 @@ impl Root {
         {
             return true;
         }
-        if keys.key == "escape" && self.replying.is_some() {
-            self.replying = None;
-            cx.notify();
-            return true;
-        }
         if keys.key == "up" && plain && self.composer.read(cx).text().is_empty() {
             let me = self.stores.current_user.as_ref().map(|user| user.id);
             let last = self
@@ -2111,13 +2192,14 @@ impl Root {
             editor.set_text(text);
             editor
         });
-        cx.subscribe(&editor, move |this, _, event, cx| {
+        cx.subscribe_in(&editor, window, move |this, _, event, window, cx| {
             match event {
                 // Saving an empty edit asks to delete the message instead.
                 EditorEvent::Submit(content) if content.is_empty() => {
                     this.confirm_delete = Some(message);
                     this.editing = None;
                 }
+                // Saving or cancelling an edit hands focus back to the composer (module 699344).
                 EditorEvent::Submit(content) => {
                     if let Some(channel) = this.channel {
                         let _ = this.requests.send(Request::Edit {
@@ -2126,9 +2208,9 @@ impl Root {
                             content: content.clone(),
                         });
                     }
-                    this.editing = None;
+                    this.end_edit(window, cx);
                 }
-                EditorEvent::Cancel => this.editing = None,
+                EditorEvent::Cancel => this.end_edit(window, cx),
                 EditorEvent::Edited => {}
             }
             cx.notify();
@@ -2153,6 +2235,34 @@ impl Root {
         }
     }
 
+    /// A reaction's count, which rolls when it changes (`NumberTicker`, module 114166): the old number slides out
+    /// and the new one in over a clipped, fixed-height box, as wide as the wider of the two.
+    fn rolling_count(&self, message: Id, index: usize, count: u64) -> AnyElement {
+        let roll = motion::number_roll(motion::key(&("reaction-count", message, index)), count);
+        let Some((previous, previous_y)) = roll.previous else {
+            return div().child(count.to_string()).into_any_element();
+        };
+        let widest = previous.max(roll.current).to_string();
+        let line = |text: String, y: f32| {
+            div()
+                .absolute()
+                .left(px(0.))
+                .right(px(0.))
+                .top(px(16. * y))
+                .h(px(16.))
+                .flex()
+                .justify_center()
+                .child(text)
+        };
+        div()
+            .relative()
+            .overflow_hidden()
+            .child(div().opacity(0.).child(widest))
+            .child(line(previous.to_string(), previous_y))
+            .child(line(roll.current.to_string(), roll.current_y))
+            .into_any_element()
+    }
+
     fn typing_bar(&self) -> Option<AnyElement> {
         let channel = self.channel?;
         let users = self.stores.typing_users(channel, Instant::now());
@@ -2167,11 +2277,17 @@ impl Root {
             [one, two] => (format!("{one}, {two}"), " are typing..."),
             _ => ("Several people".to_owned(), " are typing..."),
         };
-        let dot = || {
+        // `.dot_U9Tvvz`: 7px, `typing-dot-pulse` stepped, 2px apart.
+        let active = motion::window_active();
+        let dot = |index: usize| {
+            let (opacity, scale) = motion::typing_dot(index, active);
             div()
-                .size(px(6.))
+                .id(("typing-dot", index))
+                .size(px(7.))
                 .rounded_full()
                 .bg(color("--text-default"))
+                .opacity(opacity)
+                .paint_scale(scale, gpui::point(0.5, 0.5))
         };
         Some(
             div()
@@ -2189,10 +2305,10 @@ impl Root {
                     div()
                         .ml(px(8.))
                         .flex()
-                        .gap(px(3.))
-                        .child(dot())
-                        .child(dot())
-                        .child(dot()),
+                        .gap(px(2.))
+                        .child(dot(0))
+                        .child(dot(1))
+                        .child(dot(2)),
                 )
                 .child(
                     div()
@@ -2350,6 +2466,7 @@ impl Root {
                     strike: style.strike,
                     boxed: style.code.then(preview_code_box),
                     image: None,
+                    hover: None,
                 }
             })
             .collect();
@@ -2370,6 +2487,7 @@ impl Root {
         }
         list.extend(self.forum_editors());
         list.extend(self.group_dm.as_ref().map(|picker| picker.search.clone()));
+        list.extend(self.discover_editors());
         list.extend(
             self.quick_switcher
                 .as_ref()
@@ -2628,7 +2746,7 @@ impl Root {
         let selected = self.guild == Some(id);
         let counts = self.guild_rail_counts(guild);
         let image = self.images.get(&format!("guild:{id}")).cloned();
-        let group = SharedString::from(format!("guild-row-{id}"));
+        let row_key = format!("guild-{id}");
         let tile = div()
             .id(SharedString::from(format!("guild-{id}")))
             .on_mouse_down(
@@ -2657,18 +2775,20 @@ impl Root {
                 this.request_images();
                 cx.notify();
             }));
+        let tile = self.group_stop(tile, "rail", keyboard::Nav::List, &row_key, selected, cx);
         let tile = match image {
             Some(image) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
             None => tile
-                .bg(if selected {
-                    color("--background-brand")
-                } else {
-                    color("--background-mod-subtle")
-                })
+                // `childWrapper_JJ-hgR`: brand coloured while hovered or selected, over .15s.
+                .bg(motion::rail::tile_background(
+                    &row_key,
+                    selected,
+                    "--background-mod-subtle",
+                ))
                 .text_size(px(18.))
                 .line_height(px(21.6))
                 .font_weight(FontWeight(500.))
-                .text_color(color("--white"))
+                .text_color(motion::rail::tile_foreground(&row_key, selected))
                 .child(guild.acronym()),
         };
         div()
@@ -2678,34 +2798,9 @@ impl Root {
             .flex_none()
             .flex()
             .justify_center()
-            .group(group.clone())
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.))
-                    .top(px(if selected { 0. } else { 10. }))
-                    .w(px(4.))
-                    .h(px(if selected { 40. } else { 20. }))
-                    .rounded_r(px(4.))
-                    .bg(color("--text-strong"))
-                    .when(!selected, |this| {
-                        this.opacity(0.)
-                            .group_hover(group, |style| style.opacity(1.))
-                    }),
-            )
-            // `item__o8_Xq` unread: an 8px pill while a channel in the guild is unread.
-            .when(!selected && counts.unread, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px(16.))
-                        .w(px(4.))
-                        .h(px(8.))
-                        .rounded_r(px(4.))
-                        .bg(color("--text-strong")),
-                )
-            })
+            // `item__o8_Xq`: one pill that moves between hidden, the 8px unread dot, 20px hovered and 40px selected.
+            .child(motion::rail::pill(&row_key, selected, counts.unread))
+            .child(motion::hover_probe(motion::rail::hover_key(&row_key)))
             .child(self.with_tip(format!("guild-{id}"), Tip::rail(Body::Guild(id)), tile, cx))
             .when(counts.mentions > 0, |row| {
                 row.child(unread_badges::rail_number(
@@ -2751,10 +2846,14 @@ impl Root {
     fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tool = |name: &str, size: f32| {
             div()
+                .id(SharedString::from(format!("rail-tool-{name}")))
                 .flex_none()
                 .size(px(40.))
                 .rounded(px(12.))
                 .bg(color("--background-mod-subtle"))
+                // `circleIconButton_g8YUxD`: brand coloured on hover, over .15s ease-out.
+                .hover(|style| style.bg(color("--background-brand")))
+                .rule(motion::Rule::CircleIconButton)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2842,8 +2941,16 @@ impl Root {
                     .collapsed
             });
             let (guild, category) = (self.guild, channel.id);
-            return div()
-                .id(SharedString::from(format!("category-{}", channel.id)))
+            return self
+                .group_stop_hollow(
+                    div().id(SharedString::from(format!("category-{}", channel.id))),
+                    "channels",
+                    keyboard::Nav::List,
+                    &format!("category-{}", channel.id),
+                    false,
+                    4.,
+                    cx,
+                )
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -2884,11 +2991,16 @@ impl Root {
                                 .size(px(12.))
                                 .flex_none()
                                 .text_color(color("--channels-default"))
-                                .when(collapsed, |this| {
-                                    this.with_transformation(gpui::Transformation::rotate(
-                                        gpui::radians(-std::f32::consts::FRAC_PI_2),
-                                    ))
-                                }),
+                                // `.icon_yOdhm_`: `transform .1s linear`, turned -90deg when collapsed.
+                                .with_transformation(motion::rotation(
+                                    motion::key(&("category-chevron", category)),
+                                    if collapsed {
+                                        -std::f32::consts::FRAC_PI_2
+                                    } else {
+                                        0.
+                                    },
+                                    motion::css(100., motion::Ease::Linear),
+                                )),
                         )
                         .child(div().flex_1())
                         // Create Channel inside this category, for those who may manage channels.
@@ -3015,152 +3127,155 @@ impl Root {
                 )
             })
             .child(
-                div()
-                    .id(SharedString::from(format!("channel-row-{}", channel.id)))
-                    .when(cfg!(feature = "capture"), |d| {
-                        d.relative()
-                            .child(self.anchor_probe(format!("capture-channel-{}", channel.id)))
-                    })
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.open_context_menu(
-                                context_menu::Target::Channel(target),
-                                event.position,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if voice {
-                            // The clicked row keeps its action icons until a press lands elsewhere (`:focus-within`).
-                            this.vv.row_focus = true;
-                            if let Some(guild) = this.guild {
-                                this.request_join_voice(guild, target, cx);
-                            }
-                        } else {
-                            let guild = this.guild;
-                            if let Some(guild) = guild {
-                                this.select(guild, Some(target));
-                                this.request_images();
-                            }
-                            cx.notify();
+                self.group_stop_hollow(
+                    div().id(SharedString::from(format!("channel-row-{}", channel.id))),
+                    "channels",
+                    keyboard::Nav::List,
+                    &format!("channel-row-{}", channel.id),
+                    selected,
+                    8.,
+                    cx,
+                )
+                .when(cfg!(feature = "capture"), |d| {
+                    d.relative()
+                        .child(self.anchor_probe(format!("capture-channel-{}", channel.id)))
+                })
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.open_context_menu(
+                            context_menu::Target::Channel(target),
+                            event.position,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if voice {
+                        // The clicked row keeps its action icons until a press lands elsewhere (`:focus-within`).
+                        this.vv.row_focus = true;
+                        if let Some(guild) = this.guild {
+                            this.request_join_voice(guild, target, cx);
                         }
-                    }))
-                    .group(group)
-                    .h(px(if in_call { 48. } else { 32. }))
-                    .w(px(286.))
-                    .pl(px(8.))
-                    .pr(px(8.))
-                    .rounded(px(8.))
-                    .when(in_call, |this| this.pt(px(4.)))
-                    .flex()
-                    .flex_col()
-                    .when(selected, |this| {
-                        this.parity("channel-selected")
-                            .bg(color("--background-mod-strong"))
-                    })
-                    .when(!selected, |this| {
-                        this.hover(|style| style.bg(color("--background-mod-subtle")))
-                    })
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(if in_call { 24. } else { 32. }))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(glyph)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .when(dim, |this| this.opacity(0.5))
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color(tint))
-                                    .group_hover(name_group, |style| {
-                                        style.text_color(color("--text-strong"))
-                                    })
-                                    .child(channel.name.clone()),
-                            )
-                            .children(timer)
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(4.))
-                                    .when(!selected || in_call || voice, |this| {
-                                        if in_call && self.vv.row_focus {
-                                            this
-                                        } else {
-                                            this.opacity(0.).group_hover(action_group, |style| {
-                                                style.opacity(1.)
-                                            })
-                                        }
-                                    })
-                                    .children(
-                                        actions
-                                            .iter()
-                                            .filter(|name| {
-                                                // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
-                                                let needed = match **name {
-                                                    "settings_small" | "voice_action_3" => {
-                                                        dc_state::permissions::MANAGE_CHANNELS
-                                                    }
-                                                    "invite_small" | "voice_action_2" => {
-                                                        dc_state::permissions::CREATE_INSTANT_INVITE
-                                                    }
-                                                    _ => 0,
-                                                };
-                                                needed == 0 || self.can_in_channel(channel, needed)
-                                            })
-                                            .map(|name| {
-                                                // "Create Invite" opens the invite dialog for this channel; the gear opens its
-                                                // settings.
-                                                let invite = *name == "invite_small";
-                                                // A voice row's third icon is the same gear (`voice_action_3`).
-                                                let gear = matches!(
-                                                    *name,
-                                                    "settings_small" | "voice_action_3"
-                                                );
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "channel-action-{target}-{name}"
-                                                    )))
-                                                    .when(gear, |this| {
-                                                        this.cursor_pointer().on_click(cx.listener(
-                                                            move |this, _, window, cx| {
-                                                                cx.stop_propagation();
-                                                                this.open_channel_settings(
-                                                                    target, window, cx,
-                                                                );
-                                                            },
-                                                        ))
-                                                    })
-                                                    .when(invite, |this| {
-                                                        this.cursor_pointer().on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                cx.stop_propagation();
-                                                                if let Some(guild) = this.guild {
-                                                                    this.select(
-                                                                        guild,
-                                                                        Some(target),
-                                                                    );
-                                                                }
-                                                                this.open_invite(cx);
-                                                            },
-                                                        ))
-                                                    })
-                                                    .child(icon(name, 16., action_tint))
-                                                    .into_any_element()
-                                            }),
-                                    ),
-                            ),
-                    )
-                    .when(in_call, |this| this.child(voice::status_line())),
+                    } else {
+                        let guild = this.guild;
+                        if let Some(guild) = guild {
+                            this.select(guild, Some(target));
+                            this.request_images();
+                        }
+                        cx.notify();
+                    }
+                }))
+                .group(group)
+                .h(px(if in_call { 48. } else { 32. }))
+                .w(px(286.))
+                .pl(px(8.))
+                .pr(px(8.))
+                .rounded(px(8.))
+                .when(in_call, |this| this.pt(px(4.)))
+                .flex()
+                .flex_col()
+                .when(selected, |this| {
+                    this.parity("channel-selected")
+                        .bg(color("--background-mod-strong"))
+                })
+                .when(!selected, |this| {
+                    this.hover(|style| style.bg(color("--background-mod-subtle")))
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(if in_call { 24. } else { 32. }))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(glyph)
+                        .child(
+                            div()
+                                .flex_1()
+                                .when(dim, |this| this.opacity(0.5))
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color(tint))
+                                .group_hover(name_group, |style| {
+                                    style.text_color(color("--text-strong"))
+                                })
+                                .child(channel.name.clone()),
+                        )
+                        .children(timer)
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(4.))
+                                .when(!selected || in_call || voice, |this| {
+                                    if in_call && self.vv.row_focus {
+                                        this
+                                    } else {
+                                        this.opacity(0.)
+                                            .group_hover(action_group, |style| style.opacity(1.))
+                                    }
+                                })
+                                .children(
+                                    actions
+                                        .iter()
+                                        .filter(|name| {
+                                            // The gear needs Manage Channels, the invite Create Invite (`can` in module 336541).
+                                            let needed = match **name {
+                                                "settings_small" | "voice_action_3" => {
+                                                    dc_state::permissions::MANAGE_CHANNELS
+                                                }
+                                                "invite_small" | "voice_action_2" => {
+                                                    dc_state::permissions::CREATE_INSTANT_INVITE
+                                                }
+                                                _ => 0,
+                                            };
+                                            needed == 0 || self.can_in_channel(channel, needed)
+                                        })
+                                        .map(|name| {
+                                            // "Create Invite" opens the invite dialog for this channel; the gear opens its
+                                            // settings.
+                                            let invite = *name == "invite_small";
+                                            // A voice row's third icon is the same gear (`voice_action_3`).
+                                            let gear = matches!(
+                                                *name,
+                                                "settings_small" | "voice_action_3"
+                                            );
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "channel-action-{target}-{name}"
+                                                )))
+                                                .when(gear, |this| {
+                                                    this.cursor_pointer().on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.open_channel_settings(
+                                                                target, window, cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                })
+                                                .when(invite, |this| {
+                                                    this.cursor_pointer().on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            if let Some(guild) = this.guild {
+                                                                this.select(guild, Some(target));
+                                                            }
+                                                            this.open_invite(cx);
+                                                        },
+                                                    ))
+                                                })
+                                                .child(icon(name, 16., action_tint))
+                                                .into_any_element()
+                                        }),
+                                ),
+                        ),
+                )
+                .when(in_call, |this| this.child(voice::status_line())),
             )
             .into_any_element()
     }
@@ -3344,18 +3459,37 @@ impl Root {
                     .bg(color("--background-mod-subtle")),
             )
             // The rows scroll under the fixed header, as the official channel list does.
+            // `container_H5ozaj` pads its bottom by the panel's height + 8px - 16px and `scroller_ysO7Gy` keeps 4px of margin
+            // and 16px of padding, so the list ends 54px above the window's bottom: nothing paints in the strip below
+            // the panel or beside its rounded corners (`design/dom/channel/text-darker-cozy.json`).
             .child(
                 div()
                     .id("sidebar-rows")
                     .when(self.has_channel_browser(), |rows| rows.pt(px(12.)))
                     .flex_1()
                     .min_h(px(0.))
+                    .mb(px(4.))
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
                     .children(rows)
-                    // The user panel floats over the bottom of the column.
-                    .child(div().flex_none().h(px(72.))),
+                    .child(div().flex_none().h(px(16.))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(self.user_panel_height.unwrap_or(px(58.)) - px(8.)),
+            )
+            // `sidebar_pog62O::after`: 8px of `--background-base-lowest` along the bottom, from the left edge to 1px
+            // short of the right, above the list's border.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right(px(1.))
+                    .bottom_0()
+                    .h(px(8.))
+                    .bg(color("--background-base-lowest")),
             )
     }
 
@@ -3591,7 +3725,7 @@ impl Root {
             .rounded(px(8.))
             .bg(color("--background-base-low"))
             .border_1()
-            .border_color(color("--background-mod-subtle"))
+            .border_color(color("--border-muted"))
             .flex()
             .flex_col()
             .child(measure)
@@ -3720,23 +3854,35 @@ impl Root {
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(self.with_tip(
+                        .child(self.header_stop(
+                            self.with_tip(
+                                "dm-call",
+                                Tip::text("Start Voice Call", Side::Bottom),
+                                tool("dm_call"),
+                                cx,
+                            ),
                             "dm-call",
-                            Tip::text("Start Voice Call", Side::Bottom),
-                            tool("dm_call"),
                             cx,
                         ))
-                        .child(self.with_tip(
+                        .child(self.header_stop(
+                            self.with_tip(
+                                "dm-video",
+                                Tip::text("Start Video Call", Side::Bottom),
+                                tool("dm_video"),
+                                cx,
+                            ),
                             "dm-video",
-                            Tip::text("Start Video Call", Side::Bottom),
-                            tool("dm_video"),
                             cx,
                         ))
                         .child(
-                            self.with_tip(
+                            self.header_stop(
+                                self.with_tip(
+                                    "dm-pins",
+                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    tool("pin"),
+                                    cx,
+                                ),
                                 "dm-pins",
-                                Tip::text("Pinned Messages", Side::Bottom),
-                                tool("pin"),
                                 cx,
                             )
                             .cursor_pointer()
@@ -3746,10 +3892,14 @@ impl Root {
                             })),
                         )
                         .child(
-                            self.with_tip(
+                            self.header_stop(
+                                self.with_tip(
+                                    "dm-add",
+                                    Tip::text("Add to DM", Side::Bottom),
+                                    tool("dm_add"),
+                                    cx,
+                                ),
                                 "dm-add",
-                                Tip::text("Add to DM", Side::Bottom),
-                                tool("dm_add"),
                                 cx,
                             )
                             .cursor_pointer()
@@ -3761,36 +3911,40 @@ impl Root {
                             )),
                         )
                         .child(
-                            self.with_tip(
-                                "dm-profile",
-                                Tip::text(
-                                    if shown {
-                                        "Hide User Profile"
-                                    } else {
-                                        "Show User Profile"
-                                    },
-                                    Side::Bottom,
-                                ),
-                                div()
-                                    .id("toggle-dm-profile")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_dm_profile = !this.show_dm_profile;
-                                        cx.notify();
-                                    }))
-                                    .size(px(32.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon(
-                                        "dm_profile",
-                                        20.,
+                            self.header_stop(
+                                self.with_tip(
+                                    "dm-profile",
+                                    Tip::text(
                                         if shown {
-                                            "--text-strong"
+                                            "Hide User Profile"
                                         } else {
-                                            "--text-muted"
+                                            "Show User Profile"
                                         },
-                                    )),
+                                        Side::Bottom,
+                                    ),
+                                    div()
+                                        .id("toggle-dm-profile")
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_dm_profile = !this.show_dm_profile;
+                                            cx.notify();
+                                        }))
+                                        .size(px(32.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "dm_profile",
+                                            20.,
+                                            if shown {
+                                                "--text-strong"
+                                            } else {
+                                                "--text-muted"
+                                            },
+                                        )),
+                                    cx,
+                                ),
+                                "dm-profile",
                                 cx,
                             ),
                         ),
@@ -3802,12 +3956,16 @@ impl Root {
                         .flex()
                         .gap(px(8.))
                         .child(
-                            self.with_tip(
+                            self.header_stop(
+                                self.with_tip(
+                                    "threads",
+                                    Tip::text("Threads", Side::Bottom),
+                                    tool("threads")
+                                        .relative()
+                                        .child(self.anchor_probe("header-threads")),
+                                    cx,
+                                ),
                                 "threads",
-                                Tip::text("Threads", Side::Bottom),
-                                tool("threads")
-                                    .relative()
-                                    .child(self.anchor_probe("header-threads")),
                                 cx,
                             )
                             .when(
@@ -3823,10 +3981,14 @@ impl Root {
                             )),
                         )
                         .child(
-                            self.with_tip(
+                            self.header_stop(
+                                self.with_tip(
+                                    "notifications",
+                                    Tip::text("Notification Settings", Side::Bottom),
+                                    tool(if muted { "bell_muted" } else { "bell" }),
+                                    cx,
+                                ),
                                 "notifications",
-                                Tip::text("Notification Settings", Side::Bottom),
-                                tool(if muted { "bell_muted" } else { "bell" }),
                                 cx,
                             )
                             .cursor_pointer()
@@ -3838,10 +4000,14 @@ impl Root {
                             })),
                         )
                         .child(
-                            self.with_tip(
+                            self.header_stop(
+                                self.with_tip(
+                                    "pins",
+                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    tool("pin"),
+                                    cx,
+                                ),
                                 "pins",
-                                Tip::text("Pinned Messages", Side::Bottom),
-                                tool("pin"),
                                 cx,
                             )
                             .when(
@@ -3855,8 +4021,7 @@ impl Root {
                             })),
                         )
                         .child(
-                            div()
-                                .id("toggle-members")
+                            self.header_stop(div().id("toggle-members"), "toggle-members", cx)
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.show_members = !this.show_members;
@@ -4044,6 +4209,10 @@ impl Root {
             strike: style.strike,
             boxed,
             image,
+            // `.interactive:hover { background-color: var(--brand-500); color: var(--white) }` on the mention
+            // (stylesheet 17256's markup rules); `@everyone` and `@here` are not interactive.
+            hover: (mention && !matches!(span.kind, Kind::Everyone))
+                .then(|| (hsla("--brand-500"), hsla("--white"))),
         }
     }
 
@@ -4207,12 +4376,34 @@ impl Root {
                     !reaction.me,
                 );
                 let group = SharedString::from(format!("reaction-{}-{index}", message.id));
-                div()
+                // Who reacted: the first three, fetched once when the pointer first reaches the pill.
+                let fetch_key =
+                    format!("reactors3:{}:{}", message.id, reaction_route_name(reaction));
+                let fetch_route = format!(
+                    "/channels/{}/messages/{}/reactions/{}?limit={}&type=0",
+                    message.channel_id,
+                    message.id,
+                    reactions_modal::encode(&reaction_route_name(reaction)),
+                    reaction_tip::NAMED,
+                );
+                let tip = Tip::body(
+                    Body::Reaction {
+                        emoji: format!("emoji:{}", reaction.name),
+                        fetch_key: fetch_key.clone(),
+                        label: reaction_tip::emoji_label(
+                            &reaction.name,
+                            reaction.emoji_id.is_some(),
+                        ),
+                        count: reaction.count as usize,
+                    },
+                    Side::Top,
+                )
+                .after(reaction_tip::DELAY_MS)
+                .spaced(8.);
+                let pill = div()
                     .id(group.clone())
                     .group(group.clone())
                     .h(px(30.))
-                    .mr(px(4.))
-                    .mb(px(4.))
                     .px(px(6.))
                     .rounded(px(8.))
                     .flex()
@@ -4232,6 +4423,15 @@ impl Root {
                                     .border_color(color("--reaction-border-hover"))
                             })
                     })
+                    .rule(motion::Rule::Reaction)
+                    .on_hover(cx.listener(move |this, inside: &bool, _, _| {
+                        if *inside && this.requested.insert(fetch_key.clone()) {
+                            let _ = this.requests.send(Request::Fetch {
+                                key: fetch_key.clone(),
+                                route: fetch_route.clone(),
+                            });
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, _, _| {
                         if add {
                             this.track_reaction(&emoji);
@@ -4269,9 +4469,17 @@ impl Root {
                                     this.text_color(color("--reaction-text-hover"))
                                 })
                             })
-                            .child(reaction.count.to_string()),
-                    )
-                    .into_any_element()
+                            .child(self.rolling_count(message.id, index, reaction.count)),
+                    );
+                self.with_tip(
+                    format!("reaction-tip-{}-{index}", message.id),
+                    tip,
+                    pill,
+                    cx,
+                )
+                .mr(px(4.))
+                .mb(px(4.))
+                .into_any_element()
             })
             .collect();
         (!pills.is_empty()).then(|| {
@@ -4296,6 +4504,7 @@ impl Root {
                     this.bg(color("--reaction-background-hover"))
                         .border_color(color("--reaction-border-hover"))
                 })
+                .rule(motion::Rule::Reaction)
                 .child(self.anchor_probe(format!("reaction-add-{}", message.id)))
                 .on_click({
                     let key = format!("reaction-add-{}", message.id);
@@ -4736,6 +4945,7 @@ impl Root {
     }
 
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let row_ix = index;
         let Some(row) = self.rows.get(index) else {
             return div().into_any_element();
         };
@@ -4786,9 +4996,40 @@ impl Root {
                 else {
                     return div().into_any_element();
                 };
+                match dc_state::message_kinds::presentation(message) {
+                    // The official table has no entry for this type, or its handler returns `null`.
+                    dc_state::message_kinds::Presentation::Nothing => {
+                        return div().into_any_element();
+                    }
+                    dc_state::message_kinds::Presentation::System if !dm::is_system(message) => {
+                        return self
+                            .kind_line(message, *head, cx)
+                            .unwrap_or_else(|| div().into_any_element());
+                    }
+                    _ => {}
+                }
                 if dm::is_system(message) {
                     return self.system_message(message, *head, cx);
                 }
+                // THREAD_STARTER_MESSAGE draws the message it references as an ordinary message (module 891522, `n$`
+                // and `nq`: no toolbar, menu or reactions), or the "could not load" line when it is not known.
+                let starter_copy;
+                let is_starter = message.kind == dc_state::message_kinds::THREAD_STARTER_MESSAGE;
+                let mut missing_starter = false;
+                let (message, head) = if is_starter {
+                    match self.starter_target(message) {
+                        Some(target) => {
+                            starter_copy = target;
+                            (&starter_copy, &true)
+                        }
+                        None => {
+                            missing_starter = true;
+                            (message, &true)
+                        }
+                    }
+                } else {
+                    (message, head)
+                };
                 // The 17px between groups is outside the hover box, and the box stops 16px short of the edge. Padding,
                 // not margin: gpui lists measure an item without its margins.
                 let id = message.id;
@@ -4803,8 +5044,13 @@ impl Root {
                     .as_ref()
                     .filter(|(target, _)| *target == id)
                     .map(|(_, editor)| editor.clone());
-                let body = div()
-                    .id(SharedString::from(format!("message-{id}")))
+                let body = self
+                    .message_stop(
+                        div().id(SharedString::from(format!("message-{id}"))),
+                        id,
+                        row_ix,
+                        cx,
+                    )
                     .relative()
                     .pl(px(72.))
                     .pr(px(24.))
@@ -4819,24 +5065,27 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
-                        }),
-                    )
-                    .when(hovered && editing.is_none(), |this| {
+                    .when(!is_starter, |this| {
+                        this.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
+                            }),
+                        )
+                    })
+                    .when(hovered && editing.is_none() && !is_starter, |this| {
                         this.child(self.message_toolbar(message, own, cx))
                     });
                 let content = match editing {
                     Some(editor) => self.edit_box(editor).into_any_element(),
+                    None if missing_starter => self.starter_missing_line(message),
                     None => div()
                         .when(!message.content_is_inline_media(), |this| {
                             this.child(self.content(message))
                         })
                         .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message, cx))
-                        .children(self.reactions(message, cx))
+                        .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -4847,7 +5096,13 @@ impl Root {
                     .images
                     .get(&self.guild_avatar_source(&message.author).0)
                     .cloned();
-                let reply_offset = if message.referenced.is_some() {
+                // A command's reply has the "used /command" bar where a reply has its preview.
+                let command_bar = if message.referenced.is_none() {
+                    self.interaction_bar(message)
+                } else {
+                    None
+                };
+                let reply_offset = if message.referenced.is_some() || command_bar.is_some() {
                     22.
                 } else {
                     0.
@@ -4868,6 +5123,7 @@ impl Root {
                 row.pt(px(17.))
                     .child(
                         body.children(preview)
+                            .children(command_bar)
                             .child(
                                 div()
                                     .absolute()
@@ -4909,16 +5165,29 @@ impl Root {
                                         ),
                                     )
                                     .child(
-                                        div()
-                                            .ml(px(8.))
-                                            .text_size(px(12.))
-                                            .line_height(px(22.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--channels-default"))
-                                            .child(header_time(
-                                                message.local_time(),
-                                                chrono::Local::now(),
-                                            )),
+                                        // `Timestamp` (module 776579): the long date opens after the pointer rests 750ms.
+                                        self.with_tip(
+                                            format!("message-time-{id}"),
+                                            Tip::body(
+                                                Body::Text(
+                                                    timestamps::full_time(message.local_time())
+                                                        .into(),
+                                                ),
+                                                Side::Top,
+                                            )
+                                            .after(timestamps::DELAY_MS),
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(22.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--channels-default"))
+                                                .child(header_time(
+                                                    message.local_time(),
+                                                    chrono::Local::now(),
+                                                )),
+                                            cx,
+                                        )
+                                        .ml(px(8.)),
                                     ),
                             )
                             .child(content),
@@ -5278,19 +5547,27 @@ impl Root {
                 }
             }))
             .children(emoji.map(|image| img(image).size(px(18.))));
-        let tool = |name: &'static str| {
-            div()
-                .id(name)
+        let tool = |name: &'static str, cx: &mut Context<Self>| {
+            self.header_stop(div().id(name), name, cx)
                 .size(px(32.))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .child(icon(name, 20., "--interactive-text-default"))
+                // `.buttonWrapper_hfM7yP:hover { color: var(--interactive-text-active) }` over `all .2s`.
+                .text_color(color("--interactive-text-default"))
+                .hover(|style| style.text_color(color("--interactive-text-active")))
+                .rule(motion::Rule::ComposerButton)
+                .child(
+                    svg()
+                        .path(format!("icons/{name}.svg"))
+                        .size(px(20.))
+                        .flex_none(),
+                )
         };
         // GIF opens the expression picker on its tab, from the same place as the emoji button.
-        let gif_button = tool("gif").on_click(cx.listener(move |this, _, window, cx| {
+        let gif_button = tool("gif", cx).on_click(cx.listener(move |this, _, window, cx| {
             let composer = this.tip_anchors.borrow().get("composer-box").copied();
             if let Some(bounds) = composer {
                 this.open_picker_tab(
@@ -5302,19 +5579,20 @@ impl Root {
             }
         }));
         let docked = self.voice_chat_docked();
-        let gift_button = tool("gift");
-        let sticker_button = tool("sticker").on_click(cx.listener(move |this, _, window, cx| {
-            let composer = this.tip_anchors.borrow().get("composer-box").copied();
-            if let Some(bounds) = composer {
-                this.open_picker_tab(
-                    picker::Tab::Stickers,
-                    gpui::point(bounds.left(), bounds.top() - px(9.)),
-                    window,
-                    cx,
-                );
-            }
-        }));
-        let apps_button = tool("apps").on_click(cx.listener(|this, _, window, cx| {
+        let gift_button = tool("gift", cx);
+        let sticker_button =
+            tool("sticker", cx).on_click(cx.listener(move |this, _, window, cx| {
+                let composer = this.tip_anchors.borrow().get("composer-box").copied();
+                if let Some(bounds) = composer {
+                    this.open_picker_tab(
+                        picker::Tab::Stickers,
+                        gpui::point(bounds.left(), bounds.top() - px(9.)),
+                        window,
+                        cx,
+                    );
+                }
+            }));
+        let apps_button = tool("apps", cx).on_click(cx.listener(|this, _, window, cx| {
             this.open_launcher(window, cx);
         }));
         // The form overlaps the list by 16px, as the official layout does.
@@ -5360,7 +5638,7 @@ impl Root {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
                                     )
-                                    .child(tool("attach")),
+                                    .child(tool("attach", cx)),
                             )
                             .child(
                                 div()
@@ -5717,6 +5995,24 @@ fn avatar_source(user: &User) -> (String, String) {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "capture")]
+        crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The motion clock for this frame; reduced motion as module 775602 decides it.
+        motion::begin_frame(motion::decide_reduced(
+            self.pref_on("sync_reduced_motion", true),
+            self.pref_on("reduced_motion", false),
+            motion::cached_system_preference(),
+        ));
+        motion::set_window_active(window.is_window_active());
+        self.focus_new_menu(window, cx);
+        self.focus_new_dialog(window, cx);
+        let focused = window.focused(cx);
+        let top = self.list.logical_scroll_top();
+        self.keys.stops.begin_frame(
+            focused.as_ref(),
+            top.item_ix + usize::from(top.offset_in_item > px(0.)),
+        );
+        self.sync_focus(window, cx);
         self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
         self.profile_effects_sweep(window, cx);
@@ -5735,7 +6031,7 @@ impl Render for Root {
         self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
         if changed(&mut self.prepared.badge, self.data_revision) {
-            self.refresh_notification_badge();
+            self.refresh_notification_badge_soon(cx);
         }
         self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
@@ -5877,6 +6173,11 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.screening.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.discover_escape() {
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -6031,6 +6332,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if this.keyboard_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.composer_key(keys, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -6147,12 +6452,17 @@ impl Render for Root {
                 } else if event.keystroke.key == "escape" && this.profile_editor.is_some() {
                     this.profile_editor_escape(cx);
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.sticker_popout.is_some() {
+                    this.close_sticker_popout(cx);
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.profile.is_some() {
                     this.profile = None;
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.settings.is_some() {
                     this.close_settings(cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.escape_chain(window, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -6170,6 +6480,7 @@ impl Render for Root {
             // Capture runs before the text under the pointer starts its own selection.
             .capture_any_mouse_down(cx.listener(|this, _, window, _| {
                 this.selection.borrow_mut().clear();
+                this.keys.pointer_used();
                 this.vv.row_focus = false;
                 window.refresh();
             }))
@@ -6240,9 +6551,12 @@ impl Render for Root {
             .children(self.security_actions_select(cx))
             .children(self.inventory_popout_layer(window, cx))
             .children(self.profile_layer(window, cx))
+            .children(self.sticker_popout_layer(cx))
             .children(self.shop_modal(window, cx))
+            .children(self.discover_layers(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
+            .child(motion::driver())
             .child(self.titlebar(cx))
             .child({
                 let rail = self.rail(cx).into_any_element();
@@ -6316,6 +6630,7 @@ impl Render for Root {
                                                         .relative()
                                                         .flex_1()
                                                         .min_h(px(0.))
+                                                        .child(self.messages_entry(cx))
                                                         .child(rows)
                                                         .children(self.new_messages_bar(cx)),
                                                 )
@@ -6408,6 +6723,7 @@ impl Render for Root {
             .children(self.inventory_about_layer(cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
+            .children(self.keyboard_help_modal(window, cx))
             .children(self.activity_shelf_layer(window, cx))
             .children(self.activity_dialog_layer(cx))
             .children(self.update_dialog_layer(cx))

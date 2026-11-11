@@ -1,6 +1,7 @@
 //! Member channel browser: 624186, 406997, 543465 and 816662.
 mod preview;
 use super::{Root, color, editor_style, icon};
+use crate::ui::motion::Transitions as _;
 use crate::{
     editor::{Editor, EditorEvent},
     net::Request,
@@ -1063,6 +1064,7 @@ impl Root {
                             } else {
                                 "--input-border-default"
                             }))
+                            .rule(crate::ui::motion::Rule::TextField)
                             .rounded(px(8.))
                             .bg(color("--input-background-default"))
                             .pl(px(5. - border))

@@ -1,6 +1,7 @@
 //! Member activity hover details and replies (289287, 428249, 231188).
 
 use super::{Root, color, editor_style, icon, picker};
+use crate::ui::motion::Transitions as _;
 use crate::{
     editor::{Editor, EditorEvent},
     net::Request,
@@ -942,6 +943,7 @@ impl Root {
                     } else {
                         "--input-border-default"
                     }))
+                    .rule(crate::ui::motion::Rule::TextField)
                     .bg(color("--input-background-default"))
                     .pl(px(15.))
                     .pr(px(12.))

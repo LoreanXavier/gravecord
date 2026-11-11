@@ -45,6 +45,21 @@ impl Root {
         )
     }
 
+    /// Whether `presence_line` has a line for this person, without building it (the member list needs the row's
+    /// height, which depends on it). The conditions are those `presence_line_with` returns `None` on.
+    pub(super) fn has_presence_line(&self, user: &User, guild: Option<Id>) -> bool {
+        if self.is_blocked(user.id) || self.stores.is_ignored(user.id) {
+            return false;
+        }
+        let Some(presence) = self.stores.presence.get(user.id, guild) else {
+            return false;
+        };
+        if matches!(presence.status.as_str(), "offline" | "invisible") {
+            return false;
+        }
+        presence.custom().is_some() || !presence.visible_activities().is_empty()
+    }
+
     /// The same line at another line height and colour: the user panel draws it 13px high in its own text colour
     /// (`activityStatusText` under `panels_pog62O`).
     pub(super) fn presence_line_with(

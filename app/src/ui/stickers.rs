@@ -10,6 +10,7 @@ use super::{Root, color, editor_style};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::Id;
 use dc_state::stickers::{
     Category, CategoryInputs, CategoryKind, Format, SendContext, Sendability, Sticker,
@@ -23,7 +24,7 @@ use std::collections::HashSet;
 
 /// `GET /sticker-packs?locale=`, module 514983.
 pub(super) const PACKS_KEY: &str = "sticker-packs";
-const PACKS_ROUTE: &str = "/sticker-packs?locale=en-US";
+pub(super) const PACKS_ROUTE: &str = "/sticker-packs?locale=en-US";
 const COLUMNS: usize = 4;
 const CELL: f32 = 98.;
 const ROW_GAP: f32 = 12.;
@@ -1374,6 +1375,7 @@ impl Root {
                 } else {
                     color("--input-border-default")
                 })
+                .rule(crate::ui::motion::Rule::TextField)
                 .bg(color("--input-background-default"))
                 .pl(px(4.))
                 .flex()
@@ -1506,24 +1508,26 @@ impl Root {
                 .flex()
                 .flex_wrap()
                 .gap(px(4.))
-                .children(stickers.iter().map(|(id, _, format_type)| {
-                    let picture = self.sticker_art(
-                        *id,
-                        Format::from_wire(*format_type),
-                        MESSAGE_STICKER,
-                        interacting,
-                        false,
-                        cx,
-                    );
-                    div()
-                        .id(SharedString::from(format!("message-sticker-{id}")))
-                        .size(px(MESSAGE_STICKER))
-                        .flex_none()
-                        .cursor_pointer()
-                        .children(picture.map(|picture| picture.size(px(MESSAGE_STICKER))))
+                .children(stickers.iter().map(|(id, name, format_type)| {
+                    self.sticker_target(*id, name, *format_type, interacting, MESSAGE_STICKER, cx)
                 }))
                 .into_any_element(),
         )
+    }
+
+    /// The picker's rail jumps to a pack's section (the "View More Stickers" button of the sticker popout).
+    pub(super) fn show_sticker_pack(&mut self, pack: Id, cx: &mut Context<Self>) {
+        let index = self.sticker_ui.picker.as_ref().and_then(|picker| {
+            picker.sections.iter().position(|section| {
+                section
+                    .category
+                    .as_ref()
+                    .is_some_and(|category| category.id == pack.to_string())
+            })
+        });
+        if let Some(index) = index {
+            self.jump_to_sticker_section(index, cx);
+        }
     }
 }
 

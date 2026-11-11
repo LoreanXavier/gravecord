@@ -9,6 +9,7 @@ use super::{Root, avatar_source, color, editor_style, status_dot};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Transitions as _;
 use dc_state::frecency::{Frecency, Kind, Usage};
 use dc_state::{ChannelKind, Id, Message};
 use gpui::{
@@ -637,6 +638,7 @@ impl Root {
                         } else {
                             color("--input-border-default")
                         })
+                        .rule(crate::ui::motion::Rule::TextField)
                         .bg(color("--input-background-default"))
                         .pl(px(4.))
                         .flex()
