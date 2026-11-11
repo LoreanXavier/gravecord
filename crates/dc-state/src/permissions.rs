@@ -12,6 +12,7 @@ pub const BAN_MEMBERS: u64 = 1 << 2;
 pub const ADMINISTRATOR: u64 = 1 << 3;
 pub const MANAGE_CHANNELS: u64 = 1 << 4;
 pub const MANAGE_GUILD: u64 = 1 << 5;
+pub const MANAGE_WEBHOOKS: u64 = 1 << 29;
 pub const VIEW_CHANNEL: u64 = 1 << 10;
 pub const SEND_MESSAGES: u64 = 1 << 11;
 /// `ATTACH_FILES` (module constants `xBc`, 32768).
@@ -29,6 +30,10 @@ pub const MODERATE_MEMBERS: u64 = 1 << 40;
 pub const CREATE_GUILD_EXPRESSIONS: u64 = 1 << 43;
 pub const USE_EXTERNAL_SOUNDS: u64 = 1 << 45;
 pub const BYPASS_SLOWMODE: u64 = 1 << 52;
+/// `SET_VOICE_CHANNEL_STATUS` (modules 818348 and 375389, bit 48).
+pub const SET_VOICE_CHANNEL_STATUS: u64 = 1 << 48;
+/// `REQUEST_TO_SPEAK` (module 818348, bit 32).
+pub const REQUEST_TO_SPEAK: u64 = 1 << 32;
 
 /// Every bit: what the owner and administrators hold (`R`).
 /// `xBc.CONNECT`, `xBc.MOVE_MEMBERS` (module 375389).

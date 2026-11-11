@@ -37,7 +37,8 @@ impl Root {
                     channels.join(", ")
                 )
             }
-            ["community", step] => self.script_community(FIXTURE_GUILD, step),
+            // The fixture guild is a shared reference: Community stays off, so the wizard's own steps are refused.
+            ["community", _] => "refused: the fixture guild keeps its settings".to_owned(),
             // `ch rest <GET|PATCH|DELETE> <route> [json]`: only the allow rule's routes (`rest_allowed`).
             ["rest", method, route, body @ ..] => {
                 if !rest_allowed(method, route) {
@@ -70,21 +71,8 @@ impl Root {
                 None => "no answer yet".to_owned(),
                 Some(answer) => summarise(answer),
             },
-            ["create", kind, name @ ..] => {
-                let kind = match *kind {
-                    "announcement" => 5,
-                    "stage" => 13,
-                    _ => return "usage: ch create <announcement|stage> <name>".to_owned(),
-                };
-                let name = name.join("-");
-                let _ = self.requests.send(Request::Rest {
-                    key: Some("ch-create".to_owned()),
-                    method: reqwest::Method::POST,
-                    route: format!("/guilds/{FIXTURE_GUILD}/channels"),
-                    body: Some(json!({"name": name, "type": kind})),
-                });
-                format!("create request sent: type {kind} {name}")
-            }
+            // No channel is ever made in the fixture guild: announcement and Stage channels come from `ch inject`.
+            ["create", ..] => "refused: the fixture guild keeps its channels".to_owned(),
             ["post", channel, text @ ..] => {
                 let Ok(channel) = channel.parse::<Id>() else {
                     return "bad channel id".to_owned();
@@ -106,6 +94,81 @@ impl Root {
                 });
                 "post request sent".to_owned()
             }
+            // `ch stats <channel> <guilds_following> <users_seen>`: the follower numbers a publish confirm reads.
+            ["stats", channel, guilds, seen] => {
+                let (Ok(channel), Ok(guilds), Ok(seen)) = (
+                    channel.parse::<Id>(),
+                    guilds.parse::<u64>(),
+                    seen.parse::<u64>(),
+                ) else {
+                    return "usage: ch stats <channel> <guilds> <seen>".to_owned();
+                };
+                self.follower_stats.insert(
+                    channel,
+                    super::announcements::FollowerStats {
+                        guilds_following: Some(guilds),
+                        users_seen: Some(seen),
+                    },
+                );
+                "stats set".to_owned()
+            }
+            // `ch msg <channel> <id> <kind> <flags> <own|other> [ref_guild] <text...>`: a message that exists only in
+            // this client (a `MESSAGE_CREATE` fed to the stores); `other` is a webhook, and with a reference guild
+            // the message points at a message of that server.
+            ["msg", channel, message, kind, flags, who, rest @ ..] => {
+                let (Ok(channel), Ok(message), Ok(kind), Ok(flags)) = (
+                    channel.parse::<Id>(),
+                    message.parse::<Id>(),
+                    kind.parse::<u64>(),
+                    flags.parse::<u64>(),
+                ) else {
+                    return "usage: ch msg <channel> <id> <kind> <flags> <own|other> [ref_guild] <text>"
+                        .to_owned();
+                };
+                let author = match (*who, self.stores.current_user.as_ref()) {
+                    ("own", Some(me)) => json!({"id": me.id.to_string(), "username": me.username}),
+                    _ => {
+                        json!({"id": "1999000000000000777", "username": "Announcements", "bot": true})
+                    }
+                };
+                let (reference, text) = match rest.split_first() {
+                    Some((first, tail)) if first.parse::<Id>().is_ok() && !tail.is_empty() => (
+                        Some(json!({
+                            "guild_id": first,
+                            "channel_id": "1999000000000000555",
+                            "message_id": "1999000000000000556",
+                        })),
+                        tail.join(" "),
+                    ),
+                    _ => (None, rest.join(" ")),
+                };
+                let mut data = json!({
+                    "id": message.to_string(),
+                    "channel_id": channel.to_string(),
+                    "content": text,
+                    "author": author,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "type": kind,
+                    "flags": flags,
+                    "mentions": [],
+                    "attachments": [],
+                    "embeds": [],
+                });
+                if let Some(reference) = reference {
+                    data["message_reference"] = reference;
+                    data["webhook_id"] = json!("1999000000000000777");
+                }
+                self.stores.dispatch("MESSAGE_CREATE", &data);
+                self.data_revision += 1;
+                self.rebuild_rows();
+                "message injected".to_owned()
+            }
+            // `ch blocker <on|off>`: shows the Follow bar as an account without Send Messages would see it.
+            ["blocker", state] => {
+                self.follow_blocker_forced = *state == "on";
+                self.data_revision += 1;
+                format!("follow bar forced {state}")
+            }
             ["inject", event, json @ ..] => match serde_json::from_str::<Value>(&json.join(" ")) {
                 Ok(data) => {
                     self.stores.dispatch(event, &data);
@@ -114,7 +177,22 @@ impl Root {
                 }
                 Err(error) => format!("bad json: {error}"),
             },
-            _ => "usage: ch features | create | post | inject".to_owned(),
+            // `ch webhooks <json array>`: the open server's webhook list as `GET /guilds/{id}/webhooks` would answer
+            // (memory only; no webhook is made on the server).
+            ["webhooks", json @ ..] => {
+                let (Some(guild), Ok(list)) =
+                    (self.guild, serde_json::from_str::<Value>(&json.join(" ")))
+                else {
+                    return "needs an open server and a json array".to_owned();
+                };
+                self.fetched.insert(
+                    format!("{}{guild}", super::server_settings_pages::WEBHOOKS_PREFIX),
+                    list,
+                );
+                self.data_revision += 1;
+                "webhooks set".to_owned()
+            }
+            _ => "usage: ch features | create | post | inject | webhooks".to_owned(),
         }
     }
 }
@@ -133,10 +211,10 @@ fn rest_allowed(method: &str, route: &str) -> bool {
         || path
             .strip_prefix(&guild)
             .is_some_and(|rest| rest.starts_with('/'));
-    let rules = path == format!("/channels/{RULES_CHANNEL}");
+    // Reads only: the fixture guild's settings and structure are never written from the harness.
+    let _ = RULES_CHANNEL;
     match method {
-        "GET" | "PATCH" => in_guild || (rules && method == "PATCH"),
-        "DELETE" => rules,
+        "GET" => in_guild,
         _ => false,
     }
 }
@@ -182,25 +260,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_fixture_guild_and_the_rules_channel_are_reachable() {
+    fn only_reads_under_the_fixture_guild_are_reachable() {
         let guild = format!("/guilds/{FIXTURE_GUILD}");
         assert!(rest_allowed("GET", &format!("{guild}/audit-logs?limit=50")));
-        assert!(rest_allowed("PATCH", &guild));
-        assert!(rest_allowed(
+        // No write of any kind, not another guild, not a prefix lookalike.
+        assert!(!rest_allowed("PATCH", &guild));
+        assert!(!rest_allowed(
             "PATCH",
             &format!("{guild}/roles/{FIXTURE_GUILD}")
         ));
-        assert!(rest_allowed(
+        assert!(!rest_allowed(
             "DELETE",
             &format!("/channels/{RULES_CHANNEL}")
         ));
-        // Not the guild's delete, not another guild, not another channel, not a prefix lookalike.
         assert!(!rest_allowed("DELETE", &guild));
         assert!(!rest_allowed("GET", "/guilds/1554855651514122281"));
-        assert!(!rest_allowed("DELETE", "/channels/1568692565136375900"));
         assert!(!rest_allowed("GET", &format!("{guild}9")));
         assert!(!rest_allowed(
-            "PATCH",
+            "GET",
             &format!("{guild}/../1554855651514122281")
         ));
         assert!(!rest_allowed("POST", &guild));

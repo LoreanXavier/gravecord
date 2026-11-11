@@ -2236,50 +2236,6 @@ impl Root {
     }
 }
 
-#[cfg(feature = "capture")]
-impl Root {
-    /// The harness's `ch community role|enable` for the fixture guild: the wizard's two requests, one per step. The
-    /// role request takes the risky permissions off `@everyone` (only sent when any are on); the guild request is
-    /// `onComplete`'s PATCH with the rules channel made by the server and every safety level raised.
-    pub(crate) fn script_community(&mut self, guild: Id, step: &str) -> String {
-        let features = self
-            .stores
-            .guild(guild)
-            .map(|known| known.features.clone())
-            .unwrap_or_default();
-        match step {
-            "role" => {
-                let everyone = self
-                    .stores
-                    .guild(guild)
-                    .and_then(|known| known.role_permissions.get(&guild).copied())
-                    .unwrap_or(0);
-                if everyone & risky_mask() == 0 {
-                    return "@everyone holds no risky permission".to_owned();
-                }
-                let _ = self.requests.send(Request::Rest {
-                    key: Some("ch-community-role".to_owned()),
-                    method: reqwest::Method::PATCH,
-                    route: format!("/guilds/{guild}/roles/{guild}"),
-                    body: Some(json!({ "permissions": (everyone & !risky_mask()).to_string() })),
-                });
-                "role request sent".to_owned()
-            }
-            "enable" => {
-                let body = enable_body(&features, Some(CREATE_CHANNEL), None, false, false, false);
-                let _ = self.requests.send(Request::Rest {
-                    key: Some("ch-community-enable".to_owned()),
-                    method: reqwest::Method::PATCH,
-                    route: format!("/guilds/{guild}"),
-                    body: Some(body),
-                });
-                "enable request sent".to_owned()
-            }
-            _ => "usage: ch community role|enable".to_owned(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

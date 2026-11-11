@@ -36,6 +36,17 @@ pub(super) enum AppTag {
     App { verified: bool },
     /// The author of a forum post, on their own post: `OP`.
     OriginalPoster,
+    /// A published announcement as it arrives in a following server (`isCrosspost`, module 943667): `SERVER`.
+    Server,
+}
+
+/// Module 943667: a plain message flagged `IS_CROSSPOST` that references another message and is not a forward.
+pub(super) fn is_crosspost(message: &Message) -> bool {
+    const IS_CROSSPOST: u64 = 1 << 1;
+    message.kind == 0
+        && message.flags & IS_CROSSPOST == IS_CROSSPOST
+        && message.forwarded.is_none()
+        && (message.reference_id.is_some() || message.reference_guild_id.is_some())
 }
 
 /// `isVerifiedBot`: `UserFlags.VERIFIED_BOT`.
@@ -231,7 +242,13 @@ impl Root {
                         matches!(parent.kind, dc_state::ChannelKind::Other(15 | 16))
                     })
         });
-        if let Some(kind) = app_tag(author.bot, author.flags | author.public_flags, forum_owner) {
+        // Module 812299 `k`: a crossposted message is `SERVER` before a bot is `BOT`.
+        let kind = if is_crosspost(message) {
+            Some(AppTag::Server)
+        } else {
+            app_tag(author.bot, author.flags | author.public_flags, forum_owner)
+        };
+        if let Some(kind) = kind {
             chips.push(self.app_tag_chip(kind, id, cx));
         }
         chips
@@ -276,8 +293,12 @@ impl Root {
                     .text_size(px(12.8))
                     .line_height(px(15.))
                     .font_weight(FontWeight(600.))
-                    // `9RNkeF` and `fyE8sH`.
-                    .child(if op { "OP" } else { "APP" }),
+                    // `9RNkeF`, `fyE8sH` and `PuJGuM`.
+                    .child(match kind {
+                        AppTag::OriginalPoster => "OP",
+                        AppTag::Server => "SERVER",
+                        AppTag::App { .. } => "APP",
+                    }),
             );
         if op {
             // `uN6Emt`.

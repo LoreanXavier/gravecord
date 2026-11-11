@@ -99,6 +99,7 @@ mod tests {
             pinned: false,
             reference_id: None,
             reference_channel_id: None,
+            reference_guild_id: None,
             sticker_items: Vec::new(),
             extra: Default::default(),
         }

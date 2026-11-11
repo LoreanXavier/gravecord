@@ -39,24 +39,6 @@ impl Call {
     }
 }
 
-/// `linkBottom_TNyK-N`: under the channel this client is in, "Set a channel status" with a pencil, 12/16 medium.
-pub(super) fn status_line() -> AnyElement {
-    div()
-        .flex_none()
-        .h(px(16.))
-        .pl(px(28.))
-        .flex()
-        .items_center()
-        .gap(px(4.))
-        .text_size(px(12.))
-        .line_height(px(16.))
-        .font_weight(FontWeight(500.))
-        .text_color(color("--text-muted"))
-        .child("Set a channel status")
-        .child(super::icon("channel_status_pencil", 12., "--text-muted"))
-        .into_any_element()
-}
-
 /// The colour of a stream source without an icon (module 118277): one of six, chosen by the name's hash.
 fn source_color(name: &str) -> u32 {
     const COLORS: [u32; 6] = [1752220, 3066993, 3447003, 0x9b59b6, 0xe91e63, 0xf1c40f];
