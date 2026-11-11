@@ -93,6 +93,43 @@ impl Core {
     }
 }
 
+/// Where a recording's 20 ms frames come from: the processed microphone, or a script in tests.
+trait FrameSource {
+    fn next_frame(&mut self) -> Option<crate::Frame>;
+    fn failed(&self) -> bool;
+}
+
+impl FrameSource for Microphone {
+    fn next_frame(&mut self) -> Option<crate::Frame> {
+        self.next()
+    }
+
+    fn failed(&self) -> bool {
+        Microphone::failed(self)
+    }
+}
+
+/// The recording thread: every frame the source delivers goes through `Core::push`, the same call the synthetic
+/// source uses; a source that fails ends the recording with the reason.
+fn pump<S: FrameSource>(core: &Mutex<Core>, stop: &AtomicBool, source: &mut S) {
+    while !stop.load(Ordering::Acquire) {
+        match source.next_frame() {
+            Some(frame) => {
+                if let Ok(mut core) = core.lock() {
+                    core.push(&frame);
+                }
+            }
+            None if source.failed() => {
+                if let Ok(mut core) = core.lock() {
+                    core.failure = Some("The microphone stopped".to_owned());
+                }
+                break;
+            }
+            None => std::thread::sleep(Duration::from_millis(4)),
+        }
+    }
+}
+
 enum Feed {
     Microphone,
     /// Driven by [`Recorder::advance_synthetic`].
@@ -110,32 +147,21 @@ pub struct Recorder {
 impl Recorder {
     /// Opens the microphone chosen in Voice & Video (or the default one) and starts recording.
     pub fn start_microphone() -> Result<Self, &'static str> {
+        let recorder = Self::start_source(Microphone::open()?)?;
+        info!("voice message recording started on the microphone");
+        Ok(recorder)
+    }
+
+    /// Records from any frame source on its own thread. The microphone and the tests' scripted source both come
+    /// through here, so what a real recording encodes is what the tests encode.
+    fn start_source<S: FrameSource + Send + 'static>(mut source: S) -> Result<Self, &'static str> {
         let core = Arc::new(Mutex::new(Core::new()?));
-        let mut microphone = Microphone::open()?;
         let stop = Arc::new(AtomicBool::new(false));
         let (worker_core, worker_stop) = (core.clone(), stop.clone());
         let thread = std::thread::Builder::new()
             .name("dc-voice-recorder".into())
-            .spawn(move || {
-                while !worker_stop.load(Ordering::Acquire) {
-                    match microphone.next() {
-                        Some(frame) => {
-                            if let Ok(mut core) = worker_core.lock() {
-                                core.push(&frame);
-                            }
-                        }
-                        None if microphone.failed() => {
-                            if let Ok(mut core) = worker_core.lock() {
-                                core.failure = Some("The microphone stopped".to_owned());
-                            }
-                            break;
-                        }
-                        None => std::thread::sleep(Duration::from_millis(4)),
-                    }
-                }
-            })
+            .spawn(move || pump(&worker_core, &worker_stop, &mut source))
             .map_err(|_| "Could not start the recorder")?;
-        info!("voice message recording started on the microphone");
         Ok(Self {
             core,
             stop,
@@ -245,6 +271,70 @@ pub fn synthetic_frame(index: u64) -> [f32; FRAME_SAMPLES] {
 mod tests {
     use super::*;
     use crate::ogg_opus;
+
+    #[test]
+    fn a_captured_source_feeds_the_same_encoder_as_the_synthetic_one() {
+        /// Delivers `total` frames of the synthetic voice, then reports no more.
+        struct Scripted {
+            next: u64,
+            total: u64,
+        }
+        impl FrameSource for Scripted {
+            fn next_frame(&mut self) -> Option<crate::Frame> {
+                if self.next >= self.total {
+                    return None;
+                }
+                let frame = synthetic_frame(self.next);
+                self.next += 1;
+                Some(frame)
+            }
+            fn failed(&self) -> bool {
+                false
+            }
+        }
+        let total = 300;
+        let captured = Recorder::start_source(Scripted { next: 0, total }).unwrap();
+        for _ in 0..500 {
+            if captured.elapsed_ms() >= total * 20 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(captured.elapsed_ms(), total * 20, "every frame arrived");
+        let captured = captured.stop().unwrap();
+        let synthetic = Recorder::start_synthetic().unwrap();
+        synthetic.advance_synthetic(total * 20);
+        let synthetic = synthetic.stop().unwrap();
+        assert_eq!(captured.file, synthetic.file, "the same Ogg Opus bytes");
+        assert_eq!(captured.waveform, synthetic.waveform);
+        assert_eq!(captured.levels, synthetic.levels);
+        assert!((captured.duration_secs - 6.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_source_that_fails_ends_the_recording_with_a_reason() {
+        struct Dies;
+        impl FrameSource for Dies {
+            fn next_frame(&mut self) -> Option<crate::Frame> {
+                None
+            }
+            fn failed(&self) -> bool {
+                true
+            }
+        }
+        let recorder = Recorder::start_source(Dies).unwrap();
+        for _ in 0..200 {
+            if recorder.failure().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            recorder.failure().as_deref(),
+            Some("The microphone stopped")
+        );
+        recorder.cancel();
+    }
 
     #[test]
     fn a_synthetic_recording_has_the_length_levels_and_file_a_message_needs() {

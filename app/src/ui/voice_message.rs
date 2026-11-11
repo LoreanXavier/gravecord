@@ -23,45 +23,50 @@ use tracing::info;
 
 /// A clip fetched for a message.
 #[derive(Clone)]
-enum Load {
+pub(super) enum Load {
     Loading,
     Ready(Arc<Clip>),
     Failed,
 }
 
-struct Drag {
+pub(super) struct Drag {
     /// Playing when the drag began: it carries on from the new place on release (module 383055 pauses while dragging).
     resume: bool,
 }
 
 #[derive(Default)]
-struct Pill {
+pub(super) struct Pill {
     /// Played once: the unplayed look (every bar lit) is over until the pill resets at the end.
-    played: bool,
+    pub(super) played: bool,
     /// Seconds into the message while it is not the one playing (`MEDIA_PLAYBACK_POSITION_UPDATE`).
-    cached: f64,
-    want_play: bool,
+    pub(super) cached: f64,
+    pub(super) want_play: bool,
     segments: Vec<Segment>,
-    drag: Option<Drag>,
-    wave: Bounds<Pixels>,
-    track: Bounds<Pixels>,
+    pub(super) drag: Option<Drag>,
+    pub(super) wave: Bounds<Pixels>,
+    pub(super) track: Bounds<Pixels>,
     /// The playback reached its end at this motion time; the pill resets 500 ms later.
-    ended_at: Option<f64>,
-    over: u8,
-    hide_at: Option<f64>,
+    pub(super) ended_at: Option<f64>,
+    pub(super) over: u8,
+    pub(super) hide_at: Option<f64>,
+    /// An audio attachment card: the pointer is over it (the metadata loads the first time), over its seek bar, and
+    /// the share of the bar the pointer was last at (the preview segment keeps its width when the pointer leaves).
+    pub(super) bar_over: bool,
+    pub(super) preview: f32,
+    pub(super) bar: Bounds<Pixels>,
 }
 
 /// Everything the pills share.
 pub(super) struct Hub {
     loads: Arc<Mutex<HashMap<String, Load>>>,
     requested: HashSet<String>,
-    pills: HashMap<String, Pill>,
+    pub(super) pills: HashMap<String, Pill>,
     /// Playback rate of voice messages, kept for all of them (`MEDIA_PLAYBACK_RATE_UPDATE`, type VOICE_MESSAGE).
     speed: f32,
     /// `MediaPlayerVolume`, 0 to 1, 1 by default (module 587481).
-    volume: f32,
-    muted: bool,
-    volume_drag: Option<String>,
+    pub(super) volume: f32,
+    pub(super) muted: bool,
+    pub(super) volume_drag: Option<String>,
     /// The answer of the last send, for the harness: the new message's id or the failure.
     #[cfg(feature = "capture")]
     last_send: Option<String>,
@@ -89,14 +94,14 @@ impl Hub {
         }
     }
 
-    fn load(&self, key: &str) -> Option<Load> {
+    pub(super) fn load(&self, key: &str) -> Option<Load> {
         self.loads
             .lock()
             .ok()
             .and_then(|loads| loads.get(key).cloned())
     }
 
-    fn request(&mut self, key: &str, url: &str) {
+    pub(super) fn request(&mut self, key: &str, url: &str) {
         if !self.requested.insert(key.to_owned()) {
             return;
         }
@@ -107,8 +112,15 @@ impl Hub {
         let _ = std::thread::Builder::new()
             .name("dc-voice-fetch".into())
             .spawn(move || {
+                // A message of the audio attachment kind decodes any file; a voice message is Ogg Opus.
                 let made = fetch(&url)
-                    .and_then(|bytes| Clip::from_ogg(&bytes).map_err(str::to_owned))
+                    .and_then(|bytes| {
+                        if key.starts_with(super::audio_attachment::KEY) {
+                            Clip::from_file(bytes).map_err(str::to_owned)
+                        } else {
+                            Clip::from_ogg(&bytes).map_err(str::to_owned)
+                        }
+                    })
                     .map_or(Load::Failed, |clip| Load::Ready(Arc::new(clip)));
                 if let Ok(mut loads) = loads.lock() {
                     loads.insert(key, made);
@@ -116,7 +128,7 @@ impl Hub {
             });
     }
 
-    fn pill(&mut self, key: &str) -> &mut Pill {
+    pub(super) fn pill(&mut self, key: &str) -> &mut Pill {
         self.pills.entry(key.to_owned()).or_default()
     }
 
@@ -127,7 +139,7 @@ impl Hub {
         engine.set_muted(self.muted);
     }
 
-    fn start_if_ready(&mut self, key: &str, duration: f64) {
+    pub(super) fn start_if_ready(&mut self, key: &str, duration: f64) {
         if !self.pills.get(key).is_some_and(|pill| pill.want_play) {
             return;
         }
@@ -153,7 +165,7 @@ impl Hub {
     }
 
     /// The play or pause button.
-    fn toggle(&mut self, key: &str, url: &str, duration: f64) {
+    pub(super) fn toggle(&mut self, key: &str, url: &str, duration: f64) {
         let status = voice_player::engine().status();
         if status.key.as_deref() == Some(key) && status.playing {
             voice_player::engine().pause();
@@ -166,7 +178,7 @@ impl Hub {
 
     /// Plays when `play` and not playing, pauses when not `play` and playing (a harness step, not a button).
     #[cfg(any(test, feature = "capture"))]
-    fn toggle_if(&mut self, key: &str, duration: f64, play: bool) {
+    pub(super) fn toggle_if(&mut self, key: &str, duration: f64, play: bool) {
         let status = voice_player::engine().status();
         let playing = status.key.as_deref() == Some(key) && status.playing;
         if play != playing {
@@ -175,7 +187,7 @@ impl Hub {
     }
 
     /// Moves the playhead to `fraction` of the message (module 408822 `d`).
-    fn seek(&mut self, key: &str, fraction: f64, duration: f64) {
+    pub(super) fn seek(&mut self, key: &str, fraction: f64, duration: f64) {
         let at = (fraction.clamp(0., 1.) * duration).min(duration);
         let status = voice_player::engine().status();
         let pill = self.pill(key);
@@ -187,7 +199,7 @@ impl Hub {
         }
     }
 
-    fn drag_start(&mut self, key: &str) {
+    pub(super) fn drag_start(&mut self, key: &str) {
         let status = voice_player::engine().status();
         let resume = status.key.as_deref() == Some(key) && status.playing;
         if resume {
@@ -196,7 +208,7 @@ impl Hub {
         self.pill(key).drag = Some(Drag { resume });
     }
 
-    fn drag_end(&mut self, key: &str, duration: f64) {
+    pub(super) fn drag_end(&mut self, key: &str, duration: f64) {
         let resume = self.pill(key).drag.take().is_some_and(|drag| drag.resume);
         if resume {
             self.pill(key).want_play = true;
@@ -210,14 +222,14 @@ impl Hub {
         info!(speed = self.speed, "voice message speed");
     }
 
-    fn set_volume(&mut self, volume: f32) {
+    pub(super) fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0., 1.);
         self.muted = false;
         voice_player::engine().set_volume(self.volume);
         voice_player::engine().set_muted(false);
     }
 
-    fn toggle_mute(&mut self) {
+    pub(super) fn toggle_mute(&mut self) {
         self.muted = !self.muted;
         voice_player::engine().set_muted(self.muted);
     }
@@ -282,7 +294,7 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn tnum() -> FontFeatures {
+pub(super) fn tnum() -> FontFeatures {
     FontFeatures(Arc::new(vec![("tnum".to_owned(), 1)]))
 }
 
@@ -297,16 +309,20 @@ fn shade(base: Rgba, by: f32) -> Rgba {
 }
 
 fn gradient(from: Rgba, at: f32, to: Rgba, end: f32) -> gpui::Background {
-    // The play button's `linear-gradient(151.11deg, a at%, b at%)`.
+    gradient_at(151.11, from, at, to, end)
+}
+
+/// The play button's `linear-gradient(<angle>deg, a at%, b at%)`.
+fn gradient_at(angle: f32, from: Rgba, at: f32, to: Rgba, end: f32) -> gpui::Background {
     gpui::linear_gradient(
-        151.11,
+        angle,
         gpui::linear_color_stop(from, at),
         gpui::linear_color_stop(to, end),
     )
 }
 
 /// `d` in module 408822: where the pointer is across the waveform, 0 to 1.
-fn fraction_of(x: Pixels, bounds: Bounds<Pixels>) -> f64 {
+pub(super) fn fraction_of(x: Pixels, bounds: Bounds<Pixels>) -> f64 {
     let width = f64::from(bounds.size.width);
     if width <= 0. {
         return 0.;
@@ -315,7 +331,7 @@ fn fraction_of(x: Pixels, bounds: Bounds<Pixels>) -> f64 {
 }
 
 /// Where the pointer is along the volume rail, 0 at the bottom, 1 at the top.
-fn position_of(y: Pixels, track: Bounds<Pixels>) -> f32 {
+pub(super) fn position_of(y: Pixels, track: Bounds<Pixels>) -> f32 {
     let height = f32::from(track.size.height);
     if height <= 0. {
         return 0.;
@@ -446,6 +462,28 @@ impl Root {
             let styled = if playing {
                 base.bg(color("--white"))
                     .active(|style| style.bg(color("--brand-360")))
+            } else if matches!(super::theme(), super::Theme::Light) {
+                // `.theme-light .container_seLrDE:not(.playing_seLrDE) .playButtonContainer_seLrDE` (and `:hover`,
+                // `:active`, which darkens by the 20% black layer the dark theme uses too).
+                base.bg(gradient(color("--brand-400"), 0., color("--brand-500"), 1.))
+                    .hover(|style| {
+                        style.bg(gradient_at(
+                            135.,
+                            color("--brand-360"),
+                            0.,
+                            color("--brand-400"),
+                            1.,
+                        ))
+                    })
+                    .active(|style| {
+                        style.bg(gradient_at(
+                            135.,
+                            shade(color("--brand-400"), 0.2),
+                            0.,
+                            shade(color("--brand-500"), 0.2),
+                            1.,
+                        ))
+                    })
             } else {
                 base.bg(gradient(
                     color("--brand-460"),
@@ -791,12 +829,19 @@ impl Root {
             .child(icon(glyph, 24., if hovered { hover_tone } else { tone }));
         let mut holder = div().relative().flex().flex_none().child(button);
         if open {
-            holder = holder.child(self.voice_slider(key, salt, position));
+            holder = holder.child(self.voice_slider(key, salt, position, 28., 4.));
         }
         holder.into_any_element()
     }
 
-    fn voice_slider(&self, key: &str, salt: usize, position: f32) -> AnyElement {
+    pub(super) fn voice_slider(
+        &self,
+        key: &str,
+        salt: usize,
+        position: f32,
+        bottom: f32,
+        left: f32,
+    ) -> AnyElement {
         let hub = self.voice_hub.clone();
         let (down_hub, down_key) = (hub.clone(), key.to_owned());
         let (paint_hub, paint_key) = (hub, key.to_owned());
@@ -806,8 +851,8 @@ impl Root {
         div()
             .id(("voice-slider", salt))
             .absolute()
-            .bottom(px(28.))
-            .left(px(4.))
+            .bottom(px(bottom))
+            .left(px(left))
             .w(px(14.))
             .h(px(88.))
             .rounded(px(8.))
@@ -924,6 +969,16 @@ impl Root {
                     hub.muted,
                 )
             }
+            ["theme", name] => {
+                let theme = match *name {
+                    "light" => super::Theme::Light,
+                    "dark" => super::Theme::Dark,
+                    "midnight" => super::Theme::Midnight,
+                    _ => super::Theme::Darker,
+                };
+                super::set_theme(theme);
+                format!("voice: theme {name}")
+            }
             ["rec", rest @ ..] => self.script_rec(rest, cx),
             ["send-fixture"] => self.voice_send_fixture(),
             ["sent"] => format!(
@@ -1033,6 +1088,24 @@ impl Root {
 
 #[cfg(feature = "capture")]
 impl Root {
+    /// `vmfwd`: the Forward modal on the newest voice message of the open channel (nothing is sent).
+    pub(crate) fn voice_forward_modal(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> String {
+        let Some(message) = self.channel.and_then(|channel| {
+            self.stores
+                .messages
+                .get(&channel)
+                .and_then(|list| list.iter().rev().find(|m| m.is_voice_message()).cloned())
+        }) else {
+            return "voice: no voice message in this channel".to_owned();
+        };
+        self.open_forward(message, window, cx);
+        "voice: forward modal open".to_owned()
+    }
+
     /// `vm demo [seconds] [save <path>]`: a message with a synthetic recording (the recorder's own output) is put
     /// into the open channel, in memory only; its clip is already loaded so nothing is fetched.
     fn voice_demo(&mut self, rest: &[&str]) -> String {
@@ -1108,6 +1181,37 @@ impl Root {
                 messages.push(answer);
             }
         }
+        // `forward`: a forward of it (`message_snapshots`), to see the copy inside the forward block.
+        if rest.contains(&"forward") {
+            let forward = serde_json::json!({
+                "id": (id + 3).to_string(),
+                "channel_id": channel.to_string(),
+                "type": 0,
+                "content": "",
+                "flags": 16384,
+                "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                "author": {"id": "901", "username": "grace"},
+                "message_reference": {"type": 1, "message_id": (id + 1).to_string(), "channel_id": channel.to_string()},
+                "message_snapshots": [{"message": {
+                    "content": "",
+                    "flags": dc_state::VOICE_MESSAGE_FLAG,
+                    "timestamp": value["timestamp"],
+                    "attachments": value["attachments"],
+                    "embeds": [],
+                }}],
+            });
+            if let Some(forward) = dc_state::Message::from_value(&forward) {
+                messages.push(forward);
+            }
+        }
+        // `pin`: the pins popout opens with it as the only pinned message.
+        if rest.contains(&"pin") {
+            self.fetched.insert(
+                format!("pins:{channel}"),
+                serde_json::json!({"items": [{"pinned_at": value["timestamp"], "message": value}], "has_more": false}),
+            );
+            self.pins_open = Some("pins");
+        }
         self.rebuild_rows();
         format!(
             "voice: demo {key} {:.2} s, {} bytes, {} waveform bytes",
@@ -1147,6 +1251,8 @@ pub(super) struct RecState {
     phase: RecPhase,
     shown: Vec<f32>,
     last_step: f64,
+    /// A new recording was asked for in another channel while this one is unsent: the discard modal is open.
+    pub(super) confirm: bool,
 }
 
 impl RecState {
@@ -1163,6 +1269,7 @@ impl RecState {
             phase: RecPhase::Idle,
             shown: Vec::new(),
             last_step: 0.,
+            confirm: false,
         }
     }
 
@@ -1199,6 +1306,203 @@ impl Root {
             != Some(0)
     }
 
+    /// The modal of module 841817 (`G`): `size: "sm"`, title `YeUur2`, a subtitle naming where the unsent message is
+    /// (`8o9Emp` group DM, `UlsYSN` DM, `hjBbhU` otherwise), a vertical action bar with `h7tN5I` (secondary, focused)
+    /// and `IQrVoF` (critical). Layout is the app's standard small stacked dialog; no official frame exists (it needs
+    /// a recording in progress), and the card naming the other server or conversation is not drawn.
+    pub(super) fn voice_discard_modal(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
+        use super::modal::{Spec, Tone, button, render_small_stacked};
+        if !self.voice_rec.borrow().confirm {
+            return None;
+        }
+        let held = self.voice_rec.borrow().channel?;
+        let dm = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == held);
+        let subtitle = match dm {
+            Some(dm) if dm.recipients.len() > 1 => {
+                "Starting a new recording will discard your unsent voice message in your Group DM."
+                    .to_owned()
+            }
+            Some(dm) => format!(
+                "Starting a new recording will discard your unsent voice message in your conversation with {}.",
+                self.stores
+                    .dm_recipient(dm)
+                    .map(|user| user.display_name().to_owned())
+                    .unwrap_or_default()
+            ),
+            None => format!(
+                "Starting a new recording will discard your unsent voice message in {}.",
+                self.stores
+                    .guilds
+                    .iter()
+                    .flat_map(|guild| &guild.channels)
+                    .find(|known| known.id == held)
+                    .map(|known| known.name.clone())
+                    .unwrap_or_default()
+            ),
+        };
+        // The card naming where the draft is (children of module 841817 `G`, shown when the draft is in another
+        // server or in a DM): `.destination__M7qrc` (48 px tall, 12 px gap, 8 px padding, `--radius-sm` 8 px,
+        // hover `--interactive-background-hover`), a 32 px picture, the name in `body-md/semibold` and a
+        // `body-xs/medium` `--text-muted` line (channel for a server, tag for a DM).
+        let here = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| {
+                guild
+                    .channels
+                    .iter()
+                    .any(|known| Some(known.id) == self.channel)
+            })
+            .map(|guild| guild.id);
+        let there = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == held));
+        let card = if dm.is_some() || there.map(|guild| guild.id) != here {
+            let (primary, secondary, picture) = match (dm, there) {
+                (Some(dm), _) => {
+                    let user = self.stores.dm_recipient(dm).cloned();
+                    (
+                        user.as_ref()
+                            .map(|user| user.display_name().to_owned())
+                            .unwrap_or_default(),
+                        user.as_ref()
+                            .map(|user| user.username.clone())
+                            .unwrap_or_default(),
+                        user.as_ref().and_then(|user| {
+                            self.images.get(&super::avatar_source(user).0).cloned()
+                        }),
+                    )
+                }
+                (None, Some(guild)) => (
+                    guild.name.clone(),
+                    guild
+                        .channels
+                        .iter()
+                        .find(|known| known.id == held)
+                        .map(|known| known.name.clone())
+                        .unwrap_or_default(),
+                    self.images.get(&format!("guild:{}", guild.id)).cloned(),
+                ),
+                _ => (String::new(), String::new(), None),
+            };
+            Some(
+                div()
+                    .id("voice-discard-card")
+                    .min_h(px(48.))
+                    .mx(px(-8.))
+                    .px(px(8.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.voice_rec.borrow_mut().confirm = false;
+                        if this
+                            .stores
+                            .private_channels
+                            .iter()
+                            .any(|known| known.id == held)
+                        {
+                            this.select_home(Some(held));
+                        } else {
+                            this.open_channel_mention(held, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-base-lower"))
+                            .when_some(picture, |this, picture| {
+                                this.child(gpui::img(picture).size(px(32.)))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(color("--text-default"))
+                                    .child(primary),
+                            )
+                            .when(!secondary.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(color("--text-muted"))
+                                        .child(secondary),
+                                )
+                            }),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        Some(render_small_stacked(
+            Spec {
+                id: "voice-discard-modal",
+                title: "You have an unsent voice message".into(),
+                subtitle: Some(div().child(subtitle).into_any_element()),
+                body: card,
+                buttons: vec![
+                    button(
+                        "voice-return",
+                        "Return to Unsent Voice Message",
+                        Tone::Secondary,
+                        move |this, _, cx| {
+                            this.voice_rec.borrow_mut().confirm = false;
+                            if this
+                                .stores
+                                .private_channels
+                                .iter()
+                                .any(|known| known.id == held)
+                            {
+                                this.select_home(Some(held));
+                            } else {
+                                this.open_channel_mention(held, cx);
+                            }
+                        },
+                    ),
+                    button(
+                        "voice-discard",
+                        "Discard Unsent Voice Message",
+                        Tone::Critical,
+                        |this, _, cx| {
+                            this.voice_rec.borrow_mut().confirm = false;
+                            this.voice_record_discard(cx);
+                            this.voice_record_start(cx);
+                        },
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.voice_rec.borrow_mut().confirm = false),
+            },
+            cx,
+        ))
+    }
+
     /// Alt+R: starts a recording, or sends the draft when one is waiting in this channel. Whether it took the key.
     pub(super) fn voice_record_shortcut(&mut self, cx: &mut gpui::Context<Self>) -> bool {
         let waiting = self
@@ -1219,6 +1523,12 @@ impl Root {
             return "voice: recording is not offered here".to_owned();
         }
         if !matches!(self.voice_rec.borrow().phase, RecPhase::Idle) {
+            // One recording at a time: asking in another channel opens the discard modal (module 841817 `G`).
+            if self.voice_rec.borrow().channel != Some(channel) {
+                self.voice_rec.borrow_mut().confirm = true;
+                cx.notify();
+                return "voice: unsent recording elsewhere, asking".to_owned();
+            }
             return "voice: a recording already exists".to_owned();
         }
         let started = if crate::storage::is_capture_run() {
@@ -1336,6 +1646,12 @@ impl Root {
                 format!("voice: recording experiment {}", words[0])
             }
             ["start"] => self.voice_record_start(cx),
+            // Opens the discard modal as if a recording had been asked for in another channel.
+            ["confirm"] => {
+                self.voice_rec.borrow_mut().confirm = true;
+                cx.notify();
+                "voice: discard modal open".to_owned()
+            }
             ["advance", ms] => {
                 if let RecPhase::Recording(recorder) = &self.voice_rec.borrow().phase {
                     recorder.advance_synthetic(ms.parse().unwrap_or(0));

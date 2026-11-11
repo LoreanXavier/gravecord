@@ -23,13 +23,13 @@
     {
       "id": "1570000000000000002",
       "filename": "voice-message.ogg",
-      "size": 9215,
+      "size": 22985,
       "url": "https://cdn.discordapp.com/attachments/1568692565136375900/1570000000000000002/voice-message.ogg?ex=0&is=0&hm=0&",
       "proxy_url": "https://media.discordapp.net/attachments/1568692565136375900/1570000000000000002/voice-message.ogg?ex=0&is=0&hm=0&",
       "content_type": "audio/ogg",
       "content_scan_version": 0,
-      "duration_secs": 2.4,
-      "waveform": "PEhabHh6cF9NQDxBTFZaVEdCUFZUS0E8QE1gcnx8cF5MPz8/PD5HWW+FkpM="
+      "duration_secs": 6.0065,
+      "waveform": "zdbc4OHg3NfNwq+Wayp1m7PEz9fc3t/e0oqCoqmLXjN3ma69yM3R09HNxryyoY91OyppiYZoc73IysvIxLyypI9tOjxykaa1v8bLzs7MyMF5YUxiMFCDoLPCzNPX2tnX08zBsZt1L2KRqrq/hEZz0tHW08zAsJlxJ22YsMHO1tzf4N7b1Mm5nyAFHWyVrb3I0dTX19XQ"
     }
   ]
 }

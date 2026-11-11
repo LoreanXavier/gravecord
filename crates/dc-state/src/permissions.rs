@@ -14,6 +14,8 @@ pub const MANAGE_CHANNELS: u64 = 1 << 4;
 pub const MANAGE_GUILD: u64 = 1 << 5;
 pub const VIEW_CHANNEL: u64 = 1 << 10;
 pub const SEND_MESSAGES: u64 = 1 << 11;
+/// `ATTACH_FILES` (module constants `xBc`, 32768).
+pub const ATTACH_FILES: u64 = 1 << 15;
 pub const MANAGE_MESSAGES: u64 = 1 << 13;
 pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
 pub const CHANGE_NICKNAME: u64 = 1 << 26;

@@ -5,7 +5,7 @@
 //! `design/dom/modals/forward*-darker-cozy.json`; the "Message forwarded!" toast in `toasts/forwarded`.
 
 use super::actions::FRECENCY_KEY;
-use super::{Root, avatar_source, color, editor_style, status_dot};
+use super::{Root, avatar_source, color, editor_style, icon, status_dot};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -355,6 +355,38 @@ impl Root {
         }
     }
 
+    /// Why the forwarded message cannot go to `destination`: `P7yvbm` for files without Attach Files, `quj4DY` for a
+    /// voice message without Send Voice Messages (module 969223, in that order).
+    fn forward_blocked(&self, destination: Destination) -> Option<&'static str> {
+        let Destination::Channel(channel) = destination else {
+            return None;
+        };
+        let message = self.forward.as_ref()?.message.as_ref()?;
+        let known = self
+            .stores
+            .guilds
+            .iter()
+            .flat_map(|guild| &guild.channels)
+            .find(|known| known.id == channel)?;
+        let files = !message.attachments.is_empty()
+            || message
+                .forwarded
+                .as_ref()
+                .is_some_and(|copy| !copy.attachments.is_empty());
+        if files && !self.can_in_channel(known, dc_state::permissions::ATTACH_FILES) {
+            return Some("Attachments are disabled in this channel.");
+        }
+        let voice = message.is_voice_message()
+            || message
+                .forwarded
+                .as_ref()
+                .is_some_and(|copy| copy.flags & dc_state::VOICE_MESSAGE_FLAG != 0);
+        if voice && !self.can_in_channel(known, dc_state::permissions::SEND_VOICE_MESSAGES) {
+            return Some("Voice messages are disabled in this channel.");
+        }
+        None
+    }
+
     fn destination_row(
         &self,
         destination: Destination,
@@ -454,18 +486,27 @@ impl Root {
                 )
             }
         };
+        // `getDestinationIsUnavailable` (module 969223): the row is `disabled_dhbHaH`, its picture and checkbox at half
+        // opacity, its name `--text-muted`, its detail line the reason, the cursor `not-allowed`.
+        let blocked = self.forward_blocked(destination);
+        let detail = blocked.map_or(detail, str::to_owned);
         div()
             .id(SharedString::from(format!("forward-row-{index}")))
             .h(px(48.))
             .ml(px(-8.))
             .px(px(8.))
             .rounded(px(8.))
-            .cursor_pointer()
-            .hover(|style| style.bg(color("--interactive-background-hover")))
+            .when(blocked.is_none(), |this| {
+                this.cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+            })
+            .when(blocked.is_some(), |this| this.cursor_not_allowed())
             .flex()
             .items_center()
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_destination(destination);
+                if this.forward_blocked(destination).is_none() {
+                    this.toggle_destination(destination);
+                }
                 cx.notify();
             }))
             .child(
@@ -475,7 +516,11 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(icon)
+                    .child(
+                        div()
+                            .when(blocked.is_some(), |this| this.opacity(0.5))
+                            .child(icon),
+                    )
                     .child(
                         div()
                             .flex()
@@ -485,7 +530,11 @@ impl Root {
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
+                                    .text_color(color(if blocked.is_some() {
+                                        "--text-muted"
+                                    } else {
+                                        "--text-strong"
+                                    }))
                                     .child(name),
                             )
                             .child(
@@ -501,6 +550,7 @@ impl Root {
                 div()
                     .ml(px(16.))
                     .size(px(20.))
+                    .when(blocked.is_some(), |this| this.opacity(0.5))
                     .rounded(px(4.))
                     .border_1()
                     .border_color(if selected {
@@ -569,6 +619,15 @@ impl Root {
                 None => div().into_any_element(),
             },
         };
+        let attached = forward
+            .message
+            .as_ref()
+            .map(|message| message.attachments.len())
+            .filter(|count| *count > 0);
+        let has_text = forward
+            .message
+            .as_ref()
+            .is_some_and(|message| !message.content.is_empty());
         let sharing = forward.profile.as_ref().map(|user| user.id);
         let send_label = if count <= 1 {
             "Send".to_owned()
@@ -737,7 +796,57 @@ impl Root {
                                 .rounded(px(2.))
                                 .bg(color("--border-subtle")),
                         )
-                        .child(if sharing.is_some() || forward.clip.is_some() {
+                        .child(if let Some(files) = attached {
+                            // `forwardPreview_N34jMW` (design/dom/voice-message/forward-modal-darker-cozy.json): 56px
+                            // high, 12px gap; `contentWrapper` (6px gap), `attachmentRow` (20px paperclip in
+                            // `--text-muted`, 500 weight 16/20 label) and a 56px `attachmentPreview` at the right
+                            // (`imageWrapperBackground`: rgba(0,0,0,.04), 8px corners). A file shows no picture.
+                            div()
+                                .h(px(56.))
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .when(has_text, |this| this.child(preview))
+                                        .child(
+                                            div()
+                                                .h(px(20.))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .text_color(color("--text-muted"))
+                                                .child(icon(
+                                                    "forward_attachment",
+                                                    20.,
+                                                    "--text-muted",
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(16.))
+                                                        .line_height(px(20.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .child(if files == 1 {
+                                                            "1 file".to_owned()
+                                                        } else {
+                                                            format!("{files} files")
+                                                        }),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .size(px(56.))
+                                        .flex_none()
+                                        .rounded(px(8.))
+                                        .bg(gpui::rgba(0x0000000a)),
+                                )
+                        } else if sharing.is_some() || forward.clip.is_some() {
                             div().child(preview)
                         } else {
                             div().h(px(22.)).pt(px(2.)).child(preview)

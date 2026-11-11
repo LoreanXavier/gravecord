@@ -46,6 +46,14 @@ impl Clip {
         })
     }
 
+    /// Any audio file (mp3, ogg, wav, flac, m4a): decoded whole, mixed down to mono at 48 kHz.
+    pub fn from_file(bytes: Vec<u8>) -> Result<Self, &'static str> {
+        let sound = crate::sound::decode_attachment(bytes)?;
+        Ok(Self {
+            samples: crate::sound::render(&sound, RATE as u32, 1, 1.0),
+        })
+    }
+
     pub fn from_samples(samples: Vec<f32>) -> Self {
         Self { samples }
     }

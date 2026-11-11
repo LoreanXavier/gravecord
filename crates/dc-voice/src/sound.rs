@@ -25,6 +25,8 @@ use tracing::debug;
 
 /// A sound file this long or longer is not a UI sound; decoding stops there.
 const MAX_SECONDS: usize = 30;
+/// An audio attachment is decoded up to this long (module 153440 plays any length; the clip is held in memory).
+const ATTACHMENT_MAX_SECONDS: usize = 600;
 
 /// `outputChannel` (module 257645).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,19 +58,26 @@ impl Decoded {
 pub fn decode_mp3(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
     let mut hint = Hint::new();
     hint.with_extension("mp3");
-    decode_with(bytes, &hint)
+    decode_with(bytes, &hint, MAX_SECONDS)
 }
 
 /// Decodes a sound file of any kind a server's soundboard can hold: the official client hands them to the browser's
 /// `decodeAudioData`, so a soundboard file is not always an mp3. The format is read from the file itself.
 pub fn decode_any(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
-    decode_with(bytes, &Hint::new())
+    decode_with(bytes, &Hint::new(), MAX_SECONDS)
+}
+
+/// A whole audio attachment for the message player: the same decoders, with the limit of a message's longest clip
+/// (ten minutes) instead of the UI sounds' 30 seconds.
+pub fn decode_attachment(bytes: Vec<u8>) -> Result<Decoded, &'static str> {
+    decode_with(bytes, &Hint::new(), ATTACHMENT_MAX_SECONDS)
 }
 
 /// Ogg Opus: symphonia reads the container but has no Opus decoder, so the packets go to libopus at 48 kHz.
 fn decode_opus(
     format: &mut Box<dyn symphonia::core::formats::FormatReader>,
     track_id: u32,
+    limit: usize,
 ) -> Result<Decoded, &'static str> {
     const CHANNELS: usize = 2;
     let mut decoder = opus2::Decoder::new(48_000, opus2::Channels::Stereo)
@@ -88,7 +97,7 @@ fn decode_opus(
         if let Ok(count) = decoder.decode_float(&packet.data, &mut frame, false) {
             samples.extend_from_slice(&frame[..count * CHANNELS]);
         }
-        if samples.len() > MAX_SECONDS * 48_000 * CHANNELS {
+        if samples.len() > limit * 48_000 * CHANNELS {
             break;
         }
     }
@@ -102,7 +111,7 @@ fn decode_opus(
     })
 }
 
-fn decode_with(bytes: Vec<u8>, hint: &Hint) -> Result<Decoded, &'static str> {
+fn decode_with(bytes: Vec<u8>, hint: &Hint, limit: usize) -> Result<Decoded, &'static str> {
     let first: Vec<u8> = bytes.iter().copied().take(4).collect();
     let source = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
     let probed = symphonia::default::get_probe()
@@ -124,7 +133,7 @@ fn decode_with(bytes: Vec<u8>, hint: &Hint) -> Result<Decoded, &'static str> {
         .ok_or("The file has no audio track")?;
     let track_id = track.id;
     if track.codec_params.codec == symphonia::core::codecs::CODEC_TYPE_OPUS {
-        return decode_opus(&mut format, track_id);
+        return decode_opus(&mut format, track_id, limit);
     }
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -153,7 +162,7 @@ fn decode_with(bytes: Vec<u8>, hint: &Hint) -> Result<Decoded, &'static str> {
             Err(DecodeError::DecodeError(_)) => continue,
             Err(_) => return Err("The mp3 file is damaged"),
         }
-        if channels > 0 && samples.len() > MAX_SECONDS * rate as usize * usize::from(channels) {
+        if channels > 0 && samples.len() > limit * rate as usize * usize::from(channels) {
             break;
         }
     }

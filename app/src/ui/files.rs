@@ -262,7 +262,8 @@ impl Root {
                 Kind::Image if self.pref_on("chat_inline_media_uploads", true) => None,
                 Kind::Image => Some(self.file_card(attachment, cx)),
                 Kind::Plaintext => Some(self.plaintext_card(attachment, cx)),
-                Kind::Audio | Kind::Other => Some(self.file_card(attachment, cx)),
+                Kind::Audio => Some(self.audio_card(message, attachment, cx)),
+                Kind::Other => Some(self.file_card(attachment, cx)),
             })
             .map(|card| div().flex().child(card).into_any_element())
             .collect();
