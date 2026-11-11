@@ -90,6 +90,14 @@ fn asset_url(activity: &Value, key: &str) -> Option<String> {
         "https://cdn.discordapp.com/app-assets/{app}/{asset}.png?size=160"
     ))
 }
+/// `connectionEntrypointUrl` of the application (module 724302): where linking an account starts.
+fn connection_url(application: &Value) -> Option<String> {
+    application["connection_entrypoint_url"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+}
+
 fn heading(activity: &Value) -> String {
     let kind = activity["type"].as_u64().unwrap_or(0);
     let base = match kind {
@@ -493,37 +501,74 @@ impl Root {
                             .children(buttons)
                             .into_any_element(),
                     );
-                } else if let Some(url) = application.and_then(steam_url) {
-                    actions = Some(
-                        div()
-                            .id(SharedString::from(format!(
-                                "activity-steam-{user}-{index}-{large}"
-                            )))
-                            .h(px(32.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--control-secondary-border-default"))
-                            .bg(color("--control-secondary-background-default"))
-                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(4.))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.follow_link(&url, "Get on Steam", cx)
-                            }))
-                            .child(icon("activity_steam", 16., "--text-strong"))
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(strong)
-                                    .child("Get on Steam"),
-                            )
-                            .into_any_element(),
-                    );
+                } else if application.and_then(steam_url).is_some()
+                    || application.and_then(connection_url).is_some()
+                {
+                    let mut stack = div().flex().flex_col().gap(px(8.));
+                    // 802880 `th`: Connect Account, when the application has a connection entry point and this
+                    // account has no linked account for it (the token fetch is not made: an unlinked account is
+                    // assumed, so the button shows).
+                    if let Some(url) = application.and_then(connection_url) {
+                        stack = stack.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "activity-connect-{user}-{index}-{large}"
+                                )))
+                                .h(px(32.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.follow_link(&url, "Connect Account", cx)
+                                }))
+                                .child(icon("activity_game", 24., "--text-strong"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(strong)
+                                        .child("Connect Account"),
+                                ),
+                        );
+                    }
+                    if let Some(url) = application.and_then(steam_url) {
+                        stack = stack.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "activity-steam-{user}-{index}-{large}"
+                                )))
+                                .h(px(32.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--control-secondary-border-default"))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.follow_link(&url, "Get on Steam", cx)
+                                }))
+                                .child(icon("activity_steam", 16., "--text-strong"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(strong)
+                                        .child("Get on Steam"),
+                                ),
+                        );
+                    }
+                    actions = Some(stack.into_any_element());
                 }
                 actions = actions.map(|actions| div().mt(px(4.)).child(actions).into_any_element());
                 if large {
@@ -542,11 +587,47 @@ impl Root {
                     .gap(px(8.))
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(strong)
-                            .child(heading(activity)),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(if large { 12. } else { 14. }))
+                                    .line_height(px(if large { 16. } else { 18. }))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(strong)
+                                    .child(heading(activity)),
+                            )
+                            .when(!large && !bot, |this| {
+                                // `headerContextMenu_Bu4Al8` 20 x 18 holding the 16px `contextMenu_Bu4Al8` button. Its
+                                // menu (285909) offers "View All Activity" in the profile popout; the click opens that.
+                                this.child(
+                                    div()
+                                        .id(SharedString::from(format!("activity-more-{user}")))
+                                        .w(px(20.))
+                                        .h(px(18.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.profile = None;
+                                            this.open_full_profile_tab(
+                                                user,
+                                                super::full_profile::Tab::Activity,
+                                                window,
+                                                cx,
+                                            );
+                                        }))
+                                        .child(icon(
+                                            "more_horizontal",
+                                            16.,
+                                            "--interactive-text-default",
+                                        )),
+                                )
+                            }),
                     )
                     .child(
                         div()

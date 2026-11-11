@@ -1,0 +1,8 @@
+{
+  "call-area": { "class": "callContainer_hbKzX7" },
+  "call-join-tray": { "class": "wrapper_9bvEB0" },
+  "call-join-button": { "class": "centerButton_K9Xq13" },
+  "activity-card": { "class": "card_Bu4Al8" },
+  "activity-header": { "class": "header_Bu4Al8" },
+  "activity-header-menu": { "class": "headerContextMenu_Bu4Al8" }
+}

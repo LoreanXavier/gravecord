@@ -29,8 +29,12 @@ pub fn ring_body(recipients: Option<&[Id]>, location: Option<&str>) -> Value {
 }
 
 /// Body of `POST /channels/<id>/call/stop-ringing`: `{recipients}` (module 387755 `stopRinging`).
-pub fn stop_ringing_body(recipients: &[Id]) -> Value {
-    json!({ "recipients": ids(recipients) })
+/// `body: {recipients: t}`: an absent `t` is dropped by `JSON.stringify`, leaving `{}`.
+pub fn stop_ringing_body(recipients: Option<&[Id]>) -> Value {
+    match recipients {
+        Some(list) => json!({ "recipients": ids(list) }),
+        None => json!({}),
+    }
 }
 
 /// Data of gateway op 13 `CALL_CONNECT` (`callConnect` in module 868).
@@ -48,6 +52,21 @@ pub fn ring_route(channel: Id) -> String {
 
 pub fn stop_ringing_route(channel: Id) -> String {
     format!("/channels/{channel}/call/stop-ringing")
+}
+
+const NOT_FRIEND_KEY: &str = "dm-call-ringable:";
+
+/// The key of the `GET /channels/{id}/call` that decides a call to someone who is not a friend.
+pub fn not_friend_key(channel: Id, video: bool, ring: bool) -> String {
+    format!("{NOT_FRIEND_KEY}{channel}:{}:{}", video as u8, ring as u8)
+}
+
+pub fn parse_not_friend_key(key: &str) -> Option<(Id, bool, bool)> {
+    let mut parts = key.strip_prefix(NOT_FRIEND_KEY)?.split(':');
+    let channel = parts.next()?.parse().ok()?;
+    let video = parts.next()? == "1";
+    let ring = parts.next()? == "1";
+    Some((channel, video, ring))
 }
 
 /// What the DM header shows for its two call buttons.
@@ -93,6 +112,83 @@ impl Root {
         }
     }
 
+    /// The header's voice and video call buttons (`lw` in module 289287, the same for a DM and a group DM).
+    pub(super) fn header_call_buttons(
+        &self,
+        channel: Id,
+        other: Option<Id>,
+        tool: &dyn Fn(&str) -> gpui::Div,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        use super::tooltip::{Side, Tip};
+        use gpui::{IntoElement, StatefulInteractiveElement, Styled};
+        let buttons = self.dm_call_buttons(channel, other);
+        let one = |id: &'static str,
+                   glyph: &str,
+                   video: bool,
+                   state: Option<(&'static str, bool)>,
+                   cx: &mut Context<Self>| {
+            state.map(|(tip, disabled)| {
+                let button = self.header_stop(
+                    self.with_tip(id, Tip::text(tip, Side::Bottom), tool(glyph), cx),
+                    id,
+                    cx,
+                );
+                if disabled {
+                    button.into_any_element()
+                } else {
+                    button
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                            this.tip = None;
+                            let shift = event.modifiers().shift;
+                            this.dm_call_clicked(channel, video, shift, cx);
+                        }))
+                        .into_any_element()
+                }
+            })
+        };
+        [
+            one("dm-call", "dm_call", false, buttons.voice, cx),
+            one("dm-video", "dm_video", true, buttons.video, cx),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Module 313998 (and 325909 `o`): a person's menu in a DM or group DM offers "Ring" when they are not in the
+    /// call and "Stop Ringing" while the call rings them. The person must be a friend, not this account, not a bot,
+    /// and the call must have participants. `Some(false)` is Ring, `Some(true)` is Stop Ringing.
+    pub(super) fn ring_row_for(&self, user: Id, guild: Option<Id>) -> Option<bool> {
+        if guild.is_some() {
+            return None;
+        }
+        let channel = self.channel?;
+        if !self
+            .stores
+            .private_channels
+            .iter()
+            .any(|dm| dm.id == channel)
+        {
+            return None;
+        }
+        let other = self.stores.users.get(&user)?;
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        if other.bot || Some(user) == me || self.stores.relationships.get(&user) != Some(&1) {
+            return None;
+        }
+        let people = self.dm_call_people(channel);
+        if people.is_empty() {
+            return None;
+        }
+        match people.iter().find(|person| person.user == user) {
+            None => Some(false),
+            Some(person) if person.ringing => Some(true),
+            Some(_) => None,
+        }
+    }
+
     /// `ring(channel, recipients, location)`: ring now when the call exists, otherwise queue the ring for its
     /// `CALL_CREATE`.
     pub(super) fn ring_call(
@@ -131,7 +227,12 @@ impl Root {
     }
 
     /// `stopRinging(channel, recipients)`.
-    pub(super) fn stop_ringing(&mut self, channel: Id, recipients: &[Id]) {
+    pub(super) fn stop_ringing(&mut self, channel: Id, recipients: Option<&[Id]>) {
+        info!("stopping a ring");
+        #[cfg(feature = "capture")]
+        self.dmc
+            .stops
+            .push(format!("{channel} {}", stop_ringing_body(recipients)));
         let _ = self.requests.send(Request::Rest {
             key: None,
             method: reqwest::Method::POST,
@@ -193,7 +294,102 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let active = self.stores.calls.is_call_active(channel, None);
-        self.start_call(channel, video, !active && !shift, cx);
+        let ring = !active && !shift;
+        // Module 387755 `call(channel, video, ring, otherUserId)`: for a DM with someone who is not a friend, ask
+        // `GET /channels/{id}/call` first. A blocked person: nothing happens.
+        let other = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|dm| dm.id == channel)
+            .and_then(|dm| self.stores.dm_recipient(dm))
+            .map(|user| user.id);
+        if let Some(user) = other
+            && self.stores.relationships.get(&user) != Some(&1)
+        {
+            if self.is_blocked(user) {
+                return;
+            }
+            let _ = self.requests.send(Request::Rest {
+                key: Some(not_friend_key(channel, video, ring)),
+                method: reqwest::Method::GET,
+                route: format!("/channels/{channel}/call"),
+                body: None,
+            });
+            self.dmc.asking = Some(user);
+            return;
+        }
+        self.start_call(channel, video, ring, cx);
+    }
+
+    /// The answer of `GET /channels/{id}/call`: a success selects the voice channel and rings only when the call is
+    /// `ringable`; a failure opens the "Start Call" prompt (My50nf, IdKo2z, PMsq/b, BddRzS).
+    pub(super) fn dm_call_ringable(&mut self, key: &str, body: &Value, cx: &mut Context<Self>) {
+        let Some((channel, video, ring)) = parse_not_friend_key(key) else {
+            return;
+        };
+        let asked = self.dmc.asking.take();
+        if body["ok"].as_bool() == Some(true) {
+            let ringable = body["body"]["ringable"].as_bool().unwrap_or(false);
+            self.start_call(channel, video, ring && ringable, cx);
+        } else if let Some(user) = asked {
+            self.dmc.not_friend = Some(user);
+        }
+        cx.notify();
+    }
+
+    /// The "Start Call" prompt for someone who is not a friend (module 387755).
+    pub(super) fn not_friend_modal(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement, ParentElement, div};
+        let user = self.dmc.not_friend?;
+        let name = self
+            .stores
+            .users
+            .get(&user)
+            .map(|known| known.username.clone())
+            .unwrap_or_default();
+        let prefix = "You need to be friends with ";
+        let text = gpui::StyledText::new(format!("{prefix}{name} to start a call"))
+            .with_highlights(Some((
+                prefix.len()..prefix.len() + name.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(gpui::FontWeight(600.)),
+                    ..Default::default()
+                },
+            )));
+        let spec = super::modal::Spec {
+            id: "not-friend-call-modal",
+            title: "Start Call".into(),
+            subtitle: Some(div().child(text).into_any_element()),
+            body: None,
+            buttons: vec![
+                super::modal::button(
+                    "not-friend-call-cancel",
+                    "Okay",
+                    super::modal::Tone::Secondary,
+                    |this, _, _| this.dmc.not_friend = None,
+                ),
+                super::modal::button(
+                    "not-friend-call-confirm",
+                    "Send Friend Request",
+                    super::modal::Tone::Primary,
+                    move |this, _, cx| {
+                        this.dmc.not_friend = None;
+                        this.set_relationship(user, Some(1), cx);
+                    },
+                ),
+            ],
+            close: Box::new(|this, _, _| this.dmc.not_friend = None),
+        };
+        Some(super::modal::render_small(spec, cx))
+    }
+
+    /// Join Call / Join with Video on a call that is already running: select its voice channel and open the DM
+    /// (module 760571 `selectVoiceChannel(id, video)` then `transitionTo`), without ringing anyone.
+    pub(super) fn join_dm_call(&mut self, channel: Id, video: bool, cx: &mut Context<Self>) {
+        self.select_home(Some(channel));
+        self.start_call(channel, video, false, cx);
+        cx.notify();
     }
 
     /// `CallActions.call(channelId, video, ring)`: select the voice channel, then ring the others. A DM or group DM
@@ -269,10 +465,38 @@ impl Root {
                 cx.notify();
                 "the incoming card ignores Do Not Disturb here; nothing was sent".to_owned()
             }
+            ["group"] => {
+                // A local-only group DM of the test person and two made-up people, to see the group header.
+                let group: Id = 1_570_000_000_000_000_100;
+                self.stores.dispatch(
+                    "CHANNEL_CREATE",
+                    &json!({
+                        "id": group.to_string(),
+                        "type": 3,
+                        "name": null,
+                        "recipients": [
+                            {"id": other.to_string(), "username": "loreanxavier", "discriminator": "0"},
+                            {"id": "1570000000000000201", "username": "sample-one", "discriminator": "0"},
+                            {"id": "1570000000000000202", "username": "sample-two", "discriminator": "0"},
+                        ],
+                        "last_message_id": null,
+                    }),
+                );
+                self.select_home(Some(group));
+                cx.notify();
+                "opened a local group DM; nothing was sent".to_owned()
+            }
+            ["notfriend"] => {
+                // The prompt a failed `GET /channels/{id}/call` opens, without asking the service.
+                self.dmc.not_friend = Some(other);
+                cx.notify();
+                "the Start Call prompt is up; nothing was sent".to_owned()
+            }
             ["state"] => {
                 let call = self.stores.calls.get_call(channel);
                 format!(
-                    "call {:?}; incoming {}; in voice {}",
+                    "stop-ringing asked {:?}; call {:?}; incoming {}; in voice {}",
+                    self.dmc.stops,
                     call.map(|call| (call.message_id, call.ringing.clone(), call.unavailable)),
                     self.stores.calls.get_incoming_calls(false).len(),
                     self.call.is_some()
@@ -292,23 +516,46 @@ impl Root {
                 cx.notify();
                 "the call is closed here; nothing was sent".to_owned()
             }
-            ["inject", "callee"] => self.inject_call(
+            ["inject", "callee"] => {
+                // The call's announcement (type 3, no `ended_timestamp`), which carries the "Join the call" link.
+                let (author, global) = self
+                    .stores
+                    .users
+                    .get(&other)
+                    .map(|user| (user.username.clone(), user.global_name.clone()))
+                    .unwrap_or_default();
+                self.stores.dispatch(
+                    "MESSAGE_CREATE",
+                    &json!({
+                        "id": "1570000000000000001",
+                        "channel_id": channel.to_string(),
+                        "type": 3,
+                        "content": "",
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "author": {"id": other.to_string(), "username": author, "global_name": global, "discriminator": "0"},
+                        "call": {"participants": [other.to_string()]},
+                    }),
+                );
+                self.inject_call(
                 "CALL_CREATE",
                 json!({
                     "channel_id": channel.to_string(),
-                    "message_id": "1568700000000000001",
+                    "message_id": "1570000000000000001",
                     "region": "us-east",
                     "ongoing_rings": {},
-                    "voice_states": [state(other, false)],
+                    // The official client, not rung and not connected, holds no voice state of the call
+                    // (module 568598 takes participants from voice states and `call.ringing` only).
+                    "voice_states": [],
                 }),
                 cx,
-            ),
+            )
+            }
             ["inject", "incoming"] => {
                 self.inject_call(
                     "CALL_CREATE",
                     json!({
                         "channel_id": channel.to_string(),
-                        "message_id": "1568700000000000001",
+                        "message_id": "1570000000000000001",
                         "region": "us-east",
                         "ongoing_rings": rings(other, me),
                         "voice_states": [state(other, false)],
@@ -321,7 +568,7 @@ impl Root {
                     "CALL_CREATE",
                     json!({
                         "channel_id": channel.to_string(),
-                        "message_id": "1568700000000000001",
+                        "message_id": "1570000000000000001",
                         "region": "us-east",
                         "ongoing_rings": rings(me, other),
                         "voice_states": [state(me, false)],
@@ -333,7 +580,7 @@ impl Root {
                 "CALL_UPDATE",
                 json!({
                     "channel_id": channel.to_string(),
-                    "message_id": "1568700000000000001",
+                    "message_id": "1570000000000000001",
                     "region": "us-east",
                     "ongoing_rings": {},
                 }),
@@ -344,7 +591,7 @@ impl Root {
                 json!({ "channel_id": channel.to_string() }),
                 cx,
             ),
-            _ => "usage: dmcall open | start voice|video | leave | state | fake-join | fake-leave | online | inject incoming|outgoing|callee|answered|delete"
+            _ => "usage: dmcall open | start voice|video | leave | state | fake-join | fake-leave | online | notfriend | group | inject incoming|outgoing|callee|answered|delete"
                 .to_owned(),
         }
     }
@@ -377,11 +624,19 @@ mod tests {
     }
 
     #[test]
+    fn the_not_friend_key_round_trips() {
+        let key = not_friend_key(42, true, false);
+        assert_eq!(parse_not_friend_key(&key), Some((42, true, false)));
+        assert_eq!(parse_not_friend_key("other"), None);
+    }
+
+    #[test]
     fn stop_ringing_names_recipients() {
         assert_eq!(
-            stop_ringing_body(&[7, 8]),
+            stop_ringing_body(Some(&[7, 8])),
             json!({"recipients": ["7", "8"]})
         );
+        assert_eq!(stop_ringing_body(None), json!({}));
         assert_eq!(stop_ringing_route(5), "/channels/5/call/stop-ringing");
         assert_eq!(ring_route(5), "/channels/5/call/ring");
     }

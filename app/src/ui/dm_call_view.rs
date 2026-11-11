@@ -121,6 +121,16 @@ pub struct State {
     pub pulsing: bool,
     /// Capture only: the incoming card ignores the fixture account's Do Not Disturb.
     pub shown_online: bool,
+    /// Where the incoming card was last dropped (`INCOMING_CALL_MOVE`), and a drag in progress.
+    pub incoming_origin: Option<(f32, f32)>,
+    pub incoming_drag: Option<super::incoming_call::CardDrag>,
+    /// Capture only: the stop-ringing requests asked for (the harness refuses to send them).
+    #[cfg(feature = "capture")]
+    pub stops: Vec<String>,
+    /// The call asked for through `GET /channels/{id}/call` is for this person (not a friend).
+    pub asking: Option<dc_state::Id>,
+    /// The "Start Call" prompt is up for this person.
+    pub not_friend: Option<dc_state::Id>,
     /// A call rings this account (its card is up).
     pub incoming: bool,
     /// The area shows a video call (set while it is built, read by the call tray).
@@ -229,6 +239,11 @@ impl Root {
             self.dm_call_avatars(&people, width)
         };
         let header = self.header_with(cx, true).into_any_element();
+        let people_ring_me = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| self.stores.calls.is_ringing(channel, me.id));
         Some(
             div()
                 .parity("dm-call")
@@ -245,12 +260,81 @@ impl Root {
                 }))
                 .child(body)
                 .child(div().absolute().top_0().left_0().right_0().child(header))
+                .when(!in_call && !video, |this| {
+                    this.child(self.dm_join_tray(channel, people_ring_me, cx))
+                })
                 .when(in_call && !video, |this| {
                     this.child(self.call_bar(0, channel, shown, cx))
                         .children(self.voice_menus(channel, width, height, cx))
                 })
                 .into_any_element(),
         )
+    }
+
+    /// The tray of a call this account has not joined (`eb` in module 105225): join with video, Join Call and, while
+    /// the call rings this account, Decline. `wrapper_9bvEB0` is a row with a 12px gap; each button is a
+    /// `centerButton_K9Xq13` (radius 8, padding 10, a 20px icon) coloured `join` (`--green-360`, white icon) or
+    /// `disconnect` (`--control-critical-primary-background-*`). Unconfirmed until a real incoming call is captured.
+    fn dm_join_tray(
+        &mut self,
+        channel: Id,
+        ringing_me: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let button =
+            |key: &'static str, fill: &'static str, hover: &'static str, glyph: &'static str| {
+                div()
+                    .id(key)
+                    .size(px(40.))
+                    .rounded(px(8.))
+                    .bg(color(fill))
+                    .hover(|style| style.bg(color(hover)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(icon(glyph, 20., "--white"))
+            };
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(16.))
+            .h(px(50.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .child(
+                button(
+                    "dm-join-video",
+                    "--green-360",
+                    "--green-360",
+                    "voice_camera_on",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.join_dm_call(channel, true, cx))),
+            )
+            .child(
+                button("dm-join-call", "--green-360", "--green-360", "dm_call").on_click(
+                    cx.listener(move |this, _, _, cx| this.join_dm_call(channel, false, cx)),
+                ),
+            )
+            .when(ringing_me, |this| {
+                this.child(
+                    button(
+                        "dm-decline-call",
+                        "--control-critical-primary-background-default",
+                        "--control-critical-primary-background-hover",
+                        "close",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // `710801`: `stopRinging(channel.id)`, no recipients.
+                        this.stop_ringing(channel, None);
+                        cx.notify();
+                    })),
+                )
+            })
+            .into_any_element()
     }
 
     /// `VoiceCallParticipants`: the avatars in a row, centred.

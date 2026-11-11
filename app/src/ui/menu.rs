@@ -84,12 +84,16 @@ pub(super) struct SavedState {
     pub reacted: bool,
     /// A poll of this account that has not closed: "End Poll Now" follows Speak Message.
     pub poll_end: bool,
+    /// A poll message: it cannot be edited (module 697470 `isPoll`) or forwarded (module 843626 `poll == null`).
+    pub poll: bool,
     /// Text is selected in a message: Copy and Search with Google open the menu.
     pub selection: bool,
     /// What the pointer was on when the menu opened.
     pub link: LinkKind,
     /// The pointer was on a picture the app can copy and save.
     pub image: bool,
+    /// A direct message: threads grow only in server channels.
+    pub no_thread: bool,
 }
 
 /// How the link group of a message menu reads (module 777933).
@@ -211,7 +215,7 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ));
     }
     items.push(Item::Separator);
-    if own {
+    if own && !saved.poll {
         items.push(Item::Entry(
             "Edit Message",
             "menu_edit_message",
@@ -219,18 +223,38 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
-    items.extend([
-        Item::Entry("Reply", "menu_reply", Action::Reply, false),
-        Item::Entry("Forward", "menu_forward", Action::Forward, false),
-        Item::Entry("Create Thread", "menu_create_thread", Action::Thread, false),
-        Item::Separator,
-        Item::Entry("Copy Text", "menu_copy_text", Action::CopyText, false),
-        if saved.pinned {
-            Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
-        } else {
-            Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
-        },
-    ]);
+    items.push(Item::Entry("Reply", "menu_reply", Action::Reply, false));
+    if !saved.poll {
+        items.push(Item::Entry(
+            "Forward",
+            "menu_forward",
+            Action::Forward,
+            false,
+        ));
+    }
+    if !saved.no_thread {
+        items.push(Item::Entry(
+            "Create Thread",
+            "menu_create_thread",
+            Action::Thread,
+            false,
+        ));
+    }
+    items.push(Item::Separator);
+    // Module 761304 `tf`: the row is left out when the message has no text.
+    if !saved.empty {
+        items.push(Item::Entry(
+            "Copy Text",
+            "menu_copy_text",
+            Action::CopyText,
+            false,
+        ));
+    }
+    items.push(if saved.pinned {
+        Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
+    } else {
+        Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
+    });
     if !saved.reminder {
         items.push(if saved.bookmarked {
             Item::Entry(
@@ -398,11 +422,13 @@ impl Root {
             pinned,
             reacted,
             poll_end: found.is_some_and(|known| self.poll_endable(known)),
+            poll: found.is_some_and(|known| known.extra.poll.is_some()),
             selection: !self.menu_extra.selection.is_empty(),
             link: match &self.menu_extra.hit {
                 Some(Hit::Link { url, .. } | Hit::Media { url, .. }) => LinkKind::of(url),
                 None => LinkKind::None,
             },
+            no_thread: self.guild.is_none(),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
         }
     }
@@ -453,6 +479,36 @@ impl Root {
             other => self.run_message_action(other, found, window, cx),
         }
         cx.notify();
+    }
+
+    /// Harness: runs the open message menu's row with this label, as a click on it would.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_menu_run(
+        &mut self,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let Some(open) = self.menu else {
+            return "no message menu".to_owned();
+        };
+        let action = message_items_saved(open.own, self.saved_flags(open.message))
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Entry(name, _, action, _) | Item::Danger(name, _, action)
+                    if name == label =>
+                {
+                    Some(action)
+                }
+                _ => None,
+            });
+        match action {
+            Some(action) => {
+                self.run_action(action, open.message, window, cx);
+                format!("ran {label}")
+            }
+            None => format!("no row {label}"),
+        }
     }
 
     pub(super) fn run_unconfirmed(&mut self, action: Action, message: Id, cx: &mut Context<Self>) {
@@ -605,6 +661,23 @@ impl Root {
                 .text_color(label_tint)
                 .child(label),
         )
+        // The keyboard shortcut of Copy (module 373963 `keyCombo`).
+        .when(run == Action::CopySelection, |this| {
+            this.child(
+                div()
+                    .ml(px(8.))
+                    .flex_none()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--interactive-text-default"))
+                    .child(if cfg!(target_os = "macos") {
+                        "Cmd+C"
+                    } else {
+                        "Ctrl+C"
+                    }),
+            )
+        })
         .when(caret, |this| {
             this.child(
                 svg()
@@ -661,7 +734,10 @@ impl Root {
     ) -> Option<impl IntoElement> {
         let open = self.menu?;
         let mut rows: Vec<AnyElement> = Vec::new();
-        rows.extend(self.quick_row(open.message, cx));
+        // Text selected: the menu opens with Copy instead of the quick reactions (selection-own-dm).
+        if self.menu_extra.selection.is_empty() {
+            rows.extend(self.quick_row(open.message, cx));
+        }
         for (index, item) in message_items_saved(open.own, self.saved_flags(open.message))
             .into_iter()
             .enumerate()
@@ -687,7 +763,7 @@ impl Root {
                 )
             }
         };
-        let max_height = f32::from(window.viewport_size().height) - 32.;
+        let max_height = f32::from(window.viewport_size().height) - 96.;
         Some(deferred(
             anchored()
                 .position(position)
@@ -696,6 +772,7 @@ impl Root {
                     div()
                         .parity_with_border("message-menu", 1.)
                         .id("context-menu")
+                        .relative()
                         .occlude()
                         .w(px(MENU_WIDTH))
                         .max_h(px(max_height))
@@ -730,14 +807,17 @@ impl Root {
                         .child(
                             div()
                                 .id("context-menu-scroller")
+                                .track_scroll(&self.menu_scroll)
                                 .overflow_y_scroll()
                                 .max_h(px(max_height - 2.))
                                 .py(px(8.))
                                 .px(px(8.))
                                 .flex()
                                 .flex_col()
-                                .children(rows),
-                        ),
+                                // Rows keep their height when the menu scrolls.
+                                .children(rows.into_iter().map(|row| div().flex_none().child(row))),
+                        )
+                        .child(super::discover::gutter_scrollbar(self.menu_scroll.clone())),
                 ),
         ))
     }
@@ -767,9 +847,19 @@ impl Root {
         row: gpui::Bounds<Pixels>,
         window: &Window,
     ) -> AnyElement {
+        self.submenu_frame_wide(rows, row, window, 188.)
+    }
+
+    /// The submenu at another width: it grows with its longest label (the invite list's server names).
+    pub(super) fn submenu_frame_wide(
+        &self,
+        rows: Vec<(AnyElement, f32)>,
+        row: gpui::Bounds<Pixels>,
+        window: &Window,
+        width: f32,
+    ) -> AnyElement {
         let height = 2. + 16. + rows.iter().map(|(_, height)| height).sum::<f32>();
         let viewport = window.viewport_size();
-        let width = 188.;
         let right_side = f32::from(row.right()) + 4. + width <= f32::from(viewport.width) - 8.;
         let left = if right_side {
             f32::from(row.right()) + 4.
@@ -927,7 +1017,7 @@ impl Root {
             .filter(|item| !matches!(item, Item::Separator))
             .count() as f32;
         let separators = items.len() as f32 - rows;
-        let quick = if self.quick_reactions().is_empty() {
+        let quick = if self.quick_reactions().is_empty() || !self.menu_extra.selection.is_empty() {
             0.
         } else {
             60.

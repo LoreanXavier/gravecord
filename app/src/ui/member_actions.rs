@@ -317,7 +317,7 @@ impl Root {
     /// Invite to Server: an invite to the server's first text channel is made, and its link goes to the DM.
     pub(super) fn send_server_invite(&mut self, guild: Id, user: Id) {
         let Some((_, _, channel)) = self
-            .invite_servers()
+            .invite_servers(Some(user))
             .into_iter()
             .find(|(id, _, _)| *id == guild)
         else {

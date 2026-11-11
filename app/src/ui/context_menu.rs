@@ -74,6 +74,10 @@ pub(super) enum Act {
     Mention,
     Message,
     Call,
+    /// 313998: "Ring" for a friend who is not in the call.
+    RingUser,
+    /// 313998: "Stop Ringing" for a friend the call is ringing.
+    StopRinging,
     Note,
     Apps,
     AddFriend,
@@ -123,7 +127,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 67] = [
+    pub(super) const ALL: [Act; 69] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -157,6 +161,8 @@ impl Act {
         Act::Mention,
         Act::Message,
         Act::Call,
+        Act::RingUser,
+        Act::StopRinging,
         Act::Note,
         Act::Apps,
         Act::AddFriend,
@@ -229,6 +235,8 @@ impl Act {
             Act::Mention => 30,
             Act::Message => 31,
             Act::Call => 32,
+            Act::RingUser => 67,
+            Act::StopRinging => 68,
             Act::Note => 33,
             Act::Apps => 34,
             Act::AddFriend => 35,
@@ -284,7 +292,7 @@ pub(super) fn status(act: Act) -> Status {
         Act::Favorite => Missing("favorite channels (user settings proto)"),
         Act::PinDm => Missing("pinned direct messages (user settings proto)"),
         Act::HideNames => Missing("Hide Names for a voice channel"),
-        Act::Apps => Missing("the user-app commands submenu"),
+        Act::Apps => Wired,
         Act::ModView => Missing("Mod View"),
         Act::InventoryAbout
         | Act::InventoryHide
@@ -315,6 +323,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::Mention
         | Act::Message
         | Act::Call
+        | Act::RingUser
+        | Act::StopRinging
         | Act::Note
         | Act::AddFriend
         | Act::RemoveFriend
@@ -789,6 +799,8 @@ pub(super) struct UserFacts {
     /// `Some(unread)` in a DM row, which adds the channel entries.
     pub dm: Option<bool>,
     pub invite_servers: bool,
+    /// 313998: `Some(false)` offers Ring, `Some(true)` offers Stop Ringing, `None` neither.
+    pub ring: Option<bool>,
     /// In the call we are in (never true unless a call is open): adds the voice rows.
     pub in_call: bool,
     /// The person is in a voice channel of this server (module 291247 `Z`).
@@ -820,6 +832,27 @@ pub(super) struct ServerVoice {
     pub can_move: bool,
 }
 
+/// The width of a 14px medium label.
+fn label_width(window: &Window, text: &str) -> f32 {
+    let style = window.text_style();
+    let mut font = style.font();
+    font.weight = FontWeight(500.);
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_owned()), px(14.), &[run], None)
+            .width,
+    )
+}
+
 pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     if let Some(unread) = facts.dm {
@@ -843,6 +876,11 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     }
     if !facts.me {
         first.push(Row::new(Act::Call, "Start a Call"));
+        match facts.ring {
+            Some(false) => first.push(Row::new(Act::RingUser, "Ring")),
+            Some(true) => first.push(Row::new(Act::StopRinging, "Stop Ringing")),
+            None => {}
+        }
         first.push(Row::new(Act::Note, "Add Note").sub("Only visible to you"));
         if facts.friend {
             first.push(Row::new(
@@ -896,7 +934,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         ));
     }
     mid.push(Row::new(Act::Apps, "Apps").caret());
-    if facts.dm.is_some() && facts.invite_servers {
+    if facts.invite_servers && !facts.me {
         mid.push(Row::new(Act::InviteToServer, "Invite to Server").caret());
     }
     if !facts.me {
@@ -1300,7 +1338,12 @@ impl Root {
             }
             _ => return "usage: context-user | context-dm".to_owned(),
         };
-        self.open_context_menu(target, gpui::point(px(520.), px(120.)), cx);
+        let at = if matches!(target, Target::User { .. }) {
+            gpui::point(px(984.), px(88.))
+        } else {
+            gpui::point(px(520.), px(120.))
+        };
+        self.open_context_menu(target, at, cx);
         format!("menu open for {target:?}")
     }
 
@@ -1464,7 +1507,7 @@ impl Root {
                     ignored: self.stores.is_ignored(user.id),
                     developer,
                     dm: Some(self.stores.is_unread(channel)),
-                    invite_servers: !self.invite_servers().is_empty(),
+                    invite_servers: !self.invite_servers(self.dm_user(channel)).is_empty(),
                     ..UserFacts::default()
                 };
                 user_items(&facts)
@@ -1508,7 +1551,8 @@ impl Root {
                     }),
                     developer,
                     dm: None,
-                    invite_servers: false,
+                    invite_servers: !me && !self.invite_servers(Some(user)).is_empty(),
+                    ring: self.ring_row_for(user, guild),
                     server_voice: guild.and_then(|guild| self.server_voice_of(guild, user, me)),
                     in_timeout: guild.is_some_and(|guild| self.is_in_timeout(guild, user))
                         && guild.is_some_and(|guild| {
@@ -1850,6 +1894,17 @@ impl Root {
             }
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
             (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
+            // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
+            (Act::RingUser, Target::User { user, .. }) => {
+                if let Some(channel) = self.channel {
+                    self.ring_call(channel, Some(vec![user]), Some("user_context_menu"));
+                }
+            }
+            (Act::StopRinging, Target::User { user, .. }) => {
+                if let Some(channel) = self.channel {
+                    self.stop_ringing(channel, Some(&[user]));
+                }
+            }
             // "Add Note": the note field of the full profile.
             (Act::Note, Target::User { user, .. }) => self.open_full_profile(user, window, cx),
             (Act::Note, Target::Dm(channel)) => {
@@ -2137,6 +2192,12 @@ impl Root {
                 } => self.role_sub_rows(guild, user),
                 _ => Vec::new(),
             },
+            // The apps' commands are not listed yet: every person shows the official empty state.
+            Act::Apps => vec![SubRow {
+                label: "No Commands Available".to_owned(),
+                disabled: true,
+                ..SubRow::default()
+            }],
             Act::MoveMember => match target {
                 Target::User {
                     user,
@@ -2163,7 +2224,11 @@ impl Root {
                 _ => Vec::new(),
             },
             Act::InviteToServer => self
-                .invite_servers()
+                .invite_servers(match target {
+                    Target::Dm(channel) => self.dm_user(channel),
+                    Target::User { user, .. } => Some(user),
+                    _ => None,
+                })
                 .into_iter()
                 .map(|(id, name, _)| SubRow {
                     label: name,
@@ -2206,10 +2271,14 @@ impl Root {
 
     /// Servers we may create an invite in, with the channel to invite to (module 777933's invite list): a text
     /// channel we can see, in a server where we hold Create Invite.
-    pub(super) fn invite_servers(&self) -> Vec<(Id, String, Id)> {
+    pub(super) fn invite_servers(&self, person: Option<Id>) -> Vec<(Id, String, Id)> {
         self.stores
             .guilds
             .iter()
+            // Someone who is already in the server needs no invite to it.
+            .filter(|guild| {
+                person.is_none_or(|user| self.stores.members.get(guild.id, user).is_none())
+            })
             .filter(|guild| self.my_permission(guild.id, None, permissions::CREATE_INSTANT_INVITE))
             .filter_map(|guild| {
                 let channel = guild.channels.iter().find(|channel| {
@@ -2282,10 +2351,12 @@ impl Root {
                 return;
             }
             Act::InviteToServer => {
-                let Target::Dm(channel) = target else {
-                    return;
+                let user = match target {
+                    Target::Dm(channel) => self.dm_user(channel),
+                    Target::User { user, .. } => Some(user),
+                    _ => None,
                 };
-                let (Some(row), Some(user)) = (row, self.dm_user(channel)) else {
+                let (Some(row), Some(user)) = (row, user) else {
                     return;
                 };
                 self.send_server_invite(row.id, user);
@@ -2382,6 +2453,7 @@ impl Root {
                     div()
                         .parity_with_border("context-menu", 1.)
                         .id("context-menu-generic")
+                        .relative()
                         .when(matches!(target, Target::InventoryAuthor { .. }), |d| {
                             d.min_w(px(144.))
                         })
@@ -2411,7 +2483,22 @@ impl Root {
                                 }
                             },
                         ))
-                        .child(div().p(px(8.)).flex().flex_col().children(rows)),
+                        // A menu taller than the window stops 96px short of its height and scrolls (user-guild: 624 of 720).
+                        .max_h(px(f32::from(window.viewport_size().height) - 96.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("context-menu-scroll")
+                                .track_scroll(&self.menu_scroll)
+                                .min_h(px(0.))
+                                .overflow_y_scroll()
+                                .p(px(8.))
+                                .flex()
+                                .flex_col()
+                                .children(rows.into_iter().map(|row| div().flex_none().child(row))),
+                        )
+                        .child(super::discover::gutter_scrollbar(self.menu_scroll.clone())),
                 ),
         )
         .with_priority(2)
@@ -2421,6 +2508,11 @@ impl Root {
             if labels.is_empty() {
                 return None;
             }
+            let widest_label = labels
+                .iter()
+                .filter(|sub| sub.dot.is_none())
+                .map(|sub| label_width(window, &sub.label))
+                .fold(0., f32::max);
             let rows: Vec<(AnyElement, f32)> = labels
                 .into_iter()
                 .enumerate()
@@ -2493,7 +2585,9 @@ impl Root {
                     (item.into_any_element(), height)
                 })
                 .collect();
-            Some(self.submenu_frame(rows, row, window))
+            // 14px medium labels with 16px of padding either side and the 1px border (invite-sub: 212 for 179 of text).
+            let widest = widest_label.max(0.);
+            Some(self.submenu_frame_wide(rows, row, window, (widest + 34.).max(188.)))
         });
         Some(
             div()
@@ -2703,6 +2797,7 @@ impl Root {
                 )
                 .children(row.sub.clone().map(|sub| {
                     div()
+                        .mt(px(2.))
                         .text_size(px(12.))
                         .line_height(px(16.))
                         .font_weight(FontWeight(400.))
@@ -2961,6 +3056,21 @@ mod tests {
             ..other
         };
         assert!(!labels(&user_items(&friend)).contains(&"Add Friend".to_owned()));
+    }
+
+    #[test]
+    fn a_call_offers_ring_or_stop_ringing_by_who_is_in_it() {
+        let ring = |state| {
+            labels(&user_items(&UserFacts {
+                friend: true,
+                ring: state,
+                ..Default::default()
+            }))
+        };
+        assert!(ring(Some(false)).contains(&"Ring".to_owned()));
+        assert!(ring(Some(true)).contains(&"Stop Ringing".to_owned()));
+        let none = ring(None);
+        assert!(!none.contains(&"Ring".to_owned()) && !none.contains(&"Stop Ringing".to_owned()));
     }
 
     #[test]
