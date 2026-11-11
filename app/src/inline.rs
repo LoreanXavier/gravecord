@@ -1058,6 +1058,48 @@ mod tests {
         assert_eq!(selection.range(), Some((at(1, 0, 0), at(1, 0, 2))));
     }
 
+    /// gpui's wrapped text (settings copy, tooltips, embeds) follows CSS `white-space: normal`: a space after the
+    /// last word that fits hangs past the line box instead of pushing that word down. The no-op text system gives
+    /// every character 9.6px at 16px.
+    #[test]
+    fn wrapped_text_lets_trailing_spaces_hang() {
+        use gpui::{NoopTextSystem, TextRun, TextSystem, WindowTextSystem, font};
+        use std::sync::Arc;
+        let system =
+            WindowTextSystem::new(Arc::new(TextSystem::new(Arc::new(NoopTextSystem::new()))));
+        let breaks = |text: &str, width: f32| -> Vec<usize> {
+            let run = TextRun {
+                len: text.len(),
+                font: font("Test"),
+                color: Default::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let lines = system
+                .shape_text(
+                    text.to_owned().into(),
+                    px(16.),
+                    &[run],
+                    Some(px(width)),
+                    None,
+                )
+                .unwrap();
+            lines[0]
+                .wrap_boundaries()
+                .iter()
+                .map(|boundary| boundary.glyph_ix)
+                .collect()
+        };
+        // "aa bbb" is 57.6px wide, so 58px holds it and the following space overflows.
+        assert_eq!(breaks("aa bbb cc", 58.), [7]);
+        assert_eq!(breaks("aa bbb  cc", 58.), [8]);
+        assert_eq!(breaks("aa bbb\tcc", 58.), [7]);
+        assert!(breaks("aaaa  ", 39.).is_empty());
+        // One glyph over the width still wraps the whole word.
+        assert_eq!(breaks("aa bbbb cc", 58.), [3, 8]);
+    }
+
     #[test]
     fn words_keep_their_trailing_spaces() {
         assert_eq!(words("a bc  d"), [(0, "a "), (2, "bc  "), (6, "d")]);

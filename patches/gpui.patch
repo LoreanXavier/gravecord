@@ -674,6 +674,132 @@ index 5691782..d8d1881 100644
          let underline_y_offset = underline_y_offset(line_height, layout.ascent, layout.descent);
          let mut decoration_runs = decoration_runs.iter();
          let mut wraps = wrap_boundaries.iter().peekable();
+diff --git a/crates/gpui/src/text_system/line_layout.rs b/crates/gpui/src/text_system/line_layout.rs
+index bfccb8b..06149c1 100644
+--- a/crates/gpui/src/text_system/line_layout.rs
++++ b/crates/gpui/src/text_system/line_layout.rs
+@@ -269,7 +269,12 @@ impl LineLayout {
+             let next_x = glyphs.peek().map_or(self.width, |(_, _, x)| *x);
+             let width = next_x - last_boundary_x;
+ 
+-            if width > wrap_width && boundary > last_boundary {
++            // CSS `white-space: normal`: collapsible spaces at a soft wrap opportunity hang past the
++            // line box, so a space after the last word that fits never decides a break. Only the next
++            // non-space run can overflow. Leading spaces (no content yet) keep counting.
++            let hangs = matches!(byte, b' ' | b'\t') && current_segment.is_some();
++
++            if width > wrap_width && boundary > last_boundary && !hangs {
+                 // When used line_clamp, we should limit the number of lines.
+                 if let Some(max_lines) = max_lines
+                     && boundaries.len() >= max_lines.saturating_sub(1)
+@@ -921,6 +926,46 @@ mod tests {
+         );
+     }
+ 
++    /// One 10px glyph per byte, so a wrap width of `10 * n` holds `n` characters.
++    fn wrap_ascii(text: &str, wrap_width: f32) -> Vec<usize> {
++        let mut layout = make_layout(
++            (0..text.len())
++                .map(|index| glyph_at(index as f32 * 10., index))
++                .collect(),
++        );
++        layout.width = px(text.len() as f32 * 10.);
++        layout.len = text.len();
++        layout
++            .compute_wrap_boundaries(text, px(wrap_width), None, &mut WrapScratch::default())
++            .iter()
++            .map(|boundary| boundary.glyph_ix)
++            .collect()
++    }
++
++    #[test]
++    fn test_wrap_trailing_space_hangs() {
++        // "aa bbb" fills 60px exactly; the space after it overflows but hangs, so the line stays whole.
++        assert_eq!(wrap_ascii("aa bbb cc", 60.), [7]);
++        assert_eq!(wrap_ascii("aa bbb  cc", 60.), [8]);
++        assert_eq!(wrap_ascii("aa bbb	cc", 60.), [7]);
++        // Spaces that end the text never open a line of their own.
++        assert_eq!(wrap_ascii("aaaa  ", 40.), Vec::<usize>::new());
++        assert_eq!(wrap_ascii("aaaa    ", 40.), Vec::<usize>::new());
++    }
++
++    #[test]
++    fn test_wrap_overflow_by_one_glyph_still_wraps() {
++        // "bbbb" ends at 70px, one glyph past 60px, so it moves down whole.
++        assert_eq!(wrap_ascii("aa bbbb cc", 60.), [3, 8]);
++        // A single word wider than the line breaks inside the word.
++        assert_eq!(wrap_ascii("aaaaaaa", 60.), [6]);
++    }
++
++    #[test]
++    fn test_wrap_leading_spaces_still_count() {
++        assert_eq!(wrap_ascii("      a", 40.), [4]);
++    }
++
+     #[test]
+     fn test_wrap_right_to_left_text() {
+         for (text, indices, expected_boundaries) in [
+diff --git a/crates/gpui/src/text_system/line_wrapper.rs b/crates/gpui/src/text_system/line_wrapper.rs
+index fea2c79..8b8f15c 100644
+--- a/crates/gpui/src/text_system/line_wrapper.rs
++++ b/crates/gpui/src/text_system/line_wrapper.rs
+@@ -165,7 +165,15 @@ impl LineWrapper {
+                 };
+ 
+                 width += item_width;
+-                if width > wrap_width && grapheme_index > last_wrap_ix {
++                // CSS `white-space: normal`: a collapsible space after content hangs past the line
++                // box, so only the next non-space run can overflow and decide the break.
++                let hangs = matches!(
++                    candidate,
++                    WrapBoundaryCandidate::Char {
++                        character: ' ' | '\t'
++                    }
++                ) && first_non_whitespace_ix.is_some();
++                if width > wrap_width && grapheme_index > last_wrap_ix && !hangs {
+                     let wrap_at_candidate = last_candidate_ix > last_wrap_ix
+                         && width - last_candidate_width <= wrap_width;
+ 
+@@ -492,7 +500,8 @@ impl LineWrapper {
+ 
+             if line < max_lines - 1 {
+                 // Before the last line: replicate wrap_line's boundary logic.
+-                if width > wrap_width && ix > last_wrap_ix {
++                let hangs = matches!(c, ' ' | '\t') && first_non_whitespace_ix.is_some();
++                if width > wrap_width && ix > last_wrap_ix && !hangs {
+                     if let (None, Some(first_nw)) = (indent, first_non_whitespace_ix) {
+                         indent = Some(Self::MAX_INDENT.min((first_nw - last_wrap_ix) as u32));
+                     }
+@@ -1109,6 +1118,29 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn test_wrap_line_trailing_space_hangs() {
++        let mut wrapper = build_wrapper();
++        wrapper.char_widths.ascii.fill(Some(px(1.)));
++        let wrap = |wrapper: &mut LineWrapper, text: &str, width: f32| {
++            wrapper
++                .wrap_line(
++                    &[LineFragment::text(text)],
++                    px(width),
++                    IndentAdjustment::NoIndent,
++                )
++                .map(|boundary| boundary.ix)
++                .collect::<Vec<_>>()
++        };
++        // "aa bbb" fills 6 exactly; the space after it hangs instead of moving "bbb" down.
++        assert_eq!(wrap(&mut wrapper, "aa bbb cc", 6.), [7]);
++        assert_eq!(wrap(&mut wrapper, "aa bbb  cc", 6.), [8]);
++        assert_eq!(wrap(&mut wrapper, "aa bbb	cc", 6.), [7]);
++        assert_eq!(wrap(&mut wrapper, "aaaa  ", 4.), Vec::<usize>::new());
++        // One glyph over still wraps.
++        assert_eq!(wrap(&mut wrapper, "aa bbbb cc", 6.), [3, 8]);
++    }
++
+     #[test]
+     fn test_wrap_line_break_opportunities() {
+         let mut wrapper = build_wrapper();
 diff --git a/crates/gpui/src/view.rs b/crates/gpui/src/view.rs
 index 3741851..b68f3d9 100644
 --- a/crates/gpui/src/view.rs

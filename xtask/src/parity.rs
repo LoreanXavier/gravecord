@@ -143,6 +143,22 @@ fn run_copy(built: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Where Cargo puts its output: `CARGO_TARGET_DIR` when set (a second build directory lets two runs build at the
+/// same time), else `target` in the repository.
+fn target_dir(repo: &Path) -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) if !dir.is_empty() => {
+            let dir = PathBuf::from(dir);
+            if dir.is_absolute() {
+                dir
+            } else {
+                repo.join(dir)
+            }
+        }
+        _ => repo.join("target"),
+    }
+}
+
 fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
     let status = Command::new("cargo")
         .args([
@@ -159,7 +175,7 @@ fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
         bail!("gravecord did not build");
     }
     let _ = fs::remove_file(out);
-    let exe = run_copy(&repo.join("target").join("debug").join("gravecord.exe"))?;
+    let exe = run_copy(&target_dir(repo).join("debug").join("gravecord.exe"))?;
     let mut args = vec![
         "--capture".to_owned(),
         out.display().to_string(),
