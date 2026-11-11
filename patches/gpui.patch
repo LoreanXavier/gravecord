@@ -518,6 +518,122 @@ index a4116aa..0b3bb0b 100644
      /// Scale this path by the given factor.
      pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
          Path {
+diff --git a/crates/gpui/src/taffy.rs b/crates/gpui/src/taffy.rs
+index 7c12b5c..937cfe0 100644
+--- a/crates/gpui/src/taffy.rs
++++ b/crates/gpui/src/taffy.rs
+@@ -34,6 +34,12 @@ pub struct TaffyLayoutEngine {
+     /// Unrounded absolute border-box top-left per-node coordinate in device pixels.
+     absolute_outer_origins: FxHashMap<LayoutId, Point<f32>>,
+     computed_layouts: FxHashSet<LayoutId>,
++    /// Where a cached view sits in the layout it is placed in (unsnapped, device pixels): the origin of the view's own
++    /// layout tree, so every box of the view snaps to the pixel it would snap to when laid out inline.
++    root_origins: FxHashMap<LayoutId, Point<f32>>,
++    pending_root_origin: Option<(LayoutId, Point<f32>)>,
++    /// The snapped origin of the tree each node belongs to, which its snapped bounds are relative to.
++    snap_bases: FxHashMap<LayoutId, Point<f32>>,
+     layout_bounds_scratch_space: Vec<LayoutId>,
+ }
+ 
+@@ -48,6 +54,9 @@ impl TaffyLayoutEngine {
+             absolute_layout_bounds: FxHashMap::default(),
+             absolute_outer_origins: FxHashMap::default(),
+             computed_layouts: FxHashSet::default(),
++            root_origins: FxHashMap::default(),
++            pending_root_origin: None,
++            snap_bases: FxHashMap::default(),
+             layout_bounds_scratch_space: Vec::new(),
+         }
+     }
+@@ -57,6 +66,9 @@ impl TaffyLayoutEngine {
+         self.absolute_layout_bounds.clear();
+         self.absolute_outer_origins.clear();
+         self.computed_layouts.clear();
++        self.root_origins.clear();
++        self.snap_bases.clear();
++        self.pending_root_origin = None;
+     }
+ 
+     pub fn request_layout(
+@@ -202,12 +214,18 @@ impl TaffyLayoutEngine {
+         // }
+         //
+ 
++        if self.pending_root_origin.is_some_and(|(root, _)| root == id)
++            && let Some((_, origin)) = self.pending_root_origin.take()
++        {
++            self.root_origins.insert(id, origin);
++        }
+         if !self.computed_layouts.insert(id) {
+             let stack = &mut self.layout_bounds_scratch_space;
+             stack.push(id);
+             while let Some(id) = stack.pop() {
+                 self.absolute_layout_bounds.remove(&id);
+                 self.absolute_outer_origins.remove(&id);
++                self.snap_bases.remove(&id);
+                 stack.extend(
+                     self.taffy
+                         .children(id.into())
+@@ -373,15 +391,31 @@ impl TaffyLayoutEngine {
+                     .expect("parent absolute outer origin should be cached");
+                 parent_origin + Point::from(layout_location)
+             }
+-            None => Point::from(layout_location),
++            None => {
++                Point::from(layout_location)
++                    + self.root_origins.get(&id).copied().unwrap_or_default()
++            }
++        };
++        let base = match parent {
++            Some(parent_id) => self
++                .snap_bases
++                .get(&LayoutId::from(parent_id))
++                .copied()
++                .unwrap_or_default(),
++            None => self
++                .root_origins
++                .get(&id)
++                .map(|origin| origin.map(round_half_toward_zero))
++                .unwrap_or_default(),
+         };
++        self.snap_bases.insert(id, base);
+         self.absolute_outer_origins
+             .insert(id, absolute_outer_origin);
+ 
+         let absolute_far = absolute_outer_origin + Point::from(Size::from(layout_size));
+         let snapped_bounds = Bounds::from_corners(
+-            absolute_outer_origin.map(round_half_toward_zero),
+-            absolute_far.map(round_half_toward_zero),
++            absolute_outer_origin.map(round_half_toward_zero) - base,
++            absolute_far.map(round_half_toward_zero) - base,
+         );
+ 
+         let bounds = (snapped_bounds / scale_factor).map(Pixels);
+@@ -785,3 +819,24 @@ mod tests {
+         );
+     }
+ }
++
++impl TaffyLayoutEngine {
++    /// The node's unsnapped origin in device pixels.
++    pub(crate) fn raw_origin(&mut self, id: LayoutId, scale_factor: f32) -> Point<f32> {
++        self.layout_bounds(id, scale_factor);
++        self.absolute_outer_origins[&id]
++    }
++
++    /// The origin the next computed layout root starts from.
++    pub(crate) fn set_pending_root_origin(&mut self, root: LayoutId, origin: Point<f32>) {
++        self.pending_root_origin = Some((root, origin));
++    }
++}
++
++impl TaffyLayoutEngine {
++    /// The node's unsnapped size in device pixels.
++    pub(crate) fn raw_size(&self, id: LayoutId) -> Size<f32> {
++        let size = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE).size;
++        Size::from(size)
++    }
++}
 diff --git a/crates/gpui/src/text_system/line.rs b/crates/gpui/src/text_system/line.rs
 index 5691782..d8d1881 100644
 --- a/crates/gpui/src/text_system/line.rs
@@ -558,8 +674,32 @@ index 5691782..d8d1881 100644
          let underline_y_offset = underline_y_offset(line_height, layout.ascent, layout.descent);
          let mut decoration_runs = decoration_runs.iter();
          let mut wraps = wrap_boundaries.iter().peekable();
+diff --git a/crates/gpui/src/view.rs b/crates/gpui/src/view.rs
+index 3741851..b68f3d9 100644
+--- a/crates/gpui/src/view.rs
++++ b/crates/gpui/src/view.rs
+@@ -533,6 +533,8 @@ fn prepaint_view(
+     cx: &mut App,
+     render: &mut dyn FnMut(&mut Window, &mut App) -> AnyElement,
+ ) -> Option<AnyElement> {
++    // The bounds of this view's own node were asked for just before it was prepared.
++    let placed_id = window.last_layout_id;
+     window.set_view_id(entity_id);
+     window.with_rendered_view(entity_id, |window| {
+         if let Some(mut element) = element.take() {
+@@ -571,7 +573,9 @@ fn prepaint_view(
+                 let prepaint_start = window.prepaint_index();
+                 let (element, accessed_entities) = cx.detect_accessed_entities(|cx| {
+                     let mut element = render(window, cx);
+-                    element.layout_as_root(Size::<AvailableSpace>::from(bounds.size), window, cx);
++                    let root_id = element.request_layout(window, cx);
++                    let space = window.align_next_layout_root(placed_id, root_id, bounds.size);
++                    element.layout_as_root(Size::<AvailableSpace>::from(space), window, cx);
+                     element.prepaint_at(bounds.origin, window, cx);
+                     element
+                 });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..957b575 100644
+index 4e2e1a7..f82e57c 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
@@ -709,7 +849,15 @@ index 4e2e1a7..957b575 100644
      pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
      appearance: WindowAppearance,
      pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
-@@ -1926,6 +2024,7 @@ impl Window {
+@@ -1288,6 +1386,7 @@ pub struct Window {
+     long_press_timer: Option<Task<()>>,
+     long_press_capture: Option<EntityId>,
+     pub(crate) refreshing: bool,
++    pub(crate) last_layout_id: Option<LayoutId>,
+     pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
+     pub(crate) focus: Option<FocusId>,
+     focus_enabled: bool,
+@@ -1926,6 +2025,7 @@ impl Window {
                  // Take the deferred flag first: `||` short-circuits, and leaving
                  // the flag set when this request already forces a render would
                  // force a second, redundant render on the next frame.
@@ -717,7 +865,7 @@ index 4e2e1a7..957b575 100644
                  let force_render =
                      mem::take(&mut deferred_force_render) || request_frame_options.force_render;
  
-@@ -2007,6 +2106,7 @@ impl Window {
+@@ -2007,6 +2107,7 @@ impl Window {
  
                  let pending_next_frame_callbacks = next_frame_callbacks.take();
                  if !pending_next_frame_callbacks.is_empty() {
@@ -725,7 +873,7 @@ index 4e2e1a7..957b575 100644
                      handle
                          .update(&mut cx, |_, window, cx| {
                              for callback in pending_next_frame_callbacks {
-@@ -2039,9 +2139,12 @@ impl Window {
+@@ -2039,9 +2140,12 @@ impl Window {
                                      // atlas tile references after a GPU device recovery.
                                      window.refresh();
                                  }
@@ -738,7 +886,7 @@ index 4e2e1a7..957b575 100644
                              })
                              .with_context(|| {
                                  format!(
-@@ -2369,6 +2472,7 @@ impl Window {
+@@ -2369,6 +2473,7 @@ impl Window {
              text_style_stack: Vec::new(),
              rendered_entity_stack: Vec::new(),
              element_offset_stack: Vec::new(),
@@ -746,7 +894,7 @@ index 4e2e1a7..957b575 100644
              content_mask_stack: Vec::new(),
              element_opacity: 1.0,
              requested_autoscroll: None,
-@@ -2390,6 +2494,7 @@ impl Window {
+@@ -2390,6 +2495,7 @@ impl Window {
              modifiers,
              capslock,
              scale_factor,
@@ -754,7 +902,15 @@ index 4e2e1a7..957b575 100644
              bounds_observers: SingleSubscriberSet::new(),
              appearance,
              appearance_observers: SingleSubscriberSet::new(),
-@@ -2475,6 +2580,110 @@ impl ContentMask<Pixels> {
+@@ -2412,6 +2518,7 @@ impl Window {
+             long_press_timer: None,
+             long_press_capture: None,
+             refreshing: false,
++            last_layout_id: None,
+             activation_observers: SingleSubscriberSet::new(),
+             focus: None,
+             focus_enabled: true,
+@@ -2475,6 +2582,110 @@ impl ContentMask<Pixels> {
      }
  }
  
@@ -865,7 +1021,7 @@ index 4e2e1a7..957b575 100644
  impl Window {
      fn mark_view_dirty(&mut self, view_id: EntityId) {
          // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-@@ -2595,8 +2804,132 @@ impl Window {
+@@ -2595,8 +2806,132 @@ impl Window {
          }
      }
  
@@ -998,7 +1154,7 @@ index 4e2e1a7..957b575 100644
          self.removed = true;
      }
  
-@@ -3001,9 +3334,12 @@ impl Window {
+@@ -3001,9 +3336,12 @@ impl Window {
      /// the platform window, then notifies observers. Normally called automatically
      /// by the platform's resize callback, but exposed publicly for test infrastructure.
      pub fn bounds_changed(&mut self, cx: &mut App) {
@@ -1014,7 +1170,7 @@ index 4e2e1a7..957b575 100644
  
          self.refresh();
  
-@@ -3222,6 +3558,9 @@ impl Window {
+@@ -3222,6 +3560,9 @@ impl Window {
  
      /// Toggle zoom on the window.
      pub fn zoom_window(&self) {
@@ -1024,7 +1180,7 @@ index 4e2e1a7..957b575 100644
          self.platform_window.zoom();
      }
  
-@@ -3321,6 +3660,70 @@ impl Window {
+@@ -3321,6 +3662,70 @@ impl Window {
          self.platform_window.show_character_palette();
      }
  
@@ -1095,7 +1251,7 @@ index 4e2e1a7..957b575 100644
      /// The scale factor of the display associated with the window. For example, it could
      /// return 2.0 for a "retina" display, indicating that each logical pixel should actually
      /// be rendered as two pixels on screen.
-@@ -3507,6 +3910,12 @@ impl Window {
+@@ -3507,6 +3912,12 @@ impl Window {
      }
  
      fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
@@ -1108,7 +1264,7 @@ index 4e2e1a7..957b575 100644
          Underline {
              order: 0,
              pad: 0,
-@@ -3934,8 +4343,10 @@ impl Window {
+@@ -3934,8 +4345,10 @@ impl Window {
          let scale_factor = self.scale_factor();
          #[cfg(feature = "profiler")]
          let request_layout_start = Instant::now();
@@ -1119,7 +1275,7 @@ index 4e2e1a7..957b575 100644
          #[cfg(feature = "profiler")]
          let prepaint_start = Instant::now();
          self.layout_engine
-@@ -3974,6 +4385,7 @@ impl Window {
+@@ -3974,6 +4387,7 @@ impl Window {
  
          self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
  
@@ -1127,7 +1283,7 @@ index 4e2e1a7..957b575 100644
          // Now actually paint the elements.
          #[cfg(feature = "profiler")]
          let paint_start = Instant::now();
-@@ -3996,6 +4408,13 @@ impl Window {
+@@ -3996,6 +4410,13 @@ impl Window {
          #[cfg(any(feature = "inspector", debug_assertions))]
          self.paint_inspector_hitbox(cx);
  
@@ -1141,7 +1297,7 @@ index 4e2e1a7..957b575 100644
          #[cfg(feature = "profiler")]
          self.window_profiler
              .record_draw_phases(profiler::DrawPhases {
-@@ -4202,6 +4621,10 @@ impl Window {
+@@ -4202,6 +4623,10 @@ impl Window {
  
              let paint_start = self.paint_index();
              let content_mask = deferred_draw.content_mask;
@@ -1152,7 +1308,7 @@ index 4e2e1a7..957b575 100644
              if let Some(element) = deferred_draw.element.as_mut() {
                  let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
                      self.with_rendered_view(deferred_draw.current_view, |window| {
-@@ -4217,6 +4640,19 @@ impl Window {
+@@ -4217,6 +4642,19 @@ impl Window {
                  self.reuse_paint(deferred_draw.paint_range.clone());
              }
              let paint_end = self.paint_index();
@@ -1172,7 +1328,7 @@ index 4e2e1a7..957b575 100644
              deferred_draw.paint_range = paint_start..paint_end;
          }
          self.next_frame.deferred_draws = deferred_draws;
-@@ -4289,6 +4725,7 @@ impl Window {
+@@ -4289,6 +4727,7 @@ impl Window {
                      prepaint_range: deferred_draw.prepaint_range.clone(),
                      paint_range: deferred_draw.paint_range.clone(),
                      accessed_entities: deferred_draw.accessed_entities.clone(),
@@ -1180,7 +1336,7 @@ index 4e2e1a7..957b575 100644
                  }),
          );
      }
-@@ -4416,6 +4853,9 @@ impl Window {
+@@ -4416,6 +4855,9 @@ impl Window {
      ) -> R {
          self.invalidator.debug_assert_paint_or_prepaint();
          if let Some(mask) = mask {
@@ -1190,7 +1346,7 @@ index 4e2e1a7..957b575 100644
              let mask = mask.intersect(&self.content_mask());
              self.content_mask_stack.push(mask);
              let result = f(self);
-@@ -4458,7 +4898,9 @@ impl Window {
+@@ -4458,7 +4900,9 @@ impl Window {
          result
      }
  
@@ -1201,7 +1357,7 @@ index 4e2e1a7..957b575 100644
          &mut self,
          opacity: Option<f32>,
          f: impl FnOnce(&mut Self) -> R,
-@@ -4772,6 +5214,7 @@ impl Window {
+@@ -4772,6 +5216,7 @@ impl Window {
              prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
              paint_range: PaintIndex::default()..PaintIndex::default(),
              accessed_entities: FxHashSet::default(),
@@ -1209,7 +1365,7 @@ index 4e2e1a7..957b575 100644
          });
      }
  
-@@ -4780,10 +5223,183 @@ impl Window {
+@@ -4780,10 +5225,183 @@ impl Window {
      /// for performance reasons.
      ///
      /// This method should only be called as part of the paint phase of element drawing.
@@ -1393,7 +1549,7 @@ index 4e2e1a7..957b575 100644
          let clipped_bounds = bounds.intersect(&content_mask.bounds);
          if !clipped_bounds.is_empty() {
              self.next_frame
-@@ -4816,9 +5432,12 @@ impl Window {
+@@ -4816,9 +5434,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1406,7 +1562,7 @@ index 4e2e1a7..957b575 100644
              if shadow.inset {
                  continue;
              }
-@@ -4852,9 +5471,12 @@ impl Window {
+@@ -4852,9 +5473,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1419,7 +1575,7 @@ index 4e2e1a7..957b575 100644
              if !shadow.inset {
                  continue;
              }
-@@ -4935,6 +5557,12 @@ impl Window {
+@@ -4935,6 +5559,12 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let opacity = self.element_opacity();
@@ -1432,7 +1588,7 @@ index 4e2e1a7..957b575 100644
          let snapped_bounds = self.snap_bounds(quad.bounds);
          let snapped_border_widths = self.snap_border_widths(quad.border_widths);
          let quad = Quad {
-@@ -5009,6 +5637,11 @@ impl Window {
+@@ -5009,6 +5639,11 @@ impl Window {
          let content_mask = self.content_mask();
          let opacity = self.element_opacity();
          path.content_mask = content_mask;
@@ -1444,7 +1600,7 @@ index 4e2e1a7..957b575 100644
          let color: Background = color.into();
          path.color = color.opacity(opacity);
          self.next_frame
-@@ -5042,7 +5675,10 @@ impl Window {
+@@ -5042,7 +5677,10 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1456,7 +1612,7 @@ index 4e2e1a7..957b575 100644
          let bounds = Bounds {
              origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
              size: size(self.snap_stroke(width), self.snap_stroke(height)),
-@@ -5054,7 +5690,7 @@ impl Window {
+@@ -5054,7 +5692,7 @@ impl Window {
              pad: 0,
              bounds,
              content_mask: self.snapped_content_mask(),
@@ -1465,7 +1621,7 @@ index 4e2e1a7..957b575 100644
              color: style.color.unwrap_or_default().opacity(opacity),
              wavy: false.into(),
          });
-@@ -5080,6 +5716,9 @@ impl Window {
+@@ -5080,6 +5718,9 @@ impl Window {
  
          let element_opacity = self.element_opacity();
          let scale_factor = self.scale_factor();
@@ -1475,7 +1631,7 @@ index 4e2e1a7..957b575 100644
          let glyph_origin = origin.scale(scale_factor);
  
          let quantized_origin = Point::new(
-@@ -5100,7 +5739,7 @@ impl Window {
+@@ -5100,7 +5741,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant,
@@ -1484,7 +1640,7 @@ index 4e2e1a7..957b575 100644
              is_emoji: false,
              subpixel_rendering,
              dilation,
-@@ -5183,6 +5822,8 @@ impl Window {
+@@ -5183,6 +5824,8 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1493,7 +1649,7 @@ index 4e2e1a7..957b575 100644
          let glyph_origin = origin.scale(scale_factor);
          let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
          let params = RenderGlyphParams {
-@@ -5190,7 +5831,7 @@ impl Window {
+@@ -5190,7 +5833,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant: Default::default(),
@@ -1502,7 +1658,7 @@ index 4e2e1a7..957b575 100644
              is_emoji: true,
              subpixel_rendering: false,
              dilation: 0,
-@@ -5242,7 +5883,7 @@ impl Window {
+@@ -5242,7 +5885,7 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let element_opacity = self.element_opacity();
@@ -1511,7 +1667,7 @@ index 4e2e1a7..957b575 100644
  
          let params = RenderSvgParams {
              path,
-@@ -5311,6 +5952,9 @@ impl Window {
+@@ -5311,6 +5954,9 @@ impl Window {
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
@@ -1521,7 +1677,7 @@ index 4e2e1a7..957b575 100644
          let visible_bounds = bounds.intersect(&image_bounds);
          if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
              return Ok(());
-@@ -5324,6 +5968,7 @@ impl Window {
+@@ -5324,6 +5970,7 @@ impl Window {
              frame_index,
          };
  
@@ -1529,7 +1685,7 @@ index 4e2e1a7..957b575 100644
          let tile = self
              .sprite_atlas
              .get_or_insert_with(params.into(), &mut || {
-@@ -5336,6 +5981,7 @@ impl Window {
+@@ -5336,6 +5983,7 @@ impl Window {
                  )))
              })?
              .expect("Callback above only returns Some");
@@ -1537,7 +1693,7 @@ index 4e2e1a7..957b575 100644
  
          let visible_bounds_snapped = self.snap_bounds(visible_bounds);
  
-@@ -5411,7 +6057,7 @@ impl Window {
+@@ -5411,7 +6059,7 @@ impl Window {
  
          self.invalidator.debug_assert_paint();
  
@@ -1546,7 +1702,15 @@ index 4e2e1a7..957b575 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5864,6 +6510,7 @@ impl Window {
+@@ -5525,6 +6173,7 @@ impl Window {
+     pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
+         self.invalidator.debug_assert_prepaint();
+ 
++        self.last_layout_id = Some(layout_id);
+         let scale_factor = self.scale_factor();
+         let mut bounds = self
+             .layout_engine
+@@ -5864,6 +6513,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -1554,7 +1718,7 @@ index 4e2e1a7..957b575 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,11 +7572,17 @@ impl Window {
+@@ -6925,11 +7575,17 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -1572,7 +1736,7 @@ index 4e2e1a7..957b575 100644
          self.platform_window.toggle_fullscreen();
      }
  
-@@ -10677,4 +11330,95 @@ mod inspector_tests {
+@@ -10677,4 +11333,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }
@@ -1666,6 +1830,32 @@ index 4e2e1a7..957b575 100644
 +            [35., 32.5, 20., 25.]
 +        );
 +        assert_eq!(rect(&quads[4]), [10., 20., 100., 50.]);
++    }
++}
++
++impl Window {
++    /// Makes the layout tree a cached view computes next start where the view really sits in the layout it is placed
++    /// in: the unsnapped origin of the node whose bounds were asked for last, so every box of the view snaps to the
++    /// same device pixel as when the view's elements are laid out inline.
++    pub(crate) fn align_next_layout_root(
++        &mut self,
++        placed: Option<LayoutId>,
++        root: LayoutId,
++        snapped: Size<Pixels>,
++    ) -> Size<Pixels> {
++        let (Some(id), scale) = (placed, self.scale_factor()) else {
++            return snapped;
++        };
++        let Some(engine) = self.layout_engine.as_mut() else {
++            return snapped;
++        };
++        let origin = engine.raw_origin(id, scale);
++        engine.set_pending_root_origin(root, origin);
++        let size = engine.raw_size(id);
++        Size {
++            width: Pixels(size.width / scale),
++            height: Pixels(size.height / scale),
++        }
 +    }
  }
 diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs

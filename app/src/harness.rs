@@ -278,6 +278,35 @@ pub async fn run(
                     let _ = writeln!(output, "mobile member profile: no visible mobile member");
                 }
             }
+            ["context-user"] | ["context-dm"] | ["context-self"] => {
+                let kind = if step.ends_with("dm") {
+                    "dm"
+                } else if step.ends_with("self") {
+                    "self"
+                } else {
+                    "user"
+                };
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_context(kind, cx)));
+                let _ = writeln!(output, "{note}");
+            }
+            ["context-sub-state"] => {
+                let note = root.update(cx, |root, _| root.script_context_sub_state());
+                let _ = writeln!(output, "{note}");
+            }
+            // Fixture server only: makes a coloured and a plain role and gives the coloured one to this account.
+            ["fixture-roles"] => {
+                let note = root.update(cx, |root, _| root.script_fixture_roles());
+                let _ = writeln!(output, "{note}");
+            }
+            ["member-action", kind] => {
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_member_action(kind, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             ["friends", tab] => {
                 let note = cx.update(|cx| {
                     window.update(cx, |_, window, cx| {
@@ -545,6 +574,16 @@ pub async fn run(
                 let _ = writeln!(output, "stream start: {outcome}");
             }
             // The fixture guild's General voice channel, the only one a script can name.
+            // Calls in the test DM: starts, and official-shaped call dispatches fed to the stores (nothing is sent).
+            ["dmcall", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_dmcall(rest, cx));
+                let _ = writeln!(output, "dmcall: {line}");
+            }
+            // Capture only: the dialogs of the two-factor flow with injected answers (see `script_mfa`).
+            ["mfa", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_mfa(rest, cx));
+                let _ = writeln!(output, "mfa: {line}");
+            }
             ["voice", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_voice(rest, cx));
                 let _ = writeln!(output, "voice: {line}");
@@ -635,6 +674,21 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // Capture only: `webhook demo` posts the component messages of `webhook_demo.rs` to the fixture channel.
+            ["webhook", "demo"] => {
+                root.update(cx, |root, _| root.send_webhook_demo());
+                let _ = writeln!(output, "webhook: demo requested");
+            }
+            // Capture only: `interaction press|create|success|failure|state` (`ui/interaction_flow.rs`).
+            ["interaction", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_interaction(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `poll demo|create|delete|gateway|state|voters|end` (`ui/poll.rs`).
+            ["poll", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_poll(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // Capture only: `layers` logs the popouts and menus that are open, bottom to top (`ui/keyboard/layers.rs`).
             // Capture only: `inert` logs what inert mode refused or skipped (a link that would open the browser, ...).
             ["inert"] => {
@@ -680,6 +734,11 @@ pub async fn run(
                 let _ = writeln!(output, "{line}");
             }
             // Capture only: `content demo <set>` puts messages with clickable content into the open channel (memory only).
+            // Capture only: `vm demo|play|pause|seek|speed|volume|state` drive the voice message player.
+            ["vm", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_vm(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["content", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_content(rest, cx));
                 let _ = writeln!(output, "{line}");

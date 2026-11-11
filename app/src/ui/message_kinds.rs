@@ -130,6 +130,17 @@ impl Root {
 
     /// The gutter icon of a system line.
     fn line_icon(&self, line_icon: LineIcon) -> AnyElement {
+        // Modules 175476 and 130158: the handset, green for a call and red for a missed one, 16px (golden
+        // `design/golden/windows/dm-call`). Drawn from the local glyph so it does not wait for the asset.
+        match line_icon {
+            LineIcon::Call => {
+                return icon("system_call", 16., "--status-positive").into_any_element();
+            }
+            LineIcon::CallMissed => {
+                return icon("system_call", 16., "--red-400").into_any_element();
+            }
+            _ => {}
+        }
         if let Some((key, _)) = icon_image(line_icon) {
             return div()
                 .size(px(16.))
@@ -176,6 +187,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let line = message_kinds::system_line(message, &self.line_context())?;
+        // `.mentioned` (524434): the warning tint with a 2px warning bar, as on an ordinary message that mentions
+        // this account (the poll-result line names its author).
+        let mentioned = self.mentions_me(message);
         Some(
             div()
                 .pt(px(if head { 17. } else { 0. }))
@@ -183,6 +197,18 @@ impl Root {
                 .child(
                     div()
                         .relative()
+                        .when(mentioned, |this| {
+                            this.bg(color("--message-mentioned-background-default"))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .top_0()
+                                        .bottom_0()
+                                        .w(px(2.))
+                                        .bg(color("--icon-feedback-warning")),
+                                )
+                        })
                         .pl(px(72.))
                         .pr(px(24.))
                         .py(px(2.))
@@ -198,7 +224,12 @@ impl Root {
                                 .justify_center()
                                 .child(self.line_icon(line.icon)),
                         )
-                        .child(self.line_text(message, &line, cx)),
+                        .child(self.line_text(message, &line, cx))
+                        .children(if message.kind == message_kinds::POLL_RESULT {
+                            self.poll_result_card(message, cx)
+                        } else {
+                            None
+                        }),
                 )
                 .into_any_element(),
         )
@@ -248,6 +279,29 @@ impl Root {
             .line_height(px(22.))
             .text_color(color("--channels-default"))
             .children(pieces)
+            // Module 888675 renders `[children, timestamp]` and the action is one of the children: the link comes
+            // before the time. Module 117096: a call line is joinable while its call is active and this account is
+            // not in it.
+            .children(
+                line.action
+                    .as_ref()
+                    .filter(|_| {
+                        self.stores
+                            .calls
+                            .is_call_active(message.channel_id, Some(message.id))
+                            && !self.dm_call_in(Some(message.channel_id))
+                    })
+                    .map(|action| {
+                        // `T.A.Action`: an em dash and the link, 3px in.
+                        div().ml(px(3.)).flex().child("\u{2014}").child(
+                            div()
+                                .id(SharedString::from(format!("system-action-{}", message.id)))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-link"))
+                                .child(action.clone()),
+                        )
+                    }),
+            )
             .child(
                 div()
                     .ml(px(4.))
@@ -255,16 +309,6 @@ impl Root {
                     .font_weight(FontWeight(500.))
                     .child(header_time(message.local_time(), chrono::Local::now())),
             )
-            .children(line.action.as_ref().map(|action| {
-                // `T.A.Action`: an em dash and the link, 3px in.
-                div().ml(px(3.)).flex().child("\u{2014}").child(
-                    div()
-                        .id(SharedString::from(format!("system-action-{}", message.id)))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--text-link"))
-                        .child(action.clone()),
-                )
-            }))
             .into_any_element()
     }
 
@@ -583,6 +627,40 @@ impl Root {
                         .insert("custom-animated:999000000000000001".to_owned());
                 }
             }
+            "alt" => {
+                // A spoiler in a line, and a picture whose sender wrote a description (shown by "Show image
+                // descriptions"). The picture comes from `GRAVECORD_DEMO_EMOJI_FILE` instead of the network.
+                push(0, "a line with ||a hidden spoiler|| inside", json!({}));
+                push(
+                    0,
+                    "",
+                    json!({"attachments": [{"id": "777001", "filename": "cat.png", "size": 1000,
+                        "url": "https://cdn.example.invalid/cat.png", "proxy_url": "https://cdn.example.invalid/cat.png",
+                        "content_type": "image/png", "width": 320, "height": 200,
+                        "description": "A grey cat asleep on a windowsill in the morning sun"}]}),
+                );
+                // An animated upload: "Play animated GIFs" decides whether it moves.
+                push(
+                    0,
+                    "",
+                    json!({"attachments": [{"id": "777002", "filename": "anim.gif", "size": 1000,
+                        "url": "https://cdn.example.invalid/anim.gif", "proxy_url": "https://cdn.example.invalid/anim.gif",
+                        "content_type": "image/gif", "width": 160, "height": 100}]}),
+                );
+                if let Some(bytes) = std::env::var_os("GRAVECORD_DEMO_EMOJI_FILE")
+                    .and_then(|path| std::fs::read(path).ok())
+                {
+                    for key in ["attachment:777001", "attachment:777002"] {
+                        self.images.insert(
+                            key.to_owned(),
+                            std::sync::Arc::new(gpui::Image::from_bytes(
+                                gpui::ImageFormat::Webp,
+                                bytes.clone(),
+                            )),
+                        );
+                    }
+                }
+            }
             "avatar" => {
                 // Two messages from a user whose avatar hash is animated (`a_`) and one from a user whose is not. The
                 // picture of the first comes from the file named by `GRAVECORD_DEMO_AVATAR_FILE` (an animated WebP)
@@ -608,6 +686,98 @@ impl Root {
                         self.requested.insert(key);
                     }
                 }
+            }
+            "command-feedback" => {
+                // A deferred reply (the loading flag) and a private reply.
+                let bot = json!({"id": "902", "username": "Helper", "bot": true});
+                push(
+                    20,
+                    "",
+                    json!({"author": bot, "flags": 128, "interaction": {"id": "1", "type": 2, "name": "ping", "user": author(901, "grace")}}),
+                );
+                push(
+                    20,
+                    "Only the person who ran it sees this",
+                    json!({"author": bot, "flags": 64, "interaction": {"id": "2", "type": 2, "name": "secret", "user": author(901, "grace")}}),
+                );
+            }
+            "components" => {
+                // A bot's message under each control: every button style, the five selects, and a disabled row.
+                let bot = json!({"id": "902", "username": "Helper", "bot": true});
+                let button = |style: u64, label: &str, id: &str| json!({"type": 2, "style": style, "label": label, "custom_id": id});
+                push(
+                    0,
+                    "Pick one of these",
+                    json!({"author": bot, "application_id": "902", "components": [
+                        {"type": 1, "components": [
+                            button(1, "Primary", "p"),
+                            button(2, "Secondary", "s"),
+                            button(3, "Success", "g"),
+                            button(4, "Danger", "d"),
+                            {"type": 2, "style": 5, "label": "Open the docs", "url": "https://discord.com/developers/docs"},
+                            {"type": 2, "style": 1, "label": "Disabled", "custom_id": "x", "disabled": true},
+                            {"type": 2, "style": 2, "emoji": {"name": "\u{1f44d}"}, "custom_id": "e"}
+                        ]}
+                    ]}),
+                );
+                push(
+                    0,
+                    "A string select, a multi select",
+                    json!({"author": bot, "application_id": "902", "components": [
+                        {"type": 1, "components": [{"type": 3, "custom_id": "one", "placeholder": "Choose a color", "options": [
+                            {"label": "Red", "value": "r", "description": "The warm one"},
+                            {"label": "Green", "value": "g"},
+                            {"label": "Blue", "value": "b", "default": true}
+                        ]}]},
+                        {"type": 1, "components": [{"type": 3, "custom_id": "many", "min_values": 1, "max_values": 3, "options": [
+                            {"label": "Alpha", "value": "a", "default": true},
+                            {"label": "Beta", "value": "b", "default": true},
+                            {"label": "Gamma", "value": "c"}
+                        ]}]}
+                    ]}),
+                );
+                push(
+                    0,
+                    "Entity selects",
+                    json!({"author": bot, "application_id": "902", "components": [
+                        {"type": 1, "components": [{"type": 5, "custom_id": "u", "placeholder": "Select a user"}]},
+                        {"type": 1, "components": [{"type": 6, "custom_id": "r", "placeholder": "Select a role"}]},
+                        {"type": 1, "components": [{"type": 8, "custom_id": "c", "placeholder": "Select a channel", "channel_types": [0]}]},
+                        {"type": 1, "components": [{"type": 7, "custom_id": "m", "disabled": true, "placeholder": "Disabled mentionable"}]}
+                    ]}),
+                );
+            }
+            "components-v2" => {
+                // The newer layout: a container with an accent, a section with a thumbnail, text, a separator, a
+                // gallery and a file, then loose buttons.
+                let bot = json!({"id": "902", "username": "Helper", "bot": true});
+                push(
+                    0,
+                    "",
+                    json!({"author": bot, "application_id": "902", "flags": 32768, "components": [
+                        {"type": 10, "content": "# Release notes\nWhat changed this week, with a [link](https://discord.com)."},
+                        {"type": 17, "accent_color": 5793266, "components": [
+                            {"type": 9, "components": [
+                                {"type": 10, "content": "**Server status**"},
+                                {"type": 10, "content": "All systems are running."}
+                            ], "accessory": {"type": 11, "media": {"url": "https://cdn.discordapp.com/embed/avatars/1.png"}}},
+                            {"type": 14, "divider": true, "spacing": 1},
+                            {"type": 10, "content": "Reduced text inside a container."},
+                            {"type": 12, "items": [
+                                {"media": {"url": "https://cdn.discordapp.com/embed/avatars/2.png", "width": 128, "height": 128}},
+                                {"media": {"url": "https://cdn.discordapp.com/embed/avatars/3.png", "width": 128, "height": 128}}
+                            ]},
+                            {"type": 13, "file": {"url": "attachment://report.txt"}, "name": "report.txt", "size": 1234},
+                            {"type": 1, "components": [
+                                {"type": 2, "style": 1, "label": "Approve", "custom_id": "ok"},
+                                {"type": 2, "style": 2, "label": "Later", "custom_id": "later"}
+                            ]}
+                        ]},
+                        {"type": 14, "divider": true, "spacing": 2},
+                        {"type": 9, "components": [{"type": 10, "content": "A section with a button"}],
+                         "accessory": {"type": 2, "style": 2, "label": "Open", "custom_id": "open"}}
+                    ]}),
+                );
             }
             other => return format!("messages: no demo set {other}"),
         }

@@ -33,6 +33,7 @@ mod activity_host;
 mod activity_launch;
 mod activity_shelf;
 mod add_server;
+mod alt_text;
 mod apps;
 mod attachment_modal;
 mod audio_menu;
@@ -46,6 +47,8 @@ mod channel_settings;
 mod channel_settings_pages;
 mod clips;
 mod code_copy;
+mod command_feedback;
+mod components;
 mod composer_plus;
 #[cfg(feature = "capture")]
 mod content_demo;
@@ -73,6 +76,8 @@ mod guild_notifications;
 mod history;
 mod home;
 mod inbox;
+mod interaction_flow;
+mod interaction_modal;
 mod inventory_feed;
 mod inventory_popout;
 mod invite;
@@ -84,6 +89,7 @@ mod links;
 mod live_activity;
 pub mod login;
 mod logout;
+mod member_actions;
 mod message_header;
 mod message_kinds;
 mod message_tips;
@@ -98,6 +104,7 @@ mod tray;
 mod unread_badges;
 mod unread_dms;
 mod update_button;
+mod voice_message;
 pub use logout::RootEvent;
 #[cfg(feature = "capture")]
 mod avatar_demo;
@@ -138,6 +145,7 @@ mod permission_spec;
 mod picker;
 mod pins;
 mod plaintext_extensions;
+mod poll;
 mod profile;
 mod profile_art;
 mod profile_editor;
@@ -180,6 +188,9 @@ mod server_landing;
 mod server_welcome;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
+mod dm_call;
+mod dm_call_view;
+mod incoming_call;
 mod member_safety;
 mod member_window;
 mod server_members;
@@ -289,7 +300,7 @@ fn desaturated(colour: Rgba, factor: f32) -> Rgba {
     hsl.into()
 }
 
-fn color(name: &str) -> Rgba {
+pub(crate) fn color(name: &str) -> Rgba {
     let colour = settings::client_theme::overlay(name)
         .or_else(|| settings::client_theme::high_contrast(name, theme()))
         .unwrap_or_else(|| rgba(theme().color(name)));
@@ -416,6 +427,10 @@ pub struct Root {
     /// The reply bar's @ switch: whether the reply pings its author.
     reply_ping: bool,
     menu: Option<menu::OpenMenu>,
+    /// What a right press landed on (a link, a picture) and where, set by that element before the message row's own
+    /// handler opens the menu.
+    menu_hit: Option<(gpui::Point<gpui::Pixels>, menu::Hit)>,
+    menu_extra: menu::MenuExtra,
     /// The menu that ran the last action, for actions that open beside it.
     last_menu: Option<menu::OpenMenu>,
     confirm_delete: Option<Id>,
@@ -435,6 +450,7 @@ pub struct Root {
     file_language: HashMap<Id, String>,
     file_expanded: Option<dc_state::Attachment>,
     view_reactions: Option<reactions_modal::ViewReactions>,
+    polls: poll::PollUi,
     audio_menu: Option<audio_menu::AudioMenu>,
     /// The voice channel's call view: its idle timer, menus and docked chat.
     vv: voice_view::State,
@@ -465,6 +481,8 @@ pub struct Root {
     friend_menu: Option<friends::FriendMenu>,
     confirm_remove_friend: Option<friends::RemoveFriend>,
     friend_nickname: Option<friend_nickname::Dialog>,
+    /// Kick, Ban, Timeout and Remove Timeout of a member's menu.
+    member_action: Option<member_actions::Dialog>,
     quick_switcher: Option<quickswitcher::QuickSwitcher>,
     activity_shelf: Option<activity_shelf::ActivityShelf>,
     activities: activity_launch::Activities,
@@ -485,6 +503,14 @@ pub struct Root {
     requested_invites: HashSet<String>,
     /// Images this client draws itself (invite banners), by key.
     generated_images: std::cell::RefCell<HashMap<String, std::sync::Arc<gpui::Image>>>,
+    /// The voice message players: loaded clips, each pill's position and bars, the shared speed and volume.
+    voice_hub: std::rc::Rc<std::cell::RefCell<voice_message::Hub>>,
+    voice_rec: std::rc::Rc<std::cell::RefCell<voice_message::RecState>>,
+    /// Capture only: the key and length of the message `voice demo` added.
+    #[cfg(feature = "capture")]
+    voice_demo_key: Option<String>,
+    #[cfg(feature = "capture")]
+    voice_demo_seconds: f64,
     /// A server joined from an invite card, opened once its GUILD_CREATE arrives.
     pending_join: Option<Id>,
     /// A message sent from a popout to someone without a DM yet: open the DM once it exists.
@@ -520,6 +546,9 @@ pub struct Root {
     /// The Log Out confirmation of the settings sidebar.
     logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
+    /// The select list open under a bot message, and the presses in flight (`components`, `interaction_flow`).
+    components: components::State,
+    interaction_ui: interaction_flow::State,
     /// The Schedule Message modal, the "+" menu's submenu and the create request in flight.
     schedule: schedule_message::State,
     /// The window's size as of the last frame, for the viewer's room.
@@ -552,6 +581,10 @@ pub struct Root {
     profile: Option<profile::Popout>,
     /// The voice call, from joining until leaving.
     call: Option<voice::Call>,
+    /// A call asked for with a person whose DM did not exist yet: (video), started when the DM opens.
+    pending_call: Option<bool>,
+    dmc: dm_call_view::State,
+    ring_audio: incoming_call::RingAudio,
     video: voice_video::Video,
     /// The Go Live picker, while open.
     go_live: Option<go_live::State>,
@@ -638,6 +671,7 @@ impl Root {
         let composer = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_spellcheck(true);
+            editor.set_markdown_preview(true);
             editor
         });
         cx.subscribe(&composer, |this, composer, event, cx| match event {
@@ -729,6 +763,8 @@ impl Root {
             replying: None,
             reply_ping: true,
             menu: None,
+            menu_hit: None,
+            menu_extra: menu::MenuExtra::default(),
             last_menu: None,
             confirm_delete: None,
             show_members: false,
@@ -745,6 +781,7 @@ impl Root {
             file_language: HashMap::new(),
             file_expanded: None,
             view_reactions: None,
+            polls: poll::PollUi::default(),
             audio_menu: None,
             vv: voice_view::State::default(),
             invite: None,
@@ -773,6 +810,7 @@ impl Root {
             friend_menu: None,
             confirm_remove_friend: None,
             friend_nickname: None,
+            member_action: None,
             quick_switcher: None,
             activity_shelf: None,
             activities: Default::default(),
@@ -789,6 +827,12 @@ impl Root {
             profile_editor: None,
             requested_invites: HashSet::new(),
             generated_images: std::cell::RefCell::new(HashMap::new()),
+            voice_hub: std::rc::Rc::new(std::cell::RefCell::new(voice_message::Hub::new())),
+            voice_rec: std::rc::Rc::new(std::cell::RefCell::new(voice_message::RecState::new())),
+            #[cfg(feature = "capture")]
+            voice_demo_key: None,
+            #[cfg(feature = "capture")]
+            voice_demo_seconds: 0.,
             pending_join: None,
             open_dm_after_send: false,
             mention_filter: inbox::MentionFilter::stored(),
@@ -815,6 +859,8 @@ impl Root {
             leave_guild: None,
             logout_confirm: false,
             poll: None,
+            components: components::State::default(),
+            interaction_ui: interaction_flow::State::default(),
             viewport: (1280., 720.),
             unread_from: None,
             jump: jump::JumpUi::default(),
@@ -831,6 +877,9 @@ impl Root {
             content_width: 793.,
             profile: None,
             call: None,
+            pending_call: None,
+            dmc: Default::default(),
+            ring_audio: Default::default(),
             video: Default::default(),
             go_live: None,
             go_live_generation: 0,
@@ -916,6 +965,8 @@ impl Root {
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 self.stores.dispatch(&name, &data);
+                self.calls_after_dispatch(&name, cx);
+                self.interaction_dispatched(&name, &data, cx);
                 if name == "READY" {
                     self.inventory_connection_open();
                     self.detect_ready();
@@ -1071,6 +1122,10 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
             Update::Fetched { key, body } => {
+                if key.starts_with(voice_message::VOICE_SEND_KEY) {
+                    self.voice_sent(&body, cx);
+                    return;
+                }
                 if key.starts_with(role_popout::IDS_PREFIX)
                     || key.starts_with(role_popout::COUNTS_PREFIX)
                 {
@@ -1080,8 +1135,21 @@ impl Root {
                 if self.profile_effect_fetched(&key, &body, cx) {
                     return;
                 }
+                #[cfg(feature = "capture")]
+                if key == "webhook-demo" {
+                    self.webhook_demo_done(&body);
+                    return;
+                }
+                if let Some(nonce) = key.strip_prefix("interaction:") {
+                    self.interaction_answered(nonce, &body, cx);
+                    return;
+                }
                 if key == settings::SESSIONS_LOGOUT_KEY {
                     self.sessions_logout_answered(&body);
+                    return;
+                }
+                if key == settings::MFA_KEY || key == settings::MFA_CREDENTIALS_KEY {
+                    self.mfa_answered(&key, &body, cx);
                     return;
                 }
                 if key == settings::ACCOUNT_USERNAME_KEY {
@@ -1123,6 +1191,9 @@ impl Root {
                     return;
                 }
                 if self.friend_nickname_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.member_action_fetched(&key, &body, cx) {
                     return;
                 }
                 if key.starts_with("presence-button:") {
@@ -1312,6 +1383,10 @@ impl Root {
                     self.server_page_fetched(&key, cx);
                     return;
                 }
+                if key.starts_with(poll::VOTE_KEY) {
+                    self.poll_vote_answered(&key, &body, cx);
+                    return;
+                }
                 if key.starts_with(server_games::GAMES_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.games_fetched(&key, cx);
@@ -1363,6 +1438,9 @@ impl Root {
                 self.fetched.insert(key.clone(), body);
                 if key.starts_with("invite:") {
                     self.invite_fetched(&key);
+                }
+                if key.starts_with(poll::VOTERS_PREFIX) {
+                    self.poll_voters_fetched(&key);
                 }
                 if gif_answer {
                     self.request_gif_images(&key);
@@ -1641,6 +1719,8 @@ impl Root {
                 media.extend(embed::wanted(message));
                 media.extend(files::wanted(message));
                 media.extend(stickers::wanted(message));
+                media.extend(poll::wanted(message));
+                media.extend(components::wanted(message));
             }
             for attachment in messages
                 .iter()
@@ -2643,7 +2723,11 @@ impl Root {
                     .flex_1()
                     .min_w(px(0.))
                     .h(px(18.))
-                    .child(self.preview_text(&text, over))
+                    .child(if text.is_empty() && referenced.is_voice_message() {
+                        self.voice_reply_placeholder(over)
+                    } else {
+                        self.preview_text(&text, over).into_any_element()
+                    })
                     .child(motion::hover_probe(text_key)),
             )
     }
@@ -2714,6 +2798,7 @@ impl Root {
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
         list.extend(self.custom_status.as_ref().map(|open| open.input.clone()));
         list.extend(self.friend_nickname.as_ref().map(|open| open.input.clone()));
+        list.extend(self.member_action_input());
         list.extend(self.modify_attachment_editors());
         if let Some(form) = self.poll.as_ref() {
             list.push(form.question.clone());
@@ -3795,6 +3880,8 @@ impl Root {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let in_voice = self.call.as_ref().is_some_and(|call| call.connected);
+        // `9FaEzi` "In a call" with the phone glyph while the call is a DM's.
+        let dm_call = self.call.as_ref().is_some_and(|call| call.guild == 0);
         // Muted and deafened buttons turn red with their chevron: `redGlow_Y-8oZW`.
         let tint = |muted: bool| {
             if muted {
@@ -3973,6 +4060,8 @@ impl Root {
                                     .child(icon(
                                         if sharing {
                                             "voice_status_sharing"
+                                        } else if dm_call {
+                                            "status_in_call"
                                         } else {
                                             "voice_status_in_voice"
                                         },
@@ -3981,6 +4070,8 @@ impl Root {
                                     ))
                                     .child(if sharing {
                                         "Sharing their screen"
+                                    } else if dm_call {
+                                        "In a call"
                                     } else {
                                         "In voice"
                                     })
@@ -4103,6 +4194,16 @@ impl Root {
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.header_with(cx, false)
+    }
+
+    /// The channel header. `in_call_area` draws it inside a DM's call area (module 540462 `useExternalHeader`, theme
+    /// dark): no fill and no bottom border (`transparent_ybUK7Z`), the profile button dimmed.
+    pub(super) fn header_with(
+        &self,
+        cx: &mut Context<Self>,
+        in_call_area: bool,
+    ) -> impl IntoElement {
         let name = self.channel_title();
         let dm_user = self
             .current_dm()
@@ -4155,13 +4256,15 @@ impl Root {
             .parity_below("chat-header", 1.)
             .flex_none()
             .h(px(49.))
-            .border_b_1()
-            .border_color(color("--background-mod-subtle"))
-            .pl(px(15.))
+            .when(!in_call_area, |this| {
+                this.border_b_1()
+                    .border_color(color("--background-mod-subtle"))
+                    .bg(color("--background-base-lower"))
+            })
+            .pl(px(if in_call_area { 16. } else { 15. }))
             .pr(px(8.))
             .flex()
             .items_center()
-            .bg(color("--background-base-lower"))
             .when(self.guild.is_some(), |this| {
                 // 353428: the title's icon is the channel list's own (`gU(channel, guild)`), never `locked`.
                 let name = match self.current_channel() {
@@ -4215,33 +4318,81 @@ impl Root {
                         .bold_opacity(0.9),
                     ),
             )
+            // `dmHeaderActivityStatus_z_gUBg`: 8px after the title, 4px gap, the clickable part 2px 4px with an 8px
+            // radius holding the activity's glyph and text (14px / 18px medium).
+            .children(
+                dm_user
+                    .as_ref()
+                    .and_then(|user| {
+                        self.presence_line_with(user, None, false, 18., "--text-default")
+                    })
+                    .map(|line| {
+                        div().ml(px(8.)).min_w(px(0.)).flex().items_center().child(
+                            div()
+                                .min_w(px(0.))
+                                .px(px(4.))
+                                .py(px(2.))
+                                .rounded(px(8.))
+                                .child(line),
+                        )
+                    }),
+            )
             .child(div().flex_1())
             .when(dm_user.is_some(), |this| {
                 let shown = self.show_dm_profile;
+                // In a call the profile panel is hidden and its button disabled (`iconDisabled_ybUK7Z`, opacity .6).
+                let profile_disabled = in_call_area && self.dm_call_in(self.channel);
                 this.child(
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(self.header_stop(
-                            self.with_tip(
-                                "dm-call",
-                                Tip::text("Start Voice Call", Side::Bottom),
-                                tool("dm_call"),
-                                cx,
-                            ),
-                            "dm-call",
-                            cx,
-                        ))
-                        .child(self.header_stop(
-                            self.with_tip(
-                                "dm-video",
-                                Tip::text("Start Video Call", Side::Bottom),
-                                tool("dm_video"),
-                                cx,
-                            ),
-                            "dm-video",
-                            cx,
-                        ))
+                        .children(
+                            self.channel
+                                .map(|channel| {
+                                    let buttons = self.dm_call_buttons(
+                                        channel,
+                                        dm_user.as_ref().map(|user| user.id),
+                                    );
+                                    let one = |id: &'static str,
+                                       icon_name: &str,
+                                       video: bool,
+                                       state: Option<(&'static str, bool)>,
+                                       cx: &mut Context<Self>| {
+                                state.map(|(tip, disabled)| {
+                                    let button = self.header_stop(
+                                        self.with_tip(
+                                            id,
+                                            Tip::text(tip, Side::Bottom),
+                                            tool(icon_name),
+                                            cx,
+                                        ),
+                                        id,
+                                        cx,
+                                    );
+                                    if disabled {
+                                        button
+                                    } else {
+                                        button.cursor_pointer().on_click(cx.listener(
+                                            move |this, event: &gpui::ClickEvent, _, cx| {
+                                                this.tip = None;
+                                                let shift = event.modifiers().shift;
+                                                this.dm_call_clicked(channel, video, shift, cx);
+                                            },
+                                        ))
+                                    }
+                                })
+                            };
+                                    [
+                                        one("dm-call", "dm_call", false, buttons.voice, cx),
+                                        one("dm-video", "dm_video", true, buttons.video, cx),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                })
+                                .into_iter()
+                                .flatten(),
+                        )
                         .child(
                             self.header_stop(
                                 self.with_tip(
@@ -4292,11 +4443,15 @@ impl Root {
                                     ),
                                     div()
                                         .id("toggle-dm-profile")
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.show_dm_profile = !this.show_dm_profile;
-                                            cx.notify();
-                                        }))
+                                        .when(!profile_disabled, |this| {
+                                            this.cursor_pointer().on_click(cx.listener(
+                                                |this, _, _, cx| {
+                                                    this.show_dm_profile = !this.show_dm_profile;
+                                                    cx.notify();
+                                                },
+                                            ))
+                                        })
+                                        .when(profile_disabled, |this| this.opacity(0.6))
                                         .size(px(32.))
                                         .flex()
                                         .items_center()
@@ -4744,6 +4899,17 @@ impl Root {
             });
         }
         let links = link_runs(spans);
+        if links.iter().any(Option::is_some) {
+            let root = self.weak.clone();
+            let runs = links.clone();
+            element = element.on_piece_context(move |piece, at, _, cx| {
+                if let Some(Some((url, label))) = runs.get(piece).cloned() {
+                    let _ = root.update(cx, |this, _| {
+                        this.menu_hit = Some((at, menu::Hit::Link { url, label }));
+                    });
+                }
+            });
+        }
         // A user mention opens that person's profile, a channel mention the channel.
         let mentions: Vec<Option<(bool, u64)>> = spans
             .iter()
@@ -5048,8 +5214,10 @@ impl Root {
                     .cloned();
                 let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
                 let hovered = key.clone();
+                let (url, media_key) = (attachment.url.clone(), key.clone());
                 div()
                     .id(SharedString::from(format!("attachment-{}", attachment.id)))
+                    .relative()
                     .w(width)
                     .h(height)
                     .rounded(px(8.))
@@ -5058,12 +5226,25 @@ impl Root {
                     .children(image.map(|image| {
                         self.media_image(img(image).w(width).h(height).rounded(px(8.)), &key)
                     }))
+                    .children(self.alt_text_overlay(attachment, cx))
                     .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                         this.media_hover(&hovered, *inside, cx)
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_lightbox(&clicked, &key, cx);
                     }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.menu_hit = Some((
+                                event.position,
+                                menu::Hit::Media {
+                                    url: url.clone(),
+                                    key: media_key.clone(),
+                                },
+                            ));
+                        }),
+                    )
                     .into_any_element()
             })
             .collect();
@@ -5105,28 +5286,48 @@ impl Root {
             let hovered = key.clone();
             let image = self.images.get(&key).cloned();
             let clicked = message.clone();
+            let (url, media_key) = (attachment.url.clone(), key.clone());
             let (w, h) = (px(size.0), px(size.1));
             div()
                 .id(SharedString::from(format!("mosaic-{}", attachment.id)))
+                .relative()
                 .w(w)
                 .h(h)
                 .flex_none()
                 .rounded(px(8.))
-                .overflow_hidden()
                 .cursor_pointer()
                 .bg(color("--background-base-low"))
-                .children(image.map(|image| {
-                    self.media_image(
-                        img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover),
-                        &key,
-                    )
-                }))
+                .child(
+                    div()
+                        .size_full()
+                        .rounded(px(8.))
+                        .overflow_hidden()
+                        .children(image.map(|image| {
+                            self.media_image(
+                                img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover),
+                                &key,
+                            )
+                        })),
+                )
+                .children(self.alt_text_overlay(attachment, cx))
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                     this.media_hover(&hovered, *inside, cx)
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.open_lightbox(&clicked, &key, cx);
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                        this.menu_hit = Some((
+                            event.position,
+                            menu::Hit::Media {
+                                url: url.clone(),
+                                key: media_key.clone(),
+                            },
+                        ));
+                    }),
+                )
                 .into_any_element()
         };
         let mut next = 0;
@@ -5311,7 +5512,9 @@ impl Root {
             self.files(message, cx),
             self.embeds(message, cx),
             self.message_stickers(message.id, &message.sticker_items, cx),
+            self.message_components(message, cx),
             self.invite_cards(message, cx),
+            self.poll_card(message, cx),
         ]
         .into_iter()
         .flatten()
@@ -5600,12 +5803,16 @@ impl Root {
                     Some(editor) => self.edit_box(editor).into_any_element(),
                     None if missing_starter => self.starter_missing_line(message),
                     None => div()
-                        .when(!message.content_is_inline_media(), |this| {
-                            this.child(self.content(message))
-                        })
+                        .when(
+                            !message.content_is_inline_media()
+                                && !self.command_replaces_content(message),
+                            |this| this.child(self.content(message)),
+                        )
+                        .children(self.command_status(message))
                         .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
+                        .children(self.ephemeral_notice(message, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -6297,6 +6504,66 @@ impl Root {
         let apps_button = tool("apps", cx).on_click(cx.listener(|this, _, window, cx| {
             this.open_launcher(window, cx);
         }));
+        // The send button (`eu`, module 4025): a 1px separator and a 32px button after the other buttons, drawn when
+        // `AccessibilityStore.isSubmitButtonEnabled` is on and disabled while there is no text, upload or sticker
+        // (`.button_plpOf8`, `.activeButtonChild_plpOf8`: `--text-brand`, `--icon-muted` when disabled).
+        let send_button = self
+            .pref_on("enable_send_button_outside_experiment", false)
+            .then(|| {
+                let empty =
+                    self.composer.read(cx).text().is_empty() && self.pending_files.is_empty();
+                let light = matches!(theme(), Theme::Light);
+                div()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(1.))
+                            .h(px(22.))
+                            .mr(px(8.))
+                            .bg(color("--border-normal")),
+                    )
+                    .child(
+                        div()
+                            .id("composer-send")
+                            .size(px(32.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(8.))
+                            .when(empty, |button| {
+                                button
+                                    .cursor_not_allowed()
+                                    .text_color(color("--icon-muted"))
+                            })
+                            .when(!empty, |button| {
+                                button
+                                    .cursor_pointer()
+                                    .text_color(color("--text-brand"))
+                                    .hover(|style| {
+                                        style
+                                            .bg(color("--interactive-background-selected"))
+                                            .text_color(color(if light {
+                                                "--brand-560"
+                                            } else {
+                                                "--brand-430"
+                                            }))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.autocomplete.open = None;
+                                        this.composer.update(cx, |editor, cx| editor.submit(cx));
+                                        cx.notify();
+                                    }))
+                            })
+                            .child(
+                                svg()
+                                    .path("icons/send_message.svg")
+                                    .size(px(20.))
+                                    .flex_none(),
+                            ),
+                    )
+            });
         // The form overlaps the list by 16px, as the official layout does.
         div()
             .relative()
@@ -6330,8 +6597,9 @@ impl Root {
                     .children(self.upload_area(cx))
                     .children(reply_bar)
                     .children(self.schedule_bar(cx))
-                    .child(
-                        div()
+                    .child(match self.voice_bar(cx) {
+                        Some(bar) => bar,
+                        None => div()
                             .flex()
                             .items_start()
                             .pl(px(11.))
@@ -6387,9 +6655,11 @@ impl Root {
                                             .child(sticker_button)
                                     })
                                     .child(emoji_button)
-                                    .child(apps_button),
-                            ),
-                    ),
+                                    .child(apps_button)
+                                    .children(send_button),
+                            )
+                            .into_any_element(),
+                    }),
             )
     }
 }
@@ -6703,6 +6973,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.interaction_modal_frame(window, cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -6758,6 +7029,11 @@ impl Render for Root {
         self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
         set_saturation(self.saturation_factor());
+        // The composer styles typed markdown unless the legacy input is on or the preview is off (module 814390).
+        crate::markup_preview::set_enabled(
+            self.pref_on("chat_text_box_previews", true)
+                && !self.pref_on("enable_legacy_chat_input", false),
+        );
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
             self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
@@ -6778,6 +7054,7 @@ impl Render for Root {
                 self.pref_on("display_name_styles", true),
                 settings::client_theme::active().map(|swatch| swatch.name),
                 settings::client_theme::previewing(),
+                settings::client_theme::generation(),
                 self.pref_index(settings::prefs::TIME_FORMAT, 0),
             )),
             window,
@@ -6806,7 +7083,7 @@ impl Render for Root {
         let members = if self.new_thread.is_some() {
             // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
             480.
-        } else if self.current_dm().is_some() && self.show_dm_profile {
+        } else if self.current_dm().is_some() && self.show_dm_profile && !self.dm_call_shown() {
             320.
         } else if self.show_members && self.guild.is_some() {
             self.member_list_width()
@@ -6875,6 +7152,17 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Enter in the recorder bar stops the recording or sends the draft; the bar has no text field.
+                if keys.key == "enter"
+                    && !keys.modifiers.modified()
+                    && this
+                        .channel
+                        .is_some_and(|channel| this.voice_rec.borrow().active_in(channel))
+                {
+                    this.voice_record_send(cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.modifiers.control && !keys.modifiers.alt && this.zoom_key(&keys.key, cx) {
                     cx.stop_propagation();
                     return;
@@ -6907,6 +7195,11 @@ impl Render for Root {
                 // 165862 closes the whole menu on Escape, before an underlying field consumes it.
                 if keys.key == "escape" && this.picker.is_none() && this.context.open.is_some() {
                     this.close_context_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && alt_text::close() {
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -7159,11 +7452,13 @@ impl Render for Root {
                 if event.keystroke.key == "escape"
                     && (this.friend_menu.is_some()
                         || this.confirm_remove_friend.is_some()
-                        || this.friend_nickname.is_some())
+                        || this.friend_nickname.is_some()
+                        || this.member_action.is_some())
                 {
                     this.friend_menu = None;
                     this.confirm_remove_friend = None;
                     this.friend_nickname = None;
+                    this.member_action = None;
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -7181,8 +7476,15 @@ impl Render for Root {
                     this.pins_open = None;
                     cx.notify();
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.polls.modal_open() {
+                    this.polls.escape();
+                    cx.notify();
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.forward.is_some() {
                     this.forward = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.interaction_modal_escape() {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
@@ -7277,13 +7579,14 @@ impl Render for Root {
                 color("--background-base-lowest")
             })
             .when(settings::client_theme::previewing(), |root| {
-                root.pr(px(298.))
+                root.pr(px(settings::client_theme::panel_width()))
             })
             .children({
                 let size = window.viewport_size();
                 self.theme_backdrop(f32::from(size.width), f32::from(size.height))
             })
             .children(self.theme_preview_panel(cx))
+            .children(self.custom_theme_panel(cx))
             .children(self.settings_layer(window, cx))
             .children(self.profile_editor_layer(window, cx))
             .children(self.profile_editor_picker_layer(window, cx))
@@ -7415,10 +7718,15 @@ impl Render for Root {
                                 .h_full()
                                 .pt(px(1.))
                                 .overflow_hidden()
-                                .child(self.regions.place(
-                                    regions::Kind::Header,
-                                    regions::style_of(regions::Kind::Header),
-                                ))
+                                .child(match self.dm_call_area(window, cx) {
+                                    // The header moves into the call area while a call shows (module 540462
+                                    // `useExternalHeader`).
+                                    Some(area) => area,
+                                    None => self.regions.place(
+                                        regions::Kind::Header,
+                                        regions::style_of(regions::Kind::Header),
+                                    ),
+                                })
                                 .child(
                                     div()
                                         .flex()
@@ -7517,10 +7825,12 @@ impl Render for Root {
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))
             .children(self.view_reactions_modal(cx))
+            .children(self.poll_modals(cx))
             .children(self.audio_menu_layer(cx))
             .children(self.voice_panel_layer(window, cx))
             .children(self.go_live_layer(cx))
             .children(self.camera_error_modal(cx))
+            .children(self.incoming_call_layer(window, cx))
             .children(self.search_filters_modal(cx))
             .children(self.add_server_modal(cx))
             .children(self.invite_modal(cx))
@@ -7534,6 +7844,7 @@ impl Render for Root {
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
+            .children(self.member_action_layer(window, cx))
             .children(self.inventory_about_layer(cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
@@ -7554,6 +7865,7 @@ impl Render for Root {
             .children(self.remediation_modal(cx))
             .children(self.report_modal(cx))
             .children(self.custom_reminder_modal(cx))
+            .children(self.interaction_modal(cx))
             .children(self.status_popout_layer(cx))
             .children(self.custom_status_modal(cx))
             .children(self.plus_menu_layer(window, cx))

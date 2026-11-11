@@ -234,6 +234,8 @@ pub struct MessageExtra {
     pub activity: Option<u64>,
     /// Whether `components` is not empty.
     pub has_components: bool,
+    /// `components`: the controls and layout parts under the message (`components` module).
+    pub components: Vec<super::components::Component>,
     /// `referenced_message` was sent as `null`: the message this one points at was deleted.
     pub reference_deleted: bool,
 }
@@ -248,6 +250,24 @@ pub struct Poll {
     pub finalized: bool,
     /// Votes per answer, when the results are already in.
     pub counts: Vec<u64>,
+    /// `answers[].answer_id`, in the order of `answers`.
+    pub answer_ids: Vec<u64>,
+    /// `answers[].poll_media.emoji`.
+    pub emoji: Vec<Option<PollEmoji>>,
+    /// `answers[].poll_media.attachment_ids`: the pictures of an image-only answer.
+    pub attachments: Vec<Vec<Id>>,
+    /// `results.answer_counts[].me_voted`: whether this account picked the answer.
+    pub me_voted: Vec<bool>,
+    /// `layout_type`: 1 default, 2 image-only answers (module 744593).
+    pub layout: u64,
+}
+
+/// `poll_media.emoji`: a custom emoji by id, or a unicode one by its characters.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PollEmoji {
+    pub id: Option<Id>,
+    pub name: String,
+    pub animated: bool,
 }
 
 impl MessageExtra {
@@ -291,43 +311,15 @@ impl MessageExtra {
             }),
             interaction: text(&value["interaction"]["name"])
                 .zip(User::from_value(&value["interaction"]["user"])),
-            poll: value["poll"].is_object().then(|| {
-                let results = &value["poll"]["results"];
-                let answers: Vec<&Value> = value["poll"]["answers"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                Poll {
-                    question: text(&value["poll"]["question"]["text"]).unwrap_or_default(),
-                    answers: answers
-                        .iter()
-                        .map(|answer| text(&answer["poll_media"]["text"]).unwrap_or_default())
-                        .collect(),
-                    expiry: parse_time(&value["poll"]["expiry"]),
-                    multiselect: value["poll"]["allow_multiselect"]
-                        .as_bool()
-                        .unwrap_or(false),
-                    finalized: results["is_finalized"].as_bool().unwrap_or(false),
-                    counts: answers
-                        .iter()
-                        .map(|answer| {
-                            results["answer_counts"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .find(|count| count["id"] == answer["answer_id"])
-                                .and_then(|count| count["count"].as_u64())
-                                .unwrap_or(0)
-                        })
-                        .collect(),
-                }
-            }),
+            poll: value["poll"]
+                .is_object()
+                .then(|| Poll::from_value(&value["poll"])),
             activity: value["activity"]["type"].as_u64(),
             reference_deleted: value.get("referenced_message").is_some_and(Value::is_null),
             has_components: value["components"]
                 .as_array()
                 .is_some_and(|components| !components.is_empty()),
+            components: super::components::parse(&value["components"]),
         }
     }
 }
@@ -510,7 +502,8 @@ pub fn system_line(message: &Message, context: &LineContext) -> Option<Line> {
         }
         CALL => {
             let call = message.extra.call.as_ref()?;
-            let missed = !call.participants.contains(&context.me);
+            // Module 117096: missed is `!isCallActive && !participants.includes(me)`; a call with no end is active.
+            let missed = call.ended.is_some() && !call.participants.contains(&context.me);
             let length = call
                 .ended
                 .map(|ended| humanize((ended - message.timestamp).num_milliseconds()));

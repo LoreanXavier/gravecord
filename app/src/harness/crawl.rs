@@ -25,6 +25,8 @@ struct Print {
     state: u64,
     acted: u64,
     reads: u64,
+    /// What is open, bottom to top: a popout or menu opening shows here.
+    layers: String,
 }
 
 fn hash(text: &str) -> u64 {
@@ -59,6 +61,7 @@ fn print(cx: &mut AsyncApp, window: AnyWindowHandle, root: &Entity<Root>) -> Pri
         state: hash(&state),
         acted: crate::inert::count(),
         reads: crate::inert::requests(),
+        layers: root.read_with(cx, |root, _| root.crawl_layers()),
     }
 }
 
@@ -595,6 +598,13 @@ pub async fn run(
                 // else different (a control that loads data).
                 class = if after.acted != before.acted {
                     "acted"
+                } else if other == "right" {
+                    // A right press is wired when it opens a menu or popout; the pointer moving changes the rest.
+                    if after.layers != before.layers {
+                        "changed"
+                    } else {
+                        "dead"
+                    }
                 } else if after.state != before.state || (steady && after.scene != before.scene) {
                     "changed"
                 } else if after.reads != before.reads {
@@ -602,7 +612,7 @@ pub async fn run(
                 } else {
                     "dead"
                 };
-                if class == "dead" {
+                if class == "dead" && other != "right" {
                     // A control that waits for the network shows its result later: look again before calling it dead.
                     settle(cx, window, 1200).await;
                     let late = print(cx, window, root);

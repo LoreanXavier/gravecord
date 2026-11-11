@@ -28,8 +28,8 @@ d_events	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 |
 d_createserver	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 36 204 | wait 900	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 36 204 | wait 900	Create_Your_Server
 d_createchannel	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 350 202 | wait 900	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 350 202 | wait 900	Create_Channel
 d_quickswitcher	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-k | wait 700	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-k | wait 700	Where_would_you_like_to_go
-d_help	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-/ | wait 700	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-/ | wait 700	Keyboard_Shortcuts
-d_thread	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 206 265 | wait 1200	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 206 265 | wait 1200	composer
+d_help	reset | key escape | wait 300 | reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-/ | wait 700	reset | key escape | wait 300 | reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | key ctrl-/ | wait 700	Keyboard_Combos
+d_thread	reset | key escape | wait 300 | reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 206 265 | wait 1200	reset | key escape | wait 300 | reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 206 265 | wait 1200	composer
 v_voice	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 143 406 | wait 1500	reset | wait 400 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 143 406 | wait 1500	General
 s_account	reset | wait 400 | settings account | wait 700	reset | wait 400 | settings account | wait 700	Account_Info
 s_data-privacy	reset | wait 400 | settings data-privacy | wait 700	reset | wait 400 | settings data-privacy | wait 700	How_Discord_Uses_My_Data
@@ -47,7 +47,6 @@ s_system	reset | wait 400 | settings system | wait 700	reset | wait 400 | settin
 s_language-time	reset | wait 400 | settings language-time | wait 700	reset | wait 400 | settings language-time | wait 700	Select_a_Language
 s_registered-games	reset | wait 400 | settings registered-games | wait 700	reset | wait 400 | settings registered-games | wait 700	No_game_detected
 s_activity-privacy	reset | wait 400 | settings activity-privacy | wait 700	reset | wait 400 | settings activity-privacy | wait 700	What_Activity_I_Share
-s_clips	reset | wait 400 | settings clips | wait 700	reset | wait 400 | settings clips | wait 700	Clips
 s_game-overlay	reset | wait 400 | settings game-overlay | wait 700	reset | wait 400 | settings game-overlay | wait 700	Game_Overlay
 s_connected-apps	reset | wait 400 | settings connected-apps | wait 700	reset | wait 400 | settings connected-apps | wait 700	These_are_accounts
 s_developer	reset | wait 400 | settings developer | wait 700	reset | wait 400 | settings developer | wait 700	Developer_Mode

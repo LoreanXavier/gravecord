@@ -15,6 +15,7 @@ mod instance;
 mod logging;
 mod login_art;
 mod lottie;
+mod markup_preview;
 mod net;
 mod notifications;
 mod palette;
@@ -34,6 +35,8 @@ mod tray;
 mod ui;
 mod updater;
 mod video_clip;
+#[cfg(feature = "capture")]
+mod webhook_demo;
 
 use anyhow::{Context as _, Result};
 use dc_proto::identity::Identity;
@@ -329,6 +332,8 @@ fn run() -> Result<()> {
     }
     if storage::is_capture_run() {
         tracing::info!("single instance (capture no-op)");
+        // A capture run plays voice messages without a speaker: nothing is audible.
+        dc_voice::voice_player::set_silent(true);
     }
     notifications::configure_process();
     let assets_root = find_assets().context(
@@ -499,6 +504,8 @@ fn run() -> Result<()> {
     drop(instance);
     // The window closed: whatever Global Attenuation lowered goes back, and the call's recordings are written.
     dc_voice::shutdown();
+    // A call still open leaves with the gateway's close.
+    net::close_gateway_at_exit();
     Ok(())
 }
 

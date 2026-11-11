@@ -2,7 +2,9 @@
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
 pub mod autocomplete;
+pub mod calls;
 pub mod collectibles;
+pub mod components;
 pub mod confusables;
 pub mod content_inventory;
 pub mod content_inventory_manager;
@@ -12,6 +14,7 @@ pub mod frecency;
 pub mod grouping;
 pub mod guild_member_counts;
 pub mod guild_settings;
+pub mod interactions;
 pub mod local_activity;
 pub mod member_list;
 pub mod members;
@@ -19,6 +22,7 @@ pub mod message_kinds;
 pub mod message_window;
 pub mod notifications;
 pub mod permissions;
+pub mod polls;
 pub mod premium;
 pub mod presence;
 pub mod private_channels;
@@ -471,6 +475,8 @@ pub struct RoleInfo {
     pub color: u32,
     pub mentionable: bool,
     pub guild_connection: bool,
+    /// An integration's or bot's role (`managed`): never given or taken from a person by hand (module 180798).
+    pub managed: bool,
 }
 
 impl RoleInfo {
@@ -480,6 +486,7 @@ impl RoleInfo {
             color: role["color"].as_u64().unwrap_or(0) as u32,
             mentionable: role["mentionable"].as_bool().unwrap_or(false),
             guild_connection: role["tags"].get("guild_connections").is_some(),
+            managed: role["managed"].as_bool().unwrap_or(false),
         }
     }
 
@@ -767,6 +774,12 @@ pub struct Attachment {
     pub height: Option<u32>,
     pub size: u64,
     pub flags: u64,
+    /// The image description (alt text) the sender wrote.
+    pub description: Option<String>,
+    /// `duration_secs`: the length of a voice message, in seconds.
+    pub duration_secs: Option<f64>,
+    /// `waveform`: the base64 bytes a voice message's player draws its bars from.
+    pub waveform: Option<String>,
 }
 
 impl Attachment {
@@ -781,6 +794,9 @@ impl Attachment {
             height: value["height"].as_u64().map(|height| height as u32),
             size: value["size"].as_u64().unwrap_or(0),
             flags: value["flags"].as_u64().unwrap_or(0),
+            description: text(&value["description"]).filter(|text| !text.is_empty()),
+            duration_secs: value["duration_secs"].as_f64(),
+            waveform: text(&value["waveform"]),
         })
     }
 
@@ -894,8 +910,11 @@ impl Embed {
         if let Some(image) = EmbedMedia::from_value(&value["image"]) {
             embed.image = Some(image);
         }
-        // Only rich and auto-moderation embeds carry fields (`u.pd`).
-        if matches!(kind.as_str(), "rich" | "auto_moderation_message") {
+        // Only rich, auto-moderation and poll-result embeds carry fields (`u.pd`; the poll result row reads `poll_question_text` and the victor fields from them, module 117096).
+        if matches!(
+            kind.as_str(),
+            "rich" | "auto_moderation_message" | "poll_result"
+        ) {
             embed.fields = value["fields"]
                 .as_array()
                 .into_iter()
@@ -1035,7 +1054,15 @@ impl Forwarded {
     }
 }
 
+/// `IS_VOICE_MESSAGE` in the message flags (module 652215, `pr7`).
+pub const VOICE_MESSAGE_FLAG: u64 = 1 << 13;
+
 impl Message {
+    /// A voice message: the message flag is set (`hasFlag(IS_VOICE_MESSAGE)`), the player is drawn for its attachment.
+    pub fn is_voice_message(&self) -> bool {
+        self.flags & VOICE_MESSAGE_FLAG != 0
+    }
+
     /// Module 451919 `s`: `@everyone` or `@here` unless suppressed, or the account among the mentioned users, or (with
     /// roles not suppressed) one of the account's roles among the mentioned roles.
     pub fn mentions_me(
@@ -1316,7 +1343,10 @@ impl VoiceState {
 /// `VOICE_SERVER_UPDATE`: where the voice connection for a guild goes. The token is a secret.
 #[derive(Clone, PartialEq)]
 pub struct VoiceServer {
+    /// The guild, or 0 for a DM or group DM call (`VOICE_SERVER_UPDATE` carries `channel_id` and no `guild_id`).
     pub guild_id: Id,
+    /// The channel of a DM or group DM call.
+    pub channel_id: Option<Id>,
     pub endpoint: String,
     pub token: String,
 }
@@ -1331,6 +1361,8 @@ pub struct Stores {
     pub voice_states: HashMap<Id, Vec<VoiceState>>,
     /// The last voice server handed to this session.
     pub voice_server: Option<VoiceServer>,
+    /// Calls in direct messages and group DMs, and the ring queue (`CallStore`, `IncomingCallStore`).
+    pub calls: calls::CallStore,
     /// `appearance.theme` from the settings proto: 0 unset, 1 dark, 2 light, 3 darker, 4 midnight.
     pub theme: u64,
     pub account: Account,
@@ -1388,6 +1420,8 @@ pub struct Stores {
     /// Bookmarks and reminders (`SavedMessagesStore`): (channel, message) to the reminder's `due_at`, `None` for a
     /// plain bookmark.
     pub saved: HashMap<(Id, Id), Option<String>>,
+    /// Interactions in flight, the modal asked for and what was chosen on components (`InteractionStore`).
+    pub interactions: interactions::InteractionStore,
     pub guild_settings: guild_settings::GuildSettingsStore,
     pub notification_flags: u64,
     /// The members seen so far, per guild (`GuildMemberStore`).
@@ -1416,6 +1450,15 @@ impl Stores {
         self.presence.dispatch(name, data);
         self.member_counts.dispatch(name, data);
         self.scheduled_events.dispatch(name, data);
+        {
+            let known: Vec<Id> = self
+                .private_channels
+                .iter()
+                .map(|channel| channel.id)
+                .collect();
+            self.calls
+                .dispatch(name, data, &|channel| known.contains(&channel));
+        }
         if name == "READY" {
             self.content_inventory.connection_open();
             // `CONNECTION_OPEN` empties the scheduled-message list.
@@ -1423,6 +1466,7 @@ impl Stores {
         }
         self.members.dispatch(name, data);
         self.stickers.dispatch(name, data);
+        self.interactions.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
             "READY_SUPPLEMENTAL" => {
@@ -1474,7 +1518,13 @@ impl Stores {
                 }
             }
             "VOICE_STATE_UPDATE" => {
-                if let (Some(guild), Some(user)) = (id(&data["guild_id"]), id(&data["user_id"])) {
+                // A DM or group DM call has no guild: its states live under guild 0, keyed by the call's channel.
+                let guild = if data["guild_id"].is_null() {
+                    Some(0)
+                } else {
+                    id(&data["guild_id"])
+                };
+                if let (Some(guild), Some(user)) = (guild, id(&data["user_id"])) {
                     let list = self.voice_states.entry(guild).or_default();
                     list.retain(|state| state.user_id != user);
                     if let Some(state) = VoiceState::from_value(data) {
@@ -1483,13 +1533,17 @@ impl Stores {
                 }
             }
             "VOICE_SERVER_UPDATE" => {
-                if let (Some(guild_id), Some(endpoint), Some(token)) = (
-                    id(&data["guild_id"]),
-                    text(&data["endpoint"]),
-                    text(&data["token"]),
-                ) {
+                let guild = if data["guild_id"].is_null() {
+                    Some(0)
+                } else {
+                    id(&data["guild_id"])
+                };
+                if let (Some(guild_id), Some(endpoint), Some(token)) =
+                    (guild, text(&data["endpoint"]), text(&data["token"]))
+                {
                     self.voice_server = Some(VoiceServer {
                         guild_id,
+                        channel_id: id(&data["channel_id"]),
                         endpoint,
                         token,
                     });
@@ -1853,6 +1907,9 @@ impl Stores {
             "MESSAGE_UPDATE" => self.update_message(data),
             "MESSAGE_REACTION_ADD" => self.react(data, 1),
             "MESSAGE_REACTION_REMOVE" => self.react(data, -1),
+            "MESSAGE_POLL_VOTE_ADD" => self.poll_vote(data, true),
+            "MESSAGE_POLL_VOTE_REMOVE" => self.poll_vote(data, false),
+            "MESSAGE_POLL_VOTE_ADD_MANY" => self.poll_vote_many(data),
             "MESSAGE_DELETE" => {
                 if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
                     && let Some(list) = self.messages.get_mut(&channel)
@@ -1869,7 +1926,7 @@ impl Stores {
     }
 
     /// Events that cannot change a guild's unread or mention counts.
-    const COUNT_NEUTRAL: [&'static str; 9] = [
+    const COUNT_NEUTRAL: [&'static str; 12] = [
         "PRESENCE_UPDATE",
         "TYPING_START",
         "VOICE_STATE_UPDATE",
@@ -1878,6 +1935,9 @@ impl Stores {
         "GUILD_MEMBERS_CHUNK",
         "MESSAGE_REACTION_ADD",
         "MESSAGE_REACTION_REMOVE",
+        "MESSAGE_POLL_VOTE_ADD",
+        "MESSAGE_POLL_VOTE_REMOVE",
+        "MESSAGE_POLL_VOTE_ADD_MANY",
         "ONLINE_GUILD_MEMBER_COUNT_UPDATE",
     ];
 
@@ -2459,6 +2519,7 @@ impl Stores {
         let Some(known) = known else {
             return;
         };
+        self.interactions.message_changed(message);
         if let Some(content) = text(&data["content"]) {
             known.content = content;
             known.edited = data["edited_timestamp"].is_string();
@@ -2467,6 +2528,26 @@ impl Stores {
         if let Some(pinned) = data["pinned"].as_bool() {
             known.pinned = pinned;
         }
+        // The answer to a deferred command arrives as an update with new flags, and a component message may be
+        // edited into other controls (`R` in module 432005).
+        if let Some(flags) = data["flags"].as_u64() {
+            known.flags = flags;
+        }
+        if data["components"].is_array() {
+            known.extra.components = components::parse(&data["components"]);
+            known.extra.has_components = !known.extra.components.is_empty();
+        }
+        // A poll's results arrive finalized in the update that ends it.
+        if data["poll"].is_object() {
+            self.poll_update(channel, message, &data["poll"]);
+        }
+        let Some(known) = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == message))
+        else {
+            return;
+        };
         // Link previews arrive later, in an update that may carry only the embeds.
         if let Some(embeds) = data["embeds"].as_array() {
             known.embeds = embeds.iter().map(Embed::from_value).collect();
@@ -2687,6 +2768,35 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    /// A voice message as the gateway delivers it: the flag, one `audio/ogg` attachment with its length and waveform.
+    #[test]
+    fn a_voice_message_payload_keeps_its_flag_length_and_waveform() {
+        let payload: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/voice_message.json"))
+                .unwrap();
+        let message = super::Message::from_value(&payload).unwrap();
+        assert!(message.is_voice_message());
+        assert_eq!(message.content, "");
+        assert_eq!(message.attachments.len(), 1);
+        let file = &message.attachments[0];
+        assert_eq!(file.filename, "voice-message.ogg");
+        assert_eq!(file.content_type.as_deref(), Some("audio/ogg"));
+        assert_eq!(file.duration_secs, Some(2.4));
+        assert_eq!(file.waveform.as_deref().map(str::len), Some(60));
+        // An ordinary upload has neither field.
+        let mut plain = payload.clone();
+        plain["flags"] = 0.into();
+        plain["attachments"][0]["duration_secs"] = serde_json::Value::Null;
+        plain["attachments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("waveform");
+        let plain = super::Message::from_value(&plain).unwrap();
+        assert!(!plain.is_voice_message());
+        assert_eq!(plain.attachments[0].duration_secs, None);
+        assert_eq!(plain.attachments[0].waveform, None);
+    }
+
     /// Module 451919: users, `@everyone`/`@here` and roles, with the two suppress settings.
     #[test]
     fn mentions_me_follows_the_official_rule() {
@@ -2929,6 +3039,38 @@ mod tests {
             stores.voice_server.as_ref().unwrap().endpoint,
             "c-ams.discord.media"
         );
+    }
+
+    #[test]
+    fn a_dm_call_keeps_its_voice_states_under_guild_zero() {
+        let mut stores = Stores::default();
+        // `CALL_CREATE` embeds the states with `guildId: null` (module 225123), and later updates have no guild.
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"guild_id": null, "channel_id": "500", "user_id": "5", "session_id": "s", "self_video": true}),
+        );
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"channel_id": "500", "user_id": "6", "session_id": "t"}),
+        );
+        let members = stores.voice_members(0, 500);
+        assert_eq!(members.len(), 2);
+        assert!(
+            members
+                .iter()
+                .any(|state| state.user_id == 5 && state.self_video)
+        );
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"guild_id": null, "channel_id": null, "user_id": "5"}),
+        );
+        assert_eq!(stores.voice_members(0, 500).len(), 1);
+        stores.dispatch(
+            "VOICE_SERVER_UPDATE",
+            &json!({"channel_id": "500", "endpoint": "c-ams.discord.media", "token": "t"}),
+        );
+        let server = stores.voice_server.as_ref().unwrap();
+        assert_eq!((server.guild_id, server.channel_id), (0, Some(500)));
     }
 
     #[test]

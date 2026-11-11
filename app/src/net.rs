@@ -128,6 +128,13 @@ pub enum Request {
         join: dc_voice::Join,
         controls: dc_voice::Controls,
     },
+    /// Capture only (`webhook demo`): makes a webhook in the fixture channel, posts the component messages of
+    /// `webhook_demo` through it, deletes it, and answers under `webhook-demo` with the message ids. The address of
+    /// the webhook never leaves this task.
+    #[cfg(feature = "capture")]
+    WebhookDemo {
+        channel: u64,
+    },
     /// POST a form with a file and report like `Rest`.
     RestForm {
         key: String,
@@ -193,6 +200,17 @@ pub enum Request {
         files: Vec<Upload>,
         /// Guild, if any, and the message being answered.
         /// The guild, the message, and whether the reply pings its author (the reply bar's @ switch).
+        reply: Option<(Option<u64>, u64, bool)>,
+    },
+    /// A voice message: the recording is uploaded, then a message with an empty content, the voice flag (8192) and the
+    /// attachment's `duration_secs` and `waveform` is created (`em` in module 841817). The outcome is
+    /// `Update::Fetched { key, body }` with `{"ok", "status", "body"}`.
+    SendVoice {
+        key: String,
+        channel: u64,
+        file: Vec<u8>,
+        duration_secs: f64,
+        waveform: String,
         reply: Option<(Option<u64>, u64, bool)>,
     },
     Edit {
@@ -328,7 +346,9 @@ fn account_route(route: &str) -> bool {
     if path == "/users/@me/pomelo-attempt" {
         return false;
     }
-    path == "/users/@me"
+    // The backup codes key is mailed to the account's address.
+    path == "/auth/verify/view-backup-codes-challenge"
+        || path == "/users/@me"
         || path.starts_with("/users/@me/")
         || path.ends_with("/members/@me")
         || path.ends_with("/profile/@me")
@@ -357,6 +377,8 @@ impl Request {
             Request::StreamOp { .. } => "StreamOp",
             Request::StreamConnect { .. } => "StreamConnect",
             Request::VoiceConnect { .. } => "VoiceConnect",
+            #[cfg(feature = "capture")]
+            Request::WebhookDemo { .. } => "WebhookDemo",
             Request::RestForm { .. } => "RestForm",
             Request::UploadLogs { .. } => "UploadLogs",
             Request::Schedule { .. } => "Schedule",
@@ -367,6 +389,7 @@ impl Request {
             Request::FetchMessages { .. } => "FetchMessages",
             Request::SendSticker { .. } => "SendSticker",
             Request::Send { .. } => "Send",
+            Request::SendVoice { .. } => "SendVoice",
             Request::Edit { .. } => "Edit",
             Request::Delete { .. } => "Delete",
             Request::Ack { .. } => "Ack",
@@ -422,6 +445,7 @@ impl Request {
             | Request::React { .. }
             | Request::SendSticker { .. }
             | Request::Send { .. }
+            | Request::SendVoice { .. }
             | Request::Edit { .. }
             | Request::Delete { .. }
             | Request::Ack { .. }
@@ -431,6 +455,8 @@ impl Request {
             | Request::Download { .. }
             | Request::Interaction { .. }
             | Request::Pin { .. } => Inert::Deny,
+            #[cfg(feature = "capture")]
+            Request::WebhookDemo { .. } => Inert::Deny,
         }
     }
 
@@ -462,7 +488,15 @@ impl Request {
 /// token: the official client takes it out of the body before the user record is stored (`delete i.token`) and hands
 /// it to the token store. The old token is dead from then on. `None` for every other answer.
 pub(crate) fn take_renewed_token(method: &str, route: &str, answer: &mut Value) -> Option<Token> {
-    if method != "PATCH" || route != "/users/@me" {
+    // Module 631670 `KD` for the account edit; module 98207 for the authenticator app (`MFA_ENABLE_SUCCESS`,
+    // `MFA_DISABLE_SUCCESS`), whose answers renew the token too.
+    let renews = matches!(
+        (method, route),
+        ("PATCH", "/users/@me")
+            | ("POST", "/users/@me/mfa/totp/enable")
+            | ("POST", "/users/@me/mfa/totp/disable")
+    );
+    if !renews {
         return None;
     }
     let token = answer.as_object_mut()?.remove("token")?;
@@ -514,6 +548,21 @@ fn account_write_refused(
     let empty_settings = route.starts_with("/users/@me/settings-proto/")
         && body.is_some_and(|body| body["settings"].as_str().is_some_and(str::is_empty));
     empty_settings || (capture && !allowed && account_route(route))
+}
+
+/// A harness run never rings anyone's device: `POST /channels/<id>/call/ring` and `.../call/stop-ringing` are
+/// refused here, whatever the caller checked, unless the environment says `GRAVECORD_ALLOW_RING=1`.
+fn ring_refused(capture: bool, allowed: bool, method: &reqwest::Method, route: &str) -> bool {
+    if !capture || allowed || method == reqwest::Method::GET {
+        return false;
+    }
+    let path = route.split('?').next().unwrap_or(route);
+    path.ends_with("/call/ring") || path.ends_with("/call/stop-ringing")
+}
+
+fn refuses_ring(method: &reqwest::Method, route: &str) -> bool {
+    let allowed = std::env::var("GRAVECORD_ALLOW_RING").as_deref() == Ok("1");
+    ring_refused(crate::storage::is_capture_run(), allowed, method, route)
 }
 
 /// Whether a harness run refuses this request: an account write, with no override.
@@ -701,6 +750,70 @@ async fn schedule_message(
     }
 }
 
+/// The name a voice message's file goes by. The desktop client's native recorder names its file; the name is not in
+/// the snapshot, this is the name the message list shows for the file.
+pub(crate) const VOICE_FILENAME: &str = "voice-message.ogg";
+
+/// The upload and the message of `Request::SendVoice`: the cloud upload of module 48325 for one file, then the message
+/// the way `em` in module 841817 sends it (`content: ""`, `flags: IS_VOICE_MESSAGE`), its attachment entry from `OW`
+/// in module 292348 with `duration_secs` and `waveform`.
+async fn send_voice(
+    client: &dc_http::Client,
+    channel: u64,
+    file: Vec<u8>,
+    duration_secs: f64,
+    waveform: &str,
+    reply: Option<(Option<u64>, u64, bool)>,
+) -> Value {
+    let request = json!({"files": [{
+        "filename": VOICE_FILENAME,
+        "file_size": file.len(),
+        "id": "1",
+        "is_clip": false,
+    }]});
+    let granted = match client
+        .post(&format!("/channels/{channel}/attachments"), &request)
+        .await
+    {
+        Ok(granted) => granted,
+        Err(error) => {
+            warn!("voice upload request failed: {error}");
+            return json!({"ok": false, "status": 0, "body": {"message": error.to_string()}});
+        }
+    };
+    let slot = &granted["attachments"][0];
+    let (Some(url), Some(uploaded)) = (
+        slot["upload_url"].as_str(),
+        slot["upload_filename"].as_str(),
+    ) else {
+        return json!({"ok": false, "status": 0, "body": {"message": "no upload url"}});
+    };
+    if let Err(error) = client.put_upload(url, file).await {
+        warn!("voice upload failed: {error}");
+        return json!({"ok": false, "status": 0, "body": {"message": error.to_string()}});
+    }
+    let mut entry = attachment_entry(0, VOICE_FILENAME, uploaded, None);
+    entry["duration_secs"] = json!(duration_secs);
+    entry["waveform"] = json!(waveform);
+    let mut body = send_body(channel, "", reply);
+    body["flags"] = json!(dc_state::VOICE_MESSAGE_FLAG);
+    body["attachments"] = json!([entry]);
+    match client
+        .post(&format!("/channels/{channel}/messages"), &body)
+        .await
+    {
+        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+        Err(dc_http::Error::Status { status, body, .. }) => {
+            warn!("sending a voice message failed: {status}");
+            json!({"ok": false, "status": status.as_u16(), "body": body})
+        }
+        Err(error) => {
+            warn!("sending a voice message failed: {error}");
+            json!({"ok": false, "status": 0, "body": null})
+        }
+    }
+}
+
 /// A file to upload with a message: where it is, the name it goes by (the composer's Modify and spoiler actions rename
 /// it) and its alt text.
 #[derive(Clone, Debug, PartialEq)]
@@ -801,6 +914,26 @@ fn emoji_cell(sprite: &[u8], tint: u32) -> image::ImageResult<Vec<u8>> {
     Ok(bytes.into_inner())
 }
 
+/// The gateway's command channel and whether a voice state put this account in a channel or call, for the exit: the
+/// gateway leaves the call itself before it closes (`dc_gateway::voice_leave`), but only when it is told to shut
+/// down while the runtime still runs.
+static EXIT_GATEWAY: std::sync::Mutex<Option<mpsc::UnboundedSender<Command>>> =
+    std::sync::Mutex::new(None);
+static VOICE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called once when the window has closed, before the runtime is dropped: when a call is open, asks the gateway to
+/// leave it and close, and gives it a moment to send the frame.
+pub fn close_gateway_at_exit() {
+    if !VOICE_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let sender = EXIT_GATEWAY.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(sender) = sender {
+        let _ = sender.send(Command::Shutdown);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+}
+
 struct Shutdown(mpsc::UnboundedSender<Command>);
 
 impl Drop for Shutdown {
@@ -835,6 +968,9 @@ pub async fn run(
         state: IdentifyState::default(),
     });
 
+    if let Ok(mut slot) = EXIT_GATEWAY.lock() {
+        *slot = Some(commands.clone());
+    }
     // Dropping this future (logging out) closes the gateway.
     let _gateway = Shutdown(commands.clone());
     let forward = updates.clone();
@@ -984,6 +1120,20 @@ pub async fn run(
                             warn!("sending failed: {error}");
                         }
                     }
+                });
+            }
+            Request::SendVoice {
+                key,
+                channel,
+                file,
+                duration_secs,
+                waveform,
+                reply,
+            } => {
+                tokio::spawn(async move {
+                    let body =
+                        send_voice(&client, channel, file, duration_secs, &waveform, reply).await;
+                    let _ = updates.send(Update::Fetched { key, body });
                 });
             }
             Request::Edit {
@@ -1146,6 +1296,14 @@ pub async fn run(
                 body,
             } => {
                 let updates = updates.clone();
+                if refuses_ring(&method, &route) {
+                    warn!("call ring refused in this run");
+                    if let Some(key) = key {
+                        let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
+                        let _ = updates.send(Update::Fetched { key, body });
+                    }
+                    continue;
+                }
                 if refuses_account_write(&method, &route, body.as_ref()) {
                     warn!("account write refused in this run");
                     if let Some(key) = key {
@@ -1188,6 +1346,17 @@ pub async fn run(
                     if let Some(key) = key {
                         let _ = updates.send(Update::Fetched { key, body: report });
                     }
+                });
+            }
+            #[cfg(feature = "capture")]
+            Request::WebhookDemo { channel } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let report = webhook_demo(&client, channel).await;
+                    let _ = updates.send(Update::Fetched {
+                        key: "webhook-demo".to_owned(),
+                        body: report,
+                    });
                 });
             }
             Request::UploadLogs { files, state } => {
@@ -1389,13 +1558,15 @@ pub async fn run(
                 flags,
             } => {
                 let data = json!({
-                    "guild_id": guild.to_string(),
+                    // A DM or group DM call has no guild: `guildId` is `null` in `voiceStateUpdate` (module 868).
+                    "guild_id": (guild != 0).then(|| guild.to_string()),
                     "channel_id": channel.map(|channel| channel.to_string()),
                     "self_mute": self_mute,
                     "self_deaf": self_deaf,
                     "self_video": self_video,
                     "flags": flags,
                 });
+                VOICE_OPEN.store(channel.is_some(), std::sync::atomic::Ordering::Relaxed);
                 let _ = commands.send(Command::Send {
                     op: Op::VoiceStateUpdate,
                     data,
@@ -1770,6 +1941,16 @@ mod tests {
         assert!(take_renewed_token("PATCH", "/users/@me/profile", &mut other).is_none());
         let mut empty = json!({"token": ""});
         assert!(take_renewed_token("PATCH", "/users/@me", &mut empty).is_none());
+        // Module 98207: turning the authenticator app on or off renews the token too.
+        for route in ["/users/@me/mfa/totp/enable", "/users/@me/mfa/totp/disable"] {
+            let mut answer = json!({"token": "fixture-token-value", "backup_codes": [{"code": "abcd1234", "consumed": false}]});
+            let token = take_renewed_token("POST", route, &mut answer).expect("token");
+            assert_eq!(token.expose(), "fixture-token-value");
+            assert!(answer.get("token").is_none());
+            assert!(answer["backup_codes"].is_array());
+        }
+        let mut sms = json!({"token": "fixture-token-value"});
+        assert!(take_renewed_token("POST", "/users/@me/mfa/sms/enable", &mut sms).is_none());
     }
 
     use super::{
@@ -2041,4 +2222,76 @@ mod download_tests {
             PathBuf::from("a/cat")
         );
     }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::ring_refused;
+    use reqwest::Method;
+
+    #[test]
+    fn a_harness_run_never_rings_unless_the_environment_allows_it() {
+        let ring = "/channels/1568693333864480939/call/ring";
+        let stop = "/channels/1568693333864480939/call/stop-ringing";
+        assert!(ring_refused(true, false, &Method::POST, ring));
+        assert!(ring_refused(true, false, &Method::POST, stop));
+        assert!(ring_refused(
+            true,
+            false,
+            &Method::POST,
+            &format!("{ring}?x=1")
+        ));
+        assert!(!ring_refused(true, true, &Method::POST, ring));
+        assert!(!ring_refused(false, false, &Method::POST, ring));
+        // Reading the call is not a ring (`GET /channels/<id>/call`).
+        assert!(!ring_refused(true, false, &Method::GET, "/channels/1/call"));
+        assert!(!ring_refused(
+            true,
+            false,
+            &Method::POST,
+            "/channels/1/messages"
+        ));
+    }
+}
+
+#[cfg(feature = "capture")]
+/// The body of `Request::WebhookDemo`: only the fixture channel is written to, and only ids are reported.
+async fn webhook_demo(client: &dc_http::Client, channel: u64) -> Value {
+    if channel != crate::webhook_demo::FIXTURE_CHANNEL {
+        return json!({"ok": false, "error": "not the fixture channel"});
+    }
+    let made = client
+        .request(
+            reqwest::Method::POST,
+            &format!("/channels/{channel}/webhooks"),
+            Some(&json!({"name": "Components fixture"})),
+        )
+        .await;
+    let Ok(made) = made else {
+        return json!({"ok": false, "error": "webhook not created"});
+    };
+    let (Some(id), Some(secret)) = (made["id"].as_str(), made["token"].as_str()) else {
+        return json!({"ok": false, "error": "webhook answer had no address"});
+    };
+    let mut ids = Vec::new();
+    for (index, payload) in crate::webhook_demo::payloads().iter().enumerate() {
+        let file = (index > 0).then(|| {
+            (
+                crate::webhook_demo::FILE_NAME,
+                b"Components fixture report\nline two\n".to_vec(),
+            )
+        });
+        match client.post_webhook(id, secret, payload, file).await {
+            Ok(message) => ids.push(message["id"].clone()),
+            Err(dc_http::Error::Status { status, body, .. }) => {
+                warn!("webhook demo message {index} failed: {status}");
+                ids.push(json!({"failed": status.as_u16(), "body": body}));
+            }
+            Err(_) => ids.push(json!({"failed": 0})),
+        }
+    }
+    let _ = client
+        .request(reqwest::Method::DELETE, &format!("/webhooks/{id}"), None)
+        .await;
+    json!({"ok": true, "ids": ids})
 }

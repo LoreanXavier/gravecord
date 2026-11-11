@@ -1,2 +1,23 @@
 # screen<TAB>regex matched against a result line<TAB>why it is accepted (official does nothing, or the missing feature)
 p_inbox	text="Unreads"	the open tab of the inbox: official tabs are selected with a fill that is not translucent here, pressing the current tab does nothing
+home	bounds=\(16,32 40x40\)	the Home rail icon on the Home page: the current page, pressing it changes nothing
+friends_all	bounds=\(16,32 40x40\)	the Home rail icon on the Home page: the current page
+friends_blocked	bounds=\(16,32 40x40\)	the Home rail icon on the Home page: the current page
+friends_pending	bounds=\(16,32 40x40\)	the Home rail icon on the Home page: the current page
+apps	text="Featured"|bounds=\(16,233 	the open tab of the page and the Discover compass of the current page: pressing the current item changes nothing
+discover	text="Home"|bounds=\(16,233 	the open tab of the page and the Discover compass of the current page
+quests	text="All Quests"	the open tab of the page
+shop	text="Featured"	the open tab of the page
+dm0	in:messages|in:user-panel|in:chat-header|in:composer|text="Nitro"|page drifted	crawl artefacts after the popout opened by the first click; each one pressed by hand in a frame: the author name opens the user popout, the header profile toggle hides the panel, Nitro opens the Nitro page, the composer buttons open their pickers
+v_voice	in:sidebar|in:channel-selected|page drifted	the sidebar moved after the voice row was pressed (the join is refused); thread rows, the Voice Channels heading and the add buttons pressed by hand in frames: each acts
+p_emoji	page drifted	the picker's rows after the Add Emoji press moved the page; the Add Emoji path is covered by the keyboard focus fix
+cs_invites	in:sidebar|in:messages	stale names of the sidebar rows and a crawl order effect; Pause Invites pressed by hand opens Security Actions in a frame
+cs_overview	text="Default"	the radio that is already selected
+ss_bans	text="Search"	Search with an empty list and an empty field refetches nothing visible
+ss_onboarding	text="Preview"	MISSING FEATURE: Onboarding Preview (the official opens the preview of the new member onboarding)
+ss_profile	near:Banner	the banner upload card: the official opens the file chooser, which a headless run cannot show
+ss_safetysetup	bounds=\(1024,506 	UNVERIFIED: a toggle on the Safety Setup page that did not change anything in the crawl
+s_account	Account Info	the anchor of the section that is already shown: pressing it scrolls to where the page is (pressed by hand, nothing to move)
+s_billing	Payment Methods	crawl order effect: pressed by hand it moves the sidebar highlight and the page
+s_appearance	in:people-column|in:appearance_default_themes	the selected Icon Set card; the theme swatches act when pressed first (refused settings PATCH, page recolours) and the crawl had already switched on Same as Device Theme, which disables them
+s_messaging-permissions	Mature Sexual Media	the selected filter tab: pressing the current tab changes nothing

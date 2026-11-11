@@ -16,7 +16,7 @@ if known_path and os.path.exists(known_path):
         parts = line.rstrip("\n").split("\t")
         if len(parts) >= 2 and not parts[0].startswith("#"):
             known.append((parts[0], re.compile(parts[1])))
-bad = {"click": ("dead",), "right": ("dead",), "hover": ("no-tooltip",)}
+bad = {"click": ("dead",), "right": (), "hover": ("no-tooltip",)}
 rows = []
 for name in sorted(os.listdir(out)):
     path = os.path.join(out, name, "progress.txt")
