@@ -48,6 +48,10 @@ fn fallback_body(message: &Value) -> String {
             sticker["name"].as_str().unwrap_or_default()
         );
     }
+    // `slFYgi` (module 119173): a voice message has no text, so the preview says what it is.
+    if message["flags"].as_u64().unwrap_or(0) & dc_state::VOICE_MESSAGE_FLAG != 0 {
+        return "Sent a voice message".to_owned();
+    }
     if let Some(question) = message["poll"]["question"]["text"].as_str() {
         return format!("[poll] {question}");
     }

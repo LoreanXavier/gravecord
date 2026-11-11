@@ -70,6 +70,9 @@ mod tests {
             height: Some(96),
             size: 10,
             flags: 32,
+            description: None,
+            duration_secs: None,
+            waveform: None,
         };
         let url = reqwest::Url::parse(&attachment_url(&attachment, 160, 96)).unwrap();
         let pairs: std::collections::HashMap<_, _> = url.query_pairs().collect();

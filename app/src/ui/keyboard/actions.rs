@@ -148,8 +148,14 @@ impl Root {
             Action::VibeWithWumpus
             | Action::CloseChannelTab
             | Action::ToggleChannelTabPin
-            | Action::RecordVoiceMessage
             | Action::OpenAppDirectory => return false,
+            Action::RecordVoiceMessage => {
+                let started = self.voice_recording_enabled() && self.voice_record_shortcut(cx);
+                if started {
+                    window.focus(&self.focus, cx);
+                }
+                return started;
+            }
         }
         true
     }

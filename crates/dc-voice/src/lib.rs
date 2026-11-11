@@ -61,6 +61,7 @@ mod gate;
 pub mod input_watch;
 mod jitter;
 mod mixer;
+pub mod ogg_opus;
 mod process;
 pub mod recorder;
 mod rtp;
@@ -70,6 +71,9 @@ pub mod sound;
 mod stream_conn;
 pub mod streams;
 mod video;
+pub mod voice_player;
+pub mod voice_recorder;
+pub mod voice_wave;
 pub use stream_conn::{StreamEvent, StreamSource};
 pub use video::{RemoteFrame, VideoHub, VideoSink, VideoSource};
 

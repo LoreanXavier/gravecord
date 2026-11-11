@@ -145,7 +145,8 @@ impl Root {
     /// `canRecordVoiceMessage` (module 87207): the row is left out of the "+" menu in a forum channel, while files
     /// are waiting in the composer, and where the user lacks "Send Voice Messages"; a private channel always has it.
     pub(super) fn record_voice_offered(&self) -> bool {
-        if !self.pending_files.is_empty() {
+        // `eP` in module 316576: the row needs the experiment `2026-09-desktop-voice-message-recording`.
+        if !self.voice_recording_enabled() || !self.pending_files.is_empty() {
             return false;
         }
         match self.current_channel() {

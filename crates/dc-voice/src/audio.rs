@@ -896,6 +896,10 @@ impl Drop for Preview {
     }
 }
 
+/// The microphone of a voice message recording (a child module so it can use what this one keeps private).
+#[path = "voice_input.rs"]
+pub(crate) mod voice_input;
+
 #[cfg(test)]
 mod tests {
     use super::*;

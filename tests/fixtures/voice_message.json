@@ -1,0 +1,35 @@
+{
+  "id": "1570000000000000001",
+  "channel_id": "1568692565136375900",
+  "type": 0,
+  "content": "",
+  "timestamp": "2026-11-11T12:00:00.000000+00:00",
+  "edited_timestamp": null,
+  "flags": 8192,
+  "mentions": [],
+  "mention_roles": [],
+  "mention_everyone": false,
+  "pinned": false,
+  "tts": false,
+  "embeds": [],
+  "components": [],
+  "author": {
+    "id": "1568693333864480001",
+    "username": "fixture",
+    "discriminator": "0",
+    "avatar": null
+  },
+  "attachments": [
+    {
+      "id": "1570000000000000002",
+      "filename": "voice-message.ogg",
+      "size": 9215,
+      "url": "https://cdn.discordapp.com/attachments/1568692565136375900/1570000000000000002/voice-message.ogg?ex=0&is=0&hm=0&",
+      "proxy_url": "https://media.discordapp.net/attachments/1568692565136375900/1570000000000000002/voice-message.ogg?ex=0&is=0&hm=0&",
+      "content_type": "audio/ogg",
+      "content_scan_version": 0,
+      "duration_secs": 2.4,
+      "waveform": "PEhabHh6cF9NQDxBTFZaVEdCUFZUS0E8QE1gcnx8cF5MPz8/PD5HWW+FkpM="
+    }
+  ]
+}

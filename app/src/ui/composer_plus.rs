@@ -112,7 +112,13 @@ impl Root {
                 });
                 window.focus(&self.composer.read(cx).focus_handle(cx), cx);
             }
-            Plus::Schedule | Plus::RecordVoice => {}
+            Plus::RecordVoice => {
+                // The bar has no text field; the window takes Enter.
+                if self.voice_record_start(cx).starts_with("voice: recording") {
+                    window.focus(&self.focus, cx);
+                }
+            }
+            Plus::Schedule => {}
         }
         cx.notify();
     }

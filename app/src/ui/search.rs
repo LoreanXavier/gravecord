@@ -476,7 +476,16 @@ impl Root {
                                     )),
                             ),
                     )
-                    .child(self.highlighted(&message.content, words, 16., 400.)),
+                    .child(self.highlighted(&message.content, words, 16., 400.))
+                    // A voice message result shows its player under the header, as the message row does.
+                    .children(message.is_voice_message().then(|| {
+                        div().mt(px(8.)).flex().children(
+                            message
+                                .attachments
+                                .iter()
+                                .map(|attachment| self.voice_pill(message, attachment)),
+                        )
+                    })),
             )
             .into_any_element()
     }

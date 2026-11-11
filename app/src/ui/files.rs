@@ -255,6 +255,10 @@ impl Root {
             .attachments
             .iter()
             .filter_map(|attachment| match kind(attachment) {
+                // A voice message draws its player in place of a card (`renderAudioComponent`, module 679636).
+                Kind::Audio if message.is_voice_message() => {
+                    Some(self.voice_pill(message, attachment))
+                }
                 Kind::Image if self.pref_on("chat_inline_media_uploads", true) => None,
                 Kind::Image => Some(self.file_card(attachment, cx)),
                 Kind::Plaintext => Some(self.plaintext_card(attachment, cx)),
@@ -290,6 +294,9 @@ mod tests {
             height: None,
             size: 25,
             flags: 0,
+            description: None,
+            duration_secs: None,
+            waveform: None,
         }
     }
 

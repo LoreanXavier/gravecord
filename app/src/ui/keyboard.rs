@@ -413,16 +413,14 @@ pub(super) const TABLE: &[Entry] = &[
         Open,
         "158781",
     ),
-    // Shown in the help only while the voice message experiment is on (predicate `K`); the pinned build keeps it off.
-    with(
-        entry(
-            A::RecordVoiceMessage,
-            "RECORD_VOICE_MESSAGE",
-            &["alt+r"],
-            Open,
-            "158781",
-        ),
-        Availability::Disabled("voice messages are behind an experiment"),
+    // Predicate `K` is the voice message experiment, which the official client has on for the fixture account;
+    // the shortcut itself checks the gate (`voice_recording_enabled`).
+    entry(
+        A::RecordVoiceMessage,
+        "RECORD_VOICE_MESSAGE",
+        &["alt+r"],
+        Open,
+        "158781",
     ),
     entry(
         A::ReturnToAudioChannel,
