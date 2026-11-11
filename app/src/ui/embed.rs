@@ -69,6 +69,17 @@ impl Root {
 
     /// `embed_text` with another line height (a component's reduced text is 14/19.25).
     pub(super) fn embed_text_lined(&self, text: &str, key: (u64, u32), line: f32) -> AnyElement {
+        self.embed_text_sized(text, key, 14., line)
+    }
+
+    /// `embed_text_lined` with another font size (a component's plain text outside a container is 16/22).
+    pub(super) fn embed_text_sized(
+        &self,
+        text: &str,
+        key: (u64, u32),
+        size: f32,
+        line: f32,
+    ) -> AnyElement {
         let base = hsla("--text-default");
         let blocks = parse(text);
         div()
@@ -89,7 +100,7 @@ impl Root {
                 };
                 let pieces = spans
                     .iter()
-                    .map(|span| self.piece(span, base, 14., 400., line))
+                    .map(|span| self.piece(span, base, size, 400., line))
                     .collect();
                 crate::inline::inline(pieces, px(line)).selectable(
                     (key.0, key.1 + index as u32),

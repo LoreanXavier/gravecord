@@ -55,6 +55,29 @@ pub(super) fn short_ago(milliseconds: i64) -> String {
 }
 
 impl Root {
+    /// `Update::Fetched`: the `members` of a message search (`SEARCH_MESSAGES_SUCCESS`, the body itself) and of a
+    /// forum's thread search (`LOAD_ARCHIVED_THREADS_SUCCESS` / `LOAD_THREADS_SUCCESS`, in the report's `body`) are
+    /// the account's thread memberships (module 152007).
+    pub(super) fn thread_members_fetched(&mut self, key: &str, body: &serde_json::Value) {
+        if key == super::search::RESULTS_KEY {
+            let guild = self.guild;
+            self.stores.thread_members_from_response(guild, body);
+        } else if let Some(channel) = key
+            .strip_prefix("forum-page:")
+            .and_then(|rest| rest.split(':').next())
+            .and_then(|channel| channel.parse::<Id>().ok())
+        {
+            let guild = self
+                .stores
+                .guilds
+                .iter()
+                .find(|guild| guild.channels.iter().any(|known| known.id == channel))
+                .map(|guild| guild.id);
+            self.stores
+                .thread_members_from_response(guild, &body["body"]);
+        }
+    }
+
     fn guild_threads(&self, parent: Option<Id>) -> Vec<Thread> {
         let Some(guild) = self.current_guild() else {
             return Vec::new();

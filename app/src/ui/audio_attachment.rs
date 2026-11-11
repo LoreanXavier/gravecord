@@ -16,6 +16,7 @@ use super::voice_message::{Hub, Load, fraction_of};
 use super::{MONO, Root, color, icon};
 use crate::parity::Parity;
 use dc_state::{Attachment, Message};
+use dc_tokens::Theme;
 use dc_voice::voice_player;
 use gpui::{
     AnyElement, Bounds, Context, DispatchPhase, FontWeight, IntoElement, MouseButton,
@@ -25,6 +26,21 @@ use gpui::{
 
 /// The prefix of the hub key of an audio attachment: what tells the loader to decode any file.
 pub(super) const KEY: &str = "audio:";
+
+/// The controls sit in a `theme-dark theme-midnight` wrapper: `--interactive-text-active` reads the midnight value
+/// (`oklab(0.895351 ...)`, 220 220 223); the other tokens of the card are the same in both themes.
+fn control_tint() -> gpui::Rgba {
+    gpui::rgba(Theme::Midnight.color("--interactive-text-active"))
+}
+
+/// `controlIcon_FJ99sr`: a 24 px glyph in the control tint.
+fn control_icon(name: &str) -> gpui::Svg {
+    gpui::svg()
+        .path(format!("icons/{name}.svg"))
+        .size(px(24.))
+        .flex_none()
+        .text_color(control_tint())
+}
 
 /// `ei` in module 153440: `m:ss` of the whole seconds (`0|seconds`).
 fn clock(seconds: f64) -> String {
@@ -42,22 +58,6 @@ fn clock_pair(current: Option<f64>, duration: Option<f64>) -> (String, String) {
     let whole = duration.map_or_else(|| "-:--".to_owned(), clock);
     let padded = format!("{:0>width$}", elapsed, width = whole.chars().count());
     (padded, whole)
-}
-
-/// `filesize(bytes)` with its defaults, as `Hb` in module 453771 calls it: base 2, `B`/`KB`/`MB`, two decimals above
-/// a byte count.
-pub(super) fn filesize(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024. && unit < UNITS.len() - 1 {
-        value /= 1024.;
-        unit += 1;
-    }
-    format!("{value:.2} {}", UNITS[unit])
 }
 
 /// What one frame shows of a card.
@@ -180,7 +180,8 @@ impl Root {
                             .cursor_pointer()
                             .hover(|style| style.underline())
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.download_attachment(&name_click, cx);
+                                // The name is a plain anchor (`href` = the file): the link interceptor opens it.
+                                this.follow_link(&name_click.url, &name_click.filename, cx);
                             }))
                             .child(attachment.filename.clone()),
                     )
@@ -191,7 +192,7 @@ impl Root {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(color("--text-muted"))
                             .opacity(0.7)
-                            .child(filesize(attachment.size)),
+                            .child(super::components::humanize_filesize(attachment.size)),
                     ),
             );
 
@@ -213,13 +214,13 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .text_color(color("--interactive-text-active"))
+                .text_color(control_tint())
                 .hover(|style| style.text_color(color("--white")))
                 .on_click(move |_, window, _| {
                     hub.borrow_mut().toggle(&key, &url, span);
                     window.refresh();
                 })
-                .child(icon(play_icon, 24., "--interactive-text-active"))
+                .child(control_icon(play_icon))
         };
 
         // `durationTimeWrapper_FJ99sr`: 12 px mono, 7.2 px a character, a 2 px margin round the slash.
@@ -275,7 +276,7 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .text_color(color("--interactive-text-active"))
+                .text_color(control_tint())
                 .hover(|style| style.text_color(color("--white")))
                 .on_click(move |_, window, _| {
                     click_hub.borrow_mut().toggle_mute();
@@ -294,7 +295,7 @@ impl Root {
                     }
                     window.refresh();
                 })
-                .child(icon(level, 24., "--interactive-text-active"))
+                .child(control_icon(level))
         };
         let mut volume_box = div().relative().flex_none().size(px(32.)).child(button);
         if view.slider_open {
@@ -725,7 +726,7 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock, clock_pair, filesize};
+    use super::{clock, clock_pair};
 
     #[test]
     fn the_clock_is_minutes_and_two_digit_seconds_of_the_whole_seconds() {
@@ -754,9 +755,14 @@ mod tests {
     }
 
     #[test]
-    fn the_size_is_base_two_with_two_decimals() {
-        assert_eq!(filesize(512), "512 B");
-        assert_eq!(filesize(64_614), "63.10 KB");
-        assert_eq!(filesize(1_048_576), "1.00 MB");
+    fn the_size_is_the_humanize_filesize_of_the_player_metadata() {
+        // `Hb` (module 453771) is `humanize.filesize` (796873): the audio card, the video player and the File component
+        // all print the same text.
+        let size = super::super::components::humanize_filesize;
+        assert_eq!(size(35), "35 bytes");
+        assert_eq!(size(1023), "1,023 bytes");
+        assert_eq!(size(1024), "1.00 KB");
+        assert_eq!(size(64_617), "63.10 KB");
+        assert_eq!(size(5 * 1024 * 1024), "5.00 MB");
     }
 }

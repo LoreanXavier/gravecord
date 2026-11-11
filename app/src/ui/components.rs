@@ -266,7 +266,12 @@ impl Root {
                 let part = self.component(message, component, false, cx);
                 // Dump: a loose V2 component is at most 516 wide, a container 528.
                 if v2 && !matches!(component, Component::Container { .. }) {
-                    div().max_w(px(516.)).child(part).into_any_element()
+                    div()
+                        .flex()
+                        .flex_col()
+                        .max_w(px(516.))
+                        .child(part)
+                        .into_any_element()
                 } else {
                     part
                 }
@@ -455,7 +460,6 @@ impl Root {
                 let accent = *accent_color;
                 div()
                     .relative()
-                    .my(px(2.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
@@ -507,54 +511,62 @@ impl Root {
             message.id,
             40_000 + id.bytes().map(u32::from).sum::<u32>() % 5000 * 16,
         );
-        if inside_container {
-            // `reduced`: 14/19.25 text inside a container; a heading is (## measured, # assumed the same) 20/27.5 bold with 8 below it
-            // (dump of v2-container-p0: the text display is 27.5 + 8 + 19.25 tall).
-            // gpui rounds a measured text leaf UP to a whole pixel (taffy.rs), so 19.25 became 20 and the message drifted
-            // 3 px over four lines; 19 keeps every line within a quarter pixel of the official layout.
-            let mut parts: Vec<AnyElement> = Vec::new();
-            let mut rest = String::new();
-            let mut lines = content.lines().peekable();
-            while let Some(line) = lines.next() {
-                // The markup CSS (`.markup h1/h2/h3`): 24/33, 20/27.5, 16/22 bold, 16 above (none on the first
-                // block of a text display) and 8 below.
-                let heading = [("### ", 16., 22.), ("## ", 20., 27.5), ("# ", 24., 33.)]
-                    .into_iter()
-                    .find_map(|(prefix, size, line_height)| {
-                        line.strip_prefix(prefix)
-                            .map(|text| (text, size, line_height))
-                    });
-                if let Some((heading, size, line_height)) = heading {
-                    let first = parts.is_empty() && rest.is_empty();
-                    if !rest.is_empty() {
-                        parts.push(self.embed_text_lined(&std::mem::take(&mut rest), key, 19.));
-                    }
-                    parts.push(
-                        div()
-                            .text_size(px(size))
-                            .line_height(px(line_height))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--text-strong"))
-                            .when(!first, |this| this.mt(px(16.)))
-                            .when(lines.peek().is_some(), |this| this.mb(px(8.)))
-                            .child(heading.to_owned())
-                            .into_any_element(),
-                    );
-                } else {
-                    if !rest.is_empty() {
-                        rest.push('\n');
-                    }
-                    rest.push_str(line);
+        // Inside a container the text is `reduced` (14/19.25), outside it 16/22 (dumps of v2-container-p0 and
+        // v2-bare-p0: the text display is 27.5 + 8 + 19.25, respectively 27.5 + 8 + 22, tall). gpui rounds a measured
+        // text leaf UP to a whole pixel (taffy.rs), so a 19.25 line became 20 and the message drifted; the line
+        // box is therefore given its exact height and the text inside it a whole-pixel line.
+        let (size, line, box_height) = if inside_container {
+            (14., 19., 19.25)
+        } else {
+            (16., 22., 22.)
+        };
+        let paragraph = |text: &str| {
+            div()
+                .min_h(px(box_height))
+                .child(self.embed_text_sized(text, key, size, line))
+                .into_any_element()
+        };
+        let mut parts: Vec<AnyElement> = Vec::new();
+        let mut rest = String::new();
+        let mut lines = content.lines().peekable();
+        while let Some(text_line) = lines.next() {
+            // The markup CSS (`.markup h1/h2/h3`): 24/33, 20/27.5, 16/22 bold, 16 above (none on the first
+            // block of a text display) and 8 below.
+            let heading = [("### ", 16., 22.), ("## ", 20., 27.5), ("# ", 24., 33.)]
+                .into_iter()
+                .find_map(|(prefix, size, line_height)| {
+                    text_line
+                        .strip_prefix(prefix)
+                        .map(|text| (text, size, line_height))
+                });
+            if let Some((heading, size, line_height)) = heading {
+                let first = parts.is_empty() && rest.is_empty();
+                if !rest.is_empty() {
+                    parts.push(paragraph(&std::mem::take(&mut rest)));
                 }
+                parts.push(
+                    div()
+                        .text_size(px(size))
+                        .line_height(px(line_height))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .when(heading.len() < 36, |this| this.h(px(line_height)))
+                        .when(!first, |this| this.mt(px(16.)))
+                        .when(lines.peek().is_some(), |this| this.mb(px(8.)))
+                        .child(heading.to_owned())
+                        .into_any_element(),
+                );
+            } else {
+                if !rest.is_empty() {
+                    rest.push('\n');
+                }
+                rest.push_str(text_line);
             }
-            if !rest.is_empty() {
-                parts.push(self.embed_text_lined(&rest, key, 19.));
-            }
-            return div().flex().flex_col().children(parts).into_any_element();
         }
-        let mut shown = message.clone();
-        shown.content = content.to_owned();
-        self.content(&shown).into_any_element()
+        if !rest.is_empty() {
+            parts.push(paragraph(&rest));
+        }
+        div().flex().flex_col().children(parts).into_any_element()
     }
 
     fn picture(
@@ -658,7 +670,8 @@ impl Root {
             ]
         };
         let body = if count == 3 {
-            let large = (2. * (width - 4.) / 3.).round();
+            // Dump (v2-container-p0): 326.67 square beside two 163.33 x 161.33, no rounding.
+            let large = 2. * (width - 4.) / 3.;
             let small = (large - 4.) / 2.;
             let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
                 self.picture(message, id, index, w, h, corners)
@@ -695,7 +708,12 @@ impl Root {
                         }))
                 }))
         };
-        div().w_full().child(body).into_any_element()
+        // Dump: a single picture's wrapper is 259 high around its 256 square (3 below it); the other layouts have none.
+        div()
+            .w_full()
+            .child(body)
+            .when(count == 1, |this| this.pb(px(3.)))
+            .into_any_element()
     }
 
     /// The File component: the plaintext card's frame (`container_BOOBu-`), a link-colored name and the size under it.
@@ -766,7 +784,7 @@ impl Root {
                                 .text_size(px(12.))
                                 .line_height(px(16.))
                                 .text_color(color("--text-muted"))
-                                .child(super::files::format_size(size)),
+                                .child(humanize_filesize(size)),
                         )
                     }),
             )
@@ -1399,6 +1417,39 @@ impl Root {
     }
 }
 
+/// `humanize.filesize` of module 796873 (the File component, 905394): base 1024, no decimals below 1 KB and two above,
+/// "bytes", "KB", "MB", ..., a comma between thousands, "0 bytes" for nothing.
+pub(super) fn humanize_filesize(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 bytes".to_owned();
+    }
+    let units = ["bytes", "KB", "MB", "GB", "TB", "PB"];
+    let value = bytes as f64;
+    let mut index = units.len() - 1;
+    for position in 0..units.len() {
+        if value < 1024f64.powi(position as i32 + 1) {
+            index = position;
+            break;
+        }
+    }
+    let scaled = value / 1024f64.powi(index as i32);
+    let decimals = if bytes < 1024 { 0 } else { 2 };
+    let text = format!("{scaled:.decimals$}");
+    let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let mut grouped = String::new();
+    for (place, digit) in whole.chars().enumerate() {
+        if place > 0 && (whole.len() - place) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    if fraction.is_empty() {
+        format!("{grouped} {}", units[index])
+    } else {
+        format!("{grouped}.{fraction} {}", units[index])
+    }
+}
+
 /// The label of a string select's value.
 fn option_label(select: &Select, value: &str) -> String {
     select
@@ -1407,4 +1458,18 @@ fn option_label(select: &Select, value: &str) -> String {
         .find(|option| option.value == value)
         .map(|option| option.label.clone())
         .unwrap_or_else(|| value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::humanize_filesize;
+
+    #[test]
+    fn filesize_follows_the_humanize_helper() {
+        assert_eq!(humanize_filesize(0), "0 bytes");
+        assert_eq!(humanize_filesize(35), "35 bytes");
+        assert_eq!(humanize_filesize(1023), "1,023 bytes");
+        assert_eq!(humanize_filesize(1024), "1.00 KB");
+        assert_eq!(humanize_filesize(1_572_864), "1.50 MB");
+    }
 }

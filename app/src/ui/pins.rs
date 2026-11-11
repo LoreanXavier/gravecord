@@ -28,12 +28,29 @@ impl Root {
             return;
         };
         self.pins_open = Some(anchor);
+        self.ack_open_pins();
         let _ = self.requests.send(Request::Fetch {
             key: pins_key(channel),
             route: format!("/channels/{channel}/messages/pins?limit=25"),
         });
         self.request_image("pins-empty".to_owned(), EMPTY_IMAGE.to_owned());
         cx.notify();
+    }
+
+    /// Module 945830: while the popout is open and the channel has unread pins, they are acknowledged
+    /// (`ackPins`: `POST /channels/{id}/pins/ack`; the local time moves at once).
+    pub(super) fn ack_open_pins(&mut self) {
+        let Some(channel) = self.channel.filter(|_| self.pins_open.is_some()) else {
+            return;
+        };
+        if self.stores.ack_pins(channel) {
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::POST,
+                route: format!("/channels/{channel}/pins/ack"),
+                body: None,
+            });
+        }
     }
 
     fn pinned_messages(&self) -> Vec<Message> {
