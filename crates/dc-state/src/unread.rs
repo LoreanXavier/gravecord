@@ -410,6 +410,10 @@ pub fn total_counts(stores: &Stores, now: DateTime<Utc>) -> Counts {
         counts.unread |= current.unread;
     }
     for channel in &stores.private_channels {
+        // 218461 `canHaveMentions`: a message request or spam channel has no mentions.
+        if channel.is_request() {
+            continue;
+        }
         // GuildReadStateStore treats private-channel mentions as high importance.
         let mentions = stores.read_states.mentions(channel.id);
         counts.mentions = counts.mentions.saturating_add(mentions);

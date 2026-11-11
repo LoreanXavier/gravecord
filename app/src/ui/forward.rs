@@ -187,7 +187,7 @@ impl Root {
             }
         };
         if !query.is_empty() {
-            for dm in &self.stores.private_channels {
+            for dm in self.stores.pickable_private_channels() {
                 let matches = self.stores.dm_recipient(dm).is_some_and(|user| {
                     user.display_name().to_lowercase().contains(&query)
                         || user.username.to_lowercase().contains(&query)

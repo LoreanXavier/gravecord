@@ -180,6 +180,27 @@ impl Root {
         cx.notify();
     }
 
+    /// RecentMentionsStore (module 398269): `MESSAGE_DELETE`, `RECENT_MENTION_DELETE {message_id}` and
+    /// `MESSAGE_DELETE_BULK` drop the messages from the Mentions list.
+    pub(super) fn mentions_deleted(&mut self, name: &str, data: &Value, cx: &mut Context<Self>) {
+        let ids: Vec<&str> = match name {
+            "RECENT_MENTION_DELETE" => data["message_id"].as_str().into_iter().collect(),
+            "MESSAGE_DELETE" => data["id"].as_str().into_iter().collect(),
+            "MESSAGE_DELETE_BULK" => data["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect(),
+            _ => return,
+        };
+        if let Some(Value::Array(list)) = self.fetched.get_mut(MENTIONS_KEY)
+            && drop_mentions(list, &ids)
+        {
+            cx.notify();
+        }
+    }
+
     fn fetch_mentions(&mut self) {
         let _ = self.requests.send(crate::net::Request::Fetch {
             key: MENTIONS_KEY.to_owned(),
@@ -1619,9 +1640,29 @@ impl Root {
     }
 }
 
+/// Removes the listed message ids from a mentions answer; true when anything went.
+fn drop_mentions(list: &mut Vec<Value>, ids: &[&str]) -> bool {
+    let before = list.len();
+    list.retain(|message| message["id"].as_str().is_none_or(|id| !ids.contains(&id)));
+    list.len() != before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_messages_leave_the_mentions_list() {
+        let mut list = vec![
+            serde_json::json!({"id": "1"}),
+            serde_json::json!({"id": "2"}),
+            serde_json::json!({"id": "3"}),
+        ];
+        assert!(drop_mentions(&mut list, &["2"]));
+        assert!(!drop_mentions(&mut list, &["9"]));
+        assert!(drop_mentions(&mut list, &["1", "3"]));
+        assert!(list.is_empty());
+    }
 
     #[test]
     fn the_mentions_query_follows_the_filter() {

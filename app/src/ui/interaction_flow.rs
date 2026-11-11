@@ -448,6 +448,9 @@ impl Root {
                 None => "interaction: nothing submitted".to_owned(),
             };
         }
+        if words == ["fill"] {
+            return self.fill_interaction_modal(cx);
+        }
         if words == ["hold"] {
             self.interaction_ui.hold_posts = true;
             return "interaction: presses are held, not posted".to_owned();

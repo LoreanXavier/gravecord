@@ -213,6 +213,7 @@ impl Root {
         let channel = spec.channel;
         let anchor = self.scroll_anchor();
         self.stores.messages_loaded(&spec, &page);
+        self.reinsert_local_sends(channel);
         self.after_window_change(channel, Some(anchor));
         cx.notify();
     }

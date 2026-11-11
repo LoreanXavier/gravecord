@@ -614,6 +614,21 @@ impl QuestStore {
         }
     }
 
+    /// `QUESTS_USER_STATUS_UPDATE {user_status}` as it arrives on the gateway (module 859703: `$(quest_id, {userStatus})`,
+    /// which only touches a quest the store already holds).
+    pub fn apply_gateway_status(&mut self, data: &Value) {
+        if data["user_status"]["quest_id"].is_string() {
+            self.apply_user_status(UserStatus::from_value(&data["user_status"]));
+        }
+    }
+
+    /// `QUESTS_USER_COMPLETION_UPDATE {quest_enrollment_blocked_until}` (module 859703: `O = t ? new Date(t) : null`).
+    pub fn apply_completion_update(&mut self, data: &Value) {
+        self.enrollment_blocked_until = data["quest_enrollment_blocked_until"]
+            .as_str()
+            .map(str::to_owned);
+    }
+
     pub fn clear(&mut self) {
         *self = QuestStore::default();
     }
@@ -737,6 +752,38 @@ mod tests {
         }));
         assert!(store.quests.is_empty() && store.fetched_current_quests);
         assert!(!store.is_fetching_current_quests && !store.is_quest_access_suspended());
+    }
+
+    #[test]
+    fn a_gateway_status_update_changes_a_known_quest_only() {
+        let mut store = store(vec![quest(
+            "a",
+            "2026-01-01T00:00:00Z",
+            "2027-01-01T00:00:00Z",
+            &[],
+            &[],
+        )]);
+        store.apply_gateway_status(&json!({"user_status": {"quest_id": "a", "enrolled_at": "2026-02-01T00:00:00Z", "completed_at": null, "claimed_at": null}}));
+        assert_eq!(
+            store.quests[0]
+                .user_status
+                .as_ref()
+                .and_then(|s| s.enrolled_at.as_deref()),
+            Some("2026-02-01T00:00:00Z")
+        );
+        store.apply_gateway_status(&json!({"user_status": {"quest_id": "zzz"}}));
+        assert_eq!(store.quests.len(), 1);
+        store.apply_gateway_status(&json!({}));
+        assert_eq!(store.quests.len(), 1);
+        store.apply_completion_update(
+            &json!({"quest_enrollment_blocked_until": "2027-01-01T00:00:00Z"}),
+        );
+        assert_eq!(
+            store.enrollment_blocked_until.as_deref(),
+            Some("2027-01-01T00:00:00Z")
+        );
+        store.apply_completion_update(&json!({"quest_enrollment_blocked_until": null}));
+        assert_eq!(store.enrollment_blocked_until, None);
     }
 
     #[test]

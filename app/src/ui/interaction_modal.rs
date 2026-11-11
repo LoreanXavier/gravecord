@@ -14,8 +14,8 @@ use dc_state::Id;
 use dc_state::components::{self as model, Component, Select};
 use dc_state::interactions::{Kind as InteractionKind, ModalState};
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window,
+    deferred, div, prelude::*, px,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -488,6 +488,7 @@ impl Root {
                         .collect()
                 };
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .child(
@@ -542,9 +543,17 @@ impl Root {
                             })),
                     )
                     .when(*open, |this| {
-                        this.child(
+                        // A popout layer (deferred, absolute under the trigger like the select of a bot message): drawn
+                        // above the dialog and outside the fields' scroll area, so the scroll area does not clip it and
+                        // the dialog does not change height.
+                        let list = super::keyboard::outside(
                             div()
-                                .mt(px(8.))
+                                .id(SharedString::from(format!("modal-list-{id}")))
+                                .occlude()
+                                .absolute()
+                                .top(px(48.))
+                                .left_0()
+                                .right_0()
                                 .rounded_b(px(4.))
                                 .border_1()
                                 .border_color(color("--border-subtle"))
@@ -552,42 +561,43 @@ impl Root {
                                 .max_h(px(5. * 38.))
                                 .overflow_hidden()
                                 .flex()
-                                .flex_col()
-                                .children(options.into_iter().enumerate().map(
-                                    |(index, (value, label))| {
-                                        let picked = chosen.iter().any(|(held, _)| *held == value);
-                                        let (field, pick_value, pick_label) =
-                                            (id.clone(), value.clone(), label.clone());
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "modal-option-{id}-{index}"
-                                            )))
-                                            .p(px(8.))
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .cursor_pointer()
-                                            .text_color(color(if picked {
-                                                "--interactive-text-active"
-                                            } else {
-                                                "--text-strong"
-                                            }))
-                                            .when(picked, |this| {
-                                                this.bg(color("--interactive-background-selected"))
-                                            })
-                                            .hover(|style| {
-                                                style.bg(color("--interactive-background-hover"))
-                                            })
-                                            .child(label)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.modal_pick(
-                                                    &field,
-                                                    &pick_value,
-                                                    &pick_label,
-                                                    cx,
-                                                );
-                                            }))
-                                    },
-                                )),
+                                .flex_col(),
+                            super::keyboard::Layer::InteractionSelect,
+                            cx,
+                        );
+                        // Priority 2: above the dialog's own deferred layer (priority 1).
+                        this.child(
+                            deferred(list.children(options.into_iter().enumerate().map(
+                                |(index, (value, label))| {
+                                    let picked = chosen.iter().any(|(held, _)| *held == value);
+                                    let (field, pick_value, pick_label) =
+                                        (id.clone(), value.clone(), label.clone());
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "modal-option-{id}-{index}"
+                                        )))
+                                        .p(px(8.))
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .cursor_pointer()
+                                        .text_color(color(if picked {
+                                            "--interactive-text-active"
+                                        } else {
+                                            "--text-strong"
+                                        }))
+                                        .when(picked, |this| {
+                                            this.bg(color("--interactive-background-selected"))
+                                        })
+                                        .hover(|style| {
+                                            style.bg(color("--interactive-background-hover"))
+                                        })
+                                        .child(label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.modal_pick(&field, &pick_value, &pick_label, cx);
+                                        }))
+                                },
+                            )))
+                            .with_priority(2),
                         )
                     })
                     .into_any_element()
@@ -662,6 +672,42 @@ impl Root {
             .into_any_element()
     }
 
+    /// Capture only (`interaction fill`): puts "Ada" into every text field of the open form.
+    #[cfg(feature = "capture")]
+    pub(super) fn fill_interaction_modal(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(form) = self.interaction_ui.form.as_ref() else {
+            return "interaction: no form open".to_owned();
+        };
+        let mut filled = 0;
+        for field in &form.fields {
+            if let Input::Text { editor, .. } = &field.input {
+                editor.update(cx, |editor, _| editor.set_text("Ada"));
+                filled += 1;
+            }
+        }
+        cx.notify();
+        format!("interaction: filled {filled} text fields")
+    }
+
+    /// A select field's list is open (the layer a press outside or Escape closes).
+    pub(super) fn interaction_select_is_open(&self) -> bool {
+        self.interaction_ui.form.as_ref().is_some_and(|form| {
+            form.fields
+                .iter()
+                .any(|field| matches!(field.input, Input::Choose { open: true, .. }))
+        })
+    }
+
+    pub(super) fn close_interaction_selects(&mut self) {
+        if let Some(form) = self.interaction_ui.form.as_mut() {
+            for field in &mut form.fields {
+                if let Input::Choose { open, .. } = &mut field.input {
+                    *open = false;
+                }
+            }
+        }
+    }
+
     /// The dialog, or nothing when no form is open.
     pub(super) fn interaction_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let form = self.interaction_ui.form.as_ref()?;
@@ -697,7 +743,7 @@ impl Root {
                 .children(fields),
         );
         let submit_tone = if state == Some(ModalState::InFlight) {
-            Tone::PrimaryDisabled
+            Tone::PrimaryLoading
         } else {
             Tone::Primary
         };

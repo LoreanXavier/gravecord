@@ -150,6 +150,7 @@ impl Root {
                 discover: None,
                 quests: true,
                 shop: false,
+                message_requests: false,
             },
         );
         self.set_quests_open(cx);

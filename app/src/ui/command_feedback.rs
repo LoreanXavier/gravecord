@@ -285,6 +285,7 @@ impl Root {
             list.retain(|known| known.id != id);
         }
         self.stores.interactions.message_changed(id);
+        self.send_ui.forget_notice(id);
         self.rebuild_rows();
         cx.notify();
     }

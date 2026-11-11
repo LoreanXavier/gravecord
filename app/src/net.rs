@@ -36,6 +36,12 @@ pub enum Update {
         draft: RejectedDraft,
         reason: Option<String>,
     },
+    /// The end of a [`Request::SendLocal`], after the retries: the message the server made, or why it did not.
+    SendResult {
+        channel: u64,
+        nonce: String,
+        outcome: crate::send_policy::Outcome,
+    },
     Dispatch {
         name: String,
         data: Value,
@@ -201,6 +207,16 @@ pub enum Request {
         /// Guild, if any, and the message being answered.
         /// The guild, the message, and whether the reply pings its author (the reply bar's @ switch).
         reply: Option<(Option<u64>, u64, bool)>,
+    },
+    /// A message the view already shows (`ui/send_state.rs`): it carries the nonce of that local row, is sent with the
+    /// official retries (`send_policy.rs`) and ends as `Update::SendResult`.
+    SendLocal {
+        nonce: String,
+        channel: u64,
+        content: String,
+        files: Vec<Upload>,
+        reply: Option<(Option<u64>, u64, bool)>,
+        sticker_ids: Vec<u64>,
     },
     /// A voice message: the recording is uploaded, then a message with an empty content, the voice flag (8192) and the
     /// attachment's `duration_secs` and `waveform` is created (`em` in module 841817). The outcome is
@@ -428,6 +444,7 @@ impl Request {
             Request::FetchMessages { .. } => "FetchMessages",
             Request::SendSticker { .. } => "SendSticker",
             Request::Send { .. } => "Send",
+            Request::SendLocal { .. } => "SendLocal",
             Request::SendVoice { .. } => "SendVoice",
             Request::Edit { .. } => "Edit",
             Request::Delete { .. } => "Delete",
@@ -484,6 +501,7 @@ impl Request {
             | Request::React { .. }
             | Request::SendSticker { .. }
             | Request::Send { .. }
+            | Request::SendLocal { .. }
             | Request::SendVoice { .. }
             | Request::Edit { .. }
             | Request::Delete { .. }
@@ -567,6 +585,14 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
     if let Some(key) = key {
         let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
         let _ = updates.send(Update::Fetched { key, body });
+    }
+    // A send the view shows as a row ends as a failed message, as one whose request never got an answer does.
+    if let Request::SendLocal { nonce, channel, .. } = request {
+        let _ = updates.send(Update::SendResult {
+            channel: *channel,
+            nonce: nonce.clone(),
+            outcome: crate::send_policy::Outcome::Failed(crate::send_policy::Failure::refused()),
+        });
     }
     true
 }
@@ -935,6 +961,83 @@ pub(crate) fn send_body(
     body
 }
 
+/// The request of [`Request::SendLocal`]: the uploads, then the create, which is sent again after a gateway error or
+/// a transport failure (`send_policy`: three more tries, a jittered wait before each, 60 seconds for an attempt).
+async fn send_local(
+    client: &Client,
+    channel: u64,
+    nonce: &str,
+    content: &str,
+    files: &[Upload],
+    reply: Option<(Option<u64>, u64, bool)>,
+    sticker_ids: &[u64],
+) -> crate::send_policy::Outcome {
+    use crate::send_policy::{Backoff, Failure, Outcome, RETRIES, TIMEOUT, status_is_retried};
+    let mut body = send_body(channel, content, reply);
+    body["nonce"] = json!(nonce);
+    if !sticker_ids.is_empty() {
+        // `sticker_ids` beside the content, as module 989161 builds the request.
+        body["sticker_ids"] = json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
+    }
+    if !files.is_empty() {
+        match upload_all(client, channel, files).await {
+            Ok(attachments) => body["attachments"] = Value::Array(attachments),
+            Err(error) => {
+                warn!("upload failed: {error}");
+                return Outcome::Failed(Failure::default());
+            }
+        }
+    }
+    let route = format!("/channels/{channel}/messages");
+    let mut backoff = Backoff::default();
+    let mut retries = RETRIES;
+    loop {
+        let failure = match tokio::time::timeout(TIMEOUT, client.post(&route, &body)).await {
+            Ok(Ok(sent)) => return Outcome::Sent(sent),
+            Ok(Err(dc_http::Error::Status {
+                status,
+                body: answer,
+                ..
+            })) => {
+                if retries > 0 && status_is_retried(status.as_u16()) {
+                    Failure::from_response(status.as_u16(), &answer)
+                } else {
+                    warn!("sending failed: {status}");
+                    return Outcome::Failed(Failure::from_response(status.as_u16(), &answer));
+                }
+            }
+            Ok(Err(dc_http::Error::RateLimited { .. })) => {
+                return Outcome::Failed(Failure {
+                    status: Some(429),
+                    ..Failure::default()
+                });
+            }
+            // A transport error or a timeout: sent again while the retries last.
+            Ok(Err(error)) => {
+                warn!("sending failed: {error}");
+                Failure::default()
+            }
+            Err(_) => {
+                warn!("sending timed out");
+                Failure::default()
+            }
+        };
+        if retries == 0 {
+            return Outcome::Failed(failure);
+        }
+        retries -= 1;
+        let jitter = f64::from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.subsec_nanos())
+                % 1000,
+        ) / 1000.;
+        let wait = backoff.fail(jitter, None);
+        warn!("sending again in {wait:?} (failure {})", backoff.fails());
+        tokio::time::sleep(wait).await;
+    }
+}
+
 /// Cuts the cell and paints it in `tint` (0xRRGGBBAA), which is what the CSS mask over a colored box does.
 fn emoji_cell(sprite: &[u8], tint: u32) -> image::ImageResult<Vec<u8>> {
     let sheet = image::load_from_memory_with_format(sprite, image::ImageFormat::Png)?.to_rgba8();
@@ -1078,6 +1181,32 @@ pub async fn run(
                             });
                         }
                     }
+                });
+            }
+            Request::SendLocal {
+                nonce,
+                channel,
+                content,
+                files,
+                reply,
+                sticker_ids,
+            } => {
+                tokio::spawn(async move {
+                    let outcome = send_local(
+                        &client,
+                        channel,
+                        &nonce,
+                        &content,
+                        &files,
+                        reply,
+                        &sticker_ids,
+                    )
+                    .await;
+                    let _ = updates.send(Update::SendResult {
+                        channel,
+                        nonce,
+                        outcome,
+                    });
                 });
             }
             request @ (Request::Send { .. } | Request::SendSticker { .. }) => {

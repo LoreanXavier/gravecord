@@ -79,7 +79,13 @@ impl Root {
                     .map(|time| time.with_timezone(&chrono::Utc));
             }
         }
-        let body = json!({"guilds": {guild.to_string(): {"channel_overrides": {channel.to_string(): settings}}}});
+        // Direct messages are kept under guild 0 here and sent under "@me".
+        let key = if guild == 0 {
+            "@me".to_owned()
+        } else {
+            guild.to_string()
+        };
+        let body = json!({"guilds": {key: {"channel_overrides": {channel.to_string(): settings}}}});
         let _ = self.requests.send(Request::GuildSettings { body });
     }
 

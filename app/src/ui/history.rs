@@ -20,6 +20,8 @@ pub(crate) struct Route {
     pub quests: bool,
     /// The Shop page on Home (`/shop`).
     pub shop: bool,
+    /// The Message Requests page on Home (`/message-requests`).
+    pub message_requests: bool,
 }
 
 #[derive(Default)]
@@ -64,6 +66,7 @@ impl Root {
             discover: self.discover_place(),
             quests: self.quests_active(),
             shop: self.shop_active(),
+            message_requests: self.message_requests_active(),
         }
     }
 
@@ -83,6 +86,7 @@ impl Root {
             }
             None if route.quests => self.set_quests_open(cx),
             None if route.shop => self.set_shop_open(cx),
+            None if route.message_requests => self.set_message_requests_open(cx),
             None => {
                 self.select_home(route.channel);
                 if route.nitro {
@@ -185,6 +189,7 @@ mod tests {
             discover: None,
             quests: false,
             shop: false,
+            message_requests: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());
