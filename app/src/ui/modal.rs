@@ -244,7 +244,20 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
 }
 
 pub(super) fn render(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 480., false, None, cx)
+    render_sized(spec, 480., false, None, None, cx)
+}
+
+/// The dialog that sits `top` pixels from the window's top edge and has a fixed `height` (the voters dialog of a
+/// poll: `outerContainer_dvN-MP` pads 56px at the top and the 680 wide container is 608 high in a 720 window). Its
+/// body is laid out by the caller, edge to edge below the header.
+pub(super) fn render_pinned(
+    spec: Spec,
+    width: f32,
+    top: f32,
+    height: f32,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized(spec, width, false, None, Some((top, height)), cx)
 }
 
 /// The dialog with an input in its action bar (`actionBarInput`): a checkbox or a text button on the left, the
@@ -254,17 +267,17 @@ pub(super) fn render_with_input(
     input: AnyElement,
     cx: &mut Context<Root>,
 ) -> AnyElement {
-    render_sized(spec, 480., false, Some(input), cx)
+    render_sized(spec, 480., false, Some(input), None, cx)
 }
 
 /// `size-sm_dvN-MP`: the same dialog 400 wide (Delete Channel).
 pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 400., false, None, cx)
+    render_sized(spec, 400., false, None, None, cx)
 }
 
 /// The small dialog with its buttons one above the other across the width (Sync permissions?).
 pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
-    render_sized(spec, 400., true, None, cx)
+    render_sized(spec, 400., true, None, None, cx)
 }
 
 fn render_sized(
@@ -272,6 +285,7 @@ fn render_sized(
     width: f32,
     stacked: bool,
     input: Option<AnyElement>,
+    pinned: Option<(f32, f32)>,
     cx: &mut Context<Root>,
 ) -> AnyElement {
     let fill = input.is_none();
@@ -301,7 +315,10 @@ fn render_sized(
         .occlude()
         .w(px(width))
         .pt(px(8.))
-        .pb(px(16.))
+        .pb(px(if pinned.is_some() { 0. } else { 16. }))
+        .when_some(pinned, |this, (_, height)| {
+            this.h(px(height)).overflow_hidden()
+        })
         .rounded(px(12.))
         .border_1()
         .border_color(color("--border-subtle"))
@@ -367,10 +384,13 @@ fn render_sized(
                         .child(subtitle)
                 })),
         )
-        .children(
-            spec.body
-                .map(|body| div().pt(px(16.)).pl(px(24.)).pr(px(24.)).child(body)),
-        )
+        .children(spec.body.map(|body| {
+            if pinned.is_some() {
+                div().flex_1().min_h(px(0.)).child(body)
+            } else {
+                div().pt(px(16.)).pl(px(24.)).pr(px(24.)).child(body)
+            }
+        }))
         // A dialog without buttons (Invite) ends with its body.
         .when(!buttons.is_empty(), |this| {
             let bar = div()
@@ -401,7 +421,8 @@ fn render_sized(
                 ..rgba(0x000000ff)
             })
             .flex()
-            .items_center()
+            .when(pinned.is_none(), |this| this.items_center())
+            .when_some(pinned, |this, (top, _)| this.items_start().pt(px(top)))
             .justify_center()
             .on_click(cx.listener(move |this, _, window, cx| {
                 close_scrim(this, window, cx);

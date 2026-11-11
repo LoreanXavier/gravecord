@@ -21,6 +21,7 @@ impl Root {
                 self.close_layer(layer, cx);
             }
         }
+        self.polls.close_modals();
         macro_rules! drop_all {
             ($($field:ident),* $(,)?) => {$(
                 if self.$field.is_some() {
@@ -152,5 +153,12 @@ impl Root {
         }
         cx.notify();
         format!("channel-settings: {section:?}")
+    }
+}
+
+impl Root {
+    /// The open layers as one string, for the crawler to tell that a right press opened a menu.
+    pub(crate) fn crawl_layers(&self) -> String {
+        format!("{:?}", self.open_layers())
     }
 }
