@@ -60,6 +60,14 @@ fn clock_pair(current: Option<f64>, duration: Option<f64>) -> (String, String) {
     (padded, whole)
 }
 
+/// Module 153440 `handleBuffer`: the rail's buffered part is read from the audio element's `buffered` ranges on the
+/// `progress` event, debounced 400 ms (trailing), and a range shorter than one second is skipped. The whole file is
+/// fetched and decoded here when the pointer enters the card, so the range is the whole clip from the moment the load
+/// completes (the one `progress` the element would fire for a small file), shown 400 ms later. A file the element
+/// would only have buffered in part cannot be told apart without range requests.
+const BUFFER_DELAY_MS: f64 = 400.;
+const BUFFER_MIN_SECONDS: f64 = 1.;
+
 /// What one frame shows of a card.
 struct View {
     /// The length, once the metadata is in.
@@ -68,6 +76,9 @@ struct View {
     playing: bool,
     /// The end was reached: the button offers a replay.
     ended: bool,
+    /// Something of the file was played or sought: the rail shows the buffered part (a paused card that never
+    /// played has none).
+    buffered: bool,
     slider_open: bool,
 }
 
@@ -97,7 +108,14 @@ impl Hub {
                 && pill.drag.is_none()
         });
         let loading = matches!(load, Some(Load::Loading)) || wants && duration.is_none();
-        if playing || loading {
+        if duration.is_some() && pill.ready_at.is_none() {
+            pill.ready_at = Some(now);
+        }
+        // The rail's buffered part: the whole clip, 400 ms after the load completed (`handleBuffer`).
+        let long_enough = duration.is_some_and(|whole| whole >= BUFFER_MIN_SECONDS);
+        let buffered = long_enough && pill.ready_at.is_some_and(|at| now - at >= BUFFER_DELAY_MS);
+        let filling = pill.ready_at.is_some_and(|at| now - at < BUFFER_DELAY_MS);
+        if playing || loading || filling {
             super::motion::keep_animating();
         }
         View {
@@ -105,6 +123,7 @@ impl Hub {
             current: pill.cached,
             playing,
             ended,
+            buffered,
             slider_open: slider_drag || pill.over > 0 || pill.hide_at.is_some_and(|at| now < at),
         }
     }
@@ -158,18 +177,31 @@ impl Root {
         let metadata = div()
             .flex()
             .child(
+                // The `::before` picture: 24 px wide, shrinks with the row (the long name's picture is 15 by 20),
+                // 24:32 whatever the width, top aligned in the 40 px box.
                 div()
-                    .flex_none()
+                    .flex_shrink(1.)
                     .w(px(24.))
+                    .min_w(px(0.))
                     .h(px(40.))
-                    .child(img("icons/file_audio.svg").w(px(24.)).h(px(32.))),
+                    .child(
+                        div()
+                            .w_full()
+                            .aspect_ratio(24. / 32.)
+                            .child(img("icons/file_audio.svg").size_full()),
+                    ),
             )
             .child(
                 div()
-                    .flex_1()
+                    // `flex: 1 1 auto`: the name's own width counts, so a long one takes room from the picture.
+                    .flex_grow(1.)
+                    .flex_shrink(1.)
                     .min_w(px(0.))
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .flex()
+                    .flex_col()
+                    .items_start()
                     .px(px(8.))
                     .child(
                         div()
@@ -230,6 +262,8 @@ impl Root {
                 .flex_none()
                 .w(px(width))
                 .h(px(12.))
+                // The box is exactly the digits' width: at fractional zoom a hair more would wrap the last one.
+                .whitespace_nowrap()
                 .child(text)
                 .into_any_element()
         };
@@ -255,7 +289,15 @@ impl Root {
             .child(digits(whole));
 
         let bar = self.audio_bar(
-            &key, salt, span, fraction, loaded, bar_over, preview, dragging,
+            &key,
+            salt,
+            span,
+            fraction,
+            loaded,
+            view.buffered,
+            bar_over,
+            preview,
+            dragging,
         );
 
         let button = {
@@ -337,19 +379,25 @@ impl Root {
         let mut buttons = div()
             .id(("audio-buttons", salt))
             .absolute()
-            .top(px(-8.))
-            .right(px(-8.))
+            .top(px(-10.))
+            .right(px(-10.))
             .flex()
             .rounded(px(5.))
             .overflow_hidden()
             .bg(color("--background-base-low"))
-            .border_1()
-            .border_color(color("--background-base-lower"))
-            .opacity(0.)
-            .group_hover(group.clone(), |style| style.opacity(1.))
-            .hover(|style| style.opacity(1.));
+            .opacity(0.);
+        // While the volume slider is open the group stays hidden (the golden's group is at opacity 0 then).
+        if !view.slider_open {
+            buttons = buttons
+                .group_hover(group.clone(), |style| style.opacity(1.))
+                .hover(|style| style.opacity(1.));
+        }
         if own {
             let (target, tip) = hover_button("audio-edit", "clips_pencil", "Modify Attachment");
+            let (edit_message, edit_attachment) = (message.clone(), attachment.clone());
+            let target = target.on_click(cx.listener(move |this, _, _, cx| {
+                this.open_modify_sent(&edit_message, &edit_attachment, cx);
+            }));
             buttons = buttons.child(self.with_tip(
                 format!("audio-edit-tip-{salt}"),
                 Tip::text(tip, Side::Top),
@@ -360,6 +408,10 @@ impl Root {
         if removable {
             let (target, tip) =
                 hover_button("audio-remove", "clips_trash", "Remove Message Attachment");
+            let (remove_message, remove_attachment) = (message.clone(), attachment.clone());
+            let target = target.on_click(cx.listener(move |this, _, _, cx| {
+                this.open_remove_sent(&remove_message, &remove_attachment, cx);
+            }));
             buttons = buttons.child(self.with_tip(
                 format!("audio-remove-tip-{salt}"),
                 Tip::text(tip, Side::Top),
@@ -418,6 +470,7 @@ impl Root {
         span: f64,
         fraction: f32,
         loaded: bool,
+        buffered: bool,
         over: bool,
         preview: f32,
         dragging: bool,
@@ -488,7 +541,7 @@ impl Root {
                     .rounded_r(px(3.))
                     .bg(rail),
             );
-        if loaded {
+        if buffered {
             track = track.child(segment(1., color("--white"), 0.3));
         }
         track = track

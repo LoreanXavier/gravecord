@@ -42,15 +42,24 @@ pub(crate) struct NewThread {
     _events: [Subscription; 2],
 }
 
-/// The short relative time of thread cards: "1m ago", "3h ago", "2d ago".
+/// `aK` (module 469881) with its default strings: "1m ago" under a minute, then minutes, hours and days ("m ago",
+/// "h ago", "d ago"; string ids N9M4N1, p0KedC, gjK5av), ">30d ago" under a "year" of 12 thirty-day months and the
+/// date after that (`format("LL")`, such as "November 12, 2026").
 pub(super) fn short_ago(milliseconds: i64) -> String {
-    let minutes = (milliseconds / 60_000).max(1);
-    if minutes < 60 {
-        format!("{minutes}m ago")
-    } else if minutes < 60 * 24 {
-        format!("{}h ago", minutes / 60)
+    let seconds = (milliseconds / 1000).max(0);
+    if seconds < 60 {
+        "1m ago".to_owned()
+    } else if seconds < 3600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3600)
+    } else if seconds < 2_592_000 {
+        format!("{}d ago", seconds / 86_400)
+    } else if seconds < 31_104_000 {
+        ">30d ago".to_owned()
     } else {
-        format!("{}d ago", minutes / (60 * 24))
+        let then = chrono::Utc::now() - chrono::Duration::milliseconds(milliseconds);
+        then.format("%B %-d, %Y").to_string()
     }
 }
 
@@ -82,17 +91,11 @@ impl Root {
         let Some(guild) = self.current_guild() else {
             return Vec::new();
         };
-        let me = self.stores.current_user.as_ref().map(|user| user.id);
         let mut list: Vec<Thread> = guild
             .threads
             .iter()
             .filter(|thread| parent.is_none_or(|parent| thread.parent_id == parent))
             .cloned()
-            // A thread you started is one you are in, whether or not READY listed the membership.
-            .map(|mut thread| {
-                thread.joined |= thread.owner_id.is_some() && thread.owner_id == me;
-                thread
-            })
             .collect();
         list.sort_by_key(|thread| std::cmp::Reverse(thread.last_message_id.unwrap_or(thread.id)));
         list
@@ -515,8 +518,15 @@ impl Root {
         cx.notify();
     }
 
-    /// `card_*` in the joined list: the name, the last author and message, the time, and the owner's avatar.
-    fn thread_card(&self, thread: &Thread, cx: &mut Context<Self>) -> AnyElement {
+    /// `container_yRVHqK` (module 28579, measured in `design/dom/threads/*.json`): a 72 px row with the name (and in the
+    /// modal the parent channel), the last message of the thread or "Started by" for an archived one, and the
+    /// facepile of its members. `show_channel_name` is the modal's.
+    pub(super) fn thread_card(
+        &self,
+        thread: &Thread,
+        show_channel_name: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = thread.id;
         let guild = self.guild;
         let last = self
@@ -525,34 +535,154 @@ impl Root {
             .get(&id)
             .and_then(|list| list.last())
             .cloned();
-        let owner = thread
-            .owner_id
-            .and_then(|owner| self.stores.users.get(&owner))
-            .cloned();
-        let owner_avatar = owner
-            .as_ref()
-            .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
-        let since = thread
-            .last_message_id
-            .map(|message| {
-                let ms = (message >> 22) + 1_420_070_400_000;
-                short_ago(chrono::Utc::now().timestamp_millis() - ms as i64)
+        let now = chrono::Utc::now().timestamp_millis();
+        let ago = |snowflake: Id| short_ago(now - ((snowflake >> 22) + 1_420_070_400_000) as i64);
+        let parent_name = show_channel_name
+            .then(|| {
+                self.current_guild().and_then(|guild| {
+                    guild
+                        .channels
+                        .iter()
+                        .find(|channel| channel.id == thread.parent_id)
+                        .map(|channel| format!("#{}", channel.name))
+                })
             })
+            .flatten();
+        let line = || {
+            div()
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+        };
+        let subtext = if thread.archived {
+            // `O`: "Started by <owner>  •  Last active <time>".
+            let owner = thread
+                .owner_id
+                .and_then(|owner| self.stores.users.get(&owner))
+                .cloned();
+            let since = thread
+                .last_message_id
+                .map(ago)
+                .or_else(|| thread.archive_timestamp_ms.map(|at| short_ago(now - at)))
+                .unwrap_or_default();
+            let mut row = line();
+            if let Some(owner) = owner {
+                row = row
+                    .child(self.thread_avatar(&owner, 16., cx).mr(px(8.)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight(600.))
+                            .text_color(self.guild_author_color(owner.id, "--text-default"))
+                            .child(format!("Started by {}", owner.display_name())),
+                    )
+                    .child(div().flex_none().child("\u{2022}").mx(px(8.)));
+            }
+            row.child(div().flex_none().child(format!("Last active {since}")))
+                .into_any_element()
+        } else if let Some(message) = last {
+            // `D`: avatar, name, ": ", the content (16 px markup, clipped with an ellipsis), " • ", time.
+            let author = self
+                .stores
+                .users
+                .get(&message.author.id)
+                .cloned()
+                .unwrap_or_else(|| message.author.clone());
+            line()
+                .child(self.thread_avatar(&author, 16., cx).mr(px(8.)))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight(600.))
+                        .text_color(self.guild_author_color(author.id, "--text-default"))
+                        .child(author.display_name().to_owned()),
+                )
+                .child(div().flex_none().child(":\u{a0}"))
+                .child(
+                    div()
+                        .flex_shrink(1.)
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(16.))
+                        .line_height(px(22.))
+                        .child(message.content.clone()),
+                )
+                .child(div().flex_none().child("\u{a0} \u{2022} \u{a0}"))
+                .child(div().flex_none().child(ago(message.id)))
+                .into_any_element()
+        } else {
+            // `B`: "No recent messages  •  <time>".
+            let since = ago(thread.last_message_id.unwrap_or(thread.id));
+            line()
+                .child(format!("No recent messages\u{a0} \u{2022} \u{a0}{since}"))
+                .into_any_element()
+        };
+        // `U`: the thread's members, from `getMemberIdsPreview` and `getMemberCount` (at most 50 shown).
+        let preview: Vec<Id> = self
+            .stores
+            .thread_previews
+            .member_ids_preview(id)
+            .map(|ids| ids.iter().copied().take(50).collect())
             .unwrap_or_default();
+        let count = self.stores.thread_previews.member_count(id).unwrap_or(0);
+        let faces = (!preview.is_empty()).then(|| {
+            let extra = count.saturating_sub(preview.len() as u64);
+            let mut stack = div()
+                .flex_none()
+                .ml(px(16.))
+                .h(px(40.))
+                .flex()
+                .items_center();
+            for (index, user) in preview.iter().enumerate() {
+                let face = match self.stores.users.get(user).cloned() {
+                    Some(user) => self.thread_avatar(&user, 24., cx),
+                    None => div()
+                        .flex_none()
+                        .size(px(24.))
+                        .rounded_full()
+                        .bg(color("--background-mod-strong")),
+                };
+                // The overlap of a stack is not in the captures (one member only); 8 px is assumed.
+                stack = stack.child(face.when(index > 0, |face| face.ml(px(-8.))));
+            }
+            if extra > 0 {
+                stack = stack.child(
+                    div()
+                        .ml(px(-8.))
+                        .h(px(24.))
+                        .min_w(px(24.))
+                        .px(px(4.))
+                        .rounded_full()
+                        .bg(color("--background-mod-strong"))
+                        .text_size(px(12.))
+                        .line_height(px(24.))
+                        .text_color(color("--text-default"))
+                        .child(format!("+{extra}")),
+                );
+            }
+            stack
+        });
         div()
             .id(SharedString::from(format!("thread-card-{id}")))
+            .w_full()
+            .h(px(72.))
+            .flex_none()
             .mb(px(8.))
-            .p(px(12.))
+            .p(px(15.))
             .rounded(px(8.))
             .border_1()
             .border_color(color("--border-subtle"))
-            .bg(color("--background-surface-high"))
+            .bg(color("--background-surface-higher"))
             .cursor_pointer()
-            .hover(|style| style.bg(color("--background-mod-subtle")))
             .flex()
-            .items_center()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.thread_browser = None;
+                this.thread_modal = false;
                 if let Some(guild) = guild {
                     this.select(guild, Some(id));
                 }
@@ -562,55 +692,61 @@ impl Root {
                 div()
                     .flex_1()
                     .min_w(px(0.))
+                    .h(px(40.))
                     .flex()
                     .flex_col()
                     .child(
                         div()
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child(thread.name.clone()),
-                    )
-                    .child(
-                        div()
+                            .h(px(20.))
                             .flex()
                             .items_center()
-                            .gap(px(4.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .children(last.map(|message| {
-                                div()
-                                    .flex()
-                                    .min_w(px(0.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-default"))
-                                            .child(format!(
-                                                "{}:\u{a0}",
-                                                message.author.display_name()
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(color("--text-default"))
-                                            .child(message.content.clone()),
-                                    )
-                            }))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
                             .child(
                                 div()
+                                    .flex_shrink(1.)
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(thread.name.clone()),
+                            )
+                            .children(parent_name.map(|name| {
+                                div()
+                                    .flex_none()
+                                    .ml(px(8.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
                                     .text_color(color("--text-muted"))
-                                    .child(format!("\u{2022} {since}")),
-                            ),
-                    ),
+                                    .child(name)
+                            })),
+                    )
+                    .child(subtext),
             )
-            .child(
-                div()
-                    .ml(px(8.))
-                    .size(px(20.))
-                    .children(owner_avatar.map(|image| img(image).size(px(20.)).rounded_full())),
-            )
+            .children(faces)
             .into_any_element()
+    }
+
+    /// A round avatar of `size` px (the default avatar when the account has none), requested when missing.
+    fn thread_avatar(&self, user: &dc_state::User, size: f32, cx: &mut Context<Self>) -> gpui::Div {
+        let (key, url) = avatar_source(user);
+        match self.images.get(&key).cloned() {
+            Some(image) => div()
+                .flex_none()
+                .size(px(size))
+                .child(img(image).size(px(size)).rounded_full()),
+            None => {
+                self.want_image(key, url, cx);
+                div()
+                    .flex_none()
+                    .size(px(size))
+                    .rounded_full()
+                    .bg(color("--background-mod-strong"))
+            }
+        }
     }
 
     pub(super) fn thread_browser_popout(
@@ -637,23 +773,35 @@ impl Root {
         let picture = self.images.get("threads:empty").cloned();
         let mut list: Vec<AnyElement> = Vec::new();
         let heading = |text: String| {
+            // `sectionHeader_6_wQXw`: 14 px, weight 500, 8 px above and below (the box is 24 high).
             div()
-                .mt(px(16.))
+                .mt(px(8.))
                 .mb(px(8.))
-                .text_size(px(12.))
-                .line_height(px(16.))
-                .font_weight(FontWeight(600.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .text_size(px(14.))
+                .line_height(px(18.67))
+                .font_weight(FontWeight(500.))
                 .text_color(color("--text-default"))
                 .child(text)
                 .into_any_element()
         };
         if !joined.is_empty() {
             list.push(heading(format!("{} joined threads", joined.len())));
-            list.extend(joined.iter().map(|thread| self.thread_card(thread, cx)));
+            list.extend(
+                joined
+                    .iter()
+                    .map(|thread| self.thread_card(thread, false, cx)),
+            );
         }
         if !others.is_empty() {
             list.push(heading(format!("{} other active threads", others.len())));
-            list.extend(others.iter().map(|thread| self.thread_card(thread, cx)));
+            list.extend(
+                others
+                    .iter()
+                    .map(|thread| self.thread_card(thread, false, cx)),
+            );
         }
         let body: AnyElement = if empty {
             div()
@@ -713,7 +861,9 @@ impl Root {
                 .id("threads-list")
                 .h(px(351.))
                 .overflow_y_scroll()
-                .px(px(16.))
+                // Rows are x432..872 of the 416..896 panel: 16 left, 24 right (the scrollbar's 8 px gutter).
+                .pl(px(16.))
+                .pr(px(24.))
                 .children(list)
                 .into_any_element()
         };
@@ -723,7 +873,7 @@ impl Root {
             .occlude()
             .w(px(480.))
             .rounded(px(8.))
-            .bg(color("--background-surface-higher"))
+            .bg(color("--background-surface-high"))
             .shadow(vec![gpui::BoxShadow {
                 color: gpui::hsla(0., 0., 0., 0.24),
                 offset: gpui::point(px(0.), px(12.)),
@@ -830,6 +980,118 @@ impl Root {
                     )),
             )
             .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
+    /// "All Active Threads" (module 400954): every active thread of the guild, newest message first, as 80 px rows with
+    /// the parent channel's name, in a 480 by 608 list modal (a 72 px header, the list, a footer with the full-width
+    /// Close). Measured in `design/golden/windows/threads/active-threads-modal-darker-cozy@1.png`.
+    pub(super) fn active_threads_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.thread_modal {
+            return None;
+        }
+        let guild = self.current_guild()?;
+        let mut threads: Vec<Thread> = guild
+            .threads
+            .iter()
+            .filter(|thread| !thread.archived)
+            .cloned()
+            .collect();
+        threads
+            .sort_by_key(|thread| std::cmp::Reverse(thread.last_message_id.unwrap_or(thread.id)));
+        let rows: Vec<AnyElement> = threads
+            .iter()
+            .map(|thread| self.thread_card(thread, true, cx))
+            .collect();
+        // The divider colour is read from the golden's pixels (50, 50, 55 on the modal's 36, 36, 41).
+        let divider = gpui::rgba(0x323237ff);
+        let modal = div()
+            .parity("active-threads-modal")
+            .id("active-threads-modal")
+            .occlude()
+            .w(px(480.))
+            .h(px(608.))
+            .overflow_hidden()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(divider)
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(72.))
+                    .px(px(24.))
+                    .border_b_1()
+                    .border_color(divider)
+                    .flex()
+                    .items_center()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("All Active Threads"),
+            )
+            .child(
+                div()
+                    .id("active-threads-list")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .px(px(24.))
+                    .pt(px(12.))
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(88.))
+                    .p(px(24.))
+                    .border_t_1()
+                    .border_color(divider)
+                    .child(
+                        div()
+                            .id("active-threads-done")
+                            .h(px(40.))
+                            .w_full()
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.thread_modal = false;
+                                cx.notify();
+                            }))
+                            .child("Close"),
+                    ),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("active-threads-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_start()
+                    .justify_center()
+                    .pt(px(56.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.thread_modal = false;
+                        cx.notify();
+                    }))
+                    .child(modal),
+            )
+            .with_priority(1)
             .into_any_element(),
         )
     }
@@ -1063,5 +1325,25 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod ago_tests {
+    use super::short_ago;
+
+    #[test]
+    fn the_age_follows_the_official_thresholds() {
+        let minute = 60_000;
+        assert_eq!(short_ago(5_000), "1m ago");
+        assert_eq!(short_ago(59 * 1000), "1m ago");
+        assert_eq!(short_ago(minute), "1m ago");
+        assert_eq!(short_ago(45 * minute), "45m ago");
+        assert_eq!(short_ago(60 * minute), "1h ago");
+        assert_eq!(short_ago(23 * 60 * minute), "23h ago");
+        assert_eq!(short_ago(24 * 60 * minute), "1d ago");
+        assert_eq!(short_ago(29 * 24 * 60 * minute), "29d ago");
+        assert_eq!(short_ago(30 * 24 * 60 * minute), ">30d ago");
+        assert_eq!(short_ago(359 * 24 * 60 * minute), ">30d ago");
     }
 }

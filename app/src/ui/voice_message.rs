@@ -54,6 +54,31 @@ pub(super) struct Pill {
     pub(super) bar_over: bool,
     pub(super) preview: f32,
     pub(super) bar: Bounds<Pixels>,
+    /// An audio attachment card: the motion time the length became known (the buffered part of the rail follows).
+    pub(super) ready_at: Option<f64>,
+}
+
+/// `MediaPlayerVolume` (module 587481): `{volume, muted}` in the client storage; a number is clamped to 0..1 and
+/// anything else reads as 1, a non-boolean `muted` as false.
+fn volume_of(value: Option<&serde_json::Value>) -> (f32, bool) {
+    let volume = value
+        .and_then(|stored| stored["volume"].as_f64())
+        .map_or(1., |volume| volume.clamp(0., 1.)) as f32;
+    let muted = value
+        .and_then(|stored| stored["muted"].as_bool())
+        .unwrap_or(false);
+    (volume, muted)
+}
+
+fn stored_volume() -> (f32, bool) {
+    volume_of(crate::storage::get("MediaPlayerVolume").as_ref())
+}
+
+fn store_volume(volume: f32, muted: bool) {
+    crate::storage::set(
+        "MediaPlayerVolume",
+        serde_json::json!({"volume": volume, "muted": muted}),
+    );
 }
 
 /// Everything the pills share.
@@ -74,13 +99,14 @@ pub(super) struct Hub {
 
 impl Hub {
     pub(super) fn new() -> Self {
+        let (volume, muted) = stored_volume();
         Self {
             loads: Arc::new(Mutex::new(HashMap::new())),
             requested: HashSet::new(),
             pills: HashMap::new(),
             speed: 1.,
-            volume: 1.,
-            muted: false,
+            volume,
+            muted,
             volume_drag: None,
             #[cfg(feature = "capture")]
             last_send: None,
@@ -225,12 +251,14 @@ impl Hub {
     pub(super) fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0., 1.);
         self.muted = false;
+        store_volume(self.volume, self.muted);
         voice_player::engine().set_volume(self.volume);
         voice_player::engine().set_muted(false);
     }
 
     pub(super) fn toggle_mute(&mut self) {
         self.muted = !self.muted;
+        store_volume(self.volume, self.muted);
         voice_player::engine().set_muted(self.muted);
     }
 
@@ -1966,6 +1994,23 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_stored_volume_reads_as_the_official_store_does() {
+        use super::volume_of;
+        use serde_json::json;
+        assert_eq!(volume_of(None), (1., false));
+        assert_eq!(
+            volume_of(Some(&json!({"volume": 0.25, "muted": true}))),
+            (0.25, true)
+        );
+        assert_eq!(
+            volume_of(Some(&json!({"volume": 7, "muted": "yes"}))),
+            (1., false)
+        );
+        assert_eq!(volume_of(Some(&json!({"volume": -3}))), (0., false));
+        assert_eq!(volume_of(Some(&json!({"volume": "loud"}))), (1., false));
+    }
+
     use super::*;
     use gpui::{Bounds, point, px, size};
 
