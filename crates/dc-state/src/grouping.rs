@@ -75,6 +75,7 @@ mod tests {
             },
             content: String::new(),
             edited: false,
+            edited_at: None,
             referenced: None,
             attachments: Vec::new(),
             embeds: Vec::new(),

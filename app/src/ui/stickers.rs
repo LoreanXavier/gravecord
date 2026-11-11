@@ -26,6 +26,10 @@ use std::collections::HashSet;
 pub(super) const PACKS_KEY: &str = "sticker-packs";
 pub(super) const PACKS_ROUTE: &str = "/sticker-packs?locale=en-US";
 const COLUMNS: usize = 4;
+/// Rows of the grid in view when the list has not reported yet (the grid is 4 rows tall), and the rows beyond the
+/// visible ones that are given a picture so a scroll does not show empty cells.
+const VISIBLE_ROWS: usize = 5;
+const ROWS_BEYOND: usize = 1;
 const CELL: f32 = 98.;
 const ROW_GAP: f32 = 12.;
 const HEADING: f32 = 32.;
@@ -66,6 +70,9 @@ pub(crate) struct StickerPicker {
     sections: Vec<Section>,
     rows: Vec<StickerRow>,
     list: ListState,
+    /// The rows the list last showed. Every row is built to be measured, but only these (and a row beyond) ask for a
+    /// sticker's picture and start its animation.
+    visible: std::ops::Range<usize>,
     collapsed: HashSet<String>,
     /// `handleStickerInspect`: the sticker last hovered; the bar names the first sticker until one is.
     hovered: Option<Cell>,
@@ -192,6 +199,11 @@ fn rows_of(sections: &[Section], collapsed: &HashSet<String>, headings: bool) ->
     rows
 }
 
+/// Whether row `row` is among the rows the list shows or the one beyond them on either side.
+fn row_in_view(row: usize, visible: &std::ops::Range<usize>) -> bool {
+    row + ROWS_BEYOND >= visible.start && row < visible.end + ROWS_BEYOND
+}
+
 fn row_height(row: &StickerRow) -> f32 {
     match row {
         StickerRow::Heading(_) => HEADING,
@@ -302,7 +314,7 @@ impl Root {
     }
 
     /// Opens the tab: its own search field, the pack list requested once, the account's sticker history read.
-    pub(super) fn ensure_stickers(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn ensure_stickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let search = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_placeholder("Find the perfect sticker".to_owned());
@@ -317,6 +329,10 @@ impl Root {
                 // Enter picks the first result.
                 EditorEvent::Submit(_) => {
                     let first = this.sticker_ui.picker.as_ref().and_then(|picker| {
+                        // The highlighted cell (module 118057) before the first result.
+                        if let Some(Cell::Sticker(sticker)) = picker.hovered.as_ref() {
+                            return Some(sticker.id);
+                        }
                         picker.sections.first().and_then(|section| {
                             section.cells.iter().find_map(|cell| match cell {
                                 Cell::Sticker(sticker) => Some(sticker.id),
@@ -365,6 +381,7 @@ impl Root {
             rows: Vec::new(),
             // Every row is measured at once (a few hundred plain boxes), so scroll distances are exact.
             list: ListState::new(0, ListAlignment::Top, px(400.)).measure_all(),
+            visible: 0..VISIBLE_ROWS,
             collapsed: HashSet::new(),
             hovered: None,
             query: String::new(),
@@ -378,6 +395,7 @@ impl Root {
                 weak.update(cx, |this, cx| {
                     if let Some(picker) = this.sticker_ui.picker.as_mut() {
                         picker.scrolled = true;
+                        picker.visible = range.clone();
                     }
                     this.request_row_art(range.start..range.end + 4);
                     cx.notify();
@@ -386,6 +404,8 @@ impl Root {
             });
         }
         self.refresh_stickers("", cx);
+        // The tab's own search field takes the keys, as the emoji tab's does (what is typed goes to it).
+        window.focus(&search.read(cx).focus_handle(cx), cx);
     }
 
     /// The pack list arrived (`STICKER_PACKS_FETCH_SUCCESS`).
@@ -486,6 +506,7 @@ impl Root {
         picker.rows = rows;
         picker.categories = categories;
         picker.list.reset(picker.rows.len());
+        picker.visible = 0..VISIBLE_ROWS;
         self.request_row_art(0..14);
         cx.notify();
     }
@@ -587,6 +608,57 @@ impl Root {
             .search
             .update(cx, |editor, _| editor.set_placeholder(name));
         cx.notify();
+    }
+
+    /// An arrow, Home or End over the sticker grid (module 118057): the inspected cell moves and the list follows it.
+    pub(super) fn sticker_grid_key(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(picker) = self.sticker_ui.picker.as_ref() else {
+            return false;
+        };
+        let cells: Vec<(usize, usize, usize, usize)> = picker
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| match row {
+                StickerRow::Cells { section, start } => Some((
+                    index,
+                    *section,
+                    *start,
+                    (picker.sections[*section].cells.len() - start).min(COLUMNS),
+                )),
+                _ => None,
+            })
+            .collect();
+        let lengths: Vec<usize> = cells.iter().map(|cell| cell.3).collect();
+        let at = picker.hovered.as_ref().and_then(|hovered| {
+            cells
+                .iter()
+                .enumerate()
+                .find_map(|(row, (_, section, start, len))| {
+                    picker.sections[*section].cells[*start..start + len]
+                        .iter()
+                        .position(|cell| cell == hovered)
+                        .map(|col| (row, col))
+                })
+        });
+        let Some(to) = (match at {
+            Some(at) => super::keyboard::grid_step(&lengths, at, key, ctrl),
+            None => super::keyboard::grid_first(&lengths),
+        }) else {
+            return !(at == Some((0, 0)) && key == "left") && at.is_some();
+        };
+        let (row, section, start, _) = cells[to.0];
+        let cell = picker.sections[section].cells[start + to.1].clone();
+        self.inspect_sticker(cell, cx);
+        if let Some(picker) = self.sticker_ui.picker.as_ref() {
+            super::keyboard::reveal_row(&picker.list, row);
+        }
+        true
     }
 
     /// A click on a sticker (module 989161 `nm`): alt toggles it among the favourites; otherwise it is sent, or
@@ -953,8 +1025,23 @@ impl Root {
             Cell::Sticker(sticker) => {
                 let locked = self.sticker_sendability(sticker) == Sendability::SendableWithPremium;
                 // Module 357354: `isInteracting` is the inspected cell, and a grid this narrow prefers animation.
-                let picture =
-                    self.sticker_art(sticker.id, sticker.format(), 96., inspected, false, cx);
+                // Every row is built so the list can measure it, but only the rows in view ask for their picture and
+                // start to play: a few hundred cells fetching and rendering at once starve the ones on screen.
+                #[cfg(feature = "capture")]
+                let everywhere = crate::perf::legacy("picker");
+                #[cfg(not(feature = "capture"))]
+                let everywhere = false;
+                let in_view = everywhere
+                    || self
+                        .sticker_ui
+                        .picker
+                        .as_ref()
+                        .is_none_or(|picker| row_in_view(row, &picker.visible));
+                let picture = if in_view {
+                    self.sticker_art(sticker.id, sticker.format(), 96., inspected, false, cx)
+                } else {
+                    None
+                };
                 let on = cell.clone();
                 let chosen = sticker.id;
                 div()
@@ -1571,6 +1658,19 @@ mod tests {
             available: true,
             user_id: None,
         }
+    }
+
+    #[test]
+    fn only_the_rows_in_view_and_the_next_ask_for_their_picture() {
+        let visible = 10..14;
+        assert!(!row_in_view(8, &visible));
+        assert!(row_in_view(9, &visible));
+        assert!(row_in_view(10, &visible));
+        assert!(row_in_view(13, &visible));
+        assert!(row_in_view(14, &visible));
+        assert!(!row_in_view(15, &visible));
+        assert!(!row_in_view(300, &visible));
+        assert!(row_in_view(0, &(0..VISIBLE_ROWS)));
     }
 
     #[test]

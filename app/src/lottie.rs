@@ -5,6 +5,137 @@
 use image::ImageEncoder;
 use rasterlottie::{Animation, RasterFrame, RenderConfig, Renderer, Rgba8};
 
+/// Microseconds spent parsing and preparing files, microseconds spent rendering frames, and how many of each, for the
+/// capture log (`sticker state`).
+pub static PARSE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PARSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RENDER_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+type Prepared = (rasterlottie::PreparedAnimation, Animation);
+
+/// Render workers. A file always goes to the same worker (`id % WORKERS`), because a prepared animation is not
+/// `Send`: it is parsed there once and every later batch for that file reuses it.
+const WORKERS: usize = 2;
+/// Estimated bytes of prepared animations one worker keeps (a prepared animation is about thirty times its JSON), and
+/// how long an unused one stays.
+const WORKER_BUDGET: usize = 48 * 1024 * 1024;
+const PREPARED_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+type Reply = Vec<(usize, Option<image::RgbaImage>)>;
+
+struct Task {
+    id: u64,
+    json: std::sync::Arc<Vec<u8>>,
+    frames: usize,
+    indices: Vec<usize>,
+    size: u32,
+    reply: std::sync::mpsc::Sender<Reply>,
+}
+
+fn workers() -> &'static [std::sync::mpsc::Sender<Task>] {
+    static POOL: std::sync::OnceLock<Vec<std::sync::mpsc::Sender<Task>>> =
+        std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        (0..WORKERS)
+            .map(|index| {
+                let (send, receive) = std::sync::mpsc::channel::<Task>();
+                std::thread::Builder::new()
+                    .name(format!("lottie-{index}"))
+                    .spawn(move || worker(receive))
+                    .expect("a lottie worker thread");
+                send
+            })
+            .collect()
+    })
+}
+
+struct Kept {
+    id: u64,
+    bytes: usize,
+    used: std::time::Instant,
+    prepared: Prepared,
+}
+
+fn worker(receive: std::sync::mpsc::Receiver<Task>) {
+    let mut kept: Vec<Kept> = Vec::new();
+    loop {
+        match receive.recv_timeout(PREPARED_IDLE) {
+            Ok(task) => {
+                let reply = task.reply.clone();
+                let _ = reply.send(render_task(&mut kept, &task));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => kept.clear(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn render_task(kept: &mut Vec<Kept>, task: &Task) -> Reply {
+    use std::sync::atomic::Ordering::Relaxed;
+    let now = std::time::Instant::now();
+    kept.retain(|entry| now.duration_since(entry.used) < PREPARED_IDLE);
+    let at = match kept.iter().position(|entry| entry.id == task.id) {
+        Some(at) => {
+            kept[at].used = now;
+            Some(at)
+        }
+        None => {
+            let started = std::time::Instant::now();
+            let built = parse(&task.json).and_then(|animation| {
+                Some((Renderer::default().prepare(&animation).ok()?, animation))
+            });
+            PARSE_US.fetch_add(started.elapsed().as_micros() as u64, Relaxed);
+            PARSES.fetch_add(1, Relaxed);
+            built.map(|prepared| {
+                let bytes = task.json.len() * 30;
+                kept.push(Kept {
+                    id: task.id,
+                    bytes,
+                    used: now,
+                    prepared,
+                });
+                kept.len() - 1
+            })
+        }
+    };
+    let result = at;
+    let reply = task
+        .indices
+        .iter()
+        .map(|index| {
+            let started = std::time::Instant::now();
+            let frame = result.and_then(|at| {
+                let (prepared, animation) = &kept[at].prepared;
+                let frame_at = animation.in_point + (*index).min(task.frames - 1) as f32;
+                let rendered = prepared
+                    .render_frame(frame_at, config_for(animation, task.size))
+                    .ok()?;
+                let (pixels, width, height) = unpremultiply(rendered);
+                image::RgbaImage::from_raw(width, height, pixels)
+            });
+            RENDER_US.fetch_add(started.elapsed().as_micros() as u64, Relaxed);
+            RENDERS.fetch_add(1, Relaxed);
+            (*index, frame)
+        })
+        .collect();
+    // Oldest first out until the estimate fits; the entry just used stays.
+    while kept.iter().map(|entry| entry.bytes).sum::<usize>() > WORKER_BUDGET && kept.len() > 1 {
+        let oldest = (0..kept.len())
+            .filter(|index| Some(*index) != result)
+            .min_by_key(|index| kept[*index].used);
+        match oldest {
+            Some(index) => {
+                kept.remove(index);
+            }
+            None => break,
+        }
+    }
+    reply
+}
+
 /// The largest sticker file read (the official files are a few tens of KiB).
 const MAX_JSON: usize = 512 * 1024;
 /// The largest canvas an animation may declare.
@@ -78,7 +209,9 @@ fn unpremultiply(rendered: RasterFrame) -> (Vec<u8>, u32, u32) {
 /// Only the file itself is kept. The parsed animation is about thirty times the size of the JSON, so it lives for
 /// one render job and is dropped with it.
 pub struct Source {
-    json: Vec<u8>,
+    /// Key of this file in its worker's prepared-animation cache.
+    id: u64,
+    json: std::sync::Arc<Vec<u8>>,
     frames: usize,
     frame_rate: f32,
 }
@@ -88,7 +221,8 @@ impl Source {
         let animation = parse(json)?;
         let frames = (animation.duration_frames().floor() as usize).max(1);
         (animation.frame_rate > 0.).then(|| Self {
-            json: json.to_vec(),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            json: std::sync::Arc::new(json.to_vec()),
             frames,
             frame_rate: animation.frame_rate,
         })
@@ -116,22 +250,20 @@ impl Source {
         indices: &[usize],
         size: u32,
     ) -> Vec<(usize, Option<image::RgbaImage>)> {
-        let prepared = parse(&self.json)
-            .and_then(|animation| Some((Renderer::default().prepare(&animation).ok()?, animation)));
-        indices
-            .iter()
-            .map(|index| {
-                let frame = prepared.as_ref().and_then(|(prepared, animation)| {
-                    let at = animation.in_point + (*index).min(self.frames - 1) as f32;
-                    let rendered = prepared
-                        .render_frame(at, config_for(animation, size))
-                        .ok()?;
-                    let (pixels, width, height) = unpremultiply(rendered);
-                    image::RgbaImage::from_raw(width, height, pixels)
-                });
-                (*index, frame)
-            })
-            .collect()
+        let (reply, answer) = std::sync::mpsc::channel();
+        let pool = workers();
+        let sent = pool[self.id as usize % pool.len()].send(Task {
+            id: self.id,
+            json: self.json.clone(),
+            frames: self.frames,
+            indices: indices.to_vec(),
+            size,
+            reply,
+        });
+        match sent.ok().and_then(|()| answer.recv().ok()) {
+            Some(frames) => frames,
+            None => indices.iter().map(|index| (*index, None)).collect(),
+        }
     }
 }
 

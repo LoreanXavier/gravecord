@@ -10,7 +10,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetProcessTimes, GetThreadTimes,
+};
 
 /// Milliseconds since the process started when the first messages were in, and when the loading screen was gone.
 /// Zero until it happened.
@@ -296,13 +298,13 @@ pub fn working_set_report() -> Vec<String> {
 }
 
 /// Heap and working set at named moments of the start, read by `perf start`.
-static CHECKPOINTS: std::sync::Mutex<Vec<(&'static str, usize, u64)>> =
+static CHECKPOINTS: std::sync::Mutex<Vec<(&'static str, usize, u64, u64)>> =
     std::sync::Mutex::new(Vec::new());
 
 pub fn checkpoint(name: &'static str) {
     let (working, _) = memory();
     if let Ok(mut list) = CHECKPOINTS.lock() {
-        list.push((name, heap().0, working));
+        list.push((name, heap().0, working, since_process_start_ms()));
     }
 }
 
@@ -311,7 +313,9 @@ pub fn checkpoints() -> String {
         return String::new();
     };
     list.iter()
-        .map(|(name, heap, working)| format!("cp_{name}_heap={heap} cp_{name}_ws={working}"))
+        .map(|(name, heap, working, ms)| {
+            format!("cp_{name}_ms={ms} cp_{name}_heap={heap} cp_{name}_ws={working}")
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -377,6 +381,58 @@ pub fn set_measuring(script: &str) {
 
 /// Root renders so far: the count between two samples says whether an idle window keeps redrawing.
 pub static RENDERS: AtomicU64 = AtomicU64::new(0);
+
+/// Time spent building the main view's element tree (`Root::render`) and its message rows, and how many of each, so a
+/// frame's cost can be split into what the app builds and what the framework lays out and paints.
+pub static BUILD_NS: AtomicU64 = AtomicU64::new(0);
+pub static BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static ROWS_NS: AtomicU64 = AtomicU64::new(0);
+pub static ROWS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Adds the time from its creation to its drop to a pair of counters.
+pub struct Timer {
+    started: std::time::Instant,
+    nanos: &'static AtomicU64,
+    count: &'static AtomicU64,
+}
+
+impl Timer {
+    /// Times one `Root::render`.
+    pub fn build() -> Self {
+        Self::on(&BUILD_NS, &BUILD_COUNT)
+    }
+
+    /// Times one message row.
+    pub fn row() -> Self {
+        Self::on(&ROWS_NS, &ROWS_COUNT)
+    }
+
+    fn on(nanos: &'static AtomicU64, count: &'static AtomicU64) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            nanos,
+            count,
+        }
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        self.nanos
+            .fetch_add(self.started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The counters so far as (renders, ms in renders, rows, ms in rows).
+pub fn build_totals() -> (u64, f64, u64, f64) {
+    (
+        BUILD_COUNT.load(Ordering::Relaxed),
+        BUILD_NS.load(Ordering::Relaxed) as f64 / 1e6,
+        ROWS_COUNT.load(Ordering::Relaxed),
+        ROWS_NS.load(Ordering::Relaxed) as f64 / 1e6,
+    )
+}
 
 /// Whether the run asked for the behaviour a fix replaced (`GRAVECORD_PERF_LEGACY=members,blink,badge`), so a
 /// before and an after can be measured with one binary.
@@ -444,6 +500,114 @@ pub fn cpu_ms() -> u64 {
         return 0;
     }
     (ticks(kernel) + ticks(user)) / 10_000
+}
+
+/// Kernel and user time of the calling thread in milliseconds (the harness runs on the UI thread, so this is the UI
+/// thread's share of `cpu_ms`).
+pub fn thread_cpu_ms() -> u64 {
+    let (mut created, mut exit, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    if unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &mut created,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .is_err()
+    {
+        return 0;
+    }
+    (ticks(kernel) + ticks(user)) / 10_000
+}
+
+/// CPU milliseconds of every thread of the process by thread id, with the name it gave itself (empty when it has none).
+pub fn thread_times() -> std::collections::HashMap<u32, (u64, String)> {
+    use windows::Win32::System::Threading::{
+        GetThreadDescription, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
+    let mut out = std::collections::HashMap::new();
+    let process = unsafe { GetCurrentProcessId() };
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
+        return out;
+    };
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) }.is_ok();
+    while more {
+        if entry.th32OwnerProcessID == process
+            && let Ok(thread) =
+                unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, entry.th32ThreadID) }
+        {
+            let (mut created, mut exit, mut kernel, mut user) = (
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+            );
+            if unsafe { GetThreadTimes(thread, &mut created, &mut exit, &mut kernel, &mut user) }
+                .is_ok()
+            {
+                let name = unsafe { GetThreadDescription(thread) }
+                    .ok()
+                    .map(|name| unsafe { name.to_string().unwrap_or_default() })
+                    .unwrap_or_default();
+                out.insert(
+                    entry.th32ThreadID,
+                    ((ticks(kernel) + ticks(user)) / 10_000, name),
+                );
+            }
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(thread) };
+        }
+        more = unsafe { Thread32Next(snapshot, &mut entry) }.is_ok();
+    }
+    let _ = unsafe { windows::Win32::Foundation::CloseHandle(HANDLE(snapshot.0)) };
+    out
+}
+
+static THREAD_BASE: std::sync::Mutex<Option<std::collections::HashMap<u32, (u64, String)>>> =
+    std::sync::Mutex::new(None);
+
+/// `perf threads begin` remembers every thread's CPU time; `perf threads end` says which threads used the most since.
+pub fn threads_report(begin: bool) -> String {
+    let now = thread_times();
+    let Ok(mut base) = THREAD_BASE.lock() else {
+        return String::new();
+    };
+    if begin {
+        *base = Some(now);
+        return "threads: baseline taken".to_owned();
+    }
+    let Some(before) = base.take() else {
+        return "threads: no baseline".to_owned();
+    };
+    let mut used: Vec<(u64, u32, String)> = now
+        .into_iter()
+        .map(|(id, (ms, name))| {
+            (
+                ms.saturating_sub(before.get(&id).map_or(0, |(old, _)| *old)),
+                id,
+                name,
+            )
+        })
+        .filter(|(ms, _, _)| *ms > 0)
+        .collect();
+    used.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    let total: u64 = used.iter().map(|(ms, _, _)| ms).sum();
+    let mut line = format!("threads: total_cpu_ms={total} top=[");
+    for (ms, id, name) in used.iter().take(8) {
+        line.push_str(&format!("{id}:{name}={ms}ms; "));
+    }
+    line.push(']');
+    line
 }
 
 /// Working set and private bytes of the process.

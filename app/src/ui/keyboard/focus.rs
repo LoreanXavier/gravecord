@@ -32,6 +32,23 @@ pub(super) fn starts_typing(keystroke: &Keystroke) -> bool {
     }
 }
 
+/// Module 82038: Enter and Space belong to a focused button, link, tab or menu item; and once keyboard mode is on,
+/// anything focused other than the page itself keeps every key but letters and digits.
+pub(super) fn type_to_focus_allowed(
+    keystroke: &Keystroke,
+    on_control: bool,
+    keyboard_mode: bool,
+) -> bool {
+    if !on_control {
+        return true;
+    }
+    let key = keystroke.key.as_str();
+    if matches!(key, "enter" | "space") {
+        return false;
+    }
+    !keyboard_mode || (key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
 /// The text a press types: the platform's own character when it has one, else the key itself.
 pub(super) fn typed_text(keystroke: &Keystroke) -> Option<String> {
     if let Some(text) = keystroke.key_char.as_ref() {
@@ -168,6 +185,11 @@ pub(super) enum Anchor {
     Other(FocusHandle),
 }
 
+/// Whether the message box gives up focus: a dialog is open, or the box is not drawn.
+pub(super) fn blurs_composer(anchor: &Anchor, modal: bool, reachable: bool) -> bool {
+    matches!(anchor, Anchor::Composer) && (modal || !reachable)
+}
+
 /// What a frame saw of the things that decide whether the composer takes focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Seen {
@@ -221,7 +243,7 @@ impl Root {
     }
 
     /// Dialogs and menus: what a key goes to before the global table.
-    pub(super) fn modal_open(&self) -> usize {
+    pub(in crate::ui) fn modal_open(&self) -> usize {
         usize::from(self.layers_open())
             + [
                 self.quick_switcher.is_some(),
@@ -386,7 +408,21 @@ impl Root {
         }
         if let Some(anchor) = target {
             self.restore_anchor(&anchor, window, cx);
-        } else if layers > before.layers && matches!(anchor_before, Anchor::Other(_)) {
+        } else if blurs_composer(
+            &self.anchor_now(window, cx),
+            now.modals > 0,
+            self.composer_reachable(),
+        ) {
+            // The text area is blurred while a dialog, menu or settings layer is open (699344 `componentDidUpdate`
+            // `hasModalOpen`); otherwise it would keep its caret and take what is typed under the layer. A text area
+            // that is not drawn (a channel where the user cannot talk, a page without a chat) must not keep focus
+            // either: a focused element that is not in the tree receives no keys, shortcuts included.
+            window.focus(&self.focus, cx);
+        } else if layers > before.layers
+            && matches!(anchor_before, Anchor::Other(_))
+            // A layer that put its own field in focus (the picker's search) keeps it.
+            && !matches!(self.anchor_now(window, cx), Anchor::Other(handle) if is_field(&handle))
+        {
             // A layer has just opened over a focused control of the page below. That control may not be drawn under
             // the layer, and a focus handle that is not drawn receives no keys, so Escape would never reach the layer.
             // The window's own handle takes the keys; the stack above gives the control its focus back on close.
@@ -532,6 +568,16 @@ impl Root {
         if self.keys.help.is_some() && self.keyboard_help_key(keystroke.key.as_str(), cx) {
             return true;
         }
+        // The picker's search field keeps focus while the arrows move over its grid.
+        if self.picker.is_some()
+            && matches!(
+                keystroke.key.as_str(),
+                "up" | "down" | "left" | "right" | "home" | "end"
+            )
+            && self.grid_key(keystroke, cx)
+        {
+            return true;
+        }
         if !typing && self.stops_key(keystroke, window, cx) {
             return true;
         }
@@ -559,7 +605,13 @@ impl Root {
                 self.run_shortcut(hit, window, cx)
             }
             Route::Swallow => true,
-            Route::Typing if !event.is_held => self.type_to_composer(keystroke, window, cx),
+            Route::Typing if !event.is_held => {
+                let on_control = matches!(self.anchor_now(window, cx), Anchor::Other(_));
+                if !type_to_focus_allowed(keystroke, on_control, self.keys.keyboard_modality) {
+                    return false;
+                }
+                self.type_to_composer(keystroke, window, cx)
+            }
             Route::Typing | Route::Overlay | Route::Input | Route::Pass => false,
         }
     }
@@ -814,6 +866,34 @@ mod tests {
         let attached = Seen { files: 1, ..seen() };
         assert!(composer_returns(seen(), attached));
         assert!(!composer_returns(attached, seen()));
+    }
+
+    #[test]
+    fn a_focused_control_keeps_enter_and_space_and_in_keyboard_mode_every_non_alphanumeric_key() {
+        let enter = stroke("enter");
+        let space = stroke("space");
+        let letter = stroke("a");
+        let dash = stroke("-");
+        assert!(!type_to_focus_allowed(&enter, true, false));
+        assert!(!type_to_focus_allowed(&space, true, true));
+        assert!(type_to_focus_allowed(&letter, true, true));
+        assert!(type_to_focus_allowed(&dash, true, false));
+        assert!(!type_to_focus_allowed(&dash, true, true));
+        assert!(type_to_focus_allowed(&enter, false, true));
+    }
+
+    #[test]
+    fn only_the_message_box_is_blurred_under_a_dialog() {
+        assert!(blurs_composer(&Anchor::Composer, true, true));
+        assert!(!blurs_composer(&Anchor::Composer, false, true));
+        assert!(!blurs_composer(&Anchor::Edit, true, true));
+        assert!(!blurs_composer(&Anchor::Root, true, true));
+        assert!(!blurs_composer(&Anchor::Nothing, true, true));
+    }
+
+    #[test]
+    fn an_undrawn_message_box_gives_up_focus() {
+        assert!(blurs_composer(&Anchor::Composer, false, false));
     }
 
     #[test]

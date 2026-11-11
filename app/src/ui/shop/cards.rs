@@ -43,7 +43,7 @@ impl Root {
     ) -> AnyElement {
         let item = product.items.first();
         let deco = move |this: &mut Root, id: &str, avatar: f32, ring: f32| -> AnyElement {
-            let art = this.shop_img(&item_static(id));
+            let art = this.shop_img_box(&item_static(id), avatar.max(ring), avatar.max(ring));
             div()
                 .size_full()
                 .flex()
@@ -87,11 +87,11 @@ impl Root {
         };
         match product.kind {
             data::KIND_BUNDLE => {
-                let bg = self.shop_cover(product.bg_static.as_deref());
+                let bg = self.shop_cover_box(product.bg_static.as_deref(), size, size);
                 let fg = product
                     .fg_static
                     .as_deref()
-                    .and_then(|url| self.shop_img(url));
+                    .and_then(|url| self.shop_img_box(url, size, size));
                 div()
                     .relative()
                     .size_full()
@@ -109,7 +109,7 @@ impl Root {
             data::KIND_EXTERNAL => {
                 let url = data::external_art_url(&product.sku_id);
                 let badge = product.sku_id == data::ORB_BADGE;
-                let art = url.and_then(|url| self.shop_img(&url));
+                let art = url.and_then(|url| self.shop_img_box(&url, size, 252.));
                 // `externalProductWrapper`: 252 high and centred, inside the card's bottom padding of 56.
                 div()
                     .size_full()
@@ -197,7 +197,7 @@ impl Root {
                     .into_any_element()
             }
             data::KIND_PROFILE_EFFECT | data::KIND_PROFILE_FRAME => {
-                let mock = self.shop_cover(Some(PROFILE_MOCK));
+                let mock = self.shop_cover_box(Some(PROFILE_MOCK), size, size);
                 let mut urls: Vec<String> = Vec::new();
                 if let Some(item) = item {
                     if let Some(thumbnail) = &item.thumbnail {

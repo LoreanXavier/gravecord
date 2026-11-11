@@ -259,46 +259,51 @@ impl Root {
         };
         let option = |kind: Kind, name: &'static str, title: &'static str, detail: &'static str| {
             let picked = form.kind == kind;
-            div()
-                .id(SharedString::from(format!("channel-type-{kind:?}")))
-                .relative()
-                .h(px(42.))
-                .pl(px(56.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(form) = this.create_channel.as_mut() {
-                        form.kind = kind;
-                    }
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px(0.))
-                        .child(radio(picked)),
-                )
-                .child(div().absolute().left(px(32.)).top(px(0.)).child(icon(
-                    name,
-                    20.,
-                    "--text-strong",
-                )))
-                .child(
-                    div()
-                        .line_height(px(20.))
-                        .text_color(color("--text-default"))
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .mt(px(4.))
-                        .ml(px(-24.))
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .text_color(color("--text-subtle"))
-                        .child(detail),
-                )
+            // One radio group: the picked option is its tab stop (Space picks the focused one).
+            super::keyboard::inset_ring_when_focused(
+                div().id(SharedString::from(format!("channel-type-{kind:?}"))),
+            )
+            .focusable()
+            .tab_index(0)
+            .tab_stop(picked)
+            .relative()
+            .h(px(42.))
+            .pl(px(56.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(form) = this.create_channel.as_mut() {
+                    form.kind = kind;
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(0.))
+                    .child(radio(picked)),
+            )
+            .child(div().absolute().left(px(32.)).top(px(0.)).child(icon(
+                name,
+                20.,
+                "--text-strong",
+            )))
+            .child(
+                div()
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .mt(px(4.))
+                    .ml(px(-24.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-subtle"))
+                    .child(detail),
+            )
         };
         let name_icon = match form.kind {
             Kind::Voice => "channel_type_voice",
@@ -372,8 +377,11 @@ impl Root {
                             // The emoji button, grey until hovered (`spriteGreyscale_SjG8Ug`).
                             .children(self.images.get("emoji_button").cloned().map(|image| {
                                 let field = form.name.clone();
-                                div()
-                                    .id("create-channel-emoji")
+                                super::keyboard::inset_ring_when_focused(
+                                    div().id("create-channel-emoji"),
+                                )
+                                .focusable()
+                                .tab_index(0)
                                     .w(px(32.))
                                     .h(px(30.))
                                     .flex()
@@ -396,8 +404,9 @@ impl Root {
                     ),
             )
             .child(
-                div()
-                    .id("create-channel-private")
+                super::keyboard::inset_ring_when_focused(div().id("create-channel-private"))
+                    .focusable()
+                    .tab_index(0)
                     .cursor_pointer()
                     .flex()
                     .gap(px(24.))

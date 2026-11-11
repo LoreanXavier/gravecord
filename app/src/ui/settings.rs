@@ -743,74 +743,101 @@ impl Root {
             Vec::new()
         };
         let page = entry.page;
-        let item = div()
-            .id(SharedString::from(format!("settings-nav-{}", entry.icon)))
-            .h(px(36.))
-            .p(px(8.))
-            .rounded(px(8.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .cursor_pointer()
-            .text_color(color(if active {
-                "--text-strong"
-            } else {
-                "--text-muted"
-            }))
-            .when(active, |this| this.bg(color("--background-mod-normal")))
-            .when(!active, |this| {
-                this.hover(move |style| {
-                    style
-                        .bg(color(if destructive {
-                            "--background-feedback-mod-critical"
-                        } else {
-                            "--background-mod-muted"
-                        }))
-                        .text_color(color("--text-strong"))
-                })
+        // The sidebar is a list: one tab stop on the open page, the arrows, Home and End move between items.
+        let handle = self.stop(&format!("settings-nav-{}", entry.icon), cx);
+        self.join("settings-nav", super::keyboard::Nav::List, &handle);
+        // Only the page's own layer is open: a dialog above it takes the tab order.
+        let item = super::keyboard::focusable(
+            div().id(SharedString::from(format!("settings-nav-{}", entry.icon))),
+            &handle,
+            active && self.modal_open() <= 1,
+            false,
+        )
+        .relative()
+        .h(px(36.))
+        .p(px(8.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .cursor_pointer()
+        .text_color(color(if active {
+            "--text-strong"
+        } else {
+            "--text-muted"
+        }))
+        .when(active, |this| this.bg(color("--background-mod-normal")))
+        .when(!active, |this| {
+            this.hover(move |style| {
+                style
+                    .bg(color(if destructive {
+                        "--background-feedback-mod-critical"
+                    } else {
+                        "--background-mod-muted"
+                    }))
+                    .text_color(color("--text-strong"))
             })
-            // `.item_xyJHva.active`: `.full-motion` `background-color .3s ease`; the `:hover:not(.active)` rule is
-            // `transition: none`, so only an item that becomes active fades its fill in.
-            .transition(
-                motion::Props::BACKGROUND,
-                if active {
-                    motion::css(300., motion::Ease::Ease).full_motion()
-                } else {
-                    motion::css(0., motion::Ease::Linear)
+        })
+        // `.item_xyJHva.active`: `.full-motion` `background-color .3s ease`; the `:hover:not(.active)` rule is
+        // `transition: none`, so only an item that becomes active fades its fill in.
+        .transition(
+            motion::Props::BACKGROUND,
+            if active {
+                motion::css(300., motion::Ease::Ease).full_motion()
+            } else {
+                motion::css(0., motion::Ease::Linear)
+            },
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if page == Page::LogOut {
+                this.logout_confirm = true;
+            } else if let Some(open) = this.settings.as_mut() {
+                *open = Open::new(page);
+            }
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    svg()
+                        .path(format!("icons/settings_{}.svg", entry.icon))
+                        .size(px(20.))
+                        .flex_none()
+                        .text_color(color(if active {
+                            "--text-strong"
+                        } else {
+                            "--text-muted"
+                        })),
+                )
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .child(entry.label),
+                ),
+        )
+        .when(
+            self.keyboard_mode() && self.keys.stops.has_focus(&handle),
+            |this| this.child(super::keyboard::hollow_ring(8.)),
+        );
+        let anchors_map = self.tip_anchors.clone();
+        let probe_key = SharedString::from(format!("nav-item-{}", entry.icon));
+        let item = item.child(
+            gpui::canvas(
+                move |bounds, _, _| {
+                    anchors_map.borrow_mut().insert(probe_key.clone(), bounds);
                 },
+                |_, _, _, _| {},
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if page == Page::LogOut {
-                    this.logout_confirm = true;
-                } else if let Some(open) = this.settings.as_mut() {
-                    *open = Open::new(page);
-                }
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        svg()
-                            .path(format!("icons/settings_{}.svg", entry.icon))
-                            .size(px(20.))
-                            .flex_none()
-                            .text_color(color(if active {
-                                "--text-strong"
-                            } else {
-                                "--text-muted"
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .child(entry.label),
-                    ),
-            );
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        );
         div()
             .flex()
             .flex_col()
@@ -1049,6 +1076,31 @@ impl Root {
                     .child(footnote("More".to_owned(), "--text-muted")),
             )
             .into_any_element()
+    }
+
+    /// A key moved focus onto a sidebar item: the list scrolls just far enough to show it.
+    pub(super) fn reveal_settings_nav(&self, focused: &gpui::FocusHandle) {
+        let Some(open) = self.settings.as_ref() else {
+            return;
+        };
+        let Some(key) = self.keys.stops.key_of(focused) else {
+            return;
+        };
+        let Some(icon) = key.strip_prefix("settings-nav-") else {
+            return;
+        };
+        let anchors = self.tip_anchors.borrow();
+        let Some(item) = anchors.get(&SharedString::from(format!("nav-item-{icon}"))) else {
+            return;
+        };
+        let view = open.nav.bounds();
+        let mut offset = open.nav.offset();
+        if item.top() < view.top() {
+            offset.y += view.top() - item.top();
+        } else if item.bottom() > view.bottom() {
+            offset.y -= item.bottom() - view.bottom();
+        }
+        open.nav.set_offset(offset);
     }
 
     fn settings_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1479,10 +1531,16 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         self.settings.as_ref()?;
-        let pose = motion::layer_pose("settings");
+        // User Settings is a modal (`layer-modal`, module 521489), not a layer of the layer stack: the scrim and the
+        // dialog enter on the modal spring (module 150591, `scale(.9)` to 1).
+        let pose = motion::modal_pose("settings");
+        let mut scrim = color("--background-scrim");
+        scrim.a *= pose.scrim;
         let modal = div()
             .parity_with_border("settings-modal", 1.)
             .id("settings-modal")
+            .opacity(pose.opacity)
+            .paint_scale(pose.scale, point(0.5, 0.5))
             .occlude()
             .size_full()
             .max_w(px(1400.))
@@ -1503,26 +1561,41 @@ impl Root {
             .font_features(kerning())
             .child(self.settings_sidebar(window, cx))
             .child(self.settings_content(window, cx));
+        // The window's own buttons stay above the scrim, and they are not part of the dialog: drawn as a layer of
+        // their own, the copy of the dialog that plays its exit does not carry them.
+        let layer = deferred(
+            div()
+                .id("settings-layer")
+                .occlude()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .bg(scrim)
+                .p(px(40.))
+                .flex()
+                .justify_center()
+                .child(modal),
+        )
+        .with_priority(1);
+        let controls = deferred(
+            div()
+                .id("settings-window-controls")
+                .absolute()
+                .top_0()
+                .right_0()
+                .child(window_controls()),
+        )
+        .with_priority(2);
         Some(
-            deferred(
-                div()
-                    .id("settings-layer")
-                    .opacity(pose.opacity)
-                    .paint_scale(pose.scale, point(0.5, 0.5))
-                    .occlude()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(color("--background-scrim"))
-                    .p(px(40.))
-                    .flex()
-                    .justify_center()
-                    .child(modal)
-                    .child(div().absolute().top_0().right_0().child(window_controls())),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(layer)
+                .child(controls)
+                .into_any_element(),
         )
     }
 }

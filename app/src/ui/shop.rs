@@ -208,6 +208,41 @@ impl Root {
         self.images.get(&key).cloned()
     }
 
+    /// `shop_img` for a picture drawn in a box of `width` x `height` logical pixels: it is decoded at that size times the
+    /// window's scale factor (with a quarter more) and no larger, which the cover fit of every caller needs.
+    pub(super) fn shop_img_box(
+        &mut self,
+        url: &str,
+        width: f32,
+        height: f32,
+    ) -> Option<std::sync::Arc<gpui::Image>> {
+        let key = format!("shop:img:{url}");
+        if !self.requested.contains(&key)
+            && let Ok(mut boxes) = crate::net::SHOP_FIT.lock()
+        {
+            boxes
+                .get_or_insert_with(Default::default)
+                .insert(key, (width, height));
+        }
+        self.shop_img(url)
+    }
+
+    /// `shop_cover` for a box of `width` x `height` logical pixels (see `shop_img_box`).
+    pub(super) fn shop_cover_box(
+        &mut self,
+        url: Option<&str>,
+        width: f32,
+        height: f32,
+    ) -> Option<AnyElement> {
+        let image = self.shop_img_box(url?, width, height)?;
+        Some(
+            img(image)
+                .size_full()
+                .object_fit(gpui::ObjectFit::Cover)
+                .into_any_element(),
+        )
+    }
+
     /// Asks for the products that no answer has delivered yet (`requestProducts` of module 295586: batches of 100).
     pub(super) fn shop_need_products(&mut self, skus: &[String]) {
         let missing: Vec<String> = skus
@@ -949,7 +984,7 @@ impl Root {
         let rows: Vec<AnyElement> = entries
             .into_iter()
             .map(|(label, icon_url, beta, tab, game)| {
-                let art = icon_url.and_then(|url| self.shop_img(&url));
+                let art = icon_url.and_then(|url| self.shop_img_box(&url, 32., 32.));
                 let shown = label.clone();
                 div()
                     .id(SharedString::from(format!("shop-menu-{label}")))
@@ -1143,7 +1178,7 @@ impl Root {
         url: Option<&str>,
         box_aspect: f32,
     ) -> Option<AnyElement> {
-        let image = self.shop_img(url?)?;
+        let image = self.shop_img_box(url?, 865., 865. / box_aspect)?;
         let aspect = image::ImageReader::new(std::io::Cursor::new(image.bytes()))
             .with_guessed_format()
             .ok()

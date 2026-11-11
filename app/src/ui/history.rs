@@ -123,9 +123,14 @@ impl Root {
         };
         let name = if back { "title_back" } else { "title_forward" };
         let group = SharedString::from(format!("history-{name}"));
-        div()
-            .id(name)
-            .group(group.clone())
+        // A disabled arrow is not a stop.
+        let base = div().id(name);
+        let stop = if enabled {
+            self.title_stop(base, name, 5., cx)
+        } else {
+            base
+        };
+        stop.group(group.clone())
             .absolute()
             .left(px(if back { 9. } else { 37. }))
             .top(px(4.))

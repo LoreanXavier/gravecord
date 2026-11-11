@@ -61,6 +61,12 @@ fn group_icon(channel: &PrivateChannel) -> (String, String) {
     source(url)
 }
 
+thread_local! {
+    /// The rail's items as last drawn, so that one that goes away can be drawn while it leaves.
+    static RAIL_CACHE: std::cell::RefCell<std::collections::HashMap<u64, (PrivateChannel, u64)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 impl Root {
     fn rail_dm_entries(&self) -> Vec<(PrivateChannel, u64)> {
         #[cfg(feature = "capture")]
@@ -207,12 +213,24 @@ impl Root {
     }
 
     pub(super) fn unread_dm_rail(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        self.rail_dm_entries()
+        let entries = self.rail_dm_entries();
+        let ids: Vec<u64> = entries.iter().map(|(channel, _)| channel.id).collect();
+        RAIL_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            for (channel, count) in &entries {
+                cache.insert(channel.id, (channel.clone(), *count));
+            }
+        });
+        let mut first_seen = false;
+        super::motion::dm_rail::step(&ids)
             .into_iter()
-            .enumerate()
-            .map(|(index, (channel, count))| {
+            .filter_map(|(id, leaving, pose)| {
+                let (channel, count) = RAIL_CACHE.with(|cache| cache.borrow().get(&id).cloned())?;
+                Some((leaving, pose, channel, count))
+            })
+            .map(|(leaving, pose, channel, count)| {
                 let id = channel.id;
-                let probe = index == 0;
+                let probe = !leaving && !std::mem::replace(&mut first_seen, true);
                 let selected = self.guild.is_none() && self.channel == Some(id);
                 let hovered = self.hovered_rail_dm == Some(id);
                 let height = if selected {
@@ -264,7 +282,9 @@ impl Root {
                     .relative()
                     .flex_none()
                     .w(px(72.))
-                    .h(px(40.))
+                    .h(px(40. * pose.height))
+                    .opacity(pose.opacity)
+                    .paint_scale(pose.scale, gpui::point(0.5, 0.5))
                     .flex()
                     .justify_center()
                     .child(

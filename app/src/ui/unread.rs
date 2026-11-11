@@ -3,7 +3,7 @@
 //! `N new messages since T` with Mark As Read (`newMessagesBar_j9Vvzj`). Reading a channel acks it (`last_viewed`
 //! in days since 2015); Mark Unread acks the message before (`manual: true`) and leaves the channel unread.
 
-use super::{Root, color, header_time};
+use super::{Root, color};
 use crate::net::Request;
 use dc_state::Id;
 use dc_state::read_state::days_since_epoch;
@@ -151,27 +151,34 @@ impl Root {
             .into_any_element()
     }
 
-    /// The blue bar over the messages while a channel is held unread.
+    /// The blue bar over the messages (`NewMessagesBar`, module 383055, built in module 891522 when
+    /// `unreadCount > 0`): shown while the open channel has unread messages, which the NEW divider keeps after the
+    /// automatic ack, and while Mark Unread holds one.
     pub(super) fn new_messages_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.channel?;
-        let state = self.stores.read_states.states.get(&channel)?;
-        if !state.manual {
-            return None;
-        }
-        let unread: Vec<&dc_state::Message> = self
-            .stores
-            .messages
-            .get(&channel)?
-            .iter()
-            .filter(|message| message.id > state.acked)
-            .collect();
-        let first = unread.first()?;
-        let count = unread.len();
-        let label = format!(
-            "{count} new message{} since {}",
-            if count == 1 { "" } else { "s" },
-            header_time(first.local_time(), chrono::Local::now())
+        let acked = match self.divider_after() {
+            Some(acked) => acked,
+            None => {
+                let state = self.stores.read_states.states.get(&channel)?;
+                if !state.manual {
+                    return None;
+                }
+                state.acked
+            }
+        };
+        let list = self.stores.messages.get(&channel)?;
+        let ids: Vec<Id> = list.iter().map(|message| message.id).collect();
+        let summary = unread_summary(&ids, acked)?;
+        let first = list.iter().find(|message| message.id == summary.first)?;
+        let local = first.local_time();
+        let same_day = local.date_naive() == chrono::Local::now().date_naive();
+        let label = bar_text(
+            summary.count,
+            summary.estimated,
+            &super::settings::prefs::clock(&local).to_string(),
+            (!same_day).then(|| local.format("%B %-d, %Y").to_string()),
         );
+        let first_id = summary.first;
         Some(
             div()
                 .absolute()
@@ -189,6 +196,13 @@ impl Root {
                 .items_center()
                 .child(
                     div()
+                        .id("new-messages-jump")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // `jumpToMessage` to the first unread message.
+                            this.scroll_to_message(first_id);
+                            cx.notify();
+                        }))
                         .flex_1()
                         .h(px(32.))
                         .pl(px(4.))
@@ -228,5 +242,199 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+thread_local! {
+    /// Channels whose loaded messages stop before the newest one (`messages.hasMoreAfter`).
+    static DETACHED: std::cell::RefCell<std::collections::HashSet<Id>> = std::cell::RefCell::new(Default::default());
+}
+
+/// Records that the loaded window of `channel` no longer reaches the newest message (a window loaded around a
+/// message that was jumped to, or newer messages dropped by scrolling far up), or that it does again. The message
+/// store keeps every message from the newest one back and has no around-fetch yet, so nothing sets this outside the
+/// harness.
+pub(super) fn set_window_detached(channel: Id, detached: bool) {
+    DETACHED.with(|set| {
+        if detached {
+            set.borrow_mut().insert(channel);
+        } else {
+            set.borrow_mut().remove(&channel);
+        }
+    });
+}
+
+/// `messages.hasMoreAfter && ready`: the only state in which the official client draws the bar. Scrolling up inside
+/// a window that holds the newest message does not.
+pub(super) fn has_more_after(window_detached: bool, scrolled_up: bool) -> bool {
+    let _ = scrolled_up;
+    window_detached
+}
+
+impl Root {
+    /// `jumpToPresentBar_j9Vvzj` (`tv` in module 383055, rendered by module 891522 while `hasMoreAfter` and the list
+    /// is ready): "You're Viewing Older Messages" with a primary small "Jump To Present" button, 28px above the
+    /// composer, centred, 44px tall at least and 284px wide at least. The bar is mounted and unmounted with the
+    /// condition; its `.barBase` `transition: opacity .15s` has nothing to run from, so it appears and goes at once.
+    pub(super) fn jump_to_present_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let channel = self.channel?;
+        let detached = DETACHED.with(|set| set.borrow().contains(&channel));
+        if !has_more_after(detached, self.list.is_scrolled_to_end() == Some(false)) {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .bottom(px(28.))
+                .left(px(0.))
+                .right(px(0.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id("jump-to-present-bar")
+                        .occlude()
+                        .min_h(px(44.))
+                        .min_w(px(284.))
+                        .py(px(8.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_color(color("--border-normal"))
+                        .bg(color("--background-surface-highest"))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: gpui::hsla(0., 0., 0., 0.16),
+                            offset: gpui::point(px(0.), px(4.)),
+                            blur_radius: px(8.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.jump_to_present(cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .pl(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-default"))
+                                .child("You're Viewing Older Messages"),
+                        )
+                        .child(div().flex_none().child(super::sticker_popout::small_button(
+                            "jump-to-present",
+                            "Jump To Present",
+                            true,
+                        ))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `jumpToPresent`: back to the newest message.
+    pub(super) fn jump_to_present(&mut self, cx: &mut Context<Self>) {
+        if let Some(channel) = self.channel {
+            set_window_detached(channel, false);
+        }
+        self.list.scroll_to_end();
+        cx.notify();
+    }
+}
+
+/// What the open channel's unread messages look like to the bar.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct UnreadSummary {
+    pub count: usize,
+    /// `ReadStateStore.isEstimated`: every loaded message is newer than the ack, so older unread ones may exist.
+    pub estimated: bool,
+    pub first: Id,
+}
+
+/// The loaded message ids (oldest first) after `acked`, or `None` when there is none (`unreadCount` is 0).
+pub(super) fn unread_summary(ids: &[Id], acked: Id) -> Option<UnreadSummary> {
+    let unread: Vec<Id> = ids.iter().copied().filter(|id| *id > acked).collect();
+    let first = *unread.first()?;
+    Some(UnreadSummary {
+        count: unread.len(),
+        estimated: unread.len() == ids.len(),
+        first,
+    })
+}
+
+/// The bar's words: `BctFH/` (`{count} new message(s) since {time}`), `3wXb9P` (the same plus `on {date}` when the
+/// first unread message is from another day), and their estimated forms `wvtbbG` and `tHqbtg` (`{count}+ new
+/// messages since ...`). The newline the strings hold collapses to a space in the nowrap bar.
+pub(super) fn bar_text(count: usize, estimated: bool, time: &str, date: Option<String>) -> String {
+    let head = if estimated {
+        format!("{count}+ new messages since {time}")
+    } else if count == 1 {
+        format!("{count} new message since {time}")
+    } else {
+        format!("{count} new messages since {time}")
+    };
+    match date {
+        Some(date) => format!("{head} on {date}"),
+        None => head,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_jump_bar_needs_a_window_detached_from_the_newest_message() {
+        // Scrolled up with the newest message loaded: no bar.
+        assert!(!has_more_after(false, true));
+        // The loaded window detached from the newest message: bar, scrolled or not.
+        assert!(has_more_after(true, false));
+        assert!(has_more_after(true, true));
+        set_window_detached(7, true);
+        assert!(DETACHED.with(|set| set.borrow().contains(&7)));
+        set_window_detached(7, false);
+        assert!(!DETACHED.with(|set| set.borrow().contains(&7)));
+    }
+
+    #[test]
+    fn counts_the_loaded_messages_after_the_ack() {
+        assert_eq!(unread_summary(&[1, 2, 3], 3), None);
+        let summary = unread_summary(&[1, 2, 3, 4], 2).unwrap();
+        assert_eq!(
+            (summary.count, summary.estimated, summary.first),
+            (2, false, 3)
+        );
+    }
+
+    #[test]
+    fn all_loaded_messages_unread_is_an_estimate() {
+        let summary = unread_summary(&[5, 6], 1).unwrap();
+        assert!(summary.estimated);
+    }
+
+    #[test]
+    fn the_text_follows_the_official_strings() {
+        assert_eq!(
+            bar_text(1, false, "9:05 AM", None),
+            "1 new message since 9:05 AM"
+        );
+        assert_eq!(
+            bar_text(3, false, "9:05 AM", None),
+            "3 new messages since 9:05 AM"
+        );
+        assert_eq!(
+            bar_text(3, false, "9:05 AM", Some("November 5, 2026".into())),
+            "3 new messages since 9:05 AM on November 5, 2026"
+        );
+        assert_eq!(
+            bar_text(50, true, "9:05 AM", None),
+            "50+ new messages since 9:05 AM"
+        );
+        assert_eq!(
+            bar_text(50, true, "9:05 AM", Some("November 5, 2026".into())),
+            "50+ new messages since 9:05 AM on November 5, 2026"
+        );
     }
 }

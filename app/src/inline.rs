@@ -315,6 +315,12 @@ fn shorten(piece: &Piece, whole: &ShapedLine, width: Pixels, window: &Window) ->
 /// Called with the index of the piece a click landed on.
 type PieceClick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
+/// Called with the index of the piece a click landed on and where that piece is drawn, in window coordinates.
+type PieceClickAt = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
+
+/// Called when the pointer moves onto another piece (with where it is drawn) or leaves them all.
+type PieceHover = Rc<dyn Fn(Option<(usize, Bounds<Pixels>)>, &mut Window, &mut App)>;
+
 pub struct Inline {
     pieces: Rc<Vec<Piece>>,
     line_height: Pixels,
@@ -322,6 +328,8 @@ pub struct Inline {
     selectable: Option<Selectable>,
     truncate: bool,
     on_piece_click: Option<PieceClick>,
+    on_piece_click_at: Option<PieceClickAt>,
+    on_piece_hover: Option<PieceHover>,
 }
 
 #[derive(Clone)]
@@ -339,6 +347,8 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         selectable: None,
         truncate: false,
         on_piece_click: None,
+        on_piece_click_at: None,
+        on_piece_hover: None,
     }
 }
 
@@ -349,6 +359,24 @@ impl Inline {
         handler: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_piece_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// As `on_piece_click`, with the bounds of the piece that was clicked (for popouts that open beside it).
+    pub fn on_piece_click_at(
+        mut self,
+        handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_piece_click_at = Some(Rc::new(handler));
+        self
+    }
+
+    /// Reports the piece under the pointer when it changes, with its bounds (for tooltips on pieces).
+    pub fn on_piece_hover(
+        mut self,
+        handler: impl Fn(Option<(usize, Bounds<Pixels>)>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_piece_hover = Some(Rc::new(handler));
         self
     }
 
@@ -425,6 +453,54 @@ impl Inline {
                         crate::ui::motion::set_hover(key, inside);
                         window.refresh();
                     }
+                }
+            });
+        }
+        if let Some(handler) = self.on_piece_hover.clone() {
+            let laid = self.laid.clone();
+            let line_height = self.line_height;
+            let last: Rc<RefCell<Option<(usize, usize)>>> = Rc::default();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let over = if bounds.contains(&event.position) {
+                    laid.borrow()
+                        .fragment_at(event.position - bounds.origin, line_height)
+                } else {
+                    None
+                };
+                let now = over.map(|(piece, fragment, _)| (piece, fragment));
+                if *last.borrow() == now {
+                    return;
+                }
+                *last.borrow_mut() = now;
+                handler(
+                    over.map(|(piece, _, rect)| {
+                        (piece, Bounds::new(bounds.origin + rect.origin, rect.size))
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        }
+        if let Some(handler) = self.on_piece_click_at.clone() {
+            let laid = self.laid.clone();
+            let line_height = self.line_height;
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Left
+                    && bounds.contains(&event.position)
+                    && let Some((piece, _, rect)) = laid
+                        .borrow()
+                        .fragment_at(event.position - bounds.origin, line_height)
+                {
+                    handler(
+                        piece,
+                        Bounds::new(bounds.origin + rect.origin, rect.size),
+                        window,
+                        cx,
+                    );
                 }
             });
         }
@@ -739,6 +815,32 @@ impl Laid {
                     && position.x < fragment.x + fragment.width
             })
             .map(|fragment| fragment.piece)
+    }
+
+    /// The piece under a point, the fragment's start, and the fragment's rectangle relative to the element's origin.
+    fn fragment_at(
+        &self,
+        position: Point<Pixels>,
+        line_height: Pixels,
+    ) -> Option<(usize, usize, Bounds<Pixels>)> {
+        let line = (position.y / line_height).floor().max(0.) as usize;
+        self.fragments
+            .iter()
+            .find(|fragment| {
+                fragment.line == line
+                    && position.x >= fragment.x
+                    && position.x < fragment.x + fragment.width
+            })
+            .map(|fragment| {
+                (
+                    fragment.piece,
+                    fragment.start,
+                    Bounds::new(
+                        point(fragment.x, line_height * fragment.line as f32),
+                        size(fragment.width, line_height),
+                    ),
+                )
+            })
     }
 
     /// The start of the fragment under a point, when it is one with a hover look.

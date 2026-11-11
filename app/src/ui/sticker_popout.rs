@@ -226,7 +226,7 @@ enum Resolved {
 }
 
 /// The container every branch sits in: `popoutContainer_j9Vvzj`.
-fn shell() -> gpui::Div {
+pub(super) fn shell() -> gpui::Div {
     let mut background = color("--background-surface-highest");
     background.a *= 0.9;
     div()
@@ -253,7 +253,7 @@ fn shell() -> gpui::Div {
         ])
 }
 
-fn text(size: f32, line: f32, weight: f32, token: &str) -> gpui::Div {
+pub(super) fn text(size: f32, line: f32, weight: f32, token: &str) -> gpui::Div {
     div()
         .text_size(px(size))
         .line_height(px(line))
@@ -287,7 +287,11 @@ fn loader() -> AnyElement {
         .into_any_element()
 }
 
-fn small_button(id: &'static str, label: &'static str, primary: bool) -> gpui::Stateful<gpui::Div> {
+pub(super) fn small_button(
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+) -> gpui::Stateful<gpui::Div> {
     let (background, hover, border, ink) = if primary {
         (
             "--control-primary-background-default",

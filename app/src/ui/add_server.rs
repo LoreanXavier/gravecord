@@ -707,12 +707,14 @@ impl Root {
                     )
                     .child(div().mt(px(8.)).child(self.field(invite)))
                     .children(add.error.map(|message| {
-                        div()
-                            .mt(px(8.))
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .text_color(color("--text-feedback-critical"))
-                            .child(message)
+                        div().mt(px(8.)).child(super::motion::messages::status_message(
+                            message,
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-feedback-critical"))
+                                .child(message),
+                        ))
                     }))
                     .child(
                         div()

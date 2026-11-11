@@ -15,13 +15,17 @@ use gpui::Keystroke;
 
 mod actions;
 mod focus;
+mod grid;
 mod help;
 mod messages;
 mod nav;
 mod stops;
 
 pub(super) use focus::State;
-pub(super) use stops::{Nav, Stops, inset_ring_when_focused, ring_when_focused};
+pub(super) use grid::{first as grid_first, reveal_row, step as grid_step};
+pub(super) use stops::{
+    Nav, Stops, focusable, hollow_ring, inset_ring_when_focused, ring_when_focused, tab_stop,
+};
 
 /// One action of the official table (`IWg` in module 652215).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -652,6 +656,17 @@ pub(super) fn route(keystroke: &Keystroke, facts: Facts) -> Route {
         return Route::Typing;
     }
     Route::Pass
+}
+
+impl crate::ui::Root {
+    /// Script step `unread`: a message newer than anything acked arrived in `channel`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_unread(&mut self, channel: u64, cx: &mut gpui::Context<Self>) {
+        self.stores
+            .read_states
+            .message_created(channel, u64::MAX >> 1, None, false);
+        cx.notify();
+    }
 }
 
 #[cfg(test)]

@@ -24,8 +24,13 @@
 
 use gpui::{AnyElement, IntoElement, Rgba, Styled, canvas, div};
 
+pub(crate) mod composer;
 pub(crate) mod controls;
+pub(crate) mod dm_rail;
+pub(crate) mod layers;
+pub(crate) mod messages;
 pub(crate) mod rail;
+pub(crate) mod toasts;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -1386,6 +1391,9 @@ pub enum Rule {
     TextField,
     /// `.full-motion .item_6zZYhF` (790853): `background-color .3s ease`, the tab item of the friends bar.
     TabItem,
+    /// `categoryItemDefaultCategory_ufks4w` (module 342379): `background-color .1s ease-in-out`, the unicode category
+    /// buttons of the emoji picker's rail.
+    PickerCategory,
 }
 
 impl Rule {
@@ -1440,6 +1448,11 @@ impl Rule {
                 },
                 css(100., Ease::Ease),
                 css(100., Ease::Ease),
+            ),
+            Rule::PickerCategory => (
+                Props::BACKGROUND_COLOR,
+                css(100., Ease::EaseInOut),
+                css(100., Ease::EaseInOut),
             ),
             Rule::TabItem => {
                 let rule = css(300., Ease::Ease).full_motion();
@@ -1650,8 +1663,12 @@ fn ghosts_step(window: &mut gpui::Window) {
                 continue;
             }
             let viewport = window.viewport_size();
-            let layer = format!("{id:?}").contains("settings");
-            let centre = match (layer, content) {
+            let name = format!("{id:?}");
+            // Server Settings and Channel Settings are layers of the layer stack; User Settings is a modal whose
+            // dialog is centred in the window (the window controls painted with it are not part of the dialog).
+            let layer = name.contains("server-settings") || name.contains("channel-settings");
+            let centred = layer || name.contains("settings-layer");
+            let centre = match (centred, content) {
                 (false, Some(content)) => content.center(),
                 _ => gpui::point(viewport.width / 2., viewport.height / 2.),
             };
@@ -1863,6 +1880,79 @@ pub(crate) async fn step(
                 cx.notify();
             });
             "motion modal: close".to_owned()
+        }
+        // Opens and closes Server Settings of the open server, the stand-in for every full-window layer.
+        ["layer", "open"] => {
+            root.update(cx, |root, cx| {
+                if let Some(guild) = root.guild {
+                    root.open_server_settings(guild, cx);
+                }
+                cx.notify();
+            });
+            "motion layer: open".to_owned()
+        }
+        ["layer", "close"] => {
+            root.update(cx, |root, cx| {
+                root.server_settings = None;
+                cx.notify();
+            });
+            "motion layer: close".to_owned()
+        }
+        ["older", mode] => {
+            root.update(cx, |root, cx| {
+                if let Some(channel) = root.channel {
+                    crate::ui::unread::set_window_detached(channel, *mode == "on");
+                }
+                cx.notify();
+            });
+            format!("motion older: {mode}")
+        }
+        // A stand-in voice member (the signed-in user in the first voice channel of the open server), speaking or not.
+        ["speaking", mode] => {
+            root.update(cx, |root, cx| {
+                let (Some(guild), Some(me)) = (
+                    root.guild,
+                    root.stores.current_user.as_ref().map(|user| user.id),
+                ) else {
+                    return;
+                };
+                let voice = root.current_guild().and_then(|guild| {
+                    guild
+                        .channels
+                        .iter()
+                        .find(|channel| channel.kind == dc_state::ChannelKind::Voice)
+                        .map(|channel| channel.id)
+                });
+                let Some(voice) = voice else {
+                    return;
+                };
+                let list = root.stores.voice_states.entry(guild).or_default();
+                if !list.iter().any(|state| state.user_id == me) {
+                    list.push(dc_state::VoiceState {
+                        user_id: me,
+                        channel_id: voice,
+                        ..Default::default()
+                    });
+                }
+                if *mode == "on" {
+                    root.speaking.insert(me);
+                } else {
+                    root.speaking.remove(&me);
+                }
+                cx.notify();
+            });
+            format!("motion speaking: {mode}")
+        }
+        ["toast", "show"] => {
+            root.update(cx, |root, cx| root.show_app_toast("Copied!", cx));
+            "motion toast: show".to_owned()
+        }
+        ["toast", "hide"] => {
+            root.update(cx, |root, cx| {
+                root.app_toast = None;
+                cx.notify();
+            });
+            "motion toast: hide".to_owned()
         }
         ["state"] => format!(
             "motion state: last_ghost={} ghosts={} now={:.1} frozen={} active={} reduced={} frames_requested={}",

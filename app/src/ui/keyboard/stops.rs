@@ -188,11 +188,21 @@ impl Stops {
     /// A frame starts: the groups are laid out again, the handles stay.
     pub(in crate::ui) fn begin_frame(&self, focused: Option<&FocusHandle>, first_row: usize) {
         self.first_row.set(first_row);
+        crate::ui::modal::begin_frame();
         self.groups.borrow_mut().clear();
         *self.focused.borrow_mut() = focused.cloned();
     }
 
     /// Whether `handle` had focus when the frame started.
+    /// The key a stop was made with.
+    pub(in crate::ui) fn key_of(&self, handle: &FocusHandle) -> Option<String> {
+        self.handles
+            .borrow()
+            .iter()
+            .find(|(_, other)| *other == handle)
+            .map(|(key, _)| key.clone())
+    }
+
     pub(in crate::ui) fn has_focus(&self, handle: &FocusHandle) -> bool {
         self.focused.borrow().as_ref() == Some(handle)
     }
@@ -391,6 +401,25 @@ impl Root {
         }
     }
 
+    /// A title bar button: a tab stop of its own, ringed in keyboard mode with a frame around its own corners (the
+    /// bar's buttons have `tabIndex 0`); Enter and Space click it. It sits out of the tab order under a dialog.
+    pub(in crate::ui) fn title_stop<E: InteractiveElement + gpui::ParentElement>(
+        &self,
+        element: E,
+        key: &str,
+        radius: f32,
+        cx: &mut App,
+    ) -> E {
+        let handle = self.stop(&format!("title-{key}"), cx);
+        let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
+        let element = tab_stop(element, &handle, self.modal_open() == 0);
+        if ringed {
+            element.child(hollow_ring(radius))
+        } else {
+            element
+        }
+    }
+
     /// A row of an open menu: focused through the menu's own navigator (module 165862), which marks the focused row
     /// with the same background as hover; it is never a tab stop, and Enter or Space click it.
     pub(in crate::ui) fn menu_stop<E: InteractiveElement>(
@@ -440,7 +469,11 @@ impl Root {
                 .focused(cx)
                 .is_some_and(|handle| crate::editor::is_field(&handle));
             if !typing {
-                window.focus_next(cx);
+                // The primary button when the dialog has one (Enter confirms), else the first control.
+                match crate::ui::modal::dialog_primary() {
+                    Some(primary) => window.focus(&primary, cx),
+                    None => window.focus_next(cx),
+                }
             }
         } else if !open {
             self.keys.stops.dialog_wait.set(false);
@@ -596,6 +629,7 @@ impl Root {
         }
         if let Some((handle, row)) = landing {
             window.focus(&handle, cx);
+            self.reveal_settings_nav(&handle);
             if let Some(row) = row {
                 self.list.scroll_to_reveal_item(row);
             }

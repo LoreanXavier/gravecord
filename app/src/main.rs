@@ -361,11 +361,16 @@ fn run() -> Result<()> {
             cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
             // Keeps the decoded pictures within their budget (`ui/image_cache.rs`).
             ui::image_cache::start(cx);
-            cx.text_system()
-                .add_fonts(faces.into_iter().map(Cow::Owned).collect())
-                .expect("gg sans must load");
-            #[cfg(feature = "capture")]
-            perf::checkpoint("fonts_added");
+            // Registering the faces takes about 170 ms. It runs beside the window and the shell's start (the gateway
+            // connection begins in `Shell::new`), and is finished before this closure returns, so before any frame.
+            let text_system = cx.text_system().clone();
+            let fonts_added = std::thread::spawn(move || {
+                text_system
+                    .add_fonts(faces.into_iter().map(Cow::Owned).collect())
+                    .expect("gg sans must load");
+                #[cfg(feature = "capture")]
+                perf::checkpoint("fonts_added");
+            });
             let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
             let window = cx
                 .open_window(
@@ -391,6 +396,9 @@ fn run() -> Result<()> {
             perf::mark(&perf::WINDOW_MS);
             #[cfg(feature = "capture")]
             perf::checkpoint("window");
+            if fonts_added.join().is_err() {
+                panic!("gg sans must load");
+            }
             let shell = window.entity(cx).expect("the shell exists");
             if hidden {
                 let _ = window.update(cx, |_, window, _| autostart::place_hidden(window, bounds));

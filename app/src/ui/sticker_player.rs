@@ -254,6 +254,8 @@ pub(super) struct Advance {
     pub fetch: bool,
     /// Time until the shown frame changes.
     pub wake: Option<Duration>,
+    /// The index of the frame in `image` and the playhead it stands in for, and the clip's frame count.
+    pub shown: Option<(usize, usize, usize)>,
 }
 
 #[derive(Default)]
@@ -280,6 +282,22 @@ pub(super) struct Cache {
     released: u64,
     /// Lottie frames rendered and the microseconds they took, by device size.
     timings: HashMap<u32, (u64, u64)>,
+    /// Capture only: what every draw of a sticker handed out, in order.
+    #[cfg(feature = "capture")]
+    trace: Vec<Draw>,
+}
+
+/// One draw of a sticker: when (ms since the process started), which clip, and what was drawn (0 nothing, 1 the still,
+/// 2 a frame of the animation) at which frame.
+#[cfg(feature = "capture")]
+struct Draw {
+    at: u64,
+    id: Id,
+    px: u32,
+    what: u8,
+    playhead: usize,
+    /// How many frames the one drawn was behind the one due, going round the loop (0 for a still or nothing).
+    lag: usize,
 }
 
 impl Cache {
@@ -308,6 +326,7 @@ impl Cache {
             job: None,
             fetch: false,
             wake: None,
+            shown: None,
         };
         self.formats.insert(id, format);
         let art = self.arts.get_mut(&id).map(|art| {
@@ -365,12 +384,13 @@ impl Cache {
         // The frame itself, else the nearest one behind it (a late frame is skipped, as module 445972 skips them).
         // While the clip is still filling in, the frame already shown is held rather than the still picture, so a
         // sticker whose frames arrive slower than they play does not blink between the two.
-        advance.image = clip
+        let shown = clip
             .frames
             .range(..=playhead)
             .next_back()
-            .or_else(|| clip.frames.iter().next_back())
-            .map(|(_, frame)| frame.image.clone());
+            .or_else(|| clip.frames.iter().next_back());
+        advance.shown = shown.map(|(index, _)| (*index, playhead, count));
+        advance.image = shown.map(|(_, frame)| frame.image.clone());
         #[cfg(feature = "capture")]
         if crate::perf::legacy("blink") {
             advance.image = (0..LOOKAHEAD.min(count))
@@ -835,6 +855,25 @@ impl Root {
                 .detach();
             }
         }
+        #[cfg(feature = "capture")]
+        {
+            let mut cache = cache.borrow_mut();
+            let playhead = cache.clips.get(&key).map_or(0, |clip| clip.playhead);
+            cache.trace.push(Draw {
+                at: crate::perf::since_process_start_ms(),
+                id,
+                px,
+                what: match (&advance.image, &still) {
+                    (Some(_), _) => 2,
+                    (None, Some(_)) => 1,
+                    (None, None) => 0,
+                },
+                playhead,
+                lag: advance.shown.map_or(0, |(shown, due, count)| {
+                    (due + count - shown) % count.max(1)
+                }),
+            });
+        }
         match advance.image {
             Some(frame) => Some(img(frame)),
             None => still.map(img),
@@ -979,8 +1018,18 @@ impl Root {
                     })
                     .collect();
                 costs.sort();
+                let load = |counter: &std::sync::atomic::AtomicU64| {
+                    counter.load(std::sync::atomic::Ordering::Relaxed)
+                };
+                let split = format!(
+                    "lottie_parse_ms_each={:.1} over {} lottie_render_ms_each={:.2} over {}",
+                    load(&lottie::PARSE_US) as f64 / 1000. / load(&lottie::PARSES).max(1) as f64,
+                    load(&lottie::PARSES),
+                    load(&lottie::RENDER_US) as f64 / 1000. / load(&lottie::RENDERS).max(1) as f64,
+                    load(&lottie::RENDERS),
+                );
                 format!(
-                    "stickers: misses={} costs=[{}] setting={:?} focused={} clips={} playing={playing} frames={frames} bytes={} arts={} encoded={} jobs={} rendered={} evicted={} released={} frozen={:?} [{}]",
+                    "stickers: {split} misses={} costs=[{}] setting={:?} focused={} clips={} playing={playing} frames={frames} bytes={} arts={} encoded={} jobs={} rendered={} evicted={} released={} frozen={:?} [{}]",
                     cache.misses,
                     costs.join(", "),
                     self.sticker_setting(),
@@ -997,7 +1046,76 @@ impl Root {
                     heads.join(", "),
                 )
             }
-            _ => "usage: sticker clock <ms>|off | sticker state".to_owned(),
+            ["cold"] => {
+                // Forgets every sticker picture and animation so the next draw starts from the network again.
+                cache.clips.clear();
+                cache.arts.clear();
+                cache.asked.clear();
+                cache.unavailable.clear();
+                cache.retired.clear();
+                cache.trace.clear();
+                drop(cache);
+                self.images.retain(|key, _| !key.starts_with("sticker:"));
+                self.requested.retain(|key| !key.starts_with("sticker:"));
+                self.request_images();
+                cx.notify();
+                "sticker cold: pictures forgotten".to_owned()
+            }
+            ["trace"] => {
+                let mut by_clip: BTreeMap<(Id, u32), Vec<&Draw>> = BTreeMap::new();
+                for draw in &cache.trace {
+                    by_clip.entry((draw.id, draw.px)).or_default().push(draw);
+                }
+                let mut lines = Vec::new();
+                for ((id, px), draws) in by_clip {
+                    let first = draws.iter().position(|draw| draw.what != 0);
+                    let appeared = first.map_or("never".to_owned(), |at| draws[at].at.to_string());
+                    let after = first.map_or(&draws[..], |at| &draws[at..]);
+                    let blanks = after.iter().filter(|draw| draw.what == 0).count();
+                    let mut swaps = 0;
+                    for pair in after.windows(2) {
+                        if pair[0].what != pair[1].what && pair[0].what != 0 && pair[1].what != 0 {
+                            swaps += 1;
+                        }
+                    }
+                    let to_still = after
+                        .windows(2)
+                        .filter(|pair| pair[0].what == 2 && pair[1].what == 1)
+                        .count();
+                    let backwards = after
+                        .windows(2)
+                        .filter(|pair| {
+                            pair[0].what == 2
+                                && pair[1].what == 2
+                                && pair[1].playhead + 1 < pair[0].playhead
+                        })
+                        .count();
+                    let played: Vec<usize> = after
+                        .iter()
+                        .filter(|draw| draw.what == 2)
+                        .map(|draw| draw.lag)
+                        .collect();
+                    let late = played.iter().filter(|lag| **lag > 2).count();
+                    let worst = played.iter().copied().max().unwrap_or(0);
+                    let seq: String = draws
+                        .iter()
+                        .take(60)
+                        .map(|draw| match draw.what {
+                            0 => '_',
+                            1 => 's',
+                            _ => 'F',
+                        })
+                        .collect();
+                    lines.push(format!(
+                        "{id}@{px}: draws={} first_at_ms={appeared} blank_after_first={blanks} frames_over_2_late={late}/{} worst_lag={worst} still_frame_swaps={swaps} frame_to_still={to_still} playhead_wraps={backwards} first60={seq}",
+                        draws.len(),
+                        played.len()
+                    ));
+                }
+                cache.trace.clear();
+                format!("sticker trace: {}", lines.join(" | "))
+            }
+            _ => "usage: sticker clock <ms>|off | sticker state | sticker trace".to_owned(),
         }
     }
 }

@@ -729,3 +729,10 @@ fn a_checkmark_draws_in_over_300ms_from_a_scale_of_point_seven() {
     let end = check_stroke(3, true);
     assert_eq!((end.opacity, end.scale), (1., 1.));
 }
+
+#[test]
+fn the_picker_category_rule_is_100ms_ease_in_out_on_the_background() {
+    let (props, hovering, resting) = Rule::PickerCategory.parts();
+    assert_eq!(props, Props::BACKGROUND_COLOR);
+    assert_eq!((hovering.duration_ms, resting.duration_ms), (100., 100.));
+}

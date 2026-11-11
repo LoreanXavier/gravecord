@@ -14,9 +14,9 @@ use dc_state::Id;
 use dc_state::frecency::{Frecency, Kind, Usage};
 use dc_tokens::emoji_data::{CATEGORIES, EMOJIS};
 use gpui::{
-    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, ListAlignment, ListOffset,
-    ListState, Pixels, Point, SharedString, Subscription, Window, deferred, div, img, list,
-    prelude::*, px, svg,
+    AnyElement, Bounds, Context, Entity, Focusable, FontWeight, IntoElement, ListAlignment,
+    ListOffset, ListState, MouseDownEvent, Pixels, Point, SharedString, Subscription, Window,
+    deferred, div, img, list, prelude::*, px, svg,
 };
 use std::collections::HashSet;
 
@@ -464,12 +464,17 @@ impl Root {
                 }
                 // Enter picks the first result.
                 EditorEvent::Submit(_) => {
-                    let first = this
-                        .picker
-                        .as_ref()
-                        .and_then(|picker| picker.sections.first())
-                        .and_then(|section| section.items.first())
-                        .cloned();
+                    // The highlighted cell, which the arrows and the pointer move (118057); the first result
+                    // until one is.
+                    let first = this.picker.as_ref().and_then(|picker| {
+                        picker.hovered.clone().or_else(|| {
+                            picker
+                                .sections
+                                .first()
+                                .and_then(|section| section.items.first())
+                                .cloned()
+                        })
+                    });
                     if let Some(item) = first {
                         this.choose_emoji(item, false, cx);
                     }
@@ -886,6 +891,52 @@ impl Root {
         }
     }
 
+    /// An arrow, Home or End over the emoji grid (module 118057): the highlighted cell moves and the list follows it.
+    pub(super) fn emoji_grid_key(&mut self, key: &str, ctrl: bool, cx: &mut Context<Self>) -> bool {
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        // The rows of cells, as (row of the list, section, first item, cells).
+        let cells: Vec<(usize, usize, usize, usize)> = picker
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| match row {
+                Row::Cells { section, start, .. } => Some((
+                    index,
+                    *section,
+                    *start,
+                    (picker.sections[*section].items.len() - start).min(COLUMNS),
+                )),
+                Row::Heading(_) => None,
+            })
+            .collect();
+        let lengths: Vec<usize> = cells.iter().map(|cell| cell.3).collect();
+        let at = picker.hovered.as_ref().and_then(|hovered| {
+            cells
+                .iter()
+                .enumerate()
+                .find_map(|(row, (_, section, start, len))| {
+                    picker.sections[*section].items[*start..start + len]
+                        .iter()
+                        .position(|item| item == hovered)
+                        .map(|col| (row, col))
+                })
+        });
+        let Some(to) = (match at {
+            Some(at) => super::keyboard::grid_step(&lengths, at, key, ctrl),
+            None => super::keyboard::grid_first(&lengths),
+        }) else {
+            // Left at the first cell stays with the caret; the other keys at an end do nothing.
+            return !(at == Some((0, 0)) && key == "left") && at.is_some();
+        };
+        let (row, section, start, _) = cells[to.0];
+        picker.hovered = Some(picker.sections[section].items[start + to.1].clone());
+        super::keyboard::reveal_row(&picker.list, row);
+        cx.notify();
+        true
+    }
+
     fn picker_rail(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(picker) = self.picker.as_ref() else {
             return div().into_any_element();
@@ -952,6 +1003,9 @@ impl Root {
                     .when(selected, |this| this.bg(color("--background-base-low")))
                     .when(!selected, |this| {
                         this.hover(|style| style.bg(color("--interactive-background-hover")))
+                    })
+                    .when(matches!(section.icon, SectionIcon::Category(_)), |this| {
+                        this.rule(crate::ui::motion::Rule::PickerCategory)
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.jump_to_section(index, cx);
@@ -1416,9 +1470,21 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.picker = None;
-                        cx.notify();
+                    .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        // A press on the composer's own buttons is their toggle (the popout ignores its reference
+                        // element), not a dismissal followed by a click that opens it again.
+                        let on_tools = matches!(
+                            this.picker.as_ref().map(|picker| &picker.target),
+                            Some(Target::Composer)
+                        ) && this
+                            .tip_anchors
+                            .borrow()
+                            .get("composer-box")
+                            .is_some_and(|bounds| on_composer_tools(*bounds, event.position));
+                        if !on_tools {
+                            this.picker = None;
+                            cx.notify();
+                        }
                     }))
                     .when(!tabless, |this| {
                         this.child(div().px(px(16.)).flex().gap(px(8.)).children(tabs))
@@ -1473,5 +1539,27 @@ mod tests {
                 .any(|index| EMOJIS[usize::from(*index)].names.contains(&"joy_cat"))
         );
         assert!(search_unicode("zzzz_nothing").is_empty());
+    }
+}
+
+/// The width the composer's button strip (gift, GIF, sticker, emoji, apps: five 32px buttons) takes at its right end.
+const COMPOSER_TOOLS_WIDTH: f32 = 5. * 32.;
+
+/// Whether a press lands on the composer's button strip.
+fn on_composer_tools(composer: Bounds<Pixels>, position: Point<Pixels>) -> bool {
+    composer.contains(&position) && position.x >= composer.right() - px(COMPOSER_TOOLS_WIDTH + 8.)
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::*;
+    use gpui::point;
+
+    #[test]
+    fn only_the_button_strip_of_the_composer_is_a_toggle_press() {
+        let composer = Bounds::new(point(px(384.), px(655.)), gpui::size(px(888.), px(56.)));
+        assert!(on_composer_tools(composer, point(px(1202.), px(683.))));
+        assert!(!on_composer_tools(composer, point(px(700.), px(683.))));
+        assert!(!on_composer_tools(composer, point(px(1202.), px(300.))));
     }
 }

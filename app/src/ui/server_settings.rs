@@ -1579,11 +1579,15 @@ impl Root {
         } else {
             body
         };
+        // A layer of the layer stack: it enters from `scale(1.1)` and opacity 0 (module 596339).
+        let pose = crate::ui::motion::layer_pose("server-settings");
         Some(
             deferred(
                 div()
                     .parity("server-settings")
                     .id("server-settings")
+                    .opacity(pose.opacity)
+                    .paint_scale(pose.scale, gpui::point(0.5, 0.5))
                     .occlude()
                     .absolute()
                     .top_0()

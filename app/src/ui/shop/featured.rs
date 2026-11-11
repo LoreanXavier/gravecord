@@ -363,7 +363,7 @@ impl Root {
             .flex_wrap()
             .gap(px(24.));
         for (index, sub) in subs.iter().enumerate() {
-            let art = self.shop_cover(sub.asset.as_deref());
+            let art = self.shop_cover_box(sub.asset.as_deref(), (833. - 24.) / 2., 236.);
             let category = sub.category.clone();
             grid = grid.child(
                 div()

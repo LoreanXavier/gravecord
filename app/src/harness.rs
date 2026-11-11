@@ -21,6 +21,8 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod grab;
+mod hitch;
 mod native;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
@@ -358,6 +360,42 @@ pub async fn run(
                     }
                 });
             }
+            // `typed <text>`: each character is a key press that goes through the window like the system's keyboard:
+            // the key down first (so type-to-focus and the shortcut table see it), then the character to whatever
+            // input handler has focus. Unlike `type`, nothing falls back to the composer, so text that has nowhere to
+            // land is lost, as it is in the window. A frame is drawn between characters.
+            ["typed", ..] => {
+                let text = step.trim_start_matches("typed").trim_start();
+                for value in text.chars() {
+                    let mut stroke = Keystroke {
+                        modifiers: Modifiers::default(),
+                        key: if value == ' ' {
+                            "space".to_owned()
+                        } else {
+                            value.to_lowercase().to_string()
+                        },
+                        key_char: Some(value.to_string()),
+                    };
+                    stroke.modifiers.shift = value.is_uppercase();
+                    cx.update(|cx| {
+                        let _ = window
+                            .update(cx, |_, window, cx| window.dispatch_keystroke(stroke, cx));
+                    });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(40))
+                        .await;
+                }
+            }
+            // `ime-key <stroke>`: one key press with the character the keyboard would deliver for it, like `typed`.
+            ["ime-key", stroke] => {
+                let stroke: &'static str = Box::leak(stroke.to_string().into_boxed_str());
+                if let Ok(parsed) = Keystroke::parse(stroke) {
+                    cx.update(|cx| {
+                        let _ = window
+                            .update(cx, |_, window, cx| window.dispatch_keystroke(parsed, cx));
+                    });
+                }
+            }
             // One committed input operation, like CDP Input.insertText; no system clipboard.
             ["insert-text", ..] => {
                 let text = step.trim_start_matches("insert-text").trim_start();
@@ -582,10 +620,11 @@ pub async fn run(
                 let (image, mapped, committed_private) = crate::perf::committed();
                 let _ = writeln!(
                     output,
-                    "perf sample {}: wall_ms={} cpu_ms={} working_set={working} private={private} heap={heap} heap_peak={heap_peak} commit_image={image} commit_mapped={mapped} commit_private={committed_private} threads={} renders={renders}",
+                    "perf sample {}: wall_ms={} cpu_ms={} ui_thread_cpu_ms={} working_set={working} private={private} heap={heap} heap_peak={heap_peak} commit_image={image} commit_mapped={mapped} commit_private={committed_private} threads={} renders={renders}",
                     label.join(" "),
                     crate::perf::since_process_start_ms(),
                     crate::perf::cpu_ms(),
+                    crate::perf::thread_cpu_ms(),
                     crate::perf::threads(),
                 );
             }
@@ -600,6 +639,10 @@ pub async fn run(
                     crate::perf::SPLASH_DONE_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::checkpoints(),
                 );
+            }
+            ["perf", "threads", which] => {
+                let line = crate::perf::threads_report(*which == "begin");
+                let _ = writeln!(output, "perf {line}");
             }
             ["perf", "ws"] => {
                 for line in crate::perf::working_set_report() {
@@ -660,6 +703,72 @@ pub async fn run(
                         crate::perf::summary(&mut samples, 16.7)
                     );
                 }
+            }
+            // `hitch start` ... `hitch stop <label>`: a frame ticker runs beside the steps in between and the stop reports
+            // the frames over 16.7 and 33 ms and the worst ones (see `hitch.rs`).
+            ["hitch", "start"] => {
+                let line = hitch::start(window, root.clone(), cx);
+                let _ = writeln!(output, "{line}");
+            }
+            ["hitch", "stop", label @ ..] => {
+                let line = hitch::stop(&label.join(" "));
+                let _ = writeln!(output, "{line}");
+            }
+            // `frames grab <ms> <x> <y> <w> <h> <label>`: frames back to back with one box read from each (see `grab.rs`).
+            ["frames", "grab", rest @ ..] => {
+                let line = grab::run(rest, window, cx).await;
+                let _ = writeln!(output, "{line}");
+            }
+            // `frames animate <ms> <label>`: the main view is redrawn back to back for `ms`, as it is while a sticker
+            // plays, and the process's CPU time, the frames' times and how much of them the app spent building its
+            // views and rows are printed.
+            ["frames", "animate", ms, label @ ..] => {
+                let ms: u64 = ms.parse().unwrap_or(2000);
+                let (builds0, build_ms0, rows0, rows_ms0) = crate::perf::build_totals();
+                let cpu0 = crate::perf::cpu_ms();
+                let phases0 = gpui::draw_phase_totals();
+                let frames0 = gpui::frame_totals();
+                let begun = std::time::Instant::now();
+                let until = begun + Duration::from_millis(ms);
+                let mut samples = Vec::new();
+                while std::time::Instant::now() < until {
+                    let started = std::time::Instant::now();
+                    cx.update(|cx| {
+                        root.update(cx, |_, cx| cx.notify());
+                        let _ = window.update(cx, |_, window, cx| window.draw(cx).clear(cx));
+                    });
+                    samples.push(started.elapsed().as_secs_f64() * 1000.);
+                    let spent = started.elapsed();
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16).saturating_sub(spent))
+                        .await;
+                }
+                let (builds1, build_ms1, rows1, rows_ms1) = crate::perf::build_totals();
+                let frames = samples.len().max(1) as f64;
+                let phases1 = gpui::draw_phase_totals();
+                let frames1 = gpui::frame_totals();
+                let own = (frames1.2 - frames0.2).max(1) as f64;
+                let draws = (phases1.3 - phases0.3).max(1) as f64;
+                let phase = |now: u64, then: u64| (now - then) as f64 / 1e6 / draws;
+                let total: f64 = samples.iter().sum();
+                let _ = writeln!(
+                    output,
+                    "frames animate {}: {} frame_mean_ms={:.3} build_mean_ms={:.3} rows_per_frame={:.1} rows_mean_ms_per_frame={:.3} cpu_pct_of_wall={:.1} gpui_request_layout_ms={:.3} gpui_prepaint_ms={:.3} gpui_paint_ms={:.3} own_frames={} own_draw_ms={:.3} own_present_ms={:.3}",
+                    label.join(" "),
+                    crate::perf::summary(&mut samples, 16.7),
+                    total / frames,
+                    (build_ms1 - build_ms0) / (builds1 - builds0).max(1) as f64,
+                    (rows1 - rows0) as f64 / frames,
+                    (rows_ms1 - rows_ms0) / frames,
+                    (crate::perf::cpu_ms() - cpu0) as f64 * 100.
+                        / begun.elapsed().as_millis().max(1) as f64,
+                    phase(phases1.0, phases0.0),
+                    phase(phases1.1, phases0.1),
+                    phase(phases1.2, phases0.2),
+                    frames1.2 - frames0.2,
+                    (frames1.0 - frames0.0) as f64 / 1e6 / own,
+                    (frames1.1 - frames0.1) as f64 / 1e6 / own,
+                );
             }
             // `frames watch <ms> <label>`: finished frames drawn back to back for `ms`, as a window does while things
             // load in, and the time each took.
@@ -798,6 +907,16 @@ pub async fn run(
                     })
                     .unwrap_or_else(|_| "focus=unknown".to_owned());
                 let _ = writeln!(output, "{}: {report}", label.join(" "));
+            }
+            ["unread", channel] => {
+                // A message newer than anything acked arrived in `channel`.
+                if let Ok(channel) = channel.parse::<u64>() {
+                    cx.update(|cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_unread(channel, cx);
+                        })
+                    });
+                }
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

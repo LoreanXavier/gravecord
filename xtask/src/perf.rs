@@ -71,12 +71,12 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             other => bail!(
-                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N], got {other}"
+                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N], got {other}"
             ),
         }
     }
     if ![
-        "all", "start", "idle", "typing", "scroll", "soak", "stickers",
+        "all", "start", "idle", "typing", "scroll", "soak", "stickers", "hitch", "anim",
     ]
     .contains(&options.scenario.as_str())
     {
@@ -160,6 +160,48 @@ fn script(options: &Options) -> String {
     }
     steps.push_str("perf sample end; perf caches end; perf heap");
     steps
+}
+
+/// The scripts of the `hitch` scenario, one process each so every first time is a first time: what the longest frames
+/// were while (a) a channel full of pictures, embeds and stickers opened, (b) older messages were scrolled into view,
+/// (c) two servers were switched between and (d) the emoji and the sticker picker opened. The ticker of `hitch start`
+/// draws a frame every 16.7 ms and counts those over 16.7 and 33 ms.
+fn hitch_scripts() -> Vec<(&'static str, String)> {
+    let end = "perf sample end; perf caches end";
+    vec![
+        (
+            "channel",
+            format!(
+                "wait 1500; click 36 157; wait 1500; hitch start; channel click {REAL_CHANNEL}; wait 4500; hitch stop channel_first; {end}"
+            ),
+        ),
+        (
+            "scroll",
+            format!(
+                "wait 1500; click 36 157; wait 1500; channel click {REAL_CHANNEL}; wait 3500; hitch start; {} hitch stop scroll_older; {end}",
+                "scroll 800 400 400; wait 70; ".repeat(40)
+            ),
+        ),
+        (
+            "servers",
+            format!(
+                "wait 2500; hitch start; {} hitch stop server_switch; {end}",
+                "click 36 157; wait 600; click 36 109; wait 600; ".repeat(5)
+            ),
+        ),
+        (
+            "pickers",
+            format!(
+                "wait 2500; hitch start; click 1202 683; wait 2500; key escape; wait 500; click 1162 683; wait 3500; key escape; wait 500; hitch stop pickers_first; hitch start; click 1202 683; wait 1500; key escape; wait 500; click 1162 683; wait 2000; key escape; wait 300; hitch stop pickers_second; {end}"
+            ),
+        ),
+    ]
+}
+
+/// One sticker playing in the fixture's channel: the cost of a frame redrawn back to back and where it went.
+fn anim_script() -> String {
+    "perf start; wait 3000; perf sample anim0; frames animate 4000 one_sticker; perf sample anim1; wait 12000; perf sample idle0; wait 20000; perf sample idle1; "
+        .to_owned()
 }
 
 fn busy_compiling() -> bool {
@@ -284,7 +326,13 @@ fn metrics(log: &str) -> BTreeMap<String, f64> {
             }
             for (key, value) in &values {
                 if let Some(name) = key.strip_prefix("cp_") {
-                    out.insert(format!("start.{name}"), mb(*value));
+                    // `cp_<name>_ms` is the moment the start reached that point; the others are bytes.
+                    let value = if name.ends_with("_ms") {
+                        *value
+                    } else {
+                        mb(*value)
+                    };
+                    out.insert(format!("start.{name}"), value);
                 }
             }
         } else if let Some(rest) = line.strip_prefix("perf sample ")
@@ -322,6 +370,37 @@ fn metrics(log: &str) -> BTreeMap<String, f64> {
             for key in ["median_ms", "p95_ms", "worst_ms"] {
                 if let Some(value) = values.get(key) {
                     out.insert(format!("{kind}.{}.{key}", label.trim()), *value);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("hitch ")
+            && let Some((label, values)) = rest.split_once(':')
+        {
+            let values = fields(values);
+            for (key, name) in [
+                ("frames", "frames"),
+                ("over_16.7ms", "over_16_7ms"),
+                ("over_33ms", "over_33ms"),
+                ("longest_ms", "longest_ms"),
+            ] {
+                if let Some(value) = values.get(key) {
+                    out.insert(format!("hitch.{}.{name}", label.trim()), *value);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("frames animate ")
+            && let Some((label, values)) = rest.split_once(':')
+        {
+            let values = fields(values);
+            for key in [
+                "frame_mean_ms",
+                "build_mean_ms",
+                "rows_per_frame",
+                "gpui_request_layout_ms",
+                "gpui_prepaint_ms",
+                "gpui_paint_ms",
+                "worst_ms",
+            ] {
+                if let Some(value) = values.get(key) {
+                    out.insert(format!("animate.{}.{key}", label.trim()), *value);
                 }
             }
         } else if let Some(rest) = line.strip_prefix("perf badge refresh:") {
@@ -418,7 +497,14 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     };
     let dir = repo.join("design").join("perf");
     fs::create_dir_all(&dir)?;
-    let script = script(&options);
+    let scripts: Vec<(String, String)> = match options.scenario.as_str() {
+        "hitch" => hitch_scripts()
+            .into_iter()
+            .map(|(name, script)| (name.to_owned(), script))
+            .collect(),
+        "anim" => vec![("anim".to_owned(), anim_script())],
+        _ => vec![("run".to_owned(), script(&options))],
+    };
     let profile = if options.release { "release" } else { "debug" };
     let mut runs: Vec<BTreeMap<String, f64>> = Vec::new();
     let mut disturbed = false;
@@ -431,12 +517,21 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
             "run {number}/{} ({profile}, scenario {})",
             options.runs, options.scenario
         );
-        let log = run_once(repo, &exe, &script, &out, options.timeout)?;
-        fs::write(dir.join(format!("{}-run{number}.txt", options.label)), &log)?;
-        let _ = fs::remove_file(&out);
-        let _ = fs::remove_file(out.with_extension("layout.json"));
-        let _ = fs::remove_file(out.with_extension("log"));
-        runs.push(metrics(&log));
+        let mut merged = BTreeMap::new();
+        for (name, script) in &scripts {
+            let log = run_once(repo, &exe, script, &out, options.timeout)?;
+            let file = if scripts.len() == 1 {
+                format!("{}-run{number}.txt", options.label)
+            } else {
+                format!("{}-run{number}-{name}.txt", options.label)
+            };
+            fs::write(dir.join(file), &log)?;
+            let _ = fs::remove_file(&out);
+            let _ = fs::remove_file(out.with_extension("layout.json"));
+            let _ = fs::remove_file(out.with_extension("log"));
+            merged.extend(metrics(&log));
+        }
+        runs.push(merged);
     }
     let mut names: Vec<&String> = runs.iter().flat_map(BTreeMap::keys).collect();
     names.sort();

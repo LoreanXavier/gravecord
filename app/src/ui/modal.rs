@@ -74,6 +74,40 @@ pub(super) struct Spec {
     pub close: Handler,
 }
 
+thread_local! {
+    /// The handles of dialog primary buttons, one per button id, kept across frames.
+    static PRIMARY_HANDLES: std::cell::RefCell<std::collections::HashMap<&'static str, gpui::FocusHandle>> =
+        std::cell::RefCell::default();
+    /// The primary button of the dialog the current frame laid out.
+    static PRIMARY_NOW: std::cell::RefCell<Option<gpui::FocusHandle>> = const { std::cell::RefCell::new(None) };
+}
+
+fn primary_handle(id: &'static str, cx: &mut Context<Root>) -> gpui::FocusHandle {
+    PRIMARY_HANDLES.with(|handles| {
+        handles
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    })
+}
+
+fn note_primary(handle: &gpui::FocusHandle) {
+    PRIMARY_NOW.with(|now| {
+        now.borrow_mut().get_or_insert_with(|| handle.clone());
+    });
+}
+
+/// A frame starts: no dialog button has been laid out yet.
+pub(super) fn begin_frame() {
+    PRIMARY_NOW.with(|now| *now.borrow_mut() = None);
+}
+
+/// The first primary button the frame laid out in a dialog footer.
+pub(super) fn dialog_primary() -> Option<gpui::FocusHandle> {
+    PRIMARY_NOW.with(|now| now.borrow().clone())
+}
+
 pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
     footer_button_sized(spec, true, cx)
 }
@@ -126,14 +160,26 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
     let active = state_colors("active");
     let run = std::rc::Rc::new(spec.run);
     let keyboard_run = run.clone();
-    let focus = spec.focus.clone();
     let disabled = spec.tone == Tone::PrimaryDisabled;
+    // The primary button of a dialog keeps a handle across frames: it is what a dialog takes focus on when it opens,
+    // so that Enter confirms it (the footer's submit button of the official confirm modals).
+    let spec_focus = spec.focus.clone().or_else(|| {
+        (matches!(spec.tone, Tone::Primary | Tone::Critical | Tone::Active)).then(|| {
+            let handle = primary_handle(spec.id, cx);
+            note_primary(&handle);
+            handle
+        })
+    });
+    let focus = spec_focus.clone();
     super::keyboard::ring_when_focused(div().id(spec.id))
         // A button of a dialog is a tab stop; Enter and Space click it (gpui turns them into the click below).
-        .when(spec.focus.is_none(), |button| {
+        .when(spec_focus.is_none(), |button| {
             button.focusable().tab_index(0)
         })
-        .when_some(spec.focus, |button, focus| button.track_focus(&focus))
+        .when_some(
+            spec_focus.map(|handle| handle.tab_index(0)),
+            |button, focus| button.track_focus(&focus),
+        )
         .when(disabled, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(15.)))

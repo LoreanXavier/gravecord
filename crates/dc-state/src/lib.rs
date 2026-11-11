@@ -894,6 +894,12 @@ impl Embed {
     }
 }
 
+fn edited_at(value: &Value) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value.as_str()?)
+        .ok()
+        .map(|time| time.with_timezone(&Utc))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
@@ -901,6 +907,8 @@ pub struct Message {
     pub author: User,
     pub content: String,
     pub edited: bool,
+    /// When it was last edited (`edited_timestamp`), for the tooltip of the "(edited)" mark.
+    pub edited_at: Option<DateTime<Utc>>,
     /// The message this one replies to, as the server embedded it.
     pub referenced: Option<Box<Message>>,
     pub attachments: Vec<Attachment>,
@@ -1000,6 +1008,7 @@ impl Message {
             author: User::from_value(&value["author"])?,
             content: text(&value["content"]).unwrap_or_default(),
             edited: value["edited_timestamp"].is_string(),
+            edited_at: edited_at(&value["edited_timestamp"]),
             referenced: Self::from_value(&value["referenced_message"]).map(Box::new),
             attachments: value["attachments"]
                 .as_array()
@@ -2311,6 +2320,7 @@ impl Stores {
         if let Some(content) = text(&data["content"]) {
             known.content = content;
             known.edited = data["edited_timestamp"].is_string();
+            known.edited_at = edited_at(&data["edited_timestamp"]);
         }
         if let Some(pinned) = data["pinned"].as_bool() {
             known.pinned = pinned;

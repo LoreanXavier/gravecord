@@ -267,6 +267,9 @@ pub enum Request {
     },
     /// The picker's emoji sheet, cut into one PNG per `spriteIndex` (keys `sprite:<index>`).
     EmojiSheet,
+    /// The colored sprite the composer's emoji button shows while hovered, cut into 77 cells (keys
+    /// `button-sprite:<index>`).
+    EmojiButtonSprites,
 }
 
 pub(crate) const MESSAGE_PAGE: u32 = 50;
@@ -277,6 +280,14 @@ static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+/// The longest side, in pixels, a Shop picture is kept at; the main view sets it from the window and its scale.
+/// The logical boxes the Shop draws pictures in, by image key, and the window's scale factor times one hundred.
+pub(crate) static SHOP_FIT: std::sync::Mutex<
+    Option<std::collections::HashMap<String, (f32, f32)>>,
+> = std::sync::Mutex::new(None);
+pub(crate) static SHOP_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+pub(crate) static SHOP_IMAGE_SIDE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(1920);
 
 static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -379,6 +390,8 @@ fn sheet_cells(
 
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
 const EMOJI_SPRITE: &str = "https://discordapp.com/assets/decf85f79e02d276.png";
+/// `spriteColored_SjG8Ug` (module 346089): the same 20 by 4 layout in color.
+const EMOJI_SPRITE_COLORED: &str = "https://discordapp.com/assets/1b05b930a77fbff9.png";
 
 fn percent_encode(text: &str) -> String {
     let mut out = String::new();
@@ -1261,6 +1274,26 @@ pub async fn run(
                     }
                 });
             }
+            Request::EmojiButtonSprites => {
+                tokio::spawn(async move {
+                    match client.fetch_public(EMOJI_SPRITE_COLORED).await {
+                        Ok(bytes) => {
+                            let cut = tokio::task::spawn_blocking(move || {
+                                sheet_cells(&bytes, 77, 20, "button-sprite")
+                            })
+                            .await;
+                            match cut {
+                                Ok(Ok(cells)) => {
+                                    let _ = updates.send(Update::Images(cells));
+                                }
+                                Ok(Err(error)) => warn!("emoji button sprite failed: {error}"),
+                                Err(error) => warn!("emoji button sprite failed: {error}"),
+                            }
+                        }
+                        Err(error) => warn!("emoji button sprite failed: {error}"),
+                    }
+                });
+            }
             Request::EmojiSheet => {
                 let count = |diversity: bool| {
                     dc_tokens::emoji_data::EMOJIS
@@ -1350,6 +1383,40 @@ pub async fn run(
                                 }
                                 _ => {
                                     warn!("lottie failed");
+                                    let _ = updates.send(Update::ImageFailed { key });
+                                }
+                            }
+                        }
+                        Ok(bytes) if key.starts_with("shop:img:") => {
+                            // The Shop's pictures come at the size of the artwork (a banner can be 3000 pixels
+                            // wide); decoded for the screen they would hold hundreds of megabytes. They are cut down
+                            // here, off the UI thread, to what the window can show.
+                            let side = SHOP_IMAGE_SIDE.load(std::sync::atomic::Ordering::Relaxed);
+                            let scale =
+                                SHOP_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.;
+                            let drawn_in = SHOP_FIT
+                                .lock()
+                                .ok()
+                                .and_then(|mut boxes| boxes.as_mut()?.remove(&key));
+                            let _slot = IMAGE_DRAWS.acquire().await;
+                            let fitted = tokio::task::spawn_blocking(move || {
+                                match drawn_in {
+                                    Some((width, height)) => crate::ui::image_fit::fit_box(
+                                        &bytes,
+                                        width * scale,
+                                        height * scale,
+                                        side,
+                                    ),
+                                    None => crate::ui::image_fit::fit(&bytes, side),
+                                }
+                                .unwrap_or(bytes)
+                            })
+                            .await;
+                            match fitted {
+                                Ok(bytes) => {
+                                    let _ = updates.send(Update::Image { key, bytes });
+                                }
+                                Err(_) => {
                                     let _ = updates.send(Update::ImageFailed { key });
                                 }
                             }

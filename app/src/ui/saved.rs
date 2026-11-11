@@ -177,75 +177,87 @@ impl Root {
 
     /// `wrapper_O41c2-`: 12px padding and radius on `--background-surface-highest` with a `--border-normal` edge,
     /// an 18px icon in `--icon-feedback-positive`, 16/20 text; 40px from the top, centred.
-    pub(super) fn app_toast_layer(&self) -> Option<AnyElement> {
-        let toast = self.app_toast.as_ref()?;
-        Some(
-            deferred(
+    pub(super) fn app_toast_layer(&self) -> Vec<AnyElement> {
+        crate::ui::motion::toasts::frames(
+            self.app_toast
+                .as_ref()
+                .map(|toast| (toast.message.as_str(), toast.success, toast.until)),
+        )
+        .into_iter()
+        .map(|(message, success, opacity, offset)| toast_view(message, success, opacity, offset))
+        .collect()
+    }
+}
+
+/// One toast, `opacity` and `offset` being its enter or leave pose.
+fn toast_view(message: String, success: bool, opacity: f32, offset: f32) -> AnyElement {
+    deferred(
+        div()
+            .absolute()
+            .top(px((if success { 90. } else { 40. }) + offset))
+            .opacity(opacity)
+            .left(px(0.))
+            .right(px(0.))
+            .flex()
+            .justify_center()
+            .child(
                 div()
-                    .absolute()
-                    .top(px(if toast.success { 90. } else { 40. }))
-                    .left(px(0.))
-                    .right(px(0.))
+                    .p(px(12.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .when(!success, |this| {
+                        this.border_color(color("--border-normal"))
+                            .bg(color("--background-surface-highest"))
+                    })
+                    // `baselayer_O41c2- success`: a green edge and a 12% green wash over the base.
+                    .when(success, |this| {
+                        this.border_color(color("--green-new-42"))
+                            .bg(color("--background-base-low"))
+                    })
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
                     .flex()
-                    .justify_center()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(success, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(px(12.))
+                                .bg(color("--opacity-green-12")),
+                        )
+                    })
+                    .relative()
+                    .child(
+                        svg()
+                            .path(if success {
+                                "icons/toast_success.svg"
+                            } else {
+                                "icons/toast_forwarded.svg"
+                            })
+                            .size(px(18.))
+                            .text_color(color("--icon-feedback-positive")),
+                    )
                     .child(
                         div()
-                            .p(px(12.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .when(!toast.success, |this| {
-                                this.border_color(color("--border-normal"))
-                                    .bg(color("--background-surface-highest"))
-                            })
-                            // `baselayer_O41c2- success`: a green edge and a 12% green wash over the base.
-                            .when(toast.success, |this| {
-                                this.border_color(color("--green-new-42"))
-                                    .bg(color("--background-base-low"))
-                            })
-                            .shadow(vec![gpui::BoxShadow {
-                                color: gpui::hsla(0., 0., 0., 0.24),
-                                offset: gpui::point(px(0.), px(12.)),
-                                blur_radius: px(24.),
-                                spread_radius: px(0.),
-                                inset: false,
-                            }])
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .when(toast.success, |this| {
-                                this.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .rounded(px(12.))
-                                        .bg(color("--opacity-green-12")),
-                                )
-                            })
-                            .relative()
-                            .child(
-                                svg()
-                                    .path(if toast.success {
-                                        "icons/toast_success.svg"
-                                    } else {
-                                        "icons/toast_forwarded.svg"
-                                    })
-                                    .size(px(18.))
-                                    .text_color(color("--icon-feedback-positive")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_color(color("--text-strong"))
-                                    .child(toast.message.clone()),
-                            ),
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-strong"))
+                            .child(message),
                     ),
-            )
-            .with_priority(3)
-            .into_any_element(),
-        )
-    }
+            ),
+    )
+    .with_priority(3)
+    .into_any_element()
+}
 
+impl Root {
     /// Bookmark Message / Remove Bookmark.
     pub(super) fn toggle_bookmark(&mut self, channel: Id, message: Id, cx: &mut Context<Self>) {
         let bookmarked = self.saved_state(channel, message).is_some();

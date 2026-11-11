@@ -49,10 +49,27 @@ impl Root {
         let anchors = self.tip_anchors.clone();
         let stored = SharedString::from(key.clone());
         let lookup = stored.clone();
-        div()
+        let trigger = div()
             .id(SharedString::from(format!("profile-trigger-{key}")))
             .relative()
-            .cursor_pointer()
+            .cursor_pointer();
+        // The member list is one tab stop whose rows the arrows, Home and End move between (`useListNavigator`,
+        // 36544): its first row takes the tab stop.
+        let trigger = if left {
+            let handle = self.stop(&format!("member-row-{key}"), cx);
+            let first = self.join("members", super::keyboard::Nav::List, &handle);
+            let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
+            let trigger =
+                super::keyboard::tab_stop(trigger, &handle, first && self.modal_open() == 0);
+            if ringed {
+                trigger.child(super::keyboard::hollow_ring(4.))
+            } else {
+                trigger
+            }
+        } else {
+            trigger
+        };
+        trigger
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
@@ -96,7 +113,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn open_profile(
+    pub(super) fn open_profile(
         &mut self,
         user: Id,
         anchor: gpui::Bounds<Pixels>,

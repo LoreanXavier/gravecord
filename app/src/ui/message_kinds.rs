@@ -519,6 +519,27 @@ impl Root {
                     self.fetched.insert(key, json!(users));
                 }
             }
+            "stickers" => {
+                // Eight messages of one animated sticker each (the pack the sticker picker opens on), a screenful of
+                // animation at once.
+                let ids = [
+                    796140620111544330u64,
+                    796140638093443092,
+                    796140656941989888,
+                    796140687639838730,
+                    796140711719469097,
+                    796140731256799242,
+                    796140753143201873,
+                    796140775896776765,
+                ];
+                for (n, id) in ids.iter().enumerate() {
+                    push(
+                        0,
+                        "",
+                        json!({"sticker_items": [{"id": id.to_string(), "name": format!("sticker {n}"), "format_type": 3}]}),
+                    );
+                }
+            }
             other => return format!("messages: no demo set {other}"),
         }
         let list = self.stores.messages.entry(channel).or_default();

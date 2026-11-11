@@ -50,6 +50,7 @@ mod create_channel;
 mod dm;
 mod dm_profile;
 mod embed;
+mod emoji_popout;
 mod emoticons;
 mod file_actions;
 mod files;
@@ -77,6 +78,7 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod message_kinds;
+mod message_tips;
 mod presence;
 mod schedule_message;
 mod sticker_player;
@@ -96,6 +98,7 @@ mod guild_events;
 mod guild_guide;
 mod guild_navigation;
 pub(crate) mod image_cache;
+pub(crate) mod image_fit;
 mod inline_video;
 mod media_image;
 mod member_avatars;
@@ -541,6 +544,7 @@ pub struct Root {
     inventory_popout: inventory_popout::State,
     /// The popout a sticker in a message opens.
     sticker_popout: Option<sticker_popout::StickerPopout>,
+    emoji_popout: Option<emoji_popout::EmojiPopout>,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
@@ -789,6 +793,7 @@ impl Root {
             inventory: inventory_feed::State::restore(),
             inventory_popout: inventory_popout::State::default(),
             sticker_popout: None,
+            emoji_popout: None,
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -1409,6 +1414,7 @@ impl Root {
             key: "emoji_button".to_owned(),
             tint,
         });
+        let _ = self.requests.send(Request::EmojiButtonSprites);
     }
 
     fn select(&mut self, guild: Id, channel: Option<Id>) {
@@ -2716,7 +2722,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .child(
-                        bar_button("inbox", "inbox")
+                        self.title_stop(bar_button("inbox", "inbox"), "inbox", 6., cx)
                             .relative()
                             .mr(px(12.))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_inbox(cx)))
@@ -2724,7 +2730,8 @@ impl Root {
                     )
                     .child(
                         // `ar` in module 596339: an anchor to the Help Center (`tP.C`, https:// + support host).
-                        bar_button("help", "help")
+                        self.title_stop(bar_button("help", "help"), "help", 6., cx)
+                            .relative()
                             // The bar's items sit 12 apart (`trailing_3zSH5d`); the update button, when up, follows.
                             .mr(px(if update_button.is_some() { 12. } else { 16. }))
                             .on_click(|_, _, cx| cx.open_url("https://support.discord.com")),
@@ -3380,12 +3387,17 @@ impl Root {
                             .h(px(32.))
                             .flex()
                             .items_center()
-                            .pl(px(8.))
                             .child(
+                                // `.guildDropdown_XH4OpX`: 32px tall, 8px radius and inline padding, `gap: 2px`, and
+                                // `--background-mod-subtle` while hovered, with no transition.
                                 div()
                                     .id("guild-name")
                                     .flex()
                                     .items_center()
+                                    .h(px(32.))
+                                    .px(px(8.))
+                                    .rounded(px(8.))
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
                                     .cursor_pointer()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_guild_menu(cx)),
@@ -4217,7 +4229,7 @@ impl Root {
     }
 
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
-        self.spans_edited(spans, text_color, key, false)
+        self.spans_edited(spans, text_color, key, false, None)
     }
 
     /// A message's last paragraph ends in `(edited)` when the message was edited: `edited_2i8Bfm`, 10px in
@@ -4228,6 +4240,7 @@ impl Root {
         text_color: Hsla,
         key: (u64, u32),
         edited: bool,
+        edited_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
         let emoji_size = if jumbo { 48. } else { 22. };
@@ -4272,8 +4285,67 @@ impl Root {
             pieces.push(label);
         }
         let line = if jumbo { px(48.) } else { px(22.) };
+        // What the pointer finds on a piece: the "(edited)" mark and a stamp carry a tooltip, an emoji opens its popout.
+        let mut hovers: Vec<Option<Tip>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Timestamp { unix, .. } => message_tips::stamp_tip(*unix),
+                _ => None,
+            })
+            .collect();
+        let mut emoji: Vec<Option<emoji_popout::Kind>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Unicode => Some(emoji_popout::Kind::Standard(span.text.clone())),
+                Kind::Emoji { name, id, .. } => Some(emoji_popout::Kind::Custom {
+                    id: *id,
+                    name: name.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        if edited {
+            // The plain space and the label that `pieces` got above; only the label has the tooltip.
+            hovers.extend([None, edited_at.and_then(message_tips::edited_tip)]);
+            emoji.extend([None, None]);
+        }
         let mut element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        if hovers.iter().any(Option::is_some) {
+            let root = self.weak.clone();
+            let hovers = std::rc::Rc::new(hovers);
+            element = element.on_piece_hover(move |over, _, cx| {
+                let _ = root.update(cx, |this, cx| {
+                    let tip = over.and_then(|(piece, bounds)| {
+                        hovers
+                            .get(piece)
+                            .cloned()
+                            .flatten()
+                            .map(|tip| (piece, tip, bounds))
+                    });
+                    this.message_tip(format!("message-piece-{}-{}", key.0, key.1), tip, cx);
+                });
+            });
+        }
+        // A user mention opens the user popout beside itself, as the author name does (module 288539 wraps
+        // the mention in the popout of module 342296); a channel mention navigates.
+        let user_mentions: Vec<Option<u64>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::User(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if emoji.iter().any(Option::is_some) || user_mentions.iter().any(Option::is_some) {
+            let root = self.weak.clone();
+            element = element.on_piece_click_at(move |piece, bounds, _, cx| {
+                if let Some(Some(kind)) = emoji.get(piece).cloned() {
+                    let _ = root.update(cx, |this, cx| this.open_emoji_popout(kind, bounds, cx));
+                } else if let Some(Some(user)) = user_mentions.get(piece).copied() {
+                    let _ = root.update(cx, |this, cx| this.open_profile(user, bounds, false, cx));
+                }
+            });
+        }
         let links = link_runs(spans);
         // A user mention opens that person's profile, a channel mention the channel.
         let mentions: Vec<Option<(bool, u64)>> = spans
@@ -4289,7 +4361,7 @@ impl Root {
             || mentions.iter().any(Option::is_some)
         {
             let root = self.weak.clone();
-            element = element.on_piece_click(move |piece, window, cx| {
+            element = element.on_piece_click(move |piece, _window, cx| {
                 let _ = root.update(cx, |this, cx| {
                     // A hidden spoiler takes the first click; a link inside it follows on the next.
                     if let Some(Some(start)) = spoilers.get(piece).copied()
@@ -4301,10 +4373,8 @@ impl Root {
                     if let Some(Some((url, label))) = links.get(piece).cloned() {
                         this.follow_link(&url, &label, cx);
                     }
-                    match mentions.get(piece).copied().flatten() {
-                        Some((true, user)) => this.open_full_profile(user, window, cx),
-                        Some((false, channel)) => this.open_channel_mention(channel, cx),
-                        None => {}
+                    if let Some(Some((false, channel))) = mentions.get(piece).copied() {
+                        this.open_channel_mention(channel, cx);
                     }
                 });
             });
@@ -4718,6 +4788,7 @@ impl Root {
             embeds: forwarded.embeds.clone(),
             reactions: Vec::new(),
             edited: false,
+            edited_at: None,
             forwarded: None,
             ..message.clone()
         };
@@ -4859,6 +4930,7 @@ impl Root {
                                 text,
                                 key,
                                 message.edited && index == last,
+                                message.edited_at,
                             ))
                             .into_any_element(),
                         Block::Heading { level, spans } => div()
@@ -5209,15 +5281,22 @@ impl Root {
         let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
             self.quick_reactions().into_iter().take(3).collect();
         let has_quick = !quick.is_empty();
+        // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636).
         let button = |name: &str| {
             div()
+                .relative()
                 .size(px(28.))
                 .rounded(px(6.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .hover(|style| style.bg(color("--background-mod-subtle")))
-                .child(icon(name, 20., "--interactive-text-default"))
+                .hover(|style| style.bg(color("--interactive-background-hover")))
+                .child(motion::messages::icon_box(
+                    name,
+                    icon(name, 20., "--interactive-text-default"),
+                ))
+                .child(motion::hover_probe(motion::messages::hover_key(name)))
+                .child(motion::messages::press_probe(name))
         };
         div()
             .id(SharedString::from(format!("toolbar-{id}")))
@@ -5249,14 +5328,25 @@ impl Root {
                 let channel = message.channel_id;
                 div()
                     .id(SharedString::from(format!("toolbar-quick-{index}")))
+                    .relative()
                     .size(px(28.))
                     .rounded(px(6.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                    .children(picture.map(|picture| img(picture).size(px(20.))))
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .active(|style| style.bg(color("--interactive-background-active")))
+                    .children(picture.map(|picture| {
+                        motion::messages::icon_box(
+                            &format!("quick-{index}"),
+                            img(picture).size(px(20.)),
+                        )
+                    }))
+                    .child(motion::hover_probe(motion::messages::hover_key(&format!(
+                        "quick-{index}"
+                    ))))
+                    .child(motion::messages::press_probe(&format!("quick-{index}")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.track_reaction(emoji.surrogates);
                         let _ = this.requests.send(Request::React {
@@ -5527,8 +5617,13 @@ impl Root {
                 )
         });
         let emoji = self.images.get("emoji_button").cloned();
-        let emoji_button = div()
-            .id("composer-emoji")
+        let (colored_sprite, sprite_scale, sprite_cell) = motion::composer::emoji_button(false);
+        let colored = self
+            .images
+            .get(&format!("button-sprite:{sprite_cell}"))
+            .cloned();
+        let emoji_button = self
+            .header_stop(div().id("composer-emoji"), "emoji", cx)
             .size(px(32.))
             .flex()
             .items_center()
@@ -5546,7 +5641,18 @@ impl Root {
                     );
                 }
             }))
-            .children(emoji.map(|image| img(image).size(px(18.))));
+            .relative()
+            .child(
+                div()
+                    .size(px(18.))
+                    .paint_scale(sprite_scale, gpui::point(0.5, 0.5))
+                    .children(if colored_sprite && colored.is_some() {
+                        colored.map(|image| img(image).size(px(18.)))
+                    } else {
+                        emoji.map(|image| img(image).size(px(18.)))
+                    }),
+            )
+            .child(motion::hover_probe(motion::composer::hover_key()));
         let tool = |name: &'static str, cx: &mut Context<Self>| {
             self.header_stop(div().id(name), name, cx)
                 .size(px(32.))
@@ -5997,6 +6103,8 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "capture")]
+        let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
         motion::begin_frame(motion::decide_reduced(
             self.pref_on("sync_reduced_motion", true),
@@ -6006,6 +6114,10 @@ impl Render for Root {
         motion::set_window_active(window.is_window_active());
         self.focus_new_menu(window, cx);
         self.focus_new_dialog(window, cx);
+        // The base layer of the layer stack fades while a full-window layer is open (module 596339).
+        let base_opacity = motion::layers::base_opacity(
+            self.server_settings.is_some() || self.channel_settings.is_some(),
+        );
         let focused = window.focused(cx);
         let top = self.list.logical_scroll_top();
         self.keys.stops.begin_frame(
@@ -6081,6 +6193,14 @@ impl Render for Root {
             f32::from(window.viewport_size().width),
             f32::from(window.viewport_size().height),
         );
+        crate::net::SHOP_SCALE.store(
+            (window.scale_factor().max(1.) * 100.).round() as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::net::SHOP_IMAGE_SIDE.store(
+            image_fit::side_for(self.viewport.0, self.viewport.1, window.scale_factor()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if self.voice_chat_docked() {
             // The docked voice chat is 450 wide with its 1px border.
             self.content_width = 450. - 2. - 112.;
@@ -6090,7 +6210,11 @@ impl Render for Root {
         }
         let rows = list(
             self.list.clone(),
-            cx.processor(|this, index, _, cx| this.row(index, cx)),
+            cx.processor(|this, index, _, cx| {
+                #[cfg(feature = "capture")]
+                let _row = crate::perf::Timer::row();
+                this.row(index, cx)
+            }),
         )
         .size_full();
         let element = div()
@@ -6455,6 +6579,9 @@ impl Render for Root {
                 } else if event.keystroke.key == "escape" && this.sticker_popout.is_some() {
                     this.close_sticker_popout(cx);
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.emoji_popout.is_some() {
+                    this.close_emoji_popout(cx);
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.profile.is_some() {
                     this.profile = None;
                     cx.notify();
@@ -6552,12 +6679,13 @@ impl Render for Root {
             .children(self.inventory_popout_layer(window, cx))
             .children(self.profile_layer(window, cx))
             .children(self.sticker_popout_layer(cx))
+            .children(self.emoji_popout_layer(cx))
             .children(self.shop_modal(window, cx))
             .children(self.discover_layers(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .child(motion::driver())
-            .child(self.titlebar(cx))
+            .child(motion::layers::faded(self.titlebar(cx), base_opacity))
             .child({
                 let rail = self.rail(cx).into_any_element();
                 let sidebar = if self.guild.is_some() {
@@ -6632,7 +6760,8 @@ impl Render for Root {
                                                         .min_h(px(0.))
                                                         .child(self.messages_entry(cx))
                                                         .child(rows)
-                                                        .children(self.new_messages_bar(cx)),
+                                                        .children(self.new_messages_bar(cx))
+                                                        .children(self.jump_to_present_bar(cx)),
                                                 )
                                                 .child(
                                                     match self
@@ -6687,9 +6816,9 @@ impl Render for Root {
                         .children(self.new_thread_panel(cx))
                         .into_any_element()
                 };
-                self.main_row(rail, sidebar, content, cx)
+                motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
             })
-            .child(self.user_panel(cx))
+            .child(motion::layers::faded(self.user_panel(cx), base_opacity))
             .children(self.forum_layer(cx))
             .children(self.context_menu(window, cx))
             .children(self.menu_submenu(window, cx))
@@ -6939,7 +7068,7 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
 }
 
 /// `C(timestamp, true)` in the bundle's date helpers: today is the time alone, yesterday "Yesterday at" the time, and
-/// older days the short date and time (moment's `L LT`).
+/// older days the short date and time without leading zeros.
 fn header_time(
     local: chrono::DateTime<chrono::Local>,
     now: chrono::DateTime<chrono::Local>,
@@ -6949,8 +7078,8 @@ fn header_time(
     match days {
         0 => time.to_string(),
         -1 => format!("Yesterday at {time}"),
-        days if days < -1 => format!("{} {time}", local.format("%m/%d/%Y")),
-        _ => format!("{} {time}", local.format("%m/%d/%Y")),
+        // No leading zeros: the official header reads `11/8/2026 7:36 AM`.
+        _ => format!("{} {time}", local.format("%-m/%-d/%Y")),
     }
 }
 
@@ -7008,7 +7137,7 @@ mod tests {
             super::header_time(at(7, 22, 26), now),
             "Yesterday at 10:26 PM"
         );
-        assert_eq!(super::header_time(at(5, 9, 5), now), "11/05/2026 9:05 AM");
+        assert_eq!(super::header_time(at(5, 9, 5), now), "11/5/2026 9:05 AM");
     }
 
     #[test]

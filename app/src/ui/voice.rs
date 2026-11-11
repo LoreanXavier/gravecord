@@ -992,12 +992,35 @@ impl Root {
                         div()
                             .size(px(24.))
                             .rounded_full()
-                            .when(speaking, |this| {
-                                this.border_2().border_color(color("--status-positive"))
-                            })
+                            .relative()
                             .children(
                                 avatar.map(|picture| img(picture).size(px(24.)).rounded_full()),
-                            ),
+                            )
+                            // The ring is drawn over the avatar: a 3px `--background-base-lower` inset shadow
+                            // under a 2px `--status-speaking` one (module 556525), both under a 50ms transition.
+                            .child({
+                                let (inner, backing) =
+                                    super::motion::messages::speaking_rings(member, speaking);
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .rounded_full()
+                                            .border(px(backing))
+                                            .border_color(color("--background-base-lower")),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .rounded_full()
+                                            .border(px(inner))
+                                            .border_color(color("--status-speaking")),
+                                    )
+                            }),
                     )
                     .child(
                         div()
