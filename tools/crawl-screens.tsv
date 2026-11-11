@@ -1,0 +1,34 @@
+# name<TAB>setup steps (| between)<TAB>steps that return to the screen. Read by tools/crawl-scoreboard.sh.
+home	go home | wait 800	go home | wait 800
+friends_all	go home | wait 600 | friends all | wait 600	go home | wait 600 | friends all | wait 600
+friends_pending	go home | wait 600 | friends pending | wait 600	go home | wait 600 | friends pending | wait 600
+friends_blocked	go home | wait 600 | friends blocked | wait 600	go home | wait 600 | friends blocked | wait 600
+dm0	go dm 0 | wait 900	go dm 0 | wait 900
+shop	go shop | wait 1500	go shop | wait 1500
+quests	go quests | wait 1500	go quests | wait 1500
+discover	go discover | wait 1500	go discover | wait 1500
+apps	go apps | wait 1500	go apps | wait 1500
+p_emoji	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1207 682 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1207 682 | wait 900
+p_gif	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1123 683 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1123 683 | wait 900
+p_sticker	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1162 683 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1162 683 | wait 900
+p_apps	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1243 682 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1243 682 | wait 900
+p_plus	click 36 108 | wait 600 | click 150 231 | wait 700 | click 411 682 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 411 682 | wait 900
+p_pins	click 36 108 | wait 600 | click 150 231 | wait 700 | click 960 57 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 960 57 | wait 900
+p_threads	click 36 108 | wait 600 | click 150 231 | wait 700 | click 880 57 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 880 57 | wait 900
+p_inbox	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1103 16 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1103 16 | wait 900
+p_status	click 36 108 | wait 600 | click 150 231 | wait 700 | click 60 683 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 60 683 | wait 900
+p_guildmenu	click 36 108 | wait 600 | click 150 231 | wait 700 | click 150 57 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 150 57 | wait 900
+p_search	click 36 108 | wait 600 | click 150 231 | wait 700 | click 1150 57 | wait 900	key escape | key escape | key escape | wait 300 | click 36 108 | wait 600 | click 150 231 | wait 700 | click 1150 57 | wait 900
+s_account	settings account	settings account | wait 600
+s_password-security	settings password-security	settings password-security | wait 600
+s_data-privacy	settings data-privacy	settings data-privacy | wait 600
+s_notifications	settings notifications	settings notifications | wait 600
+s_voice-video	settings voice-video	settings voice-video | wait 600
+s_appearance	settings appearance	settings appearance | wait 600
+s_accessibility	settings accessibility	settings accessibility | wait 600
+s_system	settings system	settings system | wait 600
+s_language-time	settings language-time	settings language-time | wait 600
+s_games-apps	settings games-apps	settings games-apps | wait 600
+s_activity-privacy	settings activity-privacy	settings activity-privacy | wait 600
+s_nitro	settings nitro	settings nitro | wait 600
+s_billing	settings billing	settings billing | wait 600

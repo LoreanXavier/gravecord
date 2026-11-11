@@ -1,0 +1,299 @@
+//! Region views: the main window's big areas, each its own view, so an animation inside one of them redraws that
+//! area and not the whole window.
+//!
+//! A region holds nothing but a handle to the main view and the area it draws. Its render calls the main view's own
+//! build function for the area, so every listener stays bound to the main view. The main view places the region
+//! as a cached view of a given size: gpui reuses the area's previous frame (layout result, hit boxes, paint output)
+//! until the region is notified. Every notify of the main view notifies all regions (they observe it), so a change of
+//! state redraws everything exactly as before; only the animations that name the view they are drawn in
+//! (`note_drawn`, `wake`, the region driver of `motion`) leave the other regions alone.
+
+use super::{Root, motion};
+use gpui::{
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, EntityId, IntoElement,
+    ParentElement, Render, StyleRefinement, Styled, Subscription, WeakEntity, Window, div, list,
+    px,
+};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::parity::Parity;
+
+/// The regions the main view is cut into: the areas of fixed size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Titlebar,
+    Rail,
+    Sidebar,
+    Header,
+    Messages,
+    Members,
+}
+
+pub(crate) const KINDS: usize = 6;
+const ALL: [Kind; KINDS] = [
+    Kind::Titlebar,
+    Kind::Rail,
+    Kind::Sidebar,
+    Kind::Header,
+    Kind::Messages,
+    Kind::Members,
+];
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+pub(crate) const NAMES: [&str; KINDS] = [
+    "titlebar", "rail", "sidebar", "header", "messages", "members",
+];
+
+static COUNT: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
+static NANOS: [AtomicU64; KINDS] = [const { AtomicU64::new(0) }; KINDS];
+
+/// Renders and nanoseconds spent building each region so far.
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+pub(crate) fn counters() -> [(u64, u64); KINDS] {
+    let mut out = [(0, 0); KINDS];
+    for (index, slot) in out.iter_mut().enumerate() {
+        *slot = (
+            COUNT[index].load(Ordering::Relaxed),
+            NANOS[index].load(Ordering::Relaxed),
+        );
+    }
+    out
+}
+
+/// Counts one render of a region and the time until it is dropped.
+struct RenderTimer {
+    kind: Kind,
+    started: std::time::Instant,
+}
+
+impl Drop for RenderTimer {
+    fn drop(&mut self) {
+        let index = self.kind as usize;
+        COUNT[index].fetch_add(1, Ordering::Relaxed);
+        NANOS[index].fetch_add(self.started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
+
+thread_local! {
+    /// The regions' view ids, and the main view's, for the wakes that name no view.
+    static IDS: RefCell<(Option<EntityId>, Vec<EntityId>)> = const { RefCell::new((None, Vec::new())) };
+    /// The views animated things were drawn in since the last wake (`None`: drawn where no view was known).
+    static DRAWN: RefCell<HashSet<Option<EntityId>>> = RefCell::new(HashSet::new());
+}
+
+/// Notifies every region (the main view's observers do the same on its own notify).
+pub(crate) fn notify_all(cx: &mut App) {
+    let ids = IDS.with(|ids| ids.borrow().1.clone());
+    for id in ids {
+        cx.notify(id);
+    }
+}
+
+/// Called where something animated is built (a playing sticker, a GIF tile): the view being built now is where it
+/// is drawn, and the next wake of its timer redraws that view.
+pub(crate) fn note_drawn() {
+    let view = motion::current_view();
+    DRAWN.with(|drawn| drawn.borrow_mut().insert(view));
+}
+
+/// A frame timer of an animated thing fired: redraws the views it was drawn in and nothing else. When it was drawn
+/// where no view was known, or nowhere, the whole window is redrawn.
+pub(crate) fn wake(cx: &mut App) {
+    let drawn: Vec<Option<EntityId>> = DRAWN.with(|drawn| drawn.borrow_mut().drain().collect());
+    let root = IDS.with(|ids| ids.borrow().0);
+    if drawn.is_empty() || drawn.contains(&None) {
+        if let Some(root) = root {
+            cx.notify(root);
+        }
+        return;
+    }
+    for view in drawn.into_iter().flatten() {
+        cx.notify(view);
+    }
+}
+
+/// One area of the main view.
+pub(crate) struct Region {
+    root: WeakEntity<Root>,
+    kind: Kind,
+    _observing: Subscription,
+}
+
+impl Region {
+    fn new(root: &Entity<Root>, kind: Kind, cx: &mut Context<Self>) -> Self {
+        Self {
+            root: root.downgrade(),
+            kind,
+            // Whatever the main view notifies, every region redraws.
+            _observing: cx.observe(root, |_, _, cx| cx.notify()),
+        }
+    }
+}
+
+impl Render for Region {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _timer = RenderTimer {
+            kind: self.kind,
+            started: std::time::Instant::now(),
+        };
+        let cached = enabled();
+        if cached {
+            motion::begin_view(cx.entity_id());
+        } else {
+            motion::leave_view();
+        }
+        let kind = self.kind;
+        let content = match self.root.upgrade() {
+            Some(root) => root.update(cx, |root, cx| root.render_region(kind, window, cx)),
+            None => div().into_any_element(),
+        };
+        motion::leave_view();
+        if !cached {
+            return content;
+        }
+        // The wrapper gives the area's own element the cached size to fill.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(motion::region_driver())
+            .into_any_element()
+    }
+}
+
+/// The region views of one main view.
+#[derive(Default)]
+pub(crate) struct Regions {
+    views: Vec<Entity<Region>>,
+}
+
+impl Regions {
+    /// Creates the views at the first render.
+    pub(crate) fn ensure(&mut self, root: &Entity<Root>, cx: &mut Context<Root>) {
+        if !self.views.is_empty() {
+            return;
+        }
+        self.views = ALL
+            .iter()
+            .map(|kind| cx.new(|cx| Region::new(root, *kind, cx)))
+            .collect();
+        let ids = self.views.iter().map(Entity::entity_id).collect();
+        IDS.with(|cell| *cell.borrow_mut() = (Some(root.entity_id()), ids));
+    }
+
+    /// The area as a cached view laid out at `style`; an empty element before `ensure`.
+    pub(crate) fn place(&self, kind: Kind, style: StyleRefinement) -> AnyElement {
+        match self.views.get(kind as usize) {
+            Some(view) if !enabled() => AnyView::from(view.clone()).into_any_element(),
+            Some(view) => AnyView::from(view.clone()).cached(style).into_any_element(),
+            None => div().into_any_element(),
+        }
+    }
+}
+
+/// The sizes the main view lays the regions out at (each is the size of the area's own root element).
+pub(crate) fn style_of(kind: Kind) -> StyleRefinement {
+    let style = StyleRefinement::default();
+    match kind {
+        // `title_LnjVAX`: the bar across the window.
+        Kind::Titlebar => style.flex_none().w_full().h(px(32.)),
+        // `wrapper_5dqHTG` of the server rail.
+        Kind::Rail => style.flex_none().w(px(72.)).h_full(),
+        // The channel list and the direct message list, both 303 wide.
+        Kind::Sidebar => style.flex_none().w(px(303.)).h_full(),
+        // `.title_f75fb0`: 48 plus its 1px bottom border.
+        Kind::Header => style.flex_none().w_full().h(px(49.)),
+        Kind::Messages => style.flex_1().min_h(px(0.)).w_full(),
+        // The member list, 264 wide.
+        Kind::Members => style.flex_none().w(px(264.)).h_full(),
+    }
+}
+
+impl Root {
+    /// Builds the area `kind` with the main view's own function for it.
+    pub(super) fn render_region(
+        &mut self,
+        kind: Kind,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if enabled() {
+            // What this area laid out for the keyboard last time is laid out again below.
+            self.keys.stops.begin_region(motion::current_view());
+        }
+        match kind {
+            Kind::Titlebar => self.titlebar(cx).into_any_element(),
+            Kind::Rail => self.rail(cx).into_any_element(),
+            Kind::Sidebar if self.guild.is_some() => self.sidebar(cx).into_any_element(),
+            Kind::Sidebar => self.home_sidebar(cx).into_any_element(),
+            Kind::Header => self.header(cx).into_any_element(),
+            Kind::Members => self.member_panel(cx).into_any_element(),
+            Kind::Messages if hidden("messages") => div().into_any_element(),
+            Kind::Messages => {
+                let rows = list(
+                    self.list.clone(),
+                    cx.processor(|this, index, window, cx| {
+                        #[cfg(feature = "capture")]
+                        let _row = crate::perf::Timer::row();
+                        // The rows are built while the list is prepared, after the region's own render ended.
+                        if enabled() {
+                            motion::enter_view(window.current_view());
+                        }
+                        let row = this.row(index, cx);
+                        motion::leave_view();
+                        row
+                    }),
+                )
+                .size_full();
+                div()
+                    .parity("messages")
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(self.messages_entry(cx))
+                    .child(rows)
+                    .children(self.new_messages_bar(cx))
+                    .children(self.jump_to_present_bar(cx))
+                    .into_any_element()
+            }
+        }
+    }
+}
+
+/// Whether the regions are cached views. Off until each region has been proven by the use checks (typing, hover,
+/// switching, popouts, dialogs, settings, incoming messages, scrolling); the capture build can turn them on
+/// (`GRAVECORD_REGIONS=1`) to measure and to compare a run against the same areas drawn as part of the main view.
+const CACHED: bool = false;
+
+fn enabled() -> bool {
+    #[cfg(feature = "capture")]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| match std::env::var("GRAVECORD_REGIONS").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => CACHED,
+        })
+    }
+    #[cfg(not(feature = "capture"))]
+    CACHED
+}
+
+/// Whether the capture build was told to leave `part` out (`GRAVECORD_HIDE=composer,user_panel,messages`), to measure
+/// what the rest of the window costs a frame without it.
+pub(crate) fn hidden(part: &str) -> bool {
+    #[cfg(feature = "capture")]
+    {
+        static LIST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        LIST.get_or_init(|| std::env::var("GRAVECORD_HIDE").unwrap_or_default())
+            .split(',')
+            .any(|item| item == part)
+    }
+    #[cfg(not(feature = "capture"))]
+    {
+        let _ = part;
+        false
+    }
+}
