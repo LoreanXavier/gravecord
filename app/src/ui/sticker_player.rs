@@ -778,6 +778,8 @@ impl Root {
         let (Some(format), true, false) = (format, animated, disabled) else {
             return still.map(img);
         };
+        // The next frame redraws the view this sticker is drawn in.
+        super::regions::note_drawn();
         let animate = self.sticker_setting().animates(interacting);
         let cache = self.sticker_ui.player.clone();
         let now = Instant::now();
@@ -812,7 +814,7 @@ impl Root {
                             .player
                             .borrow_mut()
                             .accept_frames(key, rendered);
-                        cx.notify();
+                        super::regions::wake(cx);
                     });
                 })
                 .detach();
@@ -828,7 +830,7 @@ impl Root {
                             .player
                             .borrow_mut()
                             .accept_decoded(key, decoded);
-                        cx.notify();
+                        super::regions::wake(cx);
                     });
                 })
                 .detach();
@@ -848,7 +850,7 @@ impl Root {
                         if cache.generation == generation {
                             cache.deadline = None;
                             drop(cache);
-                            cx.notify();
+                            super::regions::wake(cx);
                         }
                     });
                 })

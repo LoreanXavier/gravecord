@@ -210,6 +210,20 @@ impl Root {
                 .runtime
                 .set_overrides(overrides(&self.detect.store));
         }
+        // The clip path records the visible game's window (module 489496: `getVisibleGame()?.windowHandle`).
+        #[cfg(windows)]
+        if !self.clips.engine.test_game {
+            let game = self.detect.store.visible_game().and_then(|game| {
+                let pid = game.pid?;
+                Some(crate::clips_capture::Game {
+                    pid,
+                    window: dc_detect::main_window(pid)?,
+                    name: game.name.clone().unwrap_or_default(),
+                    application_id: game.id.clone(),
+                })
+            });
+            self.clips_game_changed(game, cx);
+        }
         self.refresh_own_presence();
         cx.notify();
     }
@@ -493,7 +507,14 @@ impl Root {
             )
             .when(open, |this| {
                 // Below the select's own list (priority 2 in `select_with_list`), which opens over the buttons.
-                this.child(gpui::deferred(popout).with_priority(1))
+                this.child(
+                    gpui::deferred(super::keyboard::outside(
+                        popout,
+                        super::keyboard::Layer::AddGame,
+                        cx,
+                    ))
+                    .with_priority(1),
+                )
             })
             .into_any_element()
     }
@@ -502,7 +523,11 @@ impl Root {
         matches!(self.setting_choices.get(key), Some(Choice::On(true)))
     }
 
-    fn close_add_popout(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn add_popout_is_open(&self) -> bool {
+        self.choice_open(ADD_OPEN)
+    }
+
+    pub(super) fn close_add_popout(&mut self, cx: &mut Context<Self>) {
         self.setting_choices.insert(ADD_OPEN, Choice::On(false));
         self.setting_choices.remove(ADD_SELECT);
         cx.notify();

@@ -14,15 +14,18 @@
 use gpui::Keystroke;
 
 mod actions;
+mod context_key;
 mod focus;
 mod grid;
 mod help;
+mod layers;
 mod messages;
 mod nav;
 mod stops;
 
 pub(super) use focus::State;
 pub(super) use grid::{first as grid_first, reveal_row, step as grid_step};
+pub(super) use layers::{Layer, outside};
 pub(super) use stops::{
     Nav, Stops, focusable, hollow_ring, inset_ring_when_focused, ring_when_focused, tab_stop,
 };

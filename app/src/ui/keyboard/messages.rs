@@ -167,6 +167,8 @@ impl Root {
         let focused = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
         // The arrows reach the other messages; the list's one tab stop is its entry.
         let element = super::stops::tab_stop(element, &handle, false);
+        // The box the reaction picker and Shift+F10's menu open beside (`message-box-{id}`, read in `message_key`).
+        let element = element.child(self.anchor_probe(format!("message-box-{message}")));
         if focused {
             element.child(ring_overlay())
         } else {

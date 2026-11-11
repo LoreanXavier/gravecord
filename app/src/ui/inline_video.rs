@@ -616,6 +616,29 @@ mod tests {
     }
 
     #[test]
+    fn a_gifv_plays_by_setting_focus_and_hover() {
+        // Module 619517: on screen and focused, and either "Play GIFs when Discord is focused" or the pointer.
+        for visible in [false, true] {
+            for focused in [false, true] {
+                for autoplay in [false, true] {
+                    for hovered in [false, true] {
+                        assert_eq!(
+                            should_play(visible, focused, autoplay, hovered),
+                            visible && focused && (autoplay || hovered),
+                            "visible={visible} focused={focused} autoplay={autoplay} hovered={hovered}"
+                        );
+                    }
+                }
+            }
+        }
+        // The cases that matter: setting on plays without the pointer, setting off needs it, a blurred window never.
+        assert!(should_play(true, true, true, false));
+        assert!(!should_play(true, true, false, false));
+        assert!(should_play(true, true, false, true));
+        assert!(!should_play(true, false, true, true));
+    }
+
+    #[test]
     fn gifv_fetches_lazily_holds_paused_frame_and_retires_offscreen_resources() {
         let mut cache = Cache::default();
         cache.register("clip", "https://example.com/clip.mp4", (2, 2));

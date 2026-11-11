@@ -10,6 +10,7 @@ use gpui::{
 
 impl Root {
     pub(super) fn select_home(&mut self, channel: Option<Id>) {
+        super::last_channel::remember_home();
         let from = self.route();
         self.history.visit(
             from,
@@ -37,9 +38,7 @@ impl Root {
             self.remember_channel(channel);
         }
         if let Some(channel) = channel {
-            let _ = self
-                .requests
-                .send(crate::net::Request::LoadMessages { channel });
+            self.open_channel_messages(channel);
         }
         // The DM welcome shows mutual servers from the other person's profile.
         let recipient = self
@@ -140,6 +139,7 @@ impl Root {
             .pl(px(9.))
             .child(
                 div()
+                    .id(SharedString::from(format!("home-link-inner-{id}")))
                     .h(px(38.))
                     .w(px(286.))
                     .pl(px(8.))
@@ -154,10 +154,12 @@ impl Root {
                             "quests" => "quests-link",
                             _ => "friends-link",
                         })
-                        .bg(color("--background-mod-strong"))
+                        .bg(color("--interactive-background-selected"))
                     })
+                    // `.interactive_zln_tS:hover` and `:active` (834050).
                     .when(!selected, |this| {
-                        this.hover(|style| style.bg(color("--background-mod-subtle")))
+                        this.hover(|style| style.bg(color("--interactive-background-hover")))
+                            .active(|style| style.bg(color("--interactive-background-selected")))
                     })
                     .child(icon(name, 20., tint))
                     .child(
@@ -231,6 +233,7 @@ impl Root {
                 }))
                 .child(
                     div()
+                        .id(SharedString::from(format!("dm-inner-{id}")))
                         .h(px(42.))
                         .w(px(286.))
                         .pl(px(8.))
@@ -239,9 +242,16 @@ impl Root {
                         .items_center()
                         .gap(px(12.))
                         .text_color(color(tint))
-                        .when(selected, |this| this.bg(color("--background-mod-strong")))
+                        // `.interactive_zln_tS:hover`, `:active` and `.interactiveSelected_zln_tS` (834050): a pressed
+                        // row looks like the selected one.
+                        .when(selected, |this| {
+                            this.bg(color("--interactive-background-selected"))
+                        })
                         .when(!selected, |this| {
-                            this.hover(|style| style.bg(color("--background-mod-subtle")))
+                            this.hover(|style| style.bg(color("--interactive-background-hover")))
+                                .active(|style| {
+                                    style.bg(color("--interactive-background-selected"))
+                                })
                         })
                         .child(
                             div()
@@ -506,6 +516,8 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--channels-default"))
+                    // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
+                    .hover(|style| style.text_color(color("--interactive-text-hover")))
                     .child("Direct Messages")
                     .child(div().flex_1())
                     .child(

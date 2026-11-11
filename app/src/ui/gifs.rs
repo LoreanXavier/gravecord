@@ -10,7 +10,7 @@ use crate::net::Request;
 use crate::parity::Parity;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window, div,
-    img, prelude::*, px,
+    prelude::*, px,
 };
 use serde_json::{Value, json};
 
@@ -218,6 +218,71 @@ impl Root {
         }
     }
 
+    /// What the GIF answers and pictures are, for the capture log: the media each entry names, and for every picture
+    /// held its format, size and whether it carries animation.
+    #[cfg(feature = "capture")]
+    pub(crate) fn gif_report(&self) -> String {
+        let mut out = String::new();
+        let ext = |url: &str| {
+            url.split(['?', '#'])
+                .next()
+                .and_then(|path| path.rsplit('.').next())
+                .unwrap_or("?")
+                .to_owned()
+        };
+        if let Some(body) = self.fetched.get(TRENDING_KEY) {
+            let first = &body["categories"][0];
+            out += &format!(
+                "category src={} preview src={} gif_src={}; ",
+                ext(first["src"].as_str().unwrap_or("")),
+                ext(body["gifs"][0]["src"].as_str().unwrap_or("")),
+                ext(body["gifs"][0]["gif_src"].as_str().unwrap_or("")),
+            );
+        }
+        for key in [TRENDING_GIFS_KEY] {
+            if let Some(body) = self.fetched.get(key) {
+                let first = &body[0];
+                out += &format!(
+                    "results src={} gif_src={}; ",
+                    ext(first["src"].as_str().unwrap_or("")),
+                    ext(first["gif_src"].as_str().unwrap_or("")),
+                );
+            }
+        }
+        let mut pictures: Vec<_> = self
+            .images
+            .iter()
+            .filter(|(key, _)| key.starts_with("gif:") || key.starts_with("gif-category:"))
+            .collect();
+        pictures.sort_by_key(|(key, _)| key.as_str());
+        for (key, image) in pictures.into_iter().take(8) {
+            let bytes = image.bytes();
+            let animated = bytes.windows(4).take(400).any(|w| w == b"ANIM")
+                || (bytes.starts_with(b"GIF8") && bytes.windows(11).any(|w| w == b"NETSCAPE2.0"));
+            out += &format!(
+                "{key}: {:?} {} bytes animated={animated}; ",
+                image.format(),
+                bytes.len()
+            );
+        }
+        out
+    }
+
+    /// Writes the GIF pictures held to `dir`, for looking at them outside the app.
+    #[cfg(feature = "capture")]
+    pub(crate) fn gif_dump(&self, dir: &std::path::Path) -> usize {
+        let mut count = 0;
+        for (key, image) in &self.images {
+            if key.starts_with("gif:") || key.starts_with("gif-category:") {
+                let name = key.replace([':', '/'], "_");
+                if std::fs::write(dir.join(format!("{name}.webp")), image.bytes()).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     fn show_gif_view(&mut self, view: GifView, cx: &mut Context<Self>) {
         match &view {
             GifView::Favorites => {
@@ -301,9 +366,10 @@ impl Root {
         &self,
         id: String,
         label: String,
-        picture: Option<std::sync::Arc<gpui::Image>>,
-        blurple: bool,
-        trending: bool,
+        picture: Option<(String, std::sync::Arc<gpui::Image>)>,
+        (blurple, trending): (bool, bool),
+        window: &Window,
+        cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(SharedString::from(id))
@@ -314,12 +380,10 @@ impl Root {
             .overflow_hidden()
             .cursor_pointer()
             .bg(color("--background-mod-subtle"))
-            .children(picture.map(|image| {
-                img(image)
-                    .absolute()
-                    .size_full()
-                    .object_fit(gpui::ObjectFit::Cover)
-            }))
+            .children(
+                picture
+                    .map(|(key, image)| self.gif_art(&key, image, (TILE_WIDTH, 110.), window, cx)),
+            )
             .child(
                 div()
                     .absolute()
@@ -355,7 +419,7 @@ impl Root {
             )
     }
 
-    fn gif_categories(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn gif_categories(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let body = self
             .fetched
             .get(TRENDING_KEY)
@@ -382,10 +446,19 @@ impl Root {
                 "Favorites".to_owned(),
                 self.favorite_gif_list()
                     .last()
-                    .and_then(|favorite| self.images.get(&format!("gif:{}", favorite.url)).cloned())
-                    .or_else(|| self.images.get("gif:favorites").cloned()),
-                true,
-                false,
+                    .and_then(|favorite| {
+                        let key = format!("gif:{}", favorite.url);
+                        Some((key.clone(), self.images.get(&key)?.clone()))
+                    })
+                    .or_else(|| {
+                        Some((
+                            "gif:favorites".to_owned(),
+                            self.images.get("gif:favorites")?.clone(),
+                        ))
+                    }),
+                (true, false),
+                window,
+                cx,
             )
             .on_click(cx.listener(|this, _, _, cx| this.show_gif_view(GifView::Favorites, cx)))
             .into_any_element(),
@@ -394,11 +467,13 @@ impl Root {
             self.gif_tile(
                 "gif-trending".to_owned(),
                 "Trending GIFs".to_owned(),
-                preview
-                    .as_ref()
-                    .and_then(|gif| self.images.get(&format!("gif:{}", gif.id)).cloned()),
-                false,
-                true,
+                preview.as_ref().and_then(|gif| {
+                    let key = format!("gif:{}", gif.id);
+                    Some((key.clone(), self.images.get(&key)?.clone()))
+                }),
+                (false, true),
+                window,
+                cx,
             )
             .on_click(cx.listener(|this, _, _, cx| this.show_gif_view(GifView::Trending, cx)))
             .into_any_element(),
@@ -409,9 +484,12 @@ impl Root {
                 self.gif_tile(
                     format!("gif-category-{name}"),
                     name.clone(),
-                    self.images.get(&format!("gif-category:{name}")).cloned(),
-                    false,
-                    false,
+                    self.images
+                        .get(&format!("gif-category:{name}"))
+                        .map(|image| (format!("gif-category:{name}"), image.clone())),
+                    (false, false),
+                    window,
+                    cx,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let query = query.clone();
@@ -482,7 +560,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn gif_results(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn gif_results(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let (query, list) = self.current_gifs();
         let placed = masonry(&list);
         let favorites = self.favorite_gif_list();
@@ -503,6 +581,15 @@ impl Root {
             .zip(placed)
             .map(|(gif, (column, top, height))| {
                 let picture = self.images.get(&format!("gif:{}", gif.id)).cloned();
+                let art = picture.map(|image| {
+                    self.gif_art(
+                        &format!("gif-result:{}", gif.id),
+                        image,
+                        (TILE_WIDTH, height),
+                        window,
+                        cx,
+                    )
+                });
                 let chosen = gif.clone();
                 let starred = gif.clone();
                 let query = query.clone();
@@ -520,10 +607,7 @@ impl Root {
                     .overflow_hidden()
                     .cursor_pointer()
                     .bg(color("--background-mod-subtle"))
-                    .children(
-                        picture
-                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    )
+                    .children(art)
                     .child(
                         // `favButton_H8nOze`: 32 square, 5 radius, 4 from the top and right, shown on hover.
                         div()
@@ -576,7 +660,7 @@ impl Root {
     }
 
     /// `container_rfDq2B`: the header (search, or a back arrow and the view's title) over the tiles.
-    pub(super) fn gif_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn gif_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(gifs) = self.gifs.as_ref() else {
             return div().into_any_element();
         };
@@ -644,8 +728,8 @@ impl Root {
                     .into_any_element(),
             };
         let content = match view {
-            GifView::Categories => self.gif_categories(cx),
-            _ => self.gif_results(cx),
+            GifView::Categories => self.gif_categories(window, cx),
+            _ => self.gif_results(window, cx),
         };
         div()
             .flex_1()

@@ -2,11 +2,14 @@
 
 mod autostart;
 mod branding;
+#[cfg(windows)]
+mod clips_capture;
 mod editor;
 mod fonts;
 mod games;
 #[cfg(feature = "capture")]
 mod harness;
+mod inert;
 mod inline;
 mod instance;
 mod logging;
@@ -297,6 +300,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
+    inert::init();
     #[cfg(feature = "capture")]
     perf::start_heap_profile();
     #[cfg(feature = "capture")]
@@ -484,6 +488,7 @@ fn run() -> Result<()> {
                         .await;
                     cx.update(|cx| {
                         write_capture(cx, window.into(), &capture.path);
+                        gpui::INERT.store(false, std::sync::atomic::Ordering::Relaxed);
                         cx.quit();
                     });
                 })

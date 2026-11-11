@@ -40,6 +40,8 @@ pub struct Piece {
     /// The background and text colours while the pointer is over the piece (a mention's `:hover`), reached over
     /// `.05s ease-out`.
     pub hover: Option<(Hsla, Hsla)>,
+    /// The piece is underlined while the pointer is over it (`a:hover { text-decoration: underline }` of a link).
+    pub hover_underline: bool,
 }
 
 /// A place in the document: a message id, a block inside it, and a byte offset in that block.
@@ -172,7 +174,9 @@ fn paint_decorations(
     let top = origin.y + ((line_height - ascent - descent) / 2.).floor();
     let thickness = (piece.size / 10.).floor().max(px(1.));
     let bar = |y: Pixels| Bounds::new(point(origin.x, y), size(fragment.shaped.width, thickness));
-    if piece.underline {
+    if piece.underline
+        || (piece.hover_underline && crate::ui::motion::hovered(hover_key(piece, fragment)))
+    {
         window.paint_quad(fill(bar(top + ascent + px(1.)), piece.color));
     }
     if piece.strike {
@@ -430,7 +434,11 @@ impl Inline {
     }
 
     fn listen(&self, bounds: Bounds<Pixels>, window: &mut Window) {
-        if self.pieces.iter().any(|piece| piece.hover.is_some()) {
+        if self
+            .pieces
+            .iter()
+            .any(|piece| piece.hover.is_some() || piece.hover_underline)
+        {
             let laid = self.laid.clone();
             let pieces = self.pieces.clone();
             let line_height = self.line_height;
@@ -444,7 +452,9 @@ impl Inline {
                 });
                 let laid = laid.borrow();
                 for fragment in &laid.fragments {
-                    if pieces[fragment.piece].hover.is_none() {
+                    if pieces[fragment.piece].hover.is_none()
+                        && !pieces[fragment.piece].hover_underline
+                    {
                         continue;
                     }
                     let key = hover_key(&pieces[fragment.piece], fragment);
@@ -658,7 +668,8 @@ impl Element for Inline {
                     // Chromium snaps replaced images to whole pixels.
                     let area =
                         Bounds::new(point(left.round(), top.round()), gpui::size(*size, *size));
-                    let _ = window.paint_image(area, area, Corners::default(), data, 0, false);
+                    let frame = crate::ui::frame_clock::frame_index(&data, window);
+                    let _ = window.paint_image(area, area, Corners::default(), data, frame, false);
                 }
                 continue;
             }

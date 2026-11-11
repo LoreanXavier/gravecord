@@ -28,6 +28,7 @@ pub(crate) fn start(root: &Entity<Root>, cx: &mut App) {
 
 /// Keeps the newest [`KEEP_MESSAGES`] of a list that is over [`MESSAGE_LIMIT`], oldest first as the store keeps them.
 /// Whether it shortened the list.
+#[cfg(test)]
 fn keep_newest<T>(messages: &mut Vec<T>) -> bool {
     if messages.len() <= MESSAGE_LIMIT {
         return false;
@@ -49,9 +50,14 @@ impl Root {
     /// [`KEEP_MESSAGES`]. Its older messages are fetched again when it is opened and scrolled back.
     fn truncate_closed_channels(&mut self) {
         let open = self.channel;
+        // `truncateTop(60)`: the older messages go to the window's cache and `hasMoreBefore` is true again.
         for (channel, messages) in &mut self.stores.messages {
-            if Some(*channel) != open && keep_newest(messages) {
-                self.complete_history.remove(channel);
+            if Some(*channel) != open && messages.len() > MESSAGE_LIMIT {
+                self.stores
+                    .windows
+                    .entry(*channel)
+                    .or_default()
+                    .truncate_top(messages, KEEP_MESSAGES);
             }
         }
     }

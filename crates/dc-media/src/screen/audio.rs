@@ -43,8 +43,28 @@ impl AudioCapture {
     #[cfg(windows)]
     pub fn start(on_chunk: impl FnMut(AudioChunk) + Send + 'static) -> Result<Self> {
         Ok(Self {
-            inner: native::Running::start(Box::new(on_chunk))?,
+            inner: native::Running::start(Box::new(on_chunk), native::Mode::ExcludeOwnTree)?,
         })
+    }
+
+    /// Starts capturing only what the process `pid` and its children play (process loopback in include mode): a
+    /// game's own sound, without the call or anything else on the machine. Clips use it for a game without a stream.
+    #[cfg(windows)]
+    pub fn start_process(
+        pid: u32,
+        on_chunk: impl FnMut(AudioChunk) + Send + 'static,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: native::Running::start(Box::new(on_chunk), native::Mode::OnlyProcessTree(pid))?,
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub fn start_process(
+        _pid: u32,
+        _on_chunk: impl FnMut(AudioChunk) + Send + 'static,
+    ) -> Result<Self> {
+        Err(Error::Unsupported("process audio capture"))
     }
 
     #[cfg(not(windows))]
@@ -103,8 +123,17 @@ mod native {
         stop: Arc<AtomicBool>,
     }
 
+    /// Whose sound is captured.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Mode {
+        /// Everything on the machine except this process tree (Go Live: no echo of the call).
+        ExcludeOwnTree,
+        /// Only this process and its children.
+        OnlyProcessTree(u32),
+    }
+
     impl Running {
-        pub(super) fn start(callback: Callback) -> Result<Self> {
+        pub(super) fn start(callback: Callback, mode: Mode) -> Result<Self> {
             let stop = Arc::new(AtomicBool::new(false));
             let (started, result) = sync_channel(1);
             let thread_stop = stop.clone();
@@ -112,7 +141,7 @@ mod native {
                 .name("dc-media-audio".into())
                 .spawn(move || {
                     let mut callback = callback;
-                    if run(&thread_stop, &mut callback, started).is_err() {
+                    if run(&thread_stop, &mut callback, started, mode).is_err() {
                         thread_stop.store(true, Ordering::Release);
                     }
                 })
@@ -162,13 +191,20 @@ mod native {
         }
     }
 
-    pub(super) fn activation_params(pid: u32) -> AUDIOCLIENT_ACTIVATION_PARAMS {
+    pub(super) fn activation_params(mode: Mode) -> AUDIOCLIENT_ACTIVATION_PARAMS {
+        let (pid, loopback) = match mode {
+            Mode::ExcludeOwnTree => (
+                std::process::id(),
+                PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+            ),
+            Mode::OnlyProcessTree(pid) => (pid, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE),
+        };
         AUDIOCLIENT_ACTIVATION_PARAMS {
             ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
             Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                 ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
                     TargetProcessId: pid,
-                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                    ProcessLoopbackMode: loopback,
                 },
             },
         }
@@ -178,6 +214,7 @@ mod native {
         stop: &AtomicBool,
         callback: &mut Callback,
         started: SyncSender<()>,
+        mode: Mode,
     ) -> windows::core::Result<()> {
         // This dedicated thread initializes and releases all COM objects in one MTA.
         // SAFETY: balanced with CoUninitialize below.
@@ -185,7 +222,7 @@ mod native {
         let mut started = Some(started);
         let result = (|| {
             while !stop.load(Ordering::Acquire) {
-                capture(stop, callback, &mut started)?;
+                capture(stop, callback, &mut started, mode)?;
             }
             Ok(())
         })();
@@ -198,11 +235,12 @@ mod native {
         stop: &AtomicBool,
         callback: &mut Callback,
         started: &mut Option<SyncSender<()>>,
+        mode: Mode,
     ) -> windows::core::Result<()> {
         if stop.load(Ordering::Acquire) {
             return Err(E_FAIL.into());
         }
-        let params = Arc::new(activation_params(std::process::id()));
+        let params = Arc::new(activation_params(mode));
         let (send, done) = sync_channel(1);
         let completion: IActivateAudioInterfaceCompletionHandler = Completion {
             send,
@@ -349,18 +387,30 @@ mod native {
         use super::*;
 
         #[test]
-        fn activation_excludes_our_entire_process_tree() {
-            let params = activation_params(42);
+        fn the_stream_capture_excludes_our_entire_process_tree() {
+            let params = activation_params(Mode::ExcludeOwnTree);
             assert_eq!(
                 params.ActivationType,
                 AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK
             );
             // SAFETY: the union was built as ProcessLoopbackParams.
             let process = unsafe { params.Anonymous.ProcessLoopbackParams };
-            assert_eq!(process.TargetProcessId, 42);
+            assert_eq!(process.TargetProcessId, std::process::id());
             assert_eq!(
                 process.ProcessLoopbackMode,
                 PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+            );
+        }
+
+        #[test]
+        fn a_game_capture_takes_only_that_process_tree() {
+            let params = activation_params(Mode::OnlyProcessTree(42));
+            // SAFETY: the union was built as ProcessLoopbackParams.
+            let process = unsafe { params.Anonymous.ProcessLoopbackParams };
+            assert_eq!(process.TargetProcessId, 42);
+            assert_eq!(
+                process.ProcessLoopbackMode,
+                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
             );
         }
     }

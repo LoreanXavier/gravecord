@@ -187,26 +187,10 @@ impl Root {
             .into_any_element()
     }
 
-    /// Opens the message's channel and brings the message into view.
+    /// Opens the message's channel and brings the message into view, loading the page around it when it is not
+    /// loaded (`jumpToMessage` with `flash: true`).
     pub(super) fn jump_to_message(&mut self, message: &Message, cx: &mut Context<Self>) {
-        let guild = self
-            .stores
-            .guilds
-            .iter()
-            .find(|guild| {
-                guild
-                    .channels
-                    .iter()
-                    .any(|known| known.id == message.channel_id)
-            })
-            .map(|guild| guild.id);
-        if self.channel != Some(message.channel_id) {
-            match guild {
-                Some(guild) => self.select(guild, Some(message.channel_id)),
-                None => self.select_home(Some(message.channel_id)),
-            }
-        }
-        self.scroll_to_message(message.id);
+        self.jump_to_message_id(message.channel_id, message.id, true, None);
         cx.notify();
     }
 

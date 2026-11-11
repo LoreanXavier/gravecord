@@ -787,3 +787,283 @@ pub fn read_video_units(file: &mut (impl Read + Seek)) -> io::Result<Vec<Vec<u8>
     }
     Err(bad("no moov box"))
 }
+
+// ----- reading a clip back whole -----
+
+/// A clip file read back: its video and audio as the writer takes them, and its metadata document. What the editor
+/// plays and what a trimmed copy is cut from.
+pub struct ClipFile {
+    pub video: VideoInput,
+    pub audio: Vec<AudioInput>,
+    pub metadata: Option<Vec<u8>>,
+}
+
+fn stts_deltas(stbl: &[([u8; 4], &[u8])], samples: usize) -> io::Result<Vec<u32>> {
+    let stts = find(stbl, b"stts").ok_or_else(|| bad("track without stts"))?;
+    let entries = be32(stts, 4)? as usize;
+    let mut out = Vec::with_capacity(samples);
+    for index in 0..entries {
+        let (count, delta) = (be32(stts, 8 + index * 8)?, be32(stts, 12 + index * 8)?);
+        for _ in 0..count {
+            out.push(delta);
+        }
+    }
+    if out.len() != samples {
+        return Err(bad("stts does not cover every sample"));
+    }
+    Ok(out)
+}
+
+fn read_samples(file: &mut (impl Read + Seek), places: &[(u64, u32)]) -> io::Result<Vec<Vec<u8>>> {
+    let mut out = Vec::with_capacity(places.len());
+    for (offset, length) in places {
+        file.seek(SeekFrom::Start(*offset))?;
+        let mut sample = vec![0u8; *length as usize];
+        file.read_exact(&mut sample)?;
+        out.push(sample);
+    }
+    Ok(out)
+}
+
+/// Reads a whole clip file (the video track, every audio track and the metadata document).
+pub fn read_clip(file: &mut (impl Read + Seek)) -> io::Result<ClipFile> {
+    let info = read_info(file)?;
+    let size = file.seek(SeekFrom::End(0))?;
+    let mut at = 0u64;
+    let mut video = None;
+    let mut audio = Vec::new();
+    while at < size {
+        file.seek(SeekFrom::Start(at))?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        let length = u64::from(u32::from_be_bytes(header[..4].try_into().unwrap()));
+        if length < 8 || at + length > size {
+            return Err(bad("top-level box size out of range"));
+        }
+        if &header[4..8] != b"moov" {
+            at += length;
+            continue;
+        }
+        let mut body = vec![0u8; (length - 8) as usize];
+        file.read_exact(&mut body)?;
+        for (kind, track) in children(&body)? {
+            if &kind != b"trak" {
+                continue;
+            }
+            let trak = children(track)?;
+            let mdia = children(find(&trak, b"mdia").ok_or_else(|| bad("no mdia"))?)?;
+            let hdlr = find(&mdia, b"hdlr").ok_or_else(|| bad("no hdlr"))?;
+            let handler = hdlr.get(8..12).ok_or_else(|| bad("short hdlr"))?;
+            let name = String::from_utf8_lossy(
+                hdlr.get(24..)
+                    .unwrap_or(&[])
+                    .split(|b| *b == 0)
+                    .next()
+                    .unwrap_or(&[]),
+            )
+            .into_owned();
+            let minf = children(find(&mdia, b"minf").ok_or_else(|| bad("no minf"))?)?;
+            let stbl = children(find(&minf, b"stbl").ok_or_else(|| bad("no stbl"))?)?;
+            let stsd = find(&stbl, b"stsd").ok_or_else(|| bad("no stsd"))?;
+            let entries = children(stsd.get(8..).ok_or_else(|| bad("short stsd"))?)?;
+            let entry = entries.first().ok_or_else(|| bad("no sample entry"))?.1;
+            let places = sample_locations(&stbl)?;
+            match handler {
+                b"vide" => {
+                    let inner = children(entry.get(78..).ok_or_else(|| bad("short avc1"))?)?;
+                    let avcc = find(&inner, b"avcC").ok_or_else(|| bad("no avcC"))?;
+                    let sps_len = u16::from_be_bytes([avcc[6], avcc[7]]) as usize;
+                    let sps = avcc[8..8 + sps_len].to_vec();
+                    let pps_len =
+                        u16::from_be_bytes([avcc[9 + sps_len], avcc[10 + sps_len]]) as usize;
+                    let pps = avcc[11 + sps_len..11 + sps_len + pps_len].to_vec();
+                    let deltas = stts_deltas(&stbl, places.len())?;
+                    let sync: Option<Vec<u32>> = match find(&stbl, b"stss") {
+                        Some(stss) => {
+                            let count = be32(stss, 4)? as usize;
+                            Some(
+                                (0..count)
+                                    .map(|i| be32(stss, 8 + i * 4))
+                                    .collect::<io::Result<_>>()?,
+                            )
+                        }
+                        None => None,
+                    };
+                    let data = read_samples(file, &places)?;
+                    let samples = data
+                        .into_iter()
+                        .zip(deltas)
+                        .enumerate()
+                        .map(|(index, (data, duration))| VideoSample {
+                            data,
+                            duration,
+                            sync: sync
+                                .as_ref()
+                                .is_none_or(|list| list.contains(&(index as u32 + 1))),
+                        })
+                        .collect();
+                    let sps_info = crate::sps::parse(&sps).ok_or_else(|| bad("unreadable SPS"))?;
+                    video = Some(VideoInput {
+                        sps,
+                        pps,
+                        info: sps_info,
+                        samples,
+                    });
+                }
+                b"soun" => {
+                    let channels = entry
+                        .get(16..18)
+                        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+                        .ok_or_else(|| bad("short audio entry"))?
+                        as u8;
+                    let inner = children(entry.get(28..).unwrap_or(&[]))?;
+                    let pre_skip = find(&inner, b"dOps")
+                        .and_then(|dops| dops.get(2..4))
+                        .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
+                    audio.push(AudioInput {
+                        name,
+                        channels,
+                        pre_skip,
+                        packets: read_samples(file, &places)?,
+                    });
+                }
+                _ => {}
+            }
+        }
+        break;
+    }
+    Ok(ClipFile {
+        video: video.ok_or_else(|| bad("no video track"))?,
+        audio,
+        metadata: info.metadata,
+    })
+}
+
+impl ClipFile {
+    /// The start of each video sample in milliseconds, and the clip's length.
+    pub fn video_starts_ms(&self) -> (Vec<u64>, u64) {
+        let mut ticks = 0u64;
+        let mut starts = Vec::with_capacity(self.video.samples.len());
+        for sample in &self.video.samples {
+            starts.push(ticks * 1000 / u64::from(VIDEO_TIMESCALE));
+            ticks += u64::from(sample.duration);
+        }
+        (starts, ticks * 1000 / u64::from(VIDEO_TIMESCALE))
+    }
+
+    /// The part of the clip from `start_ms` to `end_ms`. The video begins at the last keyframe at or before the
+    /// start (a picture cannot be decoded without it), so a copy may run up to one group of pictures longer at the
+    /// front than asked; it ends with the last picture that starts before `end_ms`. The audio follows the same
+    /// instants. `None` when the range holds no picture.
+    pub fn trimmed(&self, start_ms: u64, end_ms: u64) -> Option<ClipFile> {
+        let (starts, _) = self.video_starts_ms();
+        let first = starts
+            .iter()
+            .enumerate()
+            .filter(|(index, start)| **start <= start_ms && self.video.samples[*index].sync)
+            .map(|(index, _)| index)
+            .next_back()
+            .or_else(|| self.video.samples.iter().position(|sample| sample.sync))?;
+        let last = starts.iter().rposition(|start| *start < end_ms)?;
+        if last < first {
+            return None;
+        }
+        let samples: Vec<VideoSample> = self.video.samples[first..=last]
+            .iter()
+            .map(|sample| VideoSample {
+                data: sample.data.clone(),
+                duration: sample.duration,
+                sync: sample.sync,
+            })
+            .collect();
+        let lead_ms = starts[first];
+        let length_ms: u64 = samples
+            .iter()
+            .map(|sample| u64::from(sample.duration))
+            .sum::<u64>()
+            * 1000
+            / u64::from(VIDEO_TIMESCALE);
+        let packet_ms = u64::from(AUDIO_PACKET_TICKS) * 1000 / u64::from(AUDIO_TIMESCALE);
+        let from = (lead_ms / packet_ms) as usize;
+        let to = ((lead_ms + length_ms).div_ceil(packet_ms)) as usize;
+        Some(ClipFile {
+            video: VideoInput {
+                sps: self.video.sps.clone(),
+                pps: self.video.pps.clone(),
+                info: self.video.info,
+                samples,
+            },
+            audio: self
+                .audio
+                .iter()
+                .map(|track| AudioInput {
+                    name: track.name.clone(),
+                    channels: track.channels,
+                    pre_skip: track.pre_skip,
+                    packets: track
+                        .packets
+                        .get(from.min(track.packets.len())..to.min(track.packets.len()))
+                        .unwrap_or(&[])
+                        .to_vec(),
+                })
+                .collect(),
+            metadata: self.metadata.clone(),
+        })
+    }
+
+    /// Drops the audio tracks whose names are not in `keep` (the editor's audio switches).
+    pub fn keep_audio(&mut self, keep: &[&str]) {
+        self.audio
+            .retain(|track| keep.contains(&track.name.as_str()));
+    }
+
+    /// Writes the clip with `metadata` as its document. Returns the size.
+    pub fn write(&self, out: &mut impl Write, metadata: &[u8]) -> io::Result<u64> {
+        write(out, &self.video, &self.audio, metadata)
+    }
+}
+
+/// Replaces the metadata document of a clip file in place: the document is the last box, so the file is cut where
+/// it starts and the new one appended. Written through a temporary file next to it and renamed over it, so a failure
+/// leaves the original whole.
+pub fn replace_metadata(path: &std::path::Path, metadata: &[u8]) -> io::Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let size = file.seek(SeekFrom::End(0))?;
+    let mut at = 0u64;
+    let mut cut = size;
+    while at < size {
+        file.seek(SeekFrom::Start(at))?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        let length = u64::from(u32::from_be_bytes(header[..4].try_into().unwrap()));
+        if length < 8 || at + length > size {
+            return Err(bad("top-level box size out of range"));
+        }
+        if &header[4..8] == b"uuid" && length >= 24 {
+            let mut user = [0u8; 16];
+            file.read_exact(&mut user)?;
+            if user == METADATA_UUID {
+                cut = at;
+            }
+        }
+        at += length;
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let temp = path.with_extension("mp4.part");
+    let result = (|| {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&temp)?);
+        std::io::copy(&mut (&mut file).take(cut), &mut out)?;
+        let mut payload = METADATA_UUID.to_vec();
+        payload.extend_from_slice(metadata);
+        out.write_all(&bx(b"uuid", &payload))?;
+        out.flush()
+    })();
+    drop(file);
+    match result {
+        Ok(()) => std::fs::rename(&temp, path),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}

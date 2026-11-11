@@ -15,4 +15,4 @@ pub use matcher::{
     Blocklist, Candidate, DetectableGame, Detectables, Detected, Executable, Kind, Scan,
     normalize_path,
 };
-pub use processes::{Process, foreground_pid, running_processes, visible_window_pids};
+pub use processes::{Process, foreground_pid, main_window, running_processes, visible_window_pids};

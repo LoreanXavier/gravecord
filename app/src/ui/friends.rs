@@ -449,11 +449,25 @@ impl Root {
                 .group_hover(group.clone(), |style| {
                     style.bg(color("--background-base-lowest"))
                 })
+                // `.actionButton_5GqXgh:hover` the hovered text colour (accept green, deny red), `:active` the active
+                // background and text colour (827776); the icon follows the button's colour.
+                .text_color(color("--text-subtle"))
+                .hover(move |style| style.text_color(color(action_hover_token(name))))
+                .active(|style| {
+                    style
+                        .bg(color("--interactive-background-active"))
+                        .text_color(color("--interactive-text-active"))
+                })
                 .cursor_pointer()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(name, 20., "--text-subtle"))
+                .child(
+                    gpui::svg()
+                        .path(format!("icons/{name}.svg"))
+                        .size(px(20.))
+                        .flex_none(),
+                )
         };
         let subtitle = match kind {
             RELATIONSHIP_INCOMING => "Incoming Friend Request".to_owned(),
@@ -719,10 +733,17 @@ impl Root {
                         this.bg(gpui::rgba(0x5865f229))
                             .text_color(color("--text-brand"))
                     })
+                    // `.tabBar .addFriend:hover` and `:active` (599618); `[aria-selected=true]` keeps its tint on hover.
                     .when(!adding, |this| {
                         this.bg(color("--background-brand"))
                             .text_color(color("--white"))
+                            .hover(|style| {
+                                style
+                                    .bg(color("--control-primary-background-hover"))
+                                    .text_color(color("--status-positive-text"))
+                            })
                     })
+                    .active(|style| style.bg(color("--control-primary-background-active")))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.set_friends_tab(FriendsTab::Add, window, cx)
                     }))
@@ -1259,4 +1280,35 @@ impl Root {
 pub(super) enum RemoveFriend {
     Menu(Id),
     Friends(Id),
+}
+
+/// The text colour a friend row's action button takes while hovered (`.actionAccept:hover`, `.actionDeny:hover`,
+/// `.actionButton:hover` in 827776).
+fn action_hover_token(icon: &str) -> &'static str {
+    match icon {
+        "friend_accept" => "--icon-feedback-positive",
+        "friend_ignore" => "--icon-feedback-critical",
+        _ => "--interactive-text-hover",
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::action_hover_token;
+
+    #[test]
+    fn accept_and_deny_buttons_tint_on_hover_and_the_rest_whiten() {
+        assert_eq!(
+            action_hover_token("friend_accept"),
+            "--icon-feedback-positive"
+        );
+        assert_eq!(
+            action_hover_token("friend_ignore"),
+            "--icon-feedback-critical"
+        );
+        assert_eq!(
+            action_hover_token("chat_bubble"),
+            "--interactive-text-hover"
+        );
+    }
 }

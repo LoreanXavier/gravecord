@@ -151,6 +151,8 @@ struct Member {
     handle: FocusHandle,
     row: Option<usize>,
     id: Option<u64>,
+    /// The view that laid the stop out (the main view or a region), so a region that is not redrawn keeps its stops.
+    view: Option<gpui::EntityId>,
 }
 
 /// A group of focus stops that share the arrow keys, in render order.
@@ -185,12 +187,28 @@ pub(in crate::ui) struct Stops {
 }
 
 impl Stops {
-    /// A frame starts: the groups are laid out again, the handles stay.
+    /// A frame starts: the groups the main view laid out are laid out again, the handles stay. What the regions laid
+    /// out is kept until the region is drawn again (`begin_region`).
     pub(in crate::ui) fn begin_frame(&self, focused: Option<&FocusHandle>, first_row: usize) {
         self.first_row.set(first_row);
         crate::ui::modal::begin_frame();
-        self.groups.borrow_mut().clear();
+        let root = crate::ui::motion::current_view();
+        self.clear_view(|view| view.is_none() || view == root);
         *self.focused.borrow_mut() = focused.cloned();
+    }
+
+    /// A region is drawn again: the stops it laid out last time are laid out again.
+    pub(in crate::ui) fn begin_region(&self, region: Option<gpui::EntityId>) {
+        self.clear_view(|view| view == region);
+    }
+
+    /// Drops the stops laid out by the views `gone` accepts, and the groups that are left empty.
+    fn clear_view(&self, gone: impl Fn(Option<gpui::EntityId>) -> bool) {
+        let mut groups = self.groups.borrow_mut();
+        for group in groups.iter_mut() {
+            group.items.retain(|member| !gone(member.view));
+        }
+        groups.retain(|group| !group.items.is_empty());
     }
 
     /// Whether `handle` had focus when the frame started.
@@ -351,6 +369,7 @@ impl Root {
             handle: handle.clone(),
             row,
             id,
+            view: crate::ui::motion::current_view(),
         };
         let mut groups = self.keys.stops.groups.borrow_mut();
         match groups.iter_mut().find(|group| group.name == name) {

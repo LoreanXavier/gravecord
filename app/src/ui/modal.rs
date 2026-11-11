@@ -196,6 +196,8 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .items_center()
         .justify_center()
         .cursor_pointer()
+        // `.button_9OQtot:disabled, [aria-disabled=true]{cursor:not-allowed;opacity:.5}` (193433).
+        .when(disabled, |this| this.cursor_not_allowed())
         .text_size(px(16.))
         .line_height(px(20.))
         .font_weight(FontWeight(500.))

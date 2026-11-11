@@ -1755,7 +1755,11 @@ const APPEARANCE: &[Node] = &[
                 description: &[
                     ("To hide avatars, go to ", false),
                     ("Accessibility", true),
-                    (" and select Compact under Chat Message Display.", false),
+                    (" and select ", false),
+                    ("\u{2}Compact", false),
+                    (" under ", false),
+                    ("\u{2}Chat Message Display", false),
+                    (".", false),
                 ],
                 on: true,
             },

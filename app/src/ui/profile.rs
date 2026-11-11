@@ -59,6 +59,8 @@ impl Root {
             let handle = self.stop(&format!("member-row-{key}"), cx);
             let first = self.join("members", super::keyboard::Nav::List, &handle);
             let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
+            // Where Shift+F10 puts the member's menu (`keyboard/context_key.rs`).
+            let trigger = trigger.child(self.anchor_probe(format!("stop-{key}")));
             let trigger =
                 super::keyboard::tab_stop(trigger, &handle, first && self.modal_open() == 0);
             if ringed {
@@ -578,6 +580,7 @@ fn status_text() -> impl IntoElement {
             boxed: None,
             image,
             hover: None,
+            hover_underline: false,
         };
     div().w(px(155.)).child(crate::inline::inline(
         vec![

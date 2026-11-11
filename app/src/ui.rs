@@ -44,7 +44,11 @@ mod call_background;
 mod channel_icon;
 mod channel_settings;
 mod channel_settings_pages;
+mod clips;
+mod code_copy;
 mod composer_plus;
+#[cfg(feature = "capture")]
+mod content_demo;
 mod context_menu;
 mod create_channel;
 mod dm;
@@ -72,14 +76,17 @@ mod inventory_popout;
 mod invite;
 mod invite_embed;
 mod keyboard;
+mod last_channel;
 mod lightbox;
 mod links;
 mod live_activity;
 pub mod login;
 mod logout;
+mod message_header;
 mod message_kinds;
 mod message_tips;
 mod presence;
+mod role_popout;
 mod schedule_message;
 mod sticker_player;
 mod sticker_popout;
@@ -90,16 +97,20 @@ mod unread_badges;
 mod unread_dms;
 mod update_button;
 pub use logout::RootEvent;
+mod avatar_play;
 mod channel_browser;
 mod discover;
 mod fetch_failures;
 mod forums;
+pub(crate) mod frame_clock;
+mod gif_tiles;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
 pub(crate) mod image_cache;
 pub(crate) mod image_fit;
 mod inline_video;
+mod jump;
 mod media_image;
 mod member_avatars;
 pub(crate) mod memory_trim;
@@ -133,6 +144,7 @@ mod quests;
 mod quickswitcher;
 mod reaction_tip;
 mod reactions_modal;
+pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
 mod report;
@@ -250,8 +262,36 @@ pub(crate) fn set_theme(theme: Theme) {
     THEME.store(value, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `AccessibilityStore.saturation` (0 to 1), as the bits of an f32: the theme colours are resolved with it
+/// (`ColorResolve({theme, saturation})`, module 413599). Set each frame from the Saturation slider.
+static SATURATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+pub(crate) fn set_saturation(factor: f32) {
+    SATURATION.store(
+        factor.clamp(0., 1.).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn saturation() -> f32 {
+    f32::from_bits(SATURATION.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// A colour with its saturation scaled.
+fn desaturated(colour: Rgba, factor: f32) -> Rgba {
+    let mut hsl: Hsla = colour.into();
+    hsl.s *= factor;
+    hsl.into()
+}
+
 fn color(name: &str) -> Rgba {
-    rgba(theme().color(name))
+    let colour = settings::client_theme::overlay(name).unwrap_or_else(|| rgba(theme().color(name)));
+    let factor = saturation();
+    if factor < 1. {
+        desaturated(colour, factor)
+    } else {
+        colour
+    }
 }
 
 /// Selection highlight, measured on the official client. The bundle sets no `::selection`.
@@ -265,7 +305,7 @@ fn hsla(name: &str) -> Hsla {
     color(name).into()
 }
 
-fn icon(name: &str, size: f32, tint: &str) -> impl IntoElement {
+fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
     svg()
         .path(format!("icons/{name}.svg"))
         .size(px(size))
@@ -306,6 +346,7 @@ pub struct Root {
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     member_window: member_window::State,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
+    gif_tiles: Rc<RefCell<gif_tiles::Cache>>,
     /// When each failed `Request::Fetch` key failed (`fetch_failures`).
     fetch_failures: HashMap<String, std::time::Instant>,
     /// Counts the changes the per-render preparation reads: store data (every `update`), the selected place and
@@ -353,6 +394,10 @@ pub struct Root {
     keys: keyboard::State,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
+    /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
+    avatar_wants: std::cell::RefCell<Vec<(String, String)>>,
+    /// The window's pixel ratio as the last frame had it, for builders that have no window at hand.
+    ui_scale: std::cell::Cell<f32>,
     selection: SharedSelection,
     hovered: Option<Id>,
     /// The message being edited, with its own field. Enter saves, Escape cancels.
@@ -472,6 +517,8 @@ pub struct Root {
     viewport: (f32, f32),
     /// The open channel and the ack its unread messages started after, for the NEW divider.
     unread_from: Option<(Id, Id)>,
+    /// A jump to a message in flight, and the flash it leaves (`jump.rs`).
+    jump: jump::JumpUi,
     /// The expression picker, open from the composer or for a reaction.
     /// The text field the picker was opened from when its target is `Target::Field`.
     picker_field: Option<Entity<Editor>>,
@@ -490,7 +537,6 @@ pub struct Root {
     /// The target whose delayed tooltip is waiting for the pointer to rest.
     tip_pending: Option<SharedString>,
     /// Channels whose first message has been loaded: the welcome goes above it.
-    complete_history: HashSet<Id>,
     /// Width of a message's content column, set each frame: media never grows past it (`max-width: 100%`).
     content_width: f32,
     /// The open profile popout.
@@ -526,6 +572,8 @@ pub struct Root {
     settings: Option<settings::Open>,
     /// Settings the user changed in the settings pages, by key.
     setting_choices: HashMap<&'static str, settings::Choice>,
+    /// Dialogs and fetched state of the settings pages' buttons and account-route switches.
+    settings_extra: settings::ActionsState,
     /// Voice & Video's stored choices, microphone preview, Mic Test, keybind recorder and slider drags.
     voice: settings::VoiceState,
     /// The Clips page's stored settings, keybind recorder, select and slider.
@@ -545,10 +593,17 @@ pub struct Root {
     /// The popout a sticker in a message opens.
     sticker_popout: Option<sticker_popout::StickerPopout>,
     emoji_popout: Option<emoji_popout::EmojiPopout>,
+    role_popout: Option<role_popout::RolePopout>,
+    /// The popout of a header chip: the role icon's card or a server tag's profile (`message_header`).
+    header_popout: Option<message_header::HeaderPopout>,
+    /// Code blocks whose copy button was pressed (`code_copy`).
+    copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
     forums: HashMap<Id, forums::Forum>,
+    /// The areas of the window that are views of their own (`regions.rs`).
+    regions: regions::Regions,
 }
 
 impl Root {
@@ -561,6 +616,7 @@ impl Root {
             this.release_nameplates(cx);
             this.release_member_avatars(cx);
             this.release_inline_videos(cx);
+            this.release_gif_tiles(cx);
             this.release_call_background(cx);
         })
         .detach();
@@ -617,6 +673,7 @@ impl Root {
             member_avatars: Default::default(),
             member_window: member_window::State::default(),
             inline_videos: Default::default(),
+            gif_tiles: Default::default(),
             fetch_failures: HashMap::new(),
             data_revision: 0,
             prepared: Prepared::default(),
@@ -654,6 +711,8 @@ impl Root {
             keys: Default::default(),
             images: HashMap::new(),
             requested: HashSet::new(),
+            avatar_wants: std::cell::RefCell::new(Vec::new()),
+            ui_scale: std::cell::Cell::new(1.),
             selection: SharedSelection::default(),
             hovered: None,
             editing: None,
@@ -748,6 +807,7 @@ impl Root {
             poll: None,
             viewport: (1280., 720.),
             unread_from: None,
+            jump: jump::JumpUi::default(),
             picker_field: None,
             picker: None,
             emoji_used: Vec::new(),
@@ -758,7 +818,6 @@ impl Root {
             last_typing_sent: None,
             tip: None,
             tip_pending: None,
-            complete_history: HashSet::new(),
             content_width: 793.,
             profile: None,
             call: None,
@@ -780,6 +839,7 @@ impl Root {
             weak: cx.weak_entity(),
             settings: None,
             setting_choices,
+            settings_extra: settings::ActionsState::default(),
             voice,
             clips: settings::ClipsState::restore(),
             fetched: HashMap::new(),
@@ -794,9 +854,13 @@ impl Root {
             inventory_popout: inventory_popout::State::default(),
             sticker_popout: None,
             emoji_popout: None,
+            role_popout: None,
+            header_popout: None,
+            copied_code: HashSet::new(),
             ready: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
+            regions: regions::Regions::default(),
         }
     }
 
@@ -889,6 +953,7 @@ impl Root {
                 }
                 if name == "GUILD_MEMBERS_CHUNK" {
                     self.refresh_autocomplete(true, cx);
+                    self.request_role_popout_images();
                 }
                 self.soundboard_dispatch(&name, &data, cx);
                 match name.as_str() {
@@ -968,18 +1033,25 @@ impl Root {
                     .detach();
                 }
             }
-            Update::Messages { channel, page } => {
-                // A page shorter than asked for reaches the start of the channel.
-                if page.as_array().map_or(0, Vec::len) < crate::net::MESSAGE_PAGE as usize {
-                    self.complete_history.insert(channel);
-                }
-                self.stores.load_messages(channel, &page);
+            Update::Messages {
+                channel,
+                page,
+                started_ms,
+            } => {
+                let anchor = self.scroll_anchor();
+                self.stores.load_messages_since(channel, &page, started_ms);
                 if Some(channel) == self.channel {
                     self.read_current_channel();
                 }
                 self.rebuild_rows();
+                self.restore_scroll_anchor(anchor);
                 self.request_images();
                 self.ready = true;
+            }
+            Update::MessagesLoaded { spec, page } => self.window_loaded(spec, page, cx),
+            Update::MessagesFailed { channel } => {
+                self.stores.messages_failed(channel);
+                cx.notify();
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
@@ -988,7 +1060,17 @@ impl Root {
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed => {}
             Update::Fetched { key, body } => {
+                if key.starts_with(role_popout::IDS_PREFIX)
+                    || key.starts_with(role_popout::COUNTS_PREFIX)
+                {
+                    self.role_popout_fetched(&key, body, cx);
+                    return;
+                }
                 if self.profile_effect_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.settings_fetched(&key, &body) {
+                    cx.notify();
                     return;
                 }
                 if self.detect_lists_fetched(&key, &body) {
@@ -1389,15 +1471,22 @@ impl Root {
     }
 
     fn after_ready(&mut self) {
-        let Some(guild) = self.stores.guilds.first() else {
+        // The app starts where it was closed: the server last shown on the channel it was left on, or Home. A first
+        // start, and a server that is gone, open the first server.
+        let saved = last_channel::last();
+        if saved == Some(None) {
+            self.select_home(None);
+            self.history = history::History::default();
+            return;
+        }
+        let saved = saved
+            .flatten()
+            .filter(|guild| self.stores.guild(*guild).is_some());
+        let Some(guild_id) = saved.or_else(|| self.stores.guilds.first().map(|guild| guild.id))
+        else {
             return;
         };
-        let guild_id = guild.id;
-        let channel = guild
-            .sidebar_rows()
-            .iter()
-            .find(|channel| channel.kind == ChannelKind::Text)
-            .map(|channel| channel.id);
+        let channel = self.last_channel_of(guild_id);
         self.select(guild_id, channel);
         // Opening on the last channel is not a step back can return from.
         self.history = history::History::default();
@@ -1438,6 +1527,7 @@ impl Root {
         self.channel_browser_open = false;
         self.guild = Some(guild);
         self.channel = channel;
+        last_channel::remember(guild, channel);
         self.member_view = None;
         self.unread_from = None;
         self.data_revision += 1;
@@ -1450,7 +1540,7 @@ impl Root {
             if self.current_channel().is_some_and(Channel::is_forum) {
                 self.ready = true;
             } else {
-                let _ = self.requests.send(Request::LoadMessages { channel });
+                self.open_channel_messages(channel);
             }
         }
         self.stop_lurking_elsewhere();
@@ -1464,6 +1554,7 @@ impl Root {
     }
 
     fn request_images(&mut self) {
+        self.request_role_icon_images();
         let guilds: Vec<(Id, String)> = self
             .stores
             .guilds
@@ -1543,6 +1634,7 @@ impl Root {
                 }
             }
         }
+        let animate_emoji = self.pref_on("animate_emojis", true);
         if let Some(messages) = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
@@ -1560,6 +1652,15 @@ impl Root {
                                 media.push((format!("emoji:{}", span.text), url));
                             }
                         }
+                        // Module 486020 `getEmojiURL`: an animated emoji asks for `&animated=true`, and module
+                        // 565645 does so while the window is focused and "Play animated emoji" is on.
+                        Kind::Emoji { id, animated, .. } if *animated && animate_emoji => media
+                            .push((
+                                format!("custom-animated:{id}"),
+                                format!(
+                                    "https://cdn.discordapp.com/emojis/{id}.webp?size=96&animated=true"
+                                ),
+                            )),
                         Kind::Emoji { id, .. } => media.push((
                             format!("custom:{id}"),
                             format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
@@ -1623,6 +1724,32 @@ impl Root {
             .unwrap_or_else(|| avatar_source(user))
     }
 
+    /// "Show spoiler content": Always reveals every spoiler, "On servers I moderate" those of a server where the user
+    /// manages messages, On click (the default) leaves them hidden until clicked (`render_spoilers`).
+    fn spoilers_shown(&self) -> bool {
+        match self.pref_index("chat_spoilers_show_spoilers", 0) {
+            1 => true,
+            2 => match (self.current_guild(), self.stores.me()) {
+                (Some(guild), Some(me)) => dc_state::permissions::can_in_guild(
+                    guild,
+                    me,
+                    dc_state::permissions::MANAGE_MESSAGES,
+                ),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The role colour of a name, in the way "Role Colors" asks for it: in the name (the default), as a dot beside it,
+    /// or not at all.
+    fn role_color_of(&self, user: Id) -> Option<u32> {
+        self.current_guild().and_then(|guild| {
+            let member = self.stores.members.get(guild.id, user)?;
+            guild.role_color(&member.roles)
+        })
+    }
+
     fn guild_author_color(&self, user: Id, fallback: &str) -> Rgba {
         if self.pref_index("role_style", 0) != 0 {
             return color(fallback);
@@ -1632,7 +1759,18 @@ impl Root {
                 let member = self.stores.members.get(guild.id, user)?;
                 guild.role_color(&member.roles)
             })
-            .map_or_else(|| color(fallback), gpui::rgb)
+            .map_or_else(
+                || color(fallback),
+                |role| {
+                    let colour = gpui::rgb(role);
+                    // "Apply saturation setting to custom colors" (`desaturateUserColors`).
+                    if self.pref_on("desaturate_custom_colors", false) && saturation() < 1. {
+                        desaturated(colour, saturation())
+                    } else {
+                        colour
+                    }
+                },
+            )
     }
 
     /// A message author's name with their display name style (315934): in a server the font alone; in a DM or group
@@ -1778,6 +1916,8 @@ impl Root {
                         .flex()
                         .items_center()
                         .hover(|style| style.bg(color("--interactive-background-hover")))
+                        // `.clickable_J1Adu_:active .childContainer_J1Adu_` (56606): the pressed row.
+                        .active(|style| style.bg(color("--interactive-background-active")))
                         .when(
                             self.profile
                                 .as_ref()
@@ -1785,7 +1925,13 @@ impl Root {
                             |this| this.bg(color("--interactive-background-selected")),
                         )
                         .children(nameplate)
-                        .child(self.member_avatar(user, status, first_decoration == Some(user.id)))
+                        .child(self.member_avatar(
+                            user,
+                            status,
+                            first_decoration == Some(user.id),
+                            self.hovered_nameplate == Some(user.id),
+                            cx,
+                        ))
                         .child(
                             div()
                                 .relative()
@@ -1917,9 +2063,13 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
             .unwrap_or(&empty);
         let mut last_day = None;
-        let complete = self
-            .channel
-            .is_some_and(|channel| self.complete_history.contains(&channel));
+        // `!hasMoreBefore`: the window reaches the first message of the channel.
+        let complete = self.channel.is_some_and(|channel| {
+            self.stores
+                .windows
+                .get(&channel)
+                .is_some_and(|window| window.has_fetched && !window.has_more_before)
+        });
         if complete && (self.current_dm().is_some() || self.voice_view_open()) {
             self.rows.push(Row::Welcome);
         }
@@ -1995,25 +2145,6 @@ impl Root {
         self.list.reset(self.rows.len());
     }
 
-    /// Brings a loaded message of the open channel into view.
-    fn scroll_to_message(&mut self, message: Id) {
-        let messages = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel));
-        let Some(index) =
-            messages.and_then(|list| list.iter().position(|known| known.id == message))
-        else {
-            return;
-        };
-        let row = self
-            .rows
-            .iter()
-            .position(|row| matches!(row, Row::Message { index: at, .. } if *at == index));
-        if let Some(row) = row {
-            self.list.scroll_to_reveal_item(row);
-        }
-    }
-
     /// The open channel when it is one of the guild's threads.
     fn current_thread(&self) -> Option<dc_state::Thread> {
         let channel = self.channel?;
@@ -2022,6 +2153,21 @@ impl Root {
             .iter()
             .find(|thread| thread.id == channel)
             .cloned()
+    }
+
+    /// Whether the message mentions the signed-in account (module 451919 with the guild's suppress settings).
+    fn mentions_me(&self, message: &Message) -> bool {
+        let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) else {
+            return false;
+        };
+        let guild = self.current_guild();
+        let settings = guild.and_then(|guild| self.stores.guild_settings.guilds.get(&guild.id));
+        message.mentions_me(
+            me,
+            guild.map_or(&[][..], |guild| guild.my_roles.as_slice()),
+            settings.is_some_and(|settings| settings.suppress_everyone),
+            settings.is_some_and(|settings| settings.suppress_roles),
+        )
     }
 
     fn current_guild(&self) -> Option<&Guild> {
@@ -2399,6 +2545,20 @@ impl Root {
             .get(&self.guild_avatar_source(&referenced.author).0)
             .cloned();
         let text = first_spans(&referenced.content);
+        // `.repliedMessageClickableSpine:hover` and `.repliedTextPreview.clickable:hover` (738015): over either one
+        // the spine turns `--interactive-text-default` (`transition: border 50ms`) and the text `--text-strong`.
+        let spine_key = motion::key(&("reply-spine", referenced.id));
+        let text_key = motion::key(&("reply-text", referenced.id));
+        let over = motion::hovered(spine_key) || motion::hovered(text_key);
+        let spine = motion::color(
+            motion::key(&("reply-spine-color", referenced.id)),
+            color(if over {
+                "--interactive-text-default"
+            } else {
+                "--spine-default"
+            }),
+            motion::css(50., motion::Ease::Ease),
+        );
         div()
             .relative()
             .h(px(18.))
@@ -2416,7 +2576,8 @@ impl Root {
                     .border_l_2()
                     .border_t_2()
                     .rounded_tl(px(6.))
-                    .border_color(color("--spine-default")),
+                    .border_color(spine)
+                    .child(motion::hover_probe(spine_key)),
             )
             .child(
                 div()
@@ -2441,12 +2602,17 @@ impl Root {
                     .flex_1()
                     .min_w(px(0.))
                     .h(px(18.))
-                    .child(self.preview_text(&text)),
+                    .child(self.preview_text(&text, over))
+                    .child(motion::hover_probe(text_key)),
             )
     }
 
-    fn preview_text(&self, spans: &[Span]) -> Inline {
-        let color_value = hsla("--text-default");
+    fn preview_text(&self, spans: &[Span], strong: bool) -> Inline {
+        let color_value = hsla(if strong {
+            "--text-strong"
+        } else {
+            "--text-default"
+        });
         let pieces = spans
             .iter()
             .map(|span| {
@@ -2473,6 +2639,7 @@ impl Root {
                     boxed: style.code.then(preview_code_box),
                     image: None,
                     hover: None,
+                    hover_underline: false,
                 }
             })
             .collect();
@@ -2770,18 +2937,9 @@ impl Root {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let channel = this.stores.guild(id).and_then(|guild| {
-                    guild
-                        .sidebar_rows()
-                        .iter()
-                        .find(|row| row.kind == ChannelKind::Text)
-                        .map(|row| row.id)
-                });
-                this.select(id, channel);
-                this.request_images();
-                cx.notify();
-            }));
+            // Where Shift+F10 puts the server's menu (`keyboard/context_key.rs`).
+            .child(self.anchor_probe(format!("stop-guild-{id}")))
+            .on_click(cx.listener(move |this, _, _, cx| this.go_guild(id, cx)));
         let tile = self.group_stop(tile, "rail", keyboard::Nav::List, &row_key, selected, cx);
         let tile = match image {
             Some(image) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
@@ -2958,6 +3116,8 @@ impl Root {
                     4.,
                     cx,
                 )
+                .relative()
+                .child(self.anchor_probe(format!("stop-category-{category}")))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -2970,6 +3130,7 @@ impl Root {
                     }),
                 )
                 .flex_none()
+                .group(SharedString::from(format!("category-group-{category}")))
                 .pt(px(16.))
                 .h(px(40.))
                 .pl(px(16.))
@@ -2991,13 +3152,17 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--channels-default"))
+                        // `.wrapper_yOdhm_:hover .icon_yOdhm_, .wrapper_yOdhm_:hover .name_yOdhm_` (ed1ab6525c3040).
+                        .group_hover(
+                            SharedString::from(format!("category-group-{category}")),
+                            |style| style.text_color(color("--interactive-text-hover")),
+                        )
                         .child(channel.name.clone())
                         .child(
                             svg()
                                 .path("icons/category_chevron.svg")
                                 .size(px(12.))
                                 .flex_none()
-                                .text_color(color("--channels-default"))
                                 // `.icon_yOdhm_`: `transform .1s linear`, turned -90deg when collapsed.
                                 .with_transformation(motion::rotation(
                                     motion::key(&("category-chevron", category)),
@@ -3016,6 +3181,17 @@ impl Root {
                                 div()
                                     .id(SharedString::from(format!("category-add-{category}")))
                                     .cursor_pointer()
+                                    // `.addButtonIcon_yOdhm_:hover` text-hover; `:active` text-active, 0.5px down.
+                                    .text_color(color("--channels-default"))
+                                    .hover(|style| {
+                                        style.text_color(color("--interactive-text-hover"))
+                                    })
+                                    .active(|style| {
+                                        style
+                                            .text_color(color("--interactive-text-active"))
+                                            .relative()
+                                            .top(px(0.5))
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
                                         this.open_create_channel(false, window, cx);
@@ -3023,7 +3199,12 @@ impl Root {
                                             form.parent = Some(category);
                                         }
                                     }))
-                                    .child(icon("plus_small", 16., "--channels-default")),
+                                    .child(
+                                        svg()
+                                            .path("icons/plus_small.svg")
+                                            .size(px(16.))
+                                            .flex_none(),
+                                    ),
                             )
                         }),
                 )
@@ -3143,11 +3324,12 @@ impl Root {
                     8.,
                     cx,
                 )
-                .when(cfg!(feature = "capture"), |d| {
-                    d.relative()
-                        .child(self.anchor_probe(format!("capture-channel-{}", channel.id)))
-                })
+                // The harness reads this box, and Shift+F10 puts the channel's menu at its centre.
+                .relative()
+                .child(self.anchor_probe(format!("capture-channel-{}", channel.id)))
                 .cursor_pointer()
+                // `.wrapper_TNyK-N.modeSelected_TNyK-N{cursor:default}` (f4b2f93f8f92b7).
+                .when(selected, |this| this.cursor_default())
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -3184,13 +3366,16 @@ impl Root {
                 .when(in_call, |this| this.pt(px(4.)))
                 .flex()
                 .flex_col()
+                // `.modeSelected .link`, `.wrapper:hover .link` and `.wrapper:active .link`: the pressed look wins over
+                // the selected one (f4b2f93f8f92b7).
                 .when(selected, |this| {
                     this.parity("channel-selected")
-                        .bg(color("--background-mod-strong"))
+                        .bg(color("--interactive-background-selected"))
                 })
                 .when(!selected, |this| {
-                    this.hover(|style| style.bg(color("--background-mod-subtle")))
+                    this.hover(|style| style.bg(color("--interactive-background-hover")))
                 })
+                .active(|style| style.bg(color("--interactive-background-active")))
                 .child(
                     div()
                         .w_full()
@@ -3290,15 +3475,22 @@ impl Root {
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let guild = self.current_guild();
         let name = guild.map(|guild| guild.name.clone()).unwrap_or_default();
+        // A channel-like row: `.wrapper:hover .link`, `:active .link` and the hovered name colour (f4b2f93f8f92b7).
         let plain_row = |icon_name: &str, label: &str| {
+            let group = SharedString::from(format!("plain-row-{icon_name}"));
             div().flex_none().h(px(34.)).pt(px(1.)).pl(px(8.)).child(
                 div()
+                    .id(group.clone())
+                    .group(group.clone())
                     .h(px(32.))
                     .w(px(286.))
                     .pl(px(8.))
+                    .rounded(px(8.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .active(|style| style.bg(color("--interactive-background-active")))
                     .child(icon(icon_name, 20., "--channels-default"))
                     .child(
                         div()
@@ -3306,6 +3498,9 @@ impl Root {
                             .line_height(px(24.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--channels-default"))
+                            .group_hover(group, |style| {
+                                style.text_color(color("--interactive-text-hover"))
+                            })
                             .child(label.to_owned()),
                     ),
             )
@@ -3435,6 +3630,9 @@ impl Root {
                                 div()
                                     .id("guild-header-invite")
                                     .size(px(32.))
+                                    .rounded(px(8.))
+                                    // `.inviteButton_XH4OpX:hover` (fdfe0d4e5e8803).
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
                                     .cursor_pointer()
                                     .flex()
                                     .items_center()
@@ -3517,32 +3715,72 @@ impl Root {
                 "--interactive-text-default"
             }
         };
+        // `button_Y-8oZW.enabled:hover`: `--control-secondary-background-hover` and the hovered text colour, over
+        // `background-color .2s ease` (718878).
         let button = |name: &str| {
             div()
+                .id("settings-button")
+                .group("settings-button")
                 .size(px(32.))
+                .rounded(px(8.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(name, 20., "--interactive-text-default"))
+                .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                .transition(
+                    motion::Props::BACKGROUND,
+                    motion::css(200., motion::Ease::Ease),
+                )
+                .child(
+                    icon(name, 20., "--interactive-text-default")
+                        .group_hover("settings-button", |style| {
+                            style.text_color(color("--interactive-text-hover"))
+                        }),
+                )
         };
-        let toggle = |name: &str, muted: bool| {
-            div()
-                .size(px(32.))
-                .when(muted, |this| {
-                    this.rounded_l(px(8.)).bg(color("--background-voice-muted"))
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(name, 20., tint(muted)))
+        // The mic and headphones buttons sit in an `audioButtonParent_gKpIZP`: while the pointer is anywhere over the
+        // pair both take `--background-mod-muted`, the one under it `--interactive-background-selected` and the hovered
+        // text colour; when muted (`redGlow_Y-8oZW`) the hovered one is `--opacity-red-24` instead.
+        let audio_look = |this: gpui::Stateful<gpui::Div>, muted: bool, parent: &'static str| {
+            if muted {
+                this.bg(color("--background-voice-muted"))
+                    .hover(|style| style.bg(color("--opacity-red-24")))
+            } else {
+                this.group_hover(parent, |style| style.bg(color("--background-mod-muted")))
+                    .hover(|style| style.bg(color("--interactive-background-selected")))
+            }
+            .transition(
+                motion::Props::BACKGROUND,
+                motion::css(200., motion::Ease::Ease),
+            )
+        };
+        let toggle = |name: &str, muted: bool, parent: &'static str| {
+            let part = SharedString::from(format!("{parent}-button-part"));
+            audio_look(
+                div().id(SharedString::from(format!("{parent}-button"))),
+                muted,
+                parent,
+            )
+            .group(part.clone())
+            .size(px(32.))
+            .rounded_l(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon(name, 20., tint(muted)).group_hover(part, |style| {
+                style.text_color(color(if muted {
+                    "--icon-voice-muted"
+                } else {
+                    "--interactive-text-hover"
+                }))
+            }))
         };
         let chevron = |muted: bool, side: audio_menu::Side| {
-            let probe = match side {
-                audio_menu::Side::Input => "mic-chevron",
-                audio_menu::Side::Output => "headphones-chevron",
+            let (probe, parent) = match side {
+                audio_menu::Side::Input => ("mic-chevron", "mic-pair"),
+                audio_menu::Side::Output => ("headphones-chevron", "headphones-pair"),
             };
-            div()
-                .id(probe)
+            audio_look(div().id(probe), muted, parent)
                 .relative()
                 .cursor_pointer()
                 .child(self.anchor_probe(probe))
@@ -3550,9 +3788,7 @@ impl Root {
                 .w(px(16.))
                 .h(px(32.))
                 .ml(px(1.))
-                .when(muted, |this| {
-                    this.rounded_r(px(8.)).bg(color("--background-voice-muted"))
-                })
+                .rounded_r(px(8.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -3562,10 +3798,24 @@ impl Root {
         let mic_chevron = chevron(mic_muted, audio_menu::Side::Input);
         let headphones_chevron = chevron(self.self_deaf, audio_menu::Side::Output);
         let row = div()
+            .relative()
             .h(px(56.))
             .flex()
             .items_center()
             .pl(px(11.))
+            // `.accountPopoutButtonWrapper_g6VwXp:hover`: the avatar and the name tag share one 184x42 hover box with
+            // `--background-mod-normal` and 4px corners (718878; the avatar's own `:hover` opacity is cancelled there).
+            .child(
+                div()
+                    .id("panel-who-hover")
+                    .absolute()
+                    .left(px(7.))
+                    .top(px(6.))
+                    .w(px(184.))
+                    .h(px(42.))
+                    .rounded(px(4.))
+                    .hover(|style| style.bg(color("--background-mod-normal"))),
+            )
             .child(
                 div()
                     .id("panel-avatar")
@@ -3643,6 +3893,8 @@ impl Root {
             )
             .child(
                 div()
+                    .id("mic-pair")
+                    .group("mic-pair")
                     .ml(px(12.))
                     .flex()
                     .items_center()
@@ -3654,7 +3906,11 @@ impl Root {
                             .child(self.with_tip(
                                 "mic",
                                 Tip::text(if mic_muted { "Unmute" } else { "Mute" }, Side::Top),
-                                toggle(if mic_muted { "mic_muted" } else { "mic" }, mic_muted),
+                                toggle(
+                                    if mic_muted { "mic_muted" } else { "mic" },
+                                    mic_muted,
+                                    "mic-pair",
+                                ),
                                 cx,
                             )),
                     )
@@ -3662,6 +3918,8 @@ impl Root {
             )
             .child(
                 div()
+                    .id("headphones-pair")
+                    .group("headphones-pair")
                     .ml(px(8.))
                     .flex()
                     .items_center()
@@ -3683,6 +3941,7 @@ impl Root {
                                         "headphones"
                                     },
                                     self.self_deaf,
+                                    "headphones-pair",
                                 ),
                                 cx,
                             )),
@@ -3742,6 +4001,7 @@ impl Root {
             .flex_col()
             .child(measure)
             .children(self.activity_panel(cx))
+            .children(self.clips_panels(cx))
             .children(self.voice_panel(cx))
             .child(row)
     }
@@ -4200,11 +4460,21 @@ impl Root {
         };
         let emoji_key = match &span.kind {
             Kind::Unicode => Some(format!("emoji:{}", span.text)),
-            Kind::Emoji { id, .. } => Some(format!("custom:{id}")),
+            Kind::Emoji { id, animated, .. } => Some(if *animated {
+                format!("custom-animated:{id}")
+            } else {
+                format!("custom:{id}")
+            }),
             _ => None,
         };
         let image = emoji_key
-            .and_then(|key| self.images.get(&key).cloned())
+            .and_then(|key| {
+                self.images.get(&key).cloned().or_else(|| {
+                    // The still picture until the animated one is in, or when the setting is off.
+                    let still = key.replace("custom-animated:", "custom:");
+                    self.images.get(&still).cloned()
+                })
+            })
             .map(|image| (image, px(emoji_size)));
         Piece {
             text: self.span_label(span),
@@ -4225,6 +4495,8 @@ impl Root {
             // (stylesheet 17256's markup rules); `@everyone` and `@here` are not interactive.
             hover: (mention && !matches!(span.kind, Kind::Everyone))
                 .then(|| (hsla("--brand-500"), hsla("--white"))),
+            // `.anchor:hover` underlines a link.
+            hover_underline: matches!(span.kind, Kind::Link(_)),
         }
     }
 
@@ -4243,7 +4515,14 @@ impl Root {
         edited_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
-        let emoji_size = if jumbo { 48. } else { 22. };
+        // `AccessibilityStore.fontSize`: the text, its 1.375 line and the 22px emoji scale with the chat font.
+        let font_size = self.chat_font_size();
+        let emoji_size = if jumbo {
+            48.
+        } else {
+            (22. * font_size / 16.).round()
+        };
+        let spoilers_shown = self.spoilers_shown();
         // A spoiler is a run of spoiler spans; clicking any of them opens the run, keyed by its first span.
         let mut run_start = vec![0; spans.len()];
         for index in 0..spans.len() {
@@ -4258,9 +4537,10 @@ impl Root {
             .iter()
             .enumerate()
             .map(|(index, span)| {
-                let open =
-                    span.style.spoiler && self.revealed.contains(&(key.0, key.1, run_start[index]));
-                let mut piece = self.piece(span, text_color, 16., 400., emoji_size);
+                let open = span.style.spoiler
+                    && (spoilers_shown
+                        || self.revealed.contains(&(key.0, key.1, run_start[index])));
+                let mut piece = self.piece(span, text_color, font_size, 400., emoji_size);
                 if open {
                     piece.color = text_color;
                     piece.boxed = Some(pill(0., 4., "--__spoiler-background-color--revealed"));
@@ -4279,12 +4559,16 @@ impl Root {
                 style: dc_markdown::Style::default(),
                 kind: Kind::Text,
             };
-            pieces.push(self.piece(&plain, text_color, 16., 400., emoji_size));
+            pieces.push(self.piece(&plain, text_color, font_size, 400., emoji_size));
             let mut label = self.piece(&plain, hsla("--chat-text-muted"), 10., 400., emoji_size);
             label.text = "(edited)".to_owned();
             pieces.push(label);
         }
-        let line = if jumbo { px(48.) } else { px(22.) };
+        let line = if jumbo {
+            px(48.)
+        } else {
+            px((font_size * 1.375).round())
+        };
         // What the pointer finds on a piece: the "(edited)" mark and a stamp carry a tooltip, an emoji opens its popout.
         let mut hovers: Vec<Option<Tip>> = spans
             .iter()
@@ -4336,13 +4620,30 @@ impl Root {
                 _ => None,
             })
             .collect();
-        if emoji.iter().any(Option::is_some) || user_mentions.iter().any(Option::is_some) {
+        // A role mention opens the list of its members (module 593284); `@everyone` does too, `@here` does not.
+        let role_mentions: Vec<Option<Option<u64>>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Role(id) => Some(Some(*id)),
+                Kind::Everyone if span.text == "@everyone" => Some(None),
+                _ => None,
+            })
+            .collect();
+        if emoji.iter().any(Option::is_some)
+            || user_mentions.iter().any(Option::is_some)
+            || role_mentions.iter().any(Option::is_some)
+        {
             let root = self.weak.clone();
             element = element.on_piece_click_at(move |piece, bounds, _, cx| {
                 if let Some(Some(kind)) = emoji.get(piece).cloned() {
                     let _ = root.update(cx, |this, cx| this.open_emoji_popout(kind, bounds, cx));
                 } else if let Some(Some(user)) = user_mentions.get(piece).copied() {
                     let _ = root.update(cx, |this, cx| this.open_profile(user, bounds, false, cx));
+                } else if let Some(Some(role)) = role_mentions.get(piece).copied() {
+                    let _ = root.update(cx, |this, cx| {
+                        this.close_emoji_popout(cx);
+                        this.open_role_popout(role, bounds, cx)
+                    });
                 }
             });
         }
@@ -4492,6 +4793,11 @@ impl Root {
                                 this.bg(color("--reaction-background-hover"))
                                     .border_color(color("--reaction-border-hover"))
                             })
+                            // `.reaction_MmKct8:active` (17256); a reacted pill keeps its own look.
+                            .active(|this| {
+                                this.bg(color("--reaction-background-active"))
+                                    .border_color(color("--reaction-border-active"))
+                            })
                     })
                     .rule(motion::Rule::Reaction)
                     .on_hover(cx.listener(move |this, inside: &bool, _, _| {
@@ -4554,8 +4860,10 @@ impl Root {
             .collect();
         (!pills.is_empty()).then(|| {
             // `forceShow` in module 367790: the add button always follows the pills.
+            let add_group = SharedString::from(format!("reaction-add-group-{}", message.id));
             let add = div()
                 .id(SharedString::from(format!("reaction-add-{}", message.id)))
+                .group(add_group.clone())
                 .relative()
                 .h(px(30.))
                 .w(px(34.))
@@ -4573,6 +4881,11 @@ impl Root {
                 .hover(|this| {
                     this.bg(color("--reaction-background-hover"))
                         .border_color(color("--reaction-border-hover"))
+                })
+                // `.reaction_MmKct8:active, .reactionBtn_MmKct8:active` (17256).
+                .active(|this| {
+                    this.bg(color("--reaction-background-active"))
+                        .border_color(color("--reaction-border-active"))
                 })
                 .rule(motion::Rule::Reaction)
                 .child(self.anchor_probe(format!("reaction-add-{}", message.id)))
@@ -4598,7 +4911,13 @@ impl Root {
                         }
                     })
                 })
-                .child(icon("msg_react", 18., "--reaction-text-default"));
+                // `.reactionBtn_MmKct8:hover .icon` (17256); `:active .icon` has the same `--reaction-text-active` value.
+                .child(
+                    icon("msg_react", 18., "--reaction-text-default")
+                        .group_hover(add_group.clone(), |this| {
+                            this.text_color(color("--reaction-text-hover"))
+                        }),
+                );
             div()
                 .pt(px(2.))
                 .pb(px(2.))
@@ -4806,6 +5125,7 @@ impl Root {
         let time = header_time(forwarded.local_time(), chrono::Local::now());
         let footer = source.map(|name| format!("{name}  \u{2022}  {time}"));
         let (guild, channel) = (forwarded.guild_id, forwarded.channel_id);
+        let message_id = forwarded.message_id;
         Some(
             div()
                 .py(px(2.))
@@ -4865,6 +5185,14 @@ impl Root {
                                 .text_color(color("--text-muted"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     match (guild, channel) {
+                                        // The footer goes to the original message (`jumpToMessage`).
+                                        (_, Some(channel)) if message_id.is_some() => {
+                                            if let Some(original) = message_id {
+                                                this.jump_to_message_id(
+                                                    channel, original, true, None,
+                                                );
+                                            }
+                                        }
                                         (Some(guild), Some(channel)) => {
                                             this.select(guild, Some(channel))
                                         }
@@ -4923,7 +5251,7 @@ impl Root {
                     let key = (message.id, index as u32);
                     match block {
                         Block::Paragraph(spans) => div()
-                            .min_h(px(22.))
+                            .min_h(px((self.chat_font_size() * 1.375).round()))
                             .mt(px(gap))
                             .child(self.spans_edited(
                                 &spans,
@@ -4997,20 +5325,9 @@ impl Root {
                                 key,
                             )))
                             .into_any_element(),
-                        Block::Code { language, text } => div()
-                            .mt(px(gap))
-                            .w(px(640.))
-                            .p(px(7.))
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(color("--background-mod-subtle"))
-                            .bg(color("--background-code"))
-                            .font_family(MONO)
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-code"))
-                            .children(code_lines(language.as_deref(), &text))
-                            .into_any_element(),
+                        Block::Code { language, text } => {
+                            self.code_block(key, gap, language.as_deref(), &text)
+                        }
                     }
                 }),
         )
@@ -5111,6 +5428,29 @@ impl Root {
                     .as_ref()
                     .is_some_and(|user| user.id == message.author.id);
                 let hovered = self.hovered == Some(id);
+                // `.replying` and `.highlighted` (524434): the highlight tint with a 2px brand bar; `.mentioned`: the
+                // warning tint with a 2px warning bar. The hover tints differ per state.
+                let replying = self.replying.as_ref().is_some_and(|reply| reply.id == id);
+                let mentioned = !replying && self.mentions_me(message);
+                let (rest, over, bar) = if replying {
+                    (
+                        Some("--message-highlight-background-default"),
+                        // `--brand-10a` is the brand colour at 10% (524434 `.replying:hover`).
+                        gpui::Rgba {
+                            a: 0.1,
+                            ..color("--brand-500")
+                        },
+                        Some("--text-brand"),
+                    )
+                } else if mentioned {
+                    (
+                        Some("--message-mentioned-background-default"),
+                        color("--message-mentioned-background-hover"),
+                        Some("--icon-feedback-warning"),
+                    )
+                } else {
+                    (None, color("--message-background-hover"), None)
+                };
                 let editing = self
                     .editing
                     .as_ref()
@@ -5124,11 +5464,23 @@ impl Root {
                         cx,
                     )
                     .relative()
+                    .children(self.flash_layers(id))
+                    .when_some(rest, |this, token| this.bg(color(token)))
+                    .children(bar.map(|token| {
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(2.))
+                            .bg(color(token))
+                    }))
                     .pl(px(72.))
                     .pr(px(24.))
                     .pt(px(2.))
                     .pb(px(2.))
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    // `.mouse-mode.full-motion .message_SY_P2T:hover` (stylesheet 524434).
+                    .hover(move |style| style.bg(over))
                     .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                         if *inside {
                             this.hovered = Some(id);
@@ -5161,7 +5513,8 @@ impl Root {
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
-                if !*head {
+                let compact = self.compact_messages();
+                if !*head && !compact {
                     return row.child(body.child(content)).into_any_element();
                 }
                 let avatar = self
@@ -5192,7 +5545,106 @@ impl Root {
                         .child(self.reply_preview(referenced))
                         .into_any_element()
                 });
-                row.pt(px(17.))
+                if compact {
+                    // `.compact` (stylesheet 738015): every message carries its own header line, the time in an
+                    // `2.25rem` (`3.1rem` at 24 hours) box ending `0.25rem` before the name, 11px muted; the avatar,
+                    // when "Show user avatars" is on, is `1em` wide with `.1em .25em` margins; the name is followed by
+                    // `0.25rem`. The text starts after the name; wrapped lines here stay in that column, where the
+                    // official wraps them back to the 5rem indent.
+                    let size = self.chat_font_size();
+                    let time_width = if settings::prefs::clock_24() {
+                        49.6
+                    } else {
+                        36.
+                    };
+                    let show_avatar = self.pref_on("appearance_display_compact_avatars", true);
+                    return row
+                        .pt(px(self.message_group_spacing()))
+                        .child(
+                            body.pl(px(16.))
+                                .children(preview)
+                                .children(command_bar)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .min_w(px(time_width))
+                                                .mr(px(4.))
+                                                .flex()
+                                                .justify_end()
+                                                .text_size(px(11.))
+                                                .line_height(px(22.))
+                                                .text_color(color("--text-muted"))
+                                                .child(settings::prefs::clock(
+                                                    &message.local_time(),
+                                                )),
+                                        )
+                                        .when(show_avatar, |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_none()
+                                                    .size(px(size))
+                                                    .mt(px(size * 0.18 + 3.))
+                                                    .mx(px(size * 0.1))
+                                                    .mr(px(size * 0.25))
+                                                    .children(
+                                                        self.live_avatar(
+                                                            &message.author,
+                                                            size,
+                                                            hovered,
+                                                            cx,
+                                                        )
+                                                        .or_else(|| {
+                                                            avatar.map(|image| {
+                                                                img(image)
+                                                                    .size(px(size))
+                                                                    .rounded_full()
+                                                                    .into_any_element()
+                                                            })
+                                                        }),
+                                                    ),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .h(px(22.))
+                                                .mr(px(4.))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    self.profile_trigger(
+                                                        format!("name-{id}"),
+                                                        message.author.id,
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "name-link-{id}"
+                                                            )))
+                                                            .hover(|style| style.underline())
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(self.guild_author_color(
+                                                                message.author.id,
+                                                                "--text-strong",
+                                                            ))
+                                                            .line_height(px(22.))
+                                                            .child(self.author_name(
+                                                                format!("author-{id}"),
+                                                                &message.author,
+                                                            )),
+                                                        cx,
+                                                    ),
+                                                ),
+                                        )
+                                        .child(div().flex_1().min_w(px(0.)).child(content)),
+                                ),
+                        )
+                        .into_any_element();
+                }
+                // `messageGroupSpacing` (16px by default) and the 1px of the group's own border.
+                row.pt(px(self.message_group_spacing() + 1.))
                     .child(
                         body.children(preview)
                             .children(command_bar)
@@ -5202,27 +5654,52 @@ impl Root {
                                     .left(px(16.))
                                     .top(px(4. + reply_offset))
                                     .size(px(40.))
-                                    .child(self.profile_trigger(
-                                        format!("avatar-{id}"),
-                                        message.author.id,
-                                        div().size(px(40.)).children(
-                                            avatar.map(|image| {
-                                                img(image).size(px(40.)).rounded_full()
-                                            }),
+                                    .child(
+                                        self.profile_trigger(
+                                            format!("avatar-{id}"),
+                                            message.author.id,
+                                            div().size(px(40.)).children(
+                                                self.live_avatar(&message.author, 40., hovered, cx)
+                                                    .or_else(|| {
+                                                        avatar.map(|image| {
+                                                            img(image)
+                                                                .size(px(40.))
+                                                                .rounded_full()
+                                                                .into_any_element()
+                                                        })
+                                                    }),
+                                            ),
+                                            cx,
                                         ),
-                                        cx,
-                                    )),
+                                    ),
                             )
                             .child(
                                 div()
                                     .h(px(22.))
                                     .flex()
                                     .items_center()
+                                    // "Next to names": a dot in the role's colour before the name (`roleStyle`).
+                                    .children(
+                                        (self.pref_index("role_style", 0) == 1)
+                                            .then(|| self.role_color_of(message.author.id))
+                                            .flatten()
+                                            .map(|rgb| {
+                                                div()
+                                                    .flex_none()
+                                                    .size(px(8.))
+                                                    .mr(px(4.))
+                                                    .rounded_full()
+                                                    .bg(gpui::rgb(rgb))
+                                            }),
+                                    )
                                     .child(
                                         self.profile_trigger(
                                             format!("name-{id}"),
                                             message.author.id,
                                             div()
+                                                .id(SharedString::from(format!("name-link-{id}")))
+                                                // `.username.clickable:hover` underlines the name (module 2i8Bfm).
+                                                .hover(|style| style.underline())
                                                 .font_weight(FontWeight(500.))
                                                 .text_color(self.guild_author_color(
                                                     message.author.id,
@@ -5236,6 +5713,7 @@ impl Root {
                                             cx,
                                         ),
                                     )
+                                    .children(self.header_decorations(message, cx))
                                     .child(
                                         // `Timestamp` (module 776579): the long date opens after the pointer rests 750ms.
                                         self.with_tip(
@@ -5284,13 +5762,17 @@ impl Root {
         // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636).
         let button = |name: &str| {
             div()
+                .id(SharedString::from(format!("toolbar-button-{name}")))
                 .relative()
                 .size(px(28.))
                 .rounded(px(6.))
                 .flex()
                 .items_center()
                 .justify_center()
+                .cursor_pointer()
                 .hover(|style| style.bg(color("--interactive-background-hover")))
+                // `.hoverBarButton:active:not([aria-disabled=true])` (28636).
+                .active(|style| style.bg(color("--interactive-background-active")))
                 .child(motion::messages::icon_box(
                     name,
                     icon(name, 20., "--interactive-text-default"),
@@ -5609,11 +6091,19 @@ impl Root {
                         .items_center()
                         .justify_center()
                         .cursor_pointer()
+                        // `.closeButton_Jldl6o:hover` (841136): the icon takes the hovered text colour.
+                        .text_color(color("--interactive-text-default"))
+                        .hover(|style| style.text_color(color("--interactive-text-hover")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.replying = None;
                             cx.notify();
                         }))
-                        .child(icon("reply_close", 16., "--interactive-text-default")),
+                        .child(
+                            svg()
+                                .path("icons/reply_close.svg")
+                                .size(px(16.))
+                                .flex_none(),
+                        ),
                 )
         });
         let emoji = self.images.get("emoji_button").cloned();
@@ -5629,6 +6119,10 @@ impl Root {
             .items_center()
             .justify_center()
             .cursor_pointer()
+            // `.emojiButton_2x8-Qn`: 8px corners, `--interactive-background-selected` on hover, `transition-duration:.2s`.
+            .rounded(px(8.))
+            .hover(|style| style.bg(color("--interactive-background-selected")))
+            .rule(motion::Rule::ComposerButton)
             .on_click(cx.listener(|this, _, window, cx| {
                 let composer = this.tip_anchors.borrow().get("composer-box").copied();
                 if let Some(bounds) = composer {
@@ -5661,9 +6155,15 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                // `.buttonWrapper_hfM7yP:hover { color: var(--interactive-text-active) }` over `all .2s`.
+                // `.button_hfM7yP:not(.noHover_hfM7yP):hover`: 8px corners, `--interactive-background-selected` and the
+                // hovered text colour over `.2s`; `.buttonWrapper_hfM7yP:hover` and `:active` the active text colour.
+                .rounded(px(8.))
                 .text_color(color("--interactive-text-default"))
-                .hover(|style| style.text_color(color("--interactive-text-active")))
+                .hover(|style| {
+                    style
+                        .text_color(color("--interactive-text-active"))
+                        .bg(color("--interactive-background-selected"))
+                })
                 .rule(motion::Rule::ComposerButton)
                 .child(
                     svg()
@@ -5714,6 +6214,7 @@ impl Root {
                 div()
                     .parity_with_border("composer", 1.)
                     .relative()
+                    .children(settings::client_theme::cover(8.))
                     .child(self.anchor_probe("composer-box"))
                     .children(self.autocomplete_popup(cx))
                     .children(self.slash_popup(cx))
@@ -5722,7 +6223,9 @@ impl Root {
                     .children(self.length_counter(cx))
                     .min_h(px(58.))
                     .rounded(px(8.))
-                    .bg(color("--chat-background-default"))
+                    .when(settings::client_theme::active().is_none(), |composer| {
+                        composer.bg(color("--chat-background-default"))
+                    })
                     .border_1()
                     .border_color(color("--background-mod-subtle"))
                     .flex()
@@ -6112,6 +6615,11 @@ impl Render for Root {
             motion::cached_system_preference(),
         ));
         motion::set_window_active(window.is_window_active());
+        motion::begin_view(cx.entity_id());
+        self.regions.ensure(&cx.entity(), cx);
+        window.set_ui_zoom(self.zoom_factor(), cx);
+        self.sync_client_theme();
+        self.ui_scale.set(window.scale_factor());
         self.focus_new_menu(window, cx);
         self.focus_new_dialog(window, cx);
         // The base layer of the layer stack fades while a full-window layer is open (module 596339).
@@ -6125,6 +6633,7 @@ impl Render for Root {
             top.item_ix + usize::from(top.offset_in_item > px(0.)),
         );
         self.sync_focus(window, cx);
+        self.pump_window(window);
         self.request_rail_dm_images();
         self.prepare_nameplate_animations(window, cx);
         self.profile_effects_sweep(window, cx);
@@ -6138,6 +6647,8 @@ impl Render for Root {
             self.prepare_member_avatars(window, cx);
         }
         self.prepare_inline_videos(window, cx);
+        self.prepare_gif_tiles(window, cx);
+        self.prepare_live_avatars();
         self.prepare_guild_guide();
         self.prepare_sidebar_events();
         self.prepare_channel_browser(cx);
@@ -6147,6 +6658,8 @@ impl Render for Root {
         }
         self.tray_runtime.attach(window);
         self.restore_slowmode_draft(cx);
+        self.apply_device_theme();
+        set_saturation(self.saturation_factor());
         // The formatting functions without a `Root` read the Time format from here.
         settings::prefs::set_clock_24(
             self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
@@ -6276,6 +6789,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // A settings select list and the add-game popout close before the settings page does.
+                if keys.key == "escape" && this.escape_layer(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && this.picker.is_none()
                     && this.profile.is_none()
@@ -6324,6 +6842,12 @@ impl Render for Root {
                 }
                 if keys.key == "escape" && this.modify_attachment.is_some() {
                     this.modify_attachment = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.settings_extra.has_dialog() {
+                    this.settings_extra.close_dialog();
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -6582,6 +7106,12 @@ impl Render for Root {
                 } else if event.keystroke.key == "escape" && this.emoji_popout.is_some() {
                     this.close_emoji_popout(cx);
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape"
+                    && this.profile.is_none()
+                    && this.role_popout.is_some()
+                {
+                    this.close_role_popout(cx);
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.profile.is_some() {
                     this.profile = None;
                     cx.notify();
@@ -6620,7 +7150,19 @@ impl Render for Root {
             .text_size(px(16.))
             .line_height(px(22.))
             .text_color(color("--text-default"))
-            .bg(color("--background-base-lowest"))
+            .bg(if settings::client_theme::active().is_some() {
+                gpui::rgba(0)
+            } else {
+                color("--background-base-lowest")
+            })
+            .when(settings::client_theme::previewing(), |root| {
+                root.pr(px(298.))
+            })
+            .children({
+                let size = window.viewport_size();
+                self.theme_backdrop(f32::from(size.width), f32::from(size.height))
+            })
+            .children(self.theme_preview_panel(cx))
             .children(self.settings_layer(window, cx))
             .children(self.profile_editor_layer(window, cx))
             .children(self.profile_editor_picker_layer(window, cx))
@@ -6677,6 +7219,8 @@ impl Render for Root {
             .children(self.security_actions_modal(cx))
             .children(self.security_actions_select(cx))
             .children(self.inventory_popout_layer(window, cx))
+            .children(self.role_popout_layer(cx))
+            .children(self.header_popout_layer(cx))
             .children(self.profile_layer(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
@@ -6685,15 +7229,29 @@ impl Render for Root {
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .child(motion::driver())
-            .child(motion::layers::faded(self.titlebar(cx), base_opacity))
+            .child(motion::layers::faded(
+                self.regions.place(
+                    regions::Kind::Titlebar,
+                    regions::style_of(regions::Kind::Titlebar),
+                ),
+                base_opacity,
+            ))
             .child({
-                let rail = self.rail(cx).into_any_element();
+                let rail = self
+                    .regions
+                    .place(regions::Kind::Rail, regions::style_of(regions::Kind::Rail));
                 let sidebar = if self.guild.is_some() {
-                    self.sidebar(cx).into_any_element()
+                    self.regions.place(
+                        regions::Kind::Sidebar,
+                        regions::style_of(regions::Kind::Sidebar),
+                    )
                 } else if self.discover_active() {
                     self.discover_sidebar(cx).into_any_element()
                 } else {
-                    self.home_sidebar(cx).into_any_element()
+                    self.regions.place(
+                        regions::Kind::Sidebar,
+                        regions::style_of(regions::Kind::Sidebar),
+                    )
                 };
                 let content = if self.discover_active() {
                     self.discover_page(window, cx)
@@ -6736,7 +7294,10 @@ impl Render for Root {
                                 .h_full()
                                 .pt(px(1.))
                                 .overflow_hidden()
-                                .child(self.header(cx))
+                                .child(self.regions.place(
+                                    regions::Kind::Header,
+                                    regions::style_of(regions::Kind::Header),
+                                ))
                                 .child(
                                     div()
                                         .flex()
@@ -6752,17 +7313,10 @@ impl Render for Root {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .h_full()
-                                                .child(
-                                                    div()
-                                                        .parity("messages")
-                                                        .relative()
-                                                        .flex_1()
-                                                        .min_h(px(0.))
-                                                        .child(self.messages_entry(cx))
-                                                        .child(rows)
-                                                        .children(self.new_messages_bar(cx))
-                                                        .children(self.jump_to_present_bar(cx)),
-                                                )
+                                                .child(self.regions.place(
+                                                    regions::Kind::Messages,
+                                                    regions::style_of(regions::Kind::Messages),
+                                                ))
                                                 .child(
                                                     match self
                                                         .current_dm()
@@ -6785,7 +7339,12 @@ impl Render for Root {
                                                             self.screening_composer(cx)
                                                         }
                                                         None => {
-                                                            self.composer_bar(cx).into_any_element()
+                                                            if regions::hidden("composer") {
+                                                                div().into_any_element()
+                                                            } else {
+                                                                self.composer_bar(cx)
+                                                                    .into_any_element()
+                                                            }
                                                         }
                                                     },
                                                 ),
@@ -6807,7 +7366,10 @@ impl Render for Root {
                                                         .h_full()
                                                         .bg(color("--background-mod-subtle")),
                                                 )
-                                                .child(self.member_panel(cx))
+                                                .child(self.regions.place(
+                                                    regions::Kind::Members,
+                                                    regions::style_of(regions::Kind::Members),
+                                                ))
                                             },
                                         )
                                         .children(self.dm_profile(window, cx)),
@@ -6818,7 +7380,14 @@ impl Render for Root {
                 };
                 motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
             })
-            .child(motion::layers::faded(self.user_panel(cx), base_opacity))
+            .child(motion::layers::faded(
+                if regions::hidden("user_panel") {
+                    div().into_any_element()
+                } else {
+                    self.user_panel(cx).into_any_element()
+                },
+                base_opacity,
+            ))
             .children(self.forum_layer(cx))
             .children(self.context_menu(window, cx))
             .children(self.menu_submenu(window, cx))
@@ -6874,6 +7443,7 @@ impl Render for Root {
             .children(self.plus_menu_layer(window, cx))
             .children(self.leave_modal(cx))
             .children(self.logout_modal(cx))
+            .children(self.settings_dialogs(cx))
             .children(self.modify_attachment_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))
@@ -6887,6 +7457,7 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         let element = element.children(name_styles::sheet_layer());
         self.end_call_background_frame(cx);
+        motion::leave_view();
         element
     }
 }

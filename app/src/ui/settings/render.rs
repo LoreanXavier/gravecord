@@ -67,7 +67,7 @@ pub(super) fn label_extent(
     let description_cap = description_max_width(window);
     // The NEW badge: 8px gap, 8px padding each side around 12px semibold text.
     let badge_width = if badge {
-        px(8. + 16.) + measure(window, "NEW", 12., 600.)
+        px(8. + 16.) + measure(window, badge_text(label), 12., 600.)
     } else {
         px(0.)
     };
@@ -98,16 +98,29 @@ pub(super) fn label_track(available: f32, label: (Pixels, Pixels), control: f32)
 }
 
 /// The Voice & Video sounds list and how many of its nodes (four switches, three rules) show before its accordion.
+/// How tall a select's open list gets before it scrolls (the language list has 31 rows). The official list's own
+/// limit is not in the extracted dom; this holds eight rows.
+const SELECT_LIST_MAX: f32 = 336.;
 const VOICE_SOUNDS_LIST: &str = "voice_and_video_sounds_list";
 const SOUNDS_SHOWN_NODES: usize = 7;
 
 pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
     let mut text = String::new();
     let mut links = Vec::new();
+    // The links in the text of the row being built, as ranges and as their words, for the clicks.
+    let mut ranges = Vec::new();
+    let mut words: Vec<&'static str> = Vec::new();
     for (part, link) in runs {
         let start = text.len();
+        // A part that starts with U+0002 is bold (`<strong>` in the official strings: "Compact", "Chat Message Display").
+        let (part, bold) = match part.strip_prefix('\u{2}') {
+            Some(rest) => (rest, true),
+            None => (*part, false),
+        };
         text.push_str(part);
         if *link {
+            ranges.push(start..text.len());
+            words.push(part);
             links.push((
                 start..text.len(),
                 HighlightStyle {
@@ -115,13 +128,46 @@ pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
                     ..HighlightStyle::default()
                 },
             ));
+        } else if bold {
+            links.push((
+                start..text.len(),
+                HighlightStyle {
+                    font_weight: Some(FontWeight(600.)),
+                    ..HighlightStyle::default()
+                },
+            ));
         }
     }
+    let styled = StyledText::new(text.clone()).with_highlights(links);
+    let body: AnyElement = match super::actions::link_context() {
+        Some((root, key)) if !ranges.is_empty() => gpui::InteractiveText::new(
+            SharedString::from(format!("link-{key}-{}", text.len())),
+            styled,
+        )
+        .on_click(ranges, move |index, _, cx| {
+            let word = words[index];
+            let _ = root.update(cx, |this, cx| {
+                this.settings_link_clicked(key, word, cx);
+                cx.notify();
+            });
+        })
+        .into_any_element(),
+        _ => styled.into_any_element(),
+    };
     div()
         .text_size(px(14.))
         .line_height(px(18.))
         .text_color(color(base))
-        .child(StyledText::new(text).with_highlights(links))
+        .child(body)
+}
+
+/// The badge beside a row's title: NEW, and BETA for Show Favorites server (`badge: "beta"`, module 158935 `ne`).
+fn badge_text(label: &str) -> &'static str {
+    if label == "Show Favorites server" {
+        "BETA"
+    } else {
+        "NEW"
+    }
 }
 
 pub(super) fn label_block(label: &'static str, badge: bool, description: Runs) -> gpui::Div {
@@ -152,7 +198,7 @@ fn label_block_capped(
                         .text_color(color("--text-strong"))
                         .child(label),
                 )
-                .when(badge, |this| this.child(super::new_badge())),
+                .when(badge, |this| this.child(super::badge(badge_text(label)))),
         )
         .when(!description.is_empty(), |this| {
             this.child(
@@ -213,6 +259,49 @@ fn switch(
         )
 }
 
+/// The same switch for a row that is not one of the generated pages' keys (a server in a list): the click calls back.
+pub(super) fn plain_switch(
+    id: SharedString,
+    on: bool,
+    changed: impl Fn(&mut Root, bool) + 'static,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let reduced = motion::reduced();
+    let state = motion::controls::switch_state(&id, on, reduced);
+    let thumb = motion::controls::thumb(state, on, reduced);
+    let background = motion::controls::switch_background(
+        state,
+        color("--input-background-default"),
+        color("--switch-background-active"),
+        color("--background-brand"),
+    );
+    div()
+        .id(id)
+        .flex_none()
+        .relative()
+        .w(px(SWITCH_WIDTH))
+        .h(px(24.))
+        .rounded(px(16.))
+        .border_1()
+        .border_color(color("--input-border-default"))
+        .bg(background)
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            changed(this, !on);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .absolute()
+                .top(px(3. + (thumb.y - 4.) as f32))
+                .left(px(3. + 24. * thumb.travel as f32 + (thumb.x - 4.) as f32))
+                .w(px(thumb.width as f32))
+                .h(px(thumb.height as f32))
+                .rounded(px(thumb.radius as f32))
+                .bg(gpui::white()),
+        )
+}
+
 /// `radioIndicator_oJuRbG`: a 20px ring, 2px stroke, with a fill and an 8px dot that grow in and out (the
 /// `fillIn`, `dotIn`, `fillOut` and `dotOut` keyframes, in `motion::controls`).
 pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
@@ -228,6 +317,14 @@ pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
         .border_2()
         .border_color(color("--radio-border-default"))
         .bg(color("--radio-background-default"))
+        // `.radioGroupOption:not([data-selected]):hover .outerRadioBase` (311913), read on the indicator itself.
+        .when(!selected, |this| {
+            this.hover(|style| {
+                style
+                    .bg(color("--radio-background-hover"))
+                    .border_color(color("--radio-border-hover"))
+            })
+        })
         .flex()
         .items_center()
         .justify_center()
@@ -334,11 +431,58 @@ pub(super) fn select_field_open(
 
 /// Selects that open, as module 158935's `r2` lists its options: the key, the key its open state is kept under in
 /// `setting_choices`, and the labels in order. The rest still show the captured value only.
-const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[(
-    "voice_noise_suppression_setting",
-    "voice_noise_suppression_setting/open",
-    &["DeepFilterNet", "Standard", "None"],
-)];
+const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
+    (
+        "voice_noise_suppression_setting",
+        "voice_noise_suppression_setting/open",
+        &["DeepFilterNet", "Standard", "None"],
+    ),
+    // Module 158935 `nu`: `render_spoilers` ON_CLICK, ALWAYS, IF_MODERATOR.
+    (
+        "chat_spoilers_show_spoilers",
+        "chat_spoilers_show_spoilers/open",
+        &["On click", "Always", "On servers I moderate"],
+    ),
+    // `ex`: `roleStyle` username, dot, hidden.
+    (
+        "role_style",
+        "role_style/open",
+        &["In names", "Next to names", "Don't show role colors"],
+    ),
+    // Language & Time: the 31 languages, the account's `localization.locale` (`dc_proto::settings::LOCALES`).
+    (
+        "language_select_setting",
+        "language_select_setting/open",
+        super::languages::NAMES,
+    ),
+    // Game Overlay's voice widget (module 158935 `pH`, `pY`, `pW`): kept on this machine, nothing draws it yet.
+    (
+        "overlay_voice_widget_avatar_size",
+        "overlay_voice_widget_avatar_size/open",
+        &["Large", "Small"],
+    ),
+    (
+        "overlay_voice_widget_display_names",
+        "overlay_voice_widget_display_names/open",
+        &["Always", "Only While Speaking", "Never"],
+    ),
+    (
+        "overlay_voice_widget_display_users",
+        "overlay_voice_widget_display_users/open",
+        &["Always", "Only While Speaking"],
+    ),
+    // `ef`: `officialMessageStyle` default, no_text_color, no_gradient, hidden.
+    (
+        "official_message_style",
+        "official_message_style/open",
+        &[
+            "Default",
+            "No text color",
+            "No background color",
+            "No styling",
+        ],
+    ),
+];
 
 /// Noise Suppression's description names what runs. The official one says "Powered by Krisp", which cannot run here
 /// (BLOCKED.md); the owner asked for DeepFilterNet to be shown as itself in the same design (11-08).
@@ -374,7 +518,7 @@ pub(super) static ROOM_ECHO: Node = Node::Switch {
 };
 
 /// `slider_OnqacX hasMarks_OnqacX`: marks above a 4px bar at 34px, the 16px grabber centred on the bar.
-fn slider(
+pub(super) fn slider(
     marks: &'static [(&'static str, f32)],
     default_mark: Option<usize>,
     value: f32,
@@ -475,6 +619,18 @@ impl Root {
         width: Option<f32>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if key == super::privacy::GUILD_SELECTOR {
+            let (labels, current) = self.guild_selector();
+            return self.select_with_list(
+                key,
+                super::privacy::GUILD_SELECTOR_OPEN,
+                &labels,
+                current,
+                captured,
+                width,
+                cx,
+            );
+        }
         let Some((_, open_key, options)) =
             SELECT_OPTIONS.iter().find(|(select, ..)| *select == key)
         else {
@@ -566,30 +722,37 @@ impl Root {
             .when(open, |this| {
                 this.child(
                     gpui::deferred(
-                        div()
-                            .id(SharedString::from(format!("{key}-list")))
-                            .occlude()
-                            .absolute()
-                            .top(px(44.))
-                            .left_0()
-                            .right_0()
-                            .p(px(4.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .shadow(vec![gpui::BoxShadow {
-                                color: gpui::hsla(0., 0., 0., 0.16),
-                                offset: gpui::point(px(0.), px(2.)),
-                                blur_radius: px(8.),
-                                spread_radius: px(0.),
-                                inset: false,
-                            }])
-                            .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                this.setting_choices.insert(open_key, Choice::On(false));
-                                cx.notify();
-                            }))
-                            .child(div().flex().flex_col().children(rows)),
+                        super::super::keyboard::outside(
+                            div().id(SharedString::from(format!("{key}-list"))),
+                            super::super::keyboard::Layer::SettingsSelect,
+                            cx,
+                        )
+                        .occlude()
+                        .absolute()
+                        .top(px(44.))
+                        .left_0()
+                        .right_0()
+                        .p(px(4.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-higher"))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: gpui::hsla(0., 0., 0., 0.16),
+                            offset: gpui::point(px(0.), px(2.)),
+                            blur_radius: px(8.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{key}-rows")))
+                                .flex()
+                                .flex_col()
+                                .max_h(px(SELECT_LIST_MAX))
+                                .overflow_y_scroll()
+                                .children(rows),
+                        ),
                     )
                     .with_priority(2),
                 )
@@ -637,8 +800,13 @@ impl Root {
                 let rows: Vec<AnyElement> = shown
                     .into_iter()
                     .map(|child| {
+                        super::actions::link_owner(cx.entity().downgrade(), child.key());
                         // The sensitivity row is drawn whole now; its captured height no longer holds its place.
-                        let padded = (child.key() != voice::SENSITIVITY)
+                        let padded = (child.key() != voice::SENSITIVITY
+                            && child.key() != super::content_filters::FILTERS
+                            && child.key() != super::connections::ACCOUNTS
+                            && child.key() != super::connections::APPS
+                            && child.key() != super::privacy::ACTIVITY_GUILDS)
                             .then(|| super::pages::padded(child.key()))
                             .flatten();
                         div()
@@ -656,14 +824,31 @@ impl Root {
                     .flex()
                     .flex_col()
                     .children(title.map(|title| {
+                        super::actions::link_owner(cx.entity().downgrade(), key);
                         let marker = self
                             .anchor_probe(format!("settings-marker:{key}"))
                             .into_any_element();
-                        category_header(
+                        let header = category_header(
                             title,
                             self.detect_description(key, description),
                             Some(marker),
-                        )
+                        );
+                        // `useHeaderDecoration`: the App Icon header carries its buttons at the right.
+                        if *key == "appearance_in_app_icon_category" {
+                            div()
+                                .relative()
+                                .child(header)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(7.))
+                                        .right_0()
+                                        .child(self.app_icon_buttons(cx)),
+                                )
+                                .into_any_element()
+                        } else {
+                            header.into_any_element()
+                        }
                     }))
                     // A top-level category keeps its 1px spacer without a title too (the input profile rows).
                     .when(*key == "voice_input_profile_category", |this| {
@@ -706,6 +891,18 @@ impl Root {
             Node::Switch { key, .. } if *key == voice::SENSITIVITY => {
                 self.sensitivity_row(width, window, cx)
             }
+            Node::Custom { key, .. } if *key == super::connections::ACCOUNTS => {
+                self.connected_accounts(cx)
+            }
+            Node::Custom { key, .. } if *key == super::connections::APPS => {
+                self.authorized_apps(cx)
+            }
+            Node::Custom { key, .. } if *key == super::content_filters::FILTERS => {
+                self.content_filters(width, cx)
+            }
+            Node::Switch { key, .. } if *key == super::privacy::ACTIVITY_GUILDS => {
+                self.activity_guild_list(width, cx)
+            }
             Node::Switch {
                 key,
                 label,
@@ -721,13 +918,24 @@ impl Root {
                             self.stores.current_user.as_ref().map(|user| user.id),
                         )
                     })
+                    .or_else(|| self.action_switch_value(key))
                     .unwrap_or_else(|| self.choice_on(key, *on));
                 // The System page's startup switches: the registry's truth, and start minimized off without it.
                 let (on, system_disabled) = match self.system_switch(key) {
                     Some((on, disabled)) => (on, disabled),
                     None => (on, false),
                 };
+                // `APPEARANCE_DISPLAY_COMPACT_AVATARS` (module 158935 `no`): the switch is locked, and shows on, while
+                // messages are not compact; compact lets it choose.
+                let (on, avatars_locked) = if *key == "appearance_display_compact_avatars" {
+                    let compact = self.compact_messages();
+                    (!compact || on, !compact)
+                } else {
+                    (on, false)
+                };
                 let disabled = system_disabled
+                    || self.action_switch_disabled(key)
+                    || avatars_locked
                     || self.voice_disabled(key)
                     || (*key == crate::sounds::SELECTED_CHANNEL
                         && crate::sounds::switch_value(crate::sounds::DISABLE_ALL) == Some(true));
@@ -735,7 +943,7 @@ impl Root {
                     key,
                     label,
                     *badge,
-                    description,
+                    self.messaging_description(key).unwrap_or(description),
                     on,
                     disabled,
                     width,
@@ -772,6 +980,36 @@ impl Root {
                 || *key == voice::extra::STREAM_ATTEN_STRENGTH =>
             {
                 self.slider_row(key, label, description, width, cx)
+            }
+            Node::Slider {
+                key,
+                label,
+                badge,
+                description,
+                marks,
+                default_mark,
+                ..
+            } if super::controls::spec(key).is_some() => {
+                let row = self.marked_slider_row(
+                    key,
+                    label,
+                    *badge,
+                    description,
+                    marks,
+                    *default_mark,
+                    width,
+                    cx,
+                );
+                if *key == super::controls::SPEECH_RATE {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(row)
+                        .child(self.tts_preview_button(cx))
+                        .into_any_element()
+                } else {
+                    row
+                }
             }
             Node::Slider {
                 label,
@@ -829,7 +1067,9 @@ impl Root {
                 value,
                 vertical,
                 width: field,
-            } if SELECT_OPTIONS.iter().any(|(select, ..)| select == key) => {
+            } if SELECT_OPTIONS.iter().any(|(select, ..)| select == key)
+                || *key == super::privacy::GUILD_SELECTOR =>
+            {
                 let field = if *vertical {
                     (*field < width).then_some(*field)
                 } else {
@@ -847,8 +1087,15 @@ impl Root {
                         .py(px(8.))
                         .flex()
                         .flex_col()
-                        .child(label_block(label, *badge, description).mb(px(8.)))
+                        .when(!label.is_empty(), |this| {
+                            this.child(label_block(label, *badge, description).mb(px(8.)))
+                        })
                         .child(select)
+                        .children(if *key == super::privacy::GUILD_SELECTOR {
+                            self.guild_selector_note()
+                        } else {
+                            None
+                        })
                         .into_any_element()
                 } else {
                     div()
@@ -918,6 +1165,17 @@ impl Root {
                 }
                 if *clickable {
                     row = row.link((!value.is_empty()).then(|| (*value).to_owned()));
+                    // A navigator opens the page of its `destinationKey`.
+                    let key: &'static str = key;
+                    return div()
+                        .id(SharedString::from(format!("navigator-{key}")))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings_navigate(key, cx);
+                            cx.notify();
+                        }))
+                        .child(row.render())
+                        .into_any_element();
                 } else if !buttons.is_empty() || !value.is_empty() {
                     row = row.trailing(
                         div()
@@ -929,11 +1187,18 @@ impl Root {
                                 let id = SharedString::from(format!("button-{key}-{index}"));
                                 let reset = *key == voice::extra::RESET;
                                 // Reset all Voice & Video settings asks first (`rA`).
+                                let key: &'static str = key;
                                 div()
                                     .id(SharedString::from(format!("{id}-click")))
                                     .when(reset, |this| {
                                         this.on_click(cx.listener(|this, _, _, cx| {
                                             this.voice.ask_reset();
+                                            cx.notify();
+                                        }))
+                                    })
+                                    .when(!reset, |this| {
+                                        this.on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settings_button_clicked(key, index, cx);
                                             cx.notify();
                                         }))
                                     })
@@ -1059,6 +1324,7 @@ impl Root {
                 "appearance_default_themes" => self.default_themes(cx),
                 "appearance_custom_themes_upsell" => self.custom_theme_card(),
                 "appearance_client_themes" => self.color_themes(cx),
+                "appearance_in_app_icon" => self.app_icon_grid(),
                 _ => self
                     .billing_custom(key, cx)
                     .or_else(|| self.voice_custom(key, width, window, cx))

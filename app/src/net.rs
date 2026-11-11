@@ -41,6 +41,17 @@ pub enum Update {
     Messages {
         channel: u64,
         page: Value,
+        /// When the request started, in Unix milliseconds: messages that arrived since stay in the window.
+        started_ms: u64,
+    },
+    /// A `before`, `after` or `around` page (`fetchMessages`), with what it was asked for.
+    MessagesLoaded {
+        spec: dc_state::message_window::FetchSpec,
+        page: Value,
+    },
+    /// `LOAD_MESSAGES_FAILURE`.
+    MessagesFailed {
+        channel: u64,
     },
     Image {
         key: String,
@@ -152,6 +163,10 @@ pub enum Request {
     },
     LoadMessages {
         channel: u64,
+    },
+    /// `fetchMessages` for a page `before` or `after` the window, or `around` a message (`jumpToMessage`).
+    FetchMessages {
+        spec: dc_state::message_window::FetchSpec,
     },
     /// A message with stickers (`sticker_ids`), from the picker or a staged sticker.
     SendSticker {
@@ -272,7 +287,7 @@ pub enum Request {
     EmojiButtonSprites,
 }
 
-pub(crate) const MESSAGE_PAGE: u32 = 50;
+pub(crate) const MESSAGE_PAGE: u32 = dc_state::message_window::INITIAL_PAGE;
 /// Held while a settings-proto PATCH is in flight.
 /// Pictures downloaded at once. Opening a picker or a shop asks for hundreds together; without a limit they all start
 /// at once and the connections, the memory and the CPU are shared out among them.
@@ -310,6 +325,149 @@ fn account_route(route: &str) -> bool {
         || path == "/guilds/automations/email-domain-lookup"
         || path.starts_with("/guilds/automations/email-domain-lookup/")
         || path == "/hub-waitlist/signup"
+}
+
+/// What an inert run (`GRAVECORD_INERT=1`, capture feature) does with a request from the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Inert {
+    Allow,
+    Deny,
+}
+
+impl Request {
+    /// The variant's name, for the inert log line.
+    pub(crate) fn variant(&self) -> &'static str {
+        match self {
+            Request::Presence { .. } => "Presence",
+            Request::VoiceState { .. } => "VoiceState",
+            Request::StreamOp { .. } => "StreamOp",
+            Request::StreamConnect { .. } => "StreamConnect",
+            Request::VoiceConnect { .. } => "VoiceConnect",
+            Request::RestForm { .. } => "RestForm",
+            Request::UploadLogs { .. } => "UploadLogs",
+            Request::Schedule { .. } => "Schedule",
+            Request::Fetch { .. } => "Fetch",
+            Request::Typing { .. } => "Typing",
+            Request::React { .. } => "React",
+            Request::LoadMessages { .. } => "LoadMessages",
+            Request::FetchMessages { .. } => "FetchMessages",
+            Request::SendSticker { .. } => "SendSticker",
+            Request::Send { .. } => "Send",
+            Request::Edit { .. } => "Edit",
+            Request::Delete { .. } => "Delete",
+            Request::Ack { .. } => "Ack",
+            Request::Save { .. } => "Save",
+            Request::Forward { .. } => "Forward",
+            Request::GuildSettings { .. } => "GuildSettings",
+            Request::Rest { .. } => "Rest",
+            Request::SoundboardSounds { .. } => "SoundboardSounds",
+            Request::GuildMembers { .. } => "GuildMembers",
+            Request::Download { .. } => "Download",
+            Request::BearerGet { .. } => "BearerGet",
+            Request::Interaction { .. } => "Interaction",
+            Request::Pin { .. } => "Pin",
+            Request::Subscribe { .. } => "Subscribe",
+            Request::Image { .. } => "Image",
+            Request::Sprite { .. } => "Sprite",
+            Request::EmojiSheet => "EmojiSheet",
+            Request::EmojiButtonSprites => "EmojiButtonSprites",
+        }
+    }
+
+    /// Inert mode is default-deny: only reads and subscriptions pass. No wildcard arm, so a new variant must be
+    /// classified here before the crate compiles.
+    pub(crate) fn inert(&self) -> Inert {
+        match self {
+            Request::Fetch { .. }
+            | Request::LoadMessages { .. }
+            | Request::FetchMessages { .. }
+            | Request::SoundboardSounds { .. }
+            | Request::GuildMembers { .. }
+            | Request::BearerGet { .. }
+            | Request::Subscribe { .. }
+            | Request::Image { .. }
+            | Request::Sprite { .. }
+            | Request::EmojiSheet
+            | Request::EmojiButtonSprites => Inert::Allow,
+            Request::Rest { method, .. } => {
+                if method == reqwest::Method::GET {
+                    Inert::Allow
+                } else {
+                    Inert::Deny
+                }
+            }
+            Request::Presence { .. }
+            | Request::VoiceState { .. }
+            | Request::StreamOp { .. }
+            | Request::StreamConnect { .. }
+            | Request::VoiceConnect { .. }
+            | Request::RestForm { .. }
+            | Request::UploadLogs { .. }
+            | Request::Schedule { .. }
+            | Request::Typing { .. }
+            | Request::React { .. }
+            | Request::SendSticker { .. }
+            | Request::Send { .. }
+            | Request::Edit { .. }
+            | Request::Delete { .. }
+            | Request::Ack { .. }
+            | Request::Save { .. }
+            | Request::Forward { .. }
+            | Request::GuildSettings { .. }
+            | Request::Download { .. }
+            | Request::Interaction { .. }
+            | Request::Pin { .. } => Inert::Deny,
+        }
+    }
+
+    /// The method and route for the log line, with every number masked.
+    fn inert_route(&self) -> String {
+        let (method, route) = match self {
+            Request::Rest { method, route, .. } => (method.as_str(), route.as_str()),
+            Request::RestForm { route, .. } => ("POST", route.as_str()),
+            _ => ("-", "-"),
+        };
+        let mut masked = String::new();
+        let mut digits = false;
+        for ch in route.split('?').next().unwrap_or("").chars() {
+            if ch.is_ascii_digit() {
+                if !digits {
+                    masked.push_str(":id");
+                }
+                digits = true;
+            } else {
+                digits = false;
+                masked.push(ch);
+            }
+        }
+        format!("{method} {masked}")
+    }
+}
+
+/// Applies inert mode to a request taken from the UI: true when it is refused (logged and counted).
+pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<Update>) -> bool {
+    if !crate::inert::on() {
+        return false;
+    }
+    if request.inert() == Inert::Allow {
+        crate::inert::request_allowed();
+        return false;
+    }
+    crate::inert::note(&format!(
+        "refused {} {}",
+        request.variant(),
+        request.inert_route()
+    ));
+    let key = match request {
+        Request::Rest { key, .. } => key.clone(),
+        Request::RestForm { key, .. } => Some(key.clone()),
+        _ => None,
+    };
+    if let Some(key) = key {
+        let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
+        let _ = updates.send(Update::Fetched { key, body });
+    }
+    true
 }
 
 /// A harness run (the `capture` feature, or `--capture`) never writes to the account by accident: such a request is
@@ -679,17 +837,43 @@ pub async fn run(
     });
 
     while let Some(request) = requests.recv().await {
+        if inert_refuses(&request, &updates) {
+            continue;
+        }
         let client = client.clone();
         let updates = updates.clone();
         match request {
             Request::LoadMessages { channel } => {
                 tokio::spawn(async move {
+                    let started_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|elapsed| elapsed.as_millis() as u64)
+                        .unwrap_or_default();
                     let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
                     match client.get(&route).await {
                         Ok(page) => {
-                            let _ = updates.send(Update::Messages { channel, page });
+                            let _ = updates.send(Update::Messages {
+                                channel,
+                                page,
+                                started_ms,
+                            });
                         }
                         Err(error) => warn!("loading messages failed: {error}"),
+                    }
+                });
+            }
+            Request::FetchMessages { spec } => {
+                tokio::spawn(async move {
+                    match client.get(&spec.route()).await {
+                        Ok(page) => {
+                            let _ = updates.send(Update::MessagesLoaded { spec, page });
+                        }
+                        Err(error) => {
+                            warn!("loading messages failed: {error}");
+                            let _ = updates.send(Update::MessagesFailed {
+                                channel: spec.channel,
+                            });
+                        }
                     }
                 });
             }

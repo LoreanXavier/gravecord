@@ -36,10 +36,17 @@ pub fn foreground_pid() -> Option<u32> {
     native::foreground_pid()
 }
 
+/// The window a process draws its picture in: its largest visible, titled, unowned top-level window (`windowHandle` of
+/// the official client's visible game), as a handle value. `None` when the process has no such window.
+pub fn main_window(pid: u32) -> Option<u64> {
+    native::main_window(pid)
+}
+
 #[cfg(windows)]
 mod native {
     use super::{MAX_PROCESSES, Process};
     use std::collections::HashSet;
+    use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -49,7 +56,7 @@ mod native {
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextLengthW,
+        EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextLengthW,
         GetWindowThreadProcessId, IsWindowVisible,
     };
 
@@ -119,6 +126,47 @@ mod native {
         1
     }
 
+    struct Search {
+        pid: u32,
+        best: Option<(i64, u64)>,
+    }
+
+    unsafe extern "system" fn each_candidate(window: *mut core::ffi::c_void, param: isize) -> i32 {
+        // SAFETY: `param` is the address of the `Search` that `main_window` passes to `EnumWindows` below.
+        unsafe {
+            let search = &mut *(param as *mut Search);
+            if IsWindowVisible(window) == 0
+                || GetWindowTextLengthW(window) == 0
+                || !GetWindow(window, GW_OWNER).is_null()
+            {
+                return 1;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(window, &mut pid);
+            if pid != search.pid {
+                return 1;
+            }
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(window, &mut rect) == 0 {
+                return 1;
+            }
+            let area = i64::from(rect.right - rect.left) * i64::from(rect.bottom - rect.top);
+            if search.best.is_none_or(|(best, _)| area > best) {
+                search.best = Some((area, window as usize as u64));
+            }
+        }
+        1
+    }
+
+    pub fn main_window(pid: u32) -> Option<u64> {
+        let mut search = Search { pid, best: None };
+        // SAFETY: the callback only touches `search`, which outlives the call.
+        unsafe {
+            EnumWindows(Some(each_candidate), &mut search as *mut Search as isize);
+        }
+        search.best.map(|(_, window)| window)
+    }
+
     pub fn foreground_pid() -> Option<u32> {
         // SAFETY: both calls only read window state.
         unsafe {
@@ -156,6 +204,10 @@ mod native {
     }
 
     pub fn foreground_pid() -> Option<u32> {
+        None
+    }
+
+    pub fn main_window(_pid: u32) -> Option<u64> {
         None
     }
 }

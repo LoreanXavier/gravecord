@@ -6,6 +6,7 @@
 use super::{Root, color};
 use crate::net::Request;
 use dc_state::Id;
+use dc_state::message_window;
 use dc_state::read_state::days_since_epoch;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, prelude::*, px, svg};
 
@@ -27,7 +28,8 @@ impl Root {
             return;
         };
         self.notification_runtime.clear(channel);
-        if !self.stores.is_unread(channel) {
+        // A window that stops short of the newest message is not the end of the channel: nothing is read there.
+        if self.window_detached() || !self.stores.is_unread(channel) {
             return;
         }
         let state = self.stores.read_states.states.get(&channel).copied();
@@ -250,10 +252,8 @@ thread_local! {
     static DETACHED: std::cell::RefCell<std::collections::HashSet<Id>> = std::cell::RefCell::new(Default::default());
 }
 
-/// Records that the loaded window of `channel` no longer reaches the newest message (a window loaded around a
-/// message that was jumped to, or newer messages dropped by scrolling far up), or that it does again. The message
-/// store keeps every message from the newest one back and has no around-fetch yet, so nothing sets this outside the
-/// harness.
+/// The harness's way to show the bar without a loaded window (`motion older on|off`). The message store's own window
+/// (`ChannelWindow::has_more_after`) is what decides in normal use.
 pub(super) fn set_window_detached(channel: Id, detached: bool) {
     DETACHED.with(|set| {
         if detached {
@@ -278,10 +278,19 @@ impl Root {
     /// condition; its `.barBase` `transition: opacity .15s` has nothing to run from, so it appears and goes at once.
     pub(super) fn jump_to_present_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.channel?;
-        let detached = DETACHED.with(|set| set.borrow().contains(&channel));
+        let state = self.stores.window(channel);
+        let forced = DETACHED.with(|set| set.borrow().contains(&channel));
+        // `hasMoreAfter && ready`.
+        let detached = forced || (state.has_more_after && state.ready);
         if !has_more_after(detached, self.list.is_scrolled_to_end() == Some(false)) {
             return None;
         }
+        // A jump from a reply keeps the message the reply was on: the bar offers it (`ks.REPLY`, module 383055).
+        let reply = state.jump_return_target_id;
+        let (label, button) = match reply {
+            Some(_) => ("You Are Viewing a Reply.", "Jump To Original Message"),
+            None => ("You're Viewing Older Messages", "Jump To Present"),
+        };
         Some(
             div()
                 .absolute()
@@ -313,7 +322,15 @@ impl Root {
                             inset: false,
                         }])
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.jump_to_present(cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| match reply {
+                            Some(message) => {
+                                if let Some(channel) = this.channel {
+                                    this.jump_to_message_id(channel, message, true, None);
+                                }
+                                cx.notify();
+                            }
+                            None => this.jump_to_present(cx),
+                        }))
                         .child(
                             div()
                                 .flex_1()
@@ -322,11 +339,11 @@ impl Root {
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-default"))
-                                .child("You're Viewing Older Messages"),
+                                .child(label),
                         )
                         .child(div().flex_none().child(super::sticker_popout::small_button(
                             "jump-to-present",
-                            "Jump To Present",
+                            button,
                             true,
                         ))),
                 )
@@ -334,11 +351,11 @@ impl Root {
         )
     }
 
-    /// `jumpToPresent`: back to the newest message.
+    /// `jumpToPresent(channelId, lX.h("renderStream.jumpToPresent"))`: drops the window and loads the newest page,
+    /// then the view scrolls to its end.
     pub(super) fn jump_to_present(&mut self, cx: &mut Context<Self>) {
-        if let Some(channel) = self.channel {
-            set_window_detached(channel, false);
-        }
+        let page = message_window::page_size(self.viewport.1, false, 16.);
+        self.jump_to_present_with(page);
         self.list.scroll_to_end();
         cx.notify();
     }

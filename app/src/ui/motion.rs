@@ -549,6 +549,10 @@ struct Motion {
     leaving: std::collections::HashSet<u64>,
     frame: u64,
     active: bool,
+    /// The views that asked for another frame in their last render, and the view being built.
+    active_views: std::collections::HashSet<gpui::EntityId>,
+    views: HashMap<gpui::EntityId, ViewFrames>,
+    view: Option<gpui::EntityId>,
     reduced: bool,
     reduced_override: Option<bool>,
     /// Frames requested because something was moving, over the process's life.
@@ -580,6 +584,73 @@ impl Motion {
     }
 }
 
+/// How many draws a finished value is kept after it was last read. A region that is not redrawn does not read its
+/// values, so a value is not let go of just because the last few draws did not read it.
+const SWEEP_AFTER: u64 = 36_000;
+
+/// What the motion store knows of one view (the main view or a region): the draw it last rendered in and the one
+/// before.
+#[derive(Clone, Copy, Default)]
+struct ViewFrames {
+    current: u64,
+    previous: u64,
+}
+
+impl Motion {
+    /// Records that something on screen is still moving, for the view being built, or for every view when no view is
+    /// being built (the caller then draws somewhere this module cannot tell).
+    fn mark_active(&mut self) {
+        match self.view {
+            Some(view) => {
+                self.active_views.insert(view);
+            }
+            None => self.active = true,
+        }
+    }
+
+    /// The draw a value must have been read in, at the latest, to count as shown in the previous render of the view
+    /// being built (a value that was not is mounting again).
+    fn gap_floor(&self) -> u64 {
+        match self.view.and_then(|view| self.views.get(&view)) {
+            Some(frames) => frames.previous,
+            None => self.frame.saturating_sub(1),
+        }
+    }
+}
+
+/// Called at the top of a view's render (the main view's and each region's): the view starts a new render, so what
+/// it asked for in the last one is forgotten, and the reads that follow belong to it.
+pub fn begin_view(view: gpui::EntityId) {
+    with(|motion| {
+        let frame = motion.frame;
+        let current = motion.views.get(&view).map_or(0, |frames| frames.current);
+        motion.views.insert(
+            view,
+            ViewFrames {
+                current: frame,
+                previous: current,
+            },
+        );
+        motion.active_views.remove(&view);
+        motion.view = Some(view);
+    });
+}
+
+/// The reads that follow belong to `view` (its rows are built after its render ended).
+pub fn enter_view(view: gpui::EntityId) {
+    with(|motion| motion.view = Some(view));
+}
+
+/// The reads that follow belong to no known view: whatever moves there is redrawn everywhere.
+pub fn leave_view() {
+    with(|motion| motion.view = None);
+}
+
+/// The view being built now, if known.
+pub fn current_view() -> Option<gpui::EntityId> {
+    with(|motion| motion.view)
+}
+
 /// A key for the stores from anything hashable.
 pub fn key<H: Hash + ?Sized>(value: &H) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -600,10 +671,10 @@ pub fn begin_frame(reduced: bool) {
         if motion.tweens.len() + motion.springs.len() > 256 && frame % 32 == 0 {
             motion
                 .tweens
-                .retain(|_, t| t.touched + 1 >= frame || !t.finished(now));
+                .retain(|_, t| t.touched + SWEEP_AFTER >= frame || !t.finished(now));
             motion
                 .springs
-                .retain(|_, s| s.touched + 1 >= frame || !s.spring.is_done());
+                .retain(|_, s| s.touched + SWEEP_AFTER >= frame || !s.spring.is_done());
             motion.hovers.retain(|_, h| h.0 || now - h.1 < 5000.);
         }
     });
@@ -643,7 +714,7 @@ pub fn frames_requested() -> u64 {
 
 /// Whether anything read this frame is still moving (what the driver acts on).
 pub fn is_active() -> bool {
-    with(|motion| motion.active)
+    with(|motion| motion.active || !motion.active_views.is_empty())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -705,7 +776,7 @@ pub fn animate_from(key: u64, initial: V4, target: V4, css: Css) -> V4 {
         let moving = !tween.finished(now);
         motion.tweens.insert(key, tween);
         if moving {
-            motion.active = true;
+            motion.mark_active();
         }
         value
     })
@@ -790,7 +861,7 @@ pub fn spring_from(key: u64, initial: f32, target: f32, config: SpringConfig) ->
         slot.spring.step_to(now);
         let position = slot.spring.position() as f32;
         if !slot.spring.is_done() {
-            motion.active = true;
+            motion.mark_active();
         }
         position
     })
@@ -821,7 +892,7 @@ pub fn rn_spring_from(key: u64, initial: f32, target: f32, tension: f64, frictio
         slot.spring.step_to(now);
         let position = slot.spring.position() as f32;
         if !slot.spring.is_done() {
-            motion.active = true;
+            motion.mark_active();
         }
         position
     })
@@ -837,7 +908,6 @@ pub fn enter(key: u64, drive: Drive) -> f32 {
 /// retargets from where it is, keeping its velocity.
 pub fn enter_between(key: u64, from: f32, to: f32, drive: Drive) -> f32 {
     let remounted = with(|motion| {
-        let frame = motion.frame;
         let seen = motion
             .tweens
             .get(&key)
@@ -845,7 +915,7 @@ pub fn enter_between(key: u64, from: f32, to: f32, drive: Drive) -> f32 {
             .or_else(|| motion.springs.get(&key).map(|s| s.touched))
             .or_else(|| motion.rn_springs.get(&key).map(|s| s.touched));
         match seen {
-            Some(seen) if seen + 1 < frame => {
+            Some(seen) if seen < motion.gap_floor() => {
                 motion.tweens.remove(&key);
                 motion.springs.remove(&key);
                 motion.rn_springs.remove(&key);
@@ -882,7 +952,7 @@ pub struct Pose {
 pub fn begin_leave(id: &str) -> bool {
     let key = key(&("leave", id));
     with(|motion| {
-        motion.active = true;
+        motion.mark_active();
         motion.leaving.insert(key)
     })
 }
@@ -943,7 +1013,7 @@ pub fn modal_pose(id: &str) -> Pose {
         let config = if leaving { MODAL_EXIT } else { MODAL_ENTER };
         enter_between(key(&("modal-body", id)), 0., target, Drive::Spring(config))
     } else {
-        with(|motion| motion.active = true);
+        with(|motion| motion.mark_active());
         0.
     };
     Pose {
@@ -1137,7 +1207,7 @@ pub fn toggled(key: u64, on: bool, within_ms: f64) -> Option<f64> {
         }
         let elapsed = now - entry.1;
         if elapsed >= 0. && elapsed < within_ms {
-            motion.active = true;
+            motion.mark_active();
             Some(elapsed)
         } else {
             None
@@ -1179,7 +1249,7 @@ pub fn set_window_active(active: bool) {
 
 /// Asks for a frame after this one: something that never settles (a looping animation) is on screen.
 pub fn keep_animating() {
-    with(|motion| motion.active = true);
+    with(|motion| motion.mark_active());
 }
 
 /// The typing indicator's dot, `typing-dot-pulse_U9Tvvz` (stylesheet of `.dot_U9Tvvz`): 1.2 s, `steps(12)` between
@@ -1715,7 +1785,8 @@ pub fn ghosts() -> usize {
 }
 
 /// Goes last in the root's tree. After the frame is laid out it asks for the next one if something moves, and
-/// asks for nothing otherwise. A frozen clock never asks (the harness draws by hand).
+/// asks for nothing otherwise. A frozen clock never asks (the harness draws by hand). What moved while no view was
+/// known to be building (`leave_view`) is redrawn in every region as well.
 pub fn driver() -> AnyElement {
     // Deferred with the highest priority: it paints after every element whose style moves, so it sees them all.
     gpui::deferred(
@@ -1723,15 +1794,21 @@ pub fn driver() -> AnyElement {
             |_, _, _| (),
             |_, _, window, _| {
                 ghosts_step(window);
-                let want = with(|motion| {
-                    let want = motion.active && motion.frozen.is_none();
+                let root = window.current_view();
+                let (want, everywhere) = with(|motion| {
+                    let live = motion.frozen.is_none();
+                    let everywhere = motion.active && live;
+                    let want = (everywhere || motion.active_views.contains(&root)) && live;
                     if want {
                         motion.requested += 1;
                     }
-                    want
+                    (want, everywhere)
                 });
                 if want {
                     window.request_animation_frame();
+                }
+                if everywhere {
+                    window.on_next_frame(|_, cx| super::regions::notify_all(cx));
                 }
             },
         )
@@ -1739,6 +1816,30 @@ pub fn driver() -> AnyElement {
         .size_0(),
     )
     .with_priority(usize::MAX)
+    .into_any_element()
+}
+
+/// The driver of a region: after the region is laid out it asks for the region's next frame if something in it
+/// moves. A region that does not move is not asked for, and its previous frame is reused.
+pub fn region_driver() -> AnyElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            let view = window.current_view();
+            let want = with(|motion| {
+                let want = motion.active_views.contains(&view) && motion.frozen.is_none();
+                if want {
+                    motion.requested += 1;
+                }
+                want
+            });
+            if want {
+                window.request_animation_frame();
+            }
+        },
+    )
+    .absolute()
+    .size_0()
     .into_any_element()
 }
 

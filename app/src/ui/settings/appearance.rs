@@ -5,13 +5,60 @@
 use super::model::{Layer, Swatch};
 use super::swatches::SWATCHES;
 use super::{Root, button, color, mask_icon};
+use crate::net::Request;
 use crate::ui::{set_theme, theme};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, Context, FontWeight, Image, ImageFormat, IntoElement, SharedString, div, img,
-    prelude::*, px,
+    AnyElement, BoxShadow, Context, FontWeight, Image, ImageFormat, IntoElement, SharedString, div,
+    img, point, prelude::*, px,
 };
+use serde_json::json;
 use std::sync::Arc;
+
+/// The in-app icons of `746322` `v8()` in the order the page lists them: the name and the asset's file.
+pub(super) const APP_ICONS: &[(&str, &str)] = &[
+    ("Blurple (Default)", "5926a37cee0904ce"),
+    ("Goth", "e8396e79419904ca"),
+    ("WHAM", "2d62663c4b493f8e"),
+    ("Charcoal", "28f89b5f78dd6f80"),
+    ("Ceramic", "96f9a2942150ba17"),
+    ("Pastel", "22bb7108ad1c466f"),
+    ("Matey", "9af4b996c897420f"),
+    ("Tactical", "9ad8ec824f71bd05"),
+    ("Sunset Ave", "5bf3279039efa66c"),
+    ("Galactic Chrome", "3a2d57c0bde9b218"),
+    ("Holo", "181e40b5ea872cdb"),
+    ("Sakura", "1e208c512641758d"),
+    ("Sherbet Dreamsicle", "e14578cc054054c0"),
+    ("Gaming", "5e5cc9b058e63987"),
+    ("Mainframe", "82c7a89d15622af4"),
+    ("Prismatic Waves", "441d164362b711b1"),
+    ("uwu~", "e5f2a55421a6dc7e"),
+    ("Fuming", "9b50f7ba00ee941f"),
+    ("D64", "a629a2a3fe1ccbcc"),
+    ("Blurple Twilight", "685b2900a9423534"),
+    ("In Rainbows", "10cd104567438715"),
+    ("Midnight Prism", "7ebbc1790864207a"),
+    ("Color Wave", "7ce5a942a5cc7cba"),
+];
+
+pub(super) fn app_icon_key(index: usize) -> String {
+    format!("app_icon:{index}")
+}
+
+pub(super) fn app_icon_url(index: usize) -> String {
+    format!("https://discord.com/assets/{}.webp", APP_ICONS[index].1)
+}
+
+/// `appearance.theme` as the settings proto holds it: DARK 1, LIGHT 2, DARKER 3, MIDNIGHT 4.
+fn theme_value(palette: Theme) -> u64 {
+    match palette {
+        Theme::Dark => 1,
+        Theme::Light => 2,
+        Theme::Darker => 3,
+        Theme::Midnight => 4,
+    }
+}
 
 fn rgba_hex(value: u32) -> (String, f32) {
     (format!("#{:06x}", value >> 8), (value & 0xff) as f32 / 255.)
@@ -135,8 +182,33 @@ impl Root {
             .cursor_pointer()
             .when_some(palette, |this, palette| {
                 this.on_click(cx.listener(move |this, _, _, cx| {
-                    set_theme(palette);
-                    this.request_emoji_button();
+                    this.choose_theme(palette);
+                    cx.refresh_windows();
+                    cx.notify();
+                }))
+            })
+            // A colour theme is a Nitro perk: a free account gets the upsell (`Selecting closes settings and opens
+            // a theme preview`; the preview and the sync tile are not drawn by this client).
+            .when(
+                palette.is_none() && swatch.group == "client" && !swatch.layers.is_empty(),
+                |this| {
+                    let name = swatch.name;
+                    this.on_click(
+                        cx.listener(move |this, _, _, cx| this.pick_client_theme(name, cx)),
+                    )
+                },
+            )
+            .when(
+                palette.is_none()
+                    && swatch.name != "Sync with computer"
+                    && (swatch.group != "client" || swatch.layers.is_empty()),
+                |this| this.on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx))),
+            )
+            .when(swatch.name == "Sync with computer", |this| {
+                this.on_click(cx.listener(|this, _, _, cx| {
+                    this.setting_choices
+                        .insert(SAME_AS_DEVICE, super::model::Choice::On(true));
+                    this.voice_setting_changed(SAME_AS_DEVICE);
                     cx.refresh_windows();
                     cx.notify();
                 }))
@@ -197,12 +269,45 @@ impl Root {
             .into_any_element()
     }
 
+    /// `appearance.theme`: shown now, kept for the next start and sent to the account as the official client does.
+    /// Choosing a palette by hand ends "Same as Device Theme".
+    pub(super) fn choose_theme(&mut self, palette: Theme) {
+        set_theme(palette);
+        self.clear_client_theme();
+        let was_synced = self.pref_on(SAME_AS_DEVICE, false);
+        if was_synced {
+            self.setting_choices
+                .insert(SAME_AS_DEVICE, super::model::Choice::On(false));
+            self.voice_setting_changed(SAME_AS_DEVICE);
+        }
+        let value = theme_value(palette);
+        let patch = self.stores.set_pref(&dc_proto::settings::THEME, value);
+        self.stores.theme = value;
+        if !patch.is_empty() {
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route: "/users/@me/settings-proto/1".to_owned(),
+                body: Some(json!({"settings": patch})),
+            });
+        }
+        self.request_emoji_button();
+    }
+
     pub(super) fn default_themes(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = theme();
+        let device = self.pref_on(SAME_AS_DEVICE, false);
         let swatches: Vec<AnyElement> = SWATCHES
             .iter()
             .filter(|swatch| swatch.group == "default")
-            .map(|swatch| self.swatch(swatch, palette_of(swatch.name) == Some(current), cx))
+            .map(|swatch| {
+                let selected = if swatch.name == "Sync with computer" {
+                    device
+                } else {
+                    !device && palette_of(swatch.name) == Some(current)
+                };
+                self.swatch(swatch, selected, cx)
+            })
             .collect();
         div()
             .py(px(8.))
@@ -266,6 +371,117 @@ impl Root {
                     )
                     .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
             )
+            .into_any_element()
+    }
+
+    /// `expressive_F7qvhY`: white, black text, the Nitro mark before it, and a glow of the Nitro colours round it
+    /// (the canvas of 193 by 56 behind the 177 by 40 button). It opens the Nitro plans.
+    pub(super) fn unlock_with_nitro(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        let glow = |red: f32, green: f32, blue: f32, alpha: f32, x: f32, y: f32| BoxShadow {
+            color: hsla_from_rgb(red, green, blue, alpha),
+            offset: point(px(x), px(y)),
+            blur_radius: px(16.),
+            spread_radius: px(0.),
+            inset: false,
+        };
+        div()
+            .id(id)
+            .h(px(40.))
+            .px(px(15.))
+            .rounded(px(8.))
+            .bg(gpui::white())
+            .shadow(vec![
+                glow(0.30, 0.55, 1.0, 0.55, -6., -3.),
+                glow(0.62, 0.35, 0.90, 0.55, 8., -3.),
+                glow(0.20, 0.80, 0.70, 0.45, -8., 5.),
+                glow(0.85, 0.35, 0.80, 0.40, 8., 5.),
+            ])
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .font_weight(FontWeight(500.))
+            .text_color(gpui::black())
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
+            .child(mask_icon("nitro_wheel", 20., "--black"))
+            .child("Unlock with Nitro")
+            .into_any_element()
+    }
+
+    /// The App Icon header's buttons (`useHeaderDecoration`): Preview Icon, then Unlock with Nitro.
+    pub(super) fn app_icon_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .gap(px(12.))
+            .child(
+                div()
+                    .id("icon-preview-click")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
+                    .child(button(
+                        "icon-preview",
+                        "Preview Icon",
+                        super::ButtonKind::Secondary,
+                    )),
+            )
+            .child(self.unlock_with_nitro("icon-unlock", cx))
+            .into_any_element()
+    }
+
+    /// `appIconSelection_jWcVMn`: the in-app icons, 48px, 8px apart. A free account sees them locked: the chosen
+    /// one (Blurple) wears the brand ring and the check, the rest take no clicks.
+    pub(super) fn app_icon_grid(&self) -> AnyElement {
+        let tiles: Vec<AnyElement> = APP_ICONS
+            .iter()
+            .enumerate()
+            .map(|(index, (name, _))| {
+                let selected = index == 0;
+                let picture = self.images.get(&app_icon_key(index)).cloned();
+                div()
+                    .id(SharedString::from(format!("app-icon-{name}")))
+                    .relative()
+                    .flex_none()
+                    .size(px(48.))
+                    .rounded(px(8.))
+                    .children(picture.map(|image| img(image).size(px(48.)).rounded(px(8.))))
+                    .when(selected, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(-2.))
+                                .left(px(-2.))
+                                .size(px(52.))
+                                .rounded(px(10.))
+                                .border_2()
+                                .border_color(color("--background-brand")),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(-8.))
+                                .left(px(32.))
+                                .size(px(24.))
+                                .child(div().absolute().child(mask_icon(
+                                    "theme_check_disc",
+                                    24.,
+                                    "--white",
+                                )))
+                                .child(div().absolute().child(mask_icon(
+                                    "theme_check",
+                                    24.,
+                                    "--background-brand",
+                                ))),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .children(tiles)
             .into_any_element()
     }
 
@@ -351,28 +567,19 @@ impl Root {
                                 div()
                                     .flex()
                                     .gap(px(12.))
-                                    .child(button(
-                                        "theme-preview",
-                                        "Preview Theme",
-                                        super::ButtonKind::Secondary,
-                                    ))
-                                    // `expressive_F7qvhY`: white, black text, the Nitro mark before it.
                                     .child(
                                         div()
-                                            .h(px(40.))
-                                            .px(px(15.))
-                                            .rounded(px(8.))
-                                            .bg(gpui::white())
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .text_size(px(16.))
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(gpui::black())
-                                            .child(mask_icon("nitro_wheel", 20., "--black"))
-                                            .child("Unlock with Nitro"),
-                                    ),
+                                            .id("theme-preview-click")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.pick_client_theme("Mint Apple", cx)
+                                            }))
+                                            .child(button(
+                                                "theme-preview",
+                                                "Preview Theme",
+                                                super::ButtonKind::Secondary,
+                                            )),
+                                    )
+                                    .child(self.unlock_with_nitro("theme-unlock", cx)),
                             ),
                     )
                     .child(
@@ -386,4 +593,17 @@ impl Root {
             )
             .into_any_element()
     }
+}
+
+/// The key of "Same as Device Theme" (`ThemeStore.syncedThemesEnabled`).
+pub(super) const SAME_AS_DEVICE: &str = "appearance_same_as_device_theme";
+
+fn hsla_from_rgb(red: f32, green: f32, blue: f32, alpha: f32) -> gpui::Hsla {
+    gpui::Rgba {
+        r: red,
+        g: green,
+        b: blue,
+        a: alpha,
+    }
+    .into()
 }

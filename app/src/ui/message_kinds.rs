@@ -540,6 +540,54 @@ impl Root {
                     );
                 }
             }
+            "emoji" => {
+                // Animated custom emoji in text. The picture comes from the file named by
+                // `GRAVECORD_DEMO_EMOJI_FILE` (an animated WebP) instead of the network.
+                push(
+                    0,
+                    "an animated emoji <a:demo:999000000000000001> in a line",
+                    json!({}),
+                );
+                if let Some(bytes) = std::env::var_os("GRAVECORD_DEMO_EMOJI_FILE")
+                    .and_then(|path| std::fs::read(path).ok())
+                {
+                    self.images.insert(
+                        "custom-animated:999000000000000001".to_owned(),
+                        std::sync::Arc::new(gpui::Image::from_bytes(
+                            gpui::ImageFormat::Webp,
+                            bytes,
+                        )),
+                    );
+                    self.requested
+                        .insert("custom-animated:999000000000000001".to_owned());
+                }
+            }
+            "avatar" => {
+                // Two messages from a user whose avatar hash is animated (`a_`) and one from a user whose is not. The
+                // picture of the first comes from the file named by `GRAVECORD_DEMO_AVATAR_FILE` (an animated WebP)
+                // instead of the network, under the keys of the files drawn at 64 and 128 pixels.
+                let animated = json!({"id": "777", "username": "mover", "avatar": "a_demo"});
+                push(0, "my avatar plays on hover", json!({"author": animated}));
+                push(0, "and again", json!({"author": animated}));
+                if let Some(bytes) = std::env::var_os("GRAVECORD_DEMO_AVATAR_FILE")
+                    .and_then(|path| std::fs::read(path).ok())
+                {
+                    let image = std::sync::Arc::new(gpui::Image::from_bytes(
+                        gpui::ImageFormat::Webp,
+                        bytes,
+                    ));
+                    self.images
+                        .insert("avatar:777:a_demo".to_owned(), image.clone());
+                    self.requested.insert("avatar:777:a_demo".to_owned());
+                    for side in [64, 128] {
+                        let key = format!(
+                            "avatar-live:https://cdn.discordapp.com/avatars/777/a_demo:{side}"
+                        );
+                        self.images.insert(key.clone(), image.clone());
+                        self.requested.insert(key);
+                    }
+                }
+            }
             other => return format!("messages: no demo set {other}"),
         }
         let list = self.stores.messages.entry(channel).or_default();

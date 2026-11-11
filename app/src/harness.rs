@@ -21,9 +21,11 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod crawl;
 mod grab;
 mod hitch;
 mod native;
+mod ticks;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
 
@@ -37,10 +39,16 @@ fn dispatch(cx: &mut App, window: AnyWindowHandle, event: PlatformInput) {
     });
 }
 
+/// The primary button is down after `hold` and until `release`: moves in between carry it, as the system's do.
+static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn moved(position: Point<gpui::Pixels>, pressed: Option<MouseButton>) -> PlatformInput {
+    let held = HELD
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then_some(MouseButton::Left);
     PlatformInput::MouseMove(MouseMoveEvent {
         position,
-        pressed_button: pressed,
+        pressed_button: pressed.or(held),
         modifiers: Modifiers::default(),
     })
 }
@@ -122,6 +130,10 @@ pub async fn run(
     {
         let words: Vec<&str> = step.split_whitespace().collect();
         match words.as_slice() {
+            ["crawl", rest @ ..] => {
+                let report = crawl::run(rest, window, &root, cx).await;
+                output.push_str(&report);
+            }
             ["wait", ms] => {
                 let ms = ms.parse().unwrap_or(0);
                 cx.background_executor()
@@ -319,6 +331,28 @@ pub async fn run(
                     cx.background_executor()
                         .timer(Duration::from_millis(150))
                         .await;
+                    cx.update(|cx| dispatch(cx, window, up(position)));
+                }
+            }
+            // The primary button goes down and stays down, so a frame can show the `:active` look; `release` lets go.
+            ["hold", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, down(position));
+                    });
+                    HELD.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            // A move with the primary button held, after `hold`: what a drag sends between press and release.
+            ["dragto", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| dispatch(cx, window, moved(position, Some(MouseButton::Left))));
+                }
+            }
+            ["release", x, y] => {
+                HELD.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some(position) = at(x, y) {
                     cx.update(|cx| dispatch(cx, window, up(position)));
                 }
             }
@@ -577,6 +611,36 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // Capture only: `layers` logs the popouts and menus that are open, bottom to top (`ui/keyboard/layers.rs`).
+            // Capture only: `inert` logs what inert mode refused or skipped (a link that would open the browser, ...).
+            ["inert"] => {
+                let lines = crate::inert::lines_since(0);
+                let _ = writeln!(
+                    output,
+                    "inert: {} ({})",
+                    if crate::inert::on() { "on" } else { "off" },
+                    lines.join(" | ")
+                );
+            }
+            ["layers"] => {
+                let line = root.update(cx, |root, _| root.layers_report());
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `content demo <set>` puts messages with clickable content into the open channel (memory only).
+            ["content", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_content(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `jump <message id>`, `jump reply` (the first reply whose original is not loaded),
+            // `jump present`, `jump state` (see `ui/jump.rs`).
+            ["jump", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_jump(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
             ["stickerpopout", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_sticker_popout(rest, cx));
                 let _ = writeln!(output, "{line}");
@@ -627,6 +691,11 @@ pub async fn run(
                     crate::perf::thread_cpu_ms(),
                     crate::perf::threads(),
                 );
+            }
+            // `perf ticks <ms> <label>`: what the window does by itself for `ms` (see `ticks.rs`).
+            ["perf", "ticks", ms, label @ ..] => {
+                let line = ticks::run(ms.parse().unwrap_or(5000), &label.join(" "), cx).await;
+                let _ = writeln!(output, "{line}");
             }
             ["perf", "start"] => {
                 let _ = writeln!(
@@ -917,6 +986,38 @@ pub async fn run(
                         })
                     });
                 }
+            }
+            ["gif", "dump", dir] => {
+                let dir = std::path::PathBuf::from(*dir);
+                let _ = std::fs::create_dir_all(&dir);
+                let count = root.read_with(cx, |root, _| root.gif_dump(&dir));
+                let _ = writeln!(output, "gif dump: {count} files");
+            }
+            // `avatar state`: the cached users whose avatar is animated (`a_`), as user id and guild-or-global.
+            ["avatar", "state"] => {
+                let report = root.read_with(cx, |root, _| root.avatar_report());
+                let _ = writeln!(output, "avatar state: {report}");
+            }
+            ["avatar", "member", name] => {
+                let found = root.update(cx, |root, cx| {
+                    let found = root.avatar_member(name);
+                    cx.notify();
+                    found
+                });
+                let _ = writeln!(output, "avatar member {name}: {found:?}");
+            }
+            ["avatar", "goto", nth] => {
+                let nth: usize = nth.parse().unwrap_or(0);
+                let row = root.update(cx, |root, cx| {
+                    let row = root.avatar_goto(nth);
+                    cx.notify();
+                    row
+                });
+                let _ = writeln!(output, "avatar goto {nth}: row={row:?}");
+            }
+            ["gif", "state"] => {
+                let report = root.read_with(cx, |root, _| root.gif_report());
+                let _ = writeln!(output, "gif state: {report}");
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

@@ -16,6 +16,7 @@ pub mod local_activity;
 pub mod member_list;
 pub mod members;
 pub mod message_kinds;
+pub mod message_window;
 pub mod notifications;
 pub mod permissions;
 pub mod premium;
@@ -252,7 +253,7 @@ impl Channel {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Guild {
     pub id: Id,
     pub name: String,
@@ -269,6 +270,8 @@ pub struct Guild {
     pub role_permissions: HashMap<Id, u64>,
     /// What a role's mention and list order read: position, colour and whether anyone may mention it.
     pub role_info: HashMap<Id, RoleInfo>,
+    /// Roles that carry an icon or an emoji (`icon`, `unicode_emoji`), which the message header draws beside the name.
+    pub role_icons: HashMap<Id, RoleIcon>,
     /// The current user's roles here (READY `merged_members`, then GUILD_MEMBER_UPDATE).
     pub my_roles: Vec<Id>,
     /// The current user has not passed the rules screening yet (`pending` on their member).
@@ -422,6 +425,44 @@ impl GuildEmoji {
     }
 }
 
+/// A role's picture: the uploaded icon's hash or a unicode emoji (module 549587's `roleIconProps`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleIcon {
+    pub icon: Option<String>,
+    pub unicode_emoji: Option<String>,
+    /// The role belongs to a server subscription listing (`tags.subscription_listing_id`): its icon shows even
+    /// without the server feature `ROLE_ICONS` (module 376304 `fm`).
+    pub subscription: bool,
+}
+
+impl RoleIcon {
+    fn from_value(role: &Value) -> Option<Self> {
+        let icon = text(&role["icon"]).filter(|hash| !hash.is_empty());
+        let unicode_emoji = text(&role["unicode_emoji"]).filter(|emoji| !emoji.is_empty());
+        (icon.is_some() || unicode_emoji.is_some()).then_some(Self {
+            icon,
+            unicode_emoji,
+            subscription: role["tags"].get("subscription_listing_id").is_some(),
+        })
+    }
+
+    fn list(roles: &Value) -> HashMap<Id, Self> {
+        roles
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| Some((id(&role["id"])?, Self::from_value(role)?)))
+            .collect()
+    }
+
+    /// `roles/{id}/{icon}.webp?size=` on the CDN (`getRoleIconData`).
+    pub fn icon_url(&self, role: Id, size: u32) -> Option<String> {
+        self.icon.as_ref().map(|hash| {
+            format!("https://cdn.discordapp.com/role-icons/{role}/{hash}.webp?size={size}&quality=lossless")
+        })
+    }
+}
+
 /// The parts of a role the composer's mention list and the member list read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RoleInfo {
@@ -511,6 +552,7 @@ impl Guild {
                 })
                 .collect(),
             role_info: RoleInfo::list(&value["roles"]),
+            role_icons: RoleIcon::list(&value["roles"]),
             my_roles: Vec::new(),
             my_pending: false,
             my_flags: 0,
@@ -583,6 +625,7 @@ impl Guild {
                 })
                 .collect();
             self.role_info = RoleInfo::list(&value["roles"]);
+            self.role_icons = RoleIcon::list(&value["roles"]);
         }
         if value["emojis"].is_array() {
             self.emojis = GuildEmoji::list(&value["emojis"]);
@@ -922,6 +965,9 @@ pub struct Message {
     pub mentions: usize,
     pub mention_roles: usize,
     pub mention_everyone: bool,
+    /// The ids in `mentions` and `mention_roles`, for the "mentions me" rule of the message row.
+    pub mention_user_ids: Vec<Id>,
+    pub mention_role_ids: Vec<Id>,
     pub blocked: bool,
     pub ignored: bool,
     /// A forwarded message's copy (`message_snapshots[0].message`) and where it came from.
@@ -990,6 +1036,25 @@ impl Forwarded {
 }
 
 impl Message {
+    /// Module 451919 `s`: `@everyone` or `@here` unless suppressed, or the account among the mentioned users, or (with
+    /// roles not suppressed) one of the account's roles among the mentioned roles.
+    pub fn mentions_me(
+        &self,
+        me: Id,
+        my_roles: &[Id],
+        suppress_everyone: bool,
+        suppress_roles: bool,
+    ) -> bool {
+        if (self.mention_everyone && !suppress_everyone) || self.mention_user_ids.contains(&me) {
+            return true;
+        }
+        !suppress_roles
+            && self
+                .mention_role_ids
+                .iter()
+                .any(|role| my_roles.contains(role))
+    }
+
     /// The content is only the link its inline media embed shows, so the text is not drawn.
     pub fn content_is_inline_media(&self) -> bool {
         let content = self.content.trim();
@@ -1038,6 +1103,18 @@ impl Message {
             mentions: value["mentions"].as_array().map_or(0, Vec::len),
             mention_roles: value["mention_roles"].as_array().map_or(0, Vec::len),
             mention_everyone: value["mention_everyone"].as_bool().unwrap_or(false),
+            mention_user_ids: value["mentions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|user| id(&user["id"]))
+                .collect(),
+            mention_role_ids: value["mention_roles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(id)
+                .collect(),
             blocked: false,
             ignored: false,
             forwarded: Forwarded::from_value(value).map(Box::new),
@@ -1295,12 +1372,18 @@ pub struct Stores {
     /// Client preferences kept in the account's proto settings (`settings::PROTO_PREFS`), by row key: the varint as
     /// stored. A key that is absent was never set, and the preference keeps its default.
     pub prefs: HashMap<&'static str, u64>,
+    /// `ConsentStore` (module 153488): what the account agreed to, by consent name (`usage_statistics`,
+    /// `personalization`), from READY's `consents` and `GET /users/@me/consent`.
+    pub consents: HashMap<String, bool>,
     /// The account's proto settings as the server last gave them, for a change to be built on.
     settings_raw: Vec<u8>,
     /// READY carried the account's settings, so `settings_raw` is the whole of them and a write may be built from it.
     settings_loaded: bool,
     pub guilds: Vec<Guild>,
     pub messages: HashMap<Id, Vec<Message>>,
+    /// What `ChannelMessages` keeps beside each channel's loaded messages: `hasMoreBefore`, `hasMoreAfter`, the jump
+    /// state and the caches (`message_window`).
+    pub windows: HashMap<Id, message_window::ChannelWindow>,
     pub read_states: read_state::ReadStates,
     /// Bookmarks and reminders (`SavedMessagesStore`): (channel, message) to the reminder's `due_at`, `None` for a
     /// plain bookmark.
@@ -1323,6 +1406,11 @@ pub struct Stores {
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
         if name == "READY" {
+            // `CONNECTION_OPEN` (module 596344 `H`): every window is stale until it is loaded again.
+            for window in self.windows.values_mut() {
+                window.ready = false;
+                window.loading_more = false;
+            }
             self.presence.set_current_user(id(&data["user"]["id"]));
         }
         self.presence.dispatch(name, data);
@@ -1478,6 +1566,10 @@ impl Stores {
                     guild
                         .role_info
                         .insert(role, RoleInfo::from_value(&data["role"]));
+                    match RoleIcon::from_value(&data["role"]) {
+                        Some(icon) => guild.role_icons.insert(role, icon),
+                        None => guild.role_icons.remove(&role),
+                    };
                 }
             }
             "GUILD_ROLE_DELETE" => {
@@ -1489,6 +1581,7 @@ impl Stores {
                     guild.roles.remove(&role);
                     guild.role_permissions.remove(&role);
                     guild.role_info.remove(&role);
+                    guild.role_icons.remove(&role);
                     guild.my_roles.retain(|known| *known != role);
                 }
             }
@@ -1549,7 +1642,7 @@ impl Stores {
                     if let Some(list) = self.typing.get_mut(&message.channel_id) {
                         list.retain(|(user, _)| *user != message.author.id);
                     }
-                    self.insert_message(message);
+                    self.receive_message(message);
                 }
             }
             "THREAD_CREATE" | "THREAD_UPDATE" => {
@@ -1764,7 +1857,10 @@ impl Stores {
                 if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
                     && let Some(list) = self.messages.get_mut(&channel)
                 {
-                    list.retain(|known| known.id != message);
+                    self.windows
+                        .entry(channel)
+                        .or_default()
+                        .remove(list, message);
                 }
             }
             _ => {}
@@ -1979,6 +2075,39 @@ impl Stores {
         patch
     }
 
+    /// Takes the consents object (`{"usage_statistics": {"consented": true}, ...}`): the names it lists replace the
+    /// store's, as `UPDATE_CONSENTS` does. Anything else is ignored.
+    pub fn set_consents(&mut self, consents: &Value) {
+        let Some(map) = consents.as_object() else {
+            return;
+        };
+        self.consents = map
+            .iter()
+            .map(|(name, value)| (name.clone(), value["consented"].as_bool().unwrap_or(false)))
+            .collect();
+    }
+
+    /// A guild list of the account's privacy settings (`DM_RESTRICTED_GUILDS` and friends).
+    pub fn proto_ids(&self, list: &settings::IdList) -> Vec<u64> {
+        settings::ids_in(&self.settings_raw, list)
+    }
+
+    /// Replaces a guild list; the PATCH body value comes back, empty until the account's settings have arrived.
+    pub fn set_proto_ids(&mut self, list: &settings::IdList, ids: &[u64]) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_ids(&self.settings_raw, list, ids);
+        self.settings_raw = updated;
+        patch
+    }
+
+    /// The varint at `field` of the settings message at `path`, for values that are not a page row (the friend
+    /// request flags).
+    pub fn proto_varint(&self, path: &[u64], field: u64) -> Option<u64> {
+        settings::varint_in(&self.settings_raw, path, field)
+    }
+
     pub fn content_dismissed(&self, content: u16) -> bool {
         settings::content_dismissed(&self.settings_raw, content)
     }
@@ -2033,7 +2162,7 @@ impl Stores {
     /// reset it); a partial one carries only what changed.
     fn read_prefs(&mut self, proto: &str, partial: bool) {
         for pref in settings::PROTO_PREFS {
-            match settings::varint_at(proto, pref.path, pref.field) {
+            match settings::pref_value(proto, pref) {
                 Some(value) => {
                     self.prefs.insert(pref.key, value);
                 }
@@ -2067,6 +2196,7 @@ impl Stores {
         self.prefs.clear();
         self.settings_raw.clear();
         self.settings_loaded = false;
+        self.set_consents(&data["consents"]);
         if let Some(proto) = data["user_settings_proto"].as_str() {
             self.settings_raw = settings::decode(proto);
             self.settings_loaded = true;
@@ -2411,8 +2541,78 @@ impl Stores {
         }
     }
 
-    /// `GET /channels/:id/messages` returns newest first.
+    /// `MESSAGE_CREATE` (module 596344): a message goes through `receiveMessage`, so a window that is detached from
+    /// the newest message does not take it.
+    pub fn receive_message(&mut self, message: Message) {
+        let channel = message.channel_id;
+        let list = self.messages.entry(channel).or_default();
+        let window = self.windows.entry(channel).or_default();
+        window.receive_message(list, message);
+    }
+
+    /// The window state of `channel` (`ChannelMessages`), as it is now.
+    pub fn window(&self, channel: Id) -> message_window::ChannelWindow {
+        self.windows.get(&channel).cloned().unwrap_or_default()
+    }
+
+    /// The first page of a channel: `fetchMessages` with no `before`, `after` or `around`, which replaces the window.
     pub fn load_messages(&mut self, channel: Id, page: &Value) {
+        self.load_messages_since(channel, page, 0);
+    }
+
+    /// [`Stores::load_messages`] for a request that started at `started_ms` (Unix milliseconds): messages that
+    /// arrived since stay.
+    pub fn load_messages_since(&mut self, channel: Id, page: &Value, started_ms: u64) {
+        let spec = message_window::FetchSpec {
+            channel,
+            limit: message_window::INITIAL_PAGE,
+            jump: Some(message_window::Jump::default()),
+            started_ms,
+            ..message_window::FetchSpec::default()
+        };
+        self.messages_loaded(&spec, page);
+    }
+
+    /// `fetchMessages` before the request: the shortcuts of `_tryFetchMessagesCached` (a jump to a message the
+    /// window covers, a page or the present the caches hold), else `loadStart`. Returns whether the request has to
+    /// go to the server.
+    pub fn fetch_messages(&mut self, spec: &message_window::FetchSpec) -> bool {
+        use message_window::JumpPlan;
+        let channel = spec.channel;
+        let list = self.messages.entry(channel).or_default();
+        let window = self.windows.entry(channel).or_default();
+        let target = spec.jump.as_ref().and_then(|jump| jump.message_id);
+        let present = spec.jump.as_ref().is_some_and(|jump| jump.present);
+        if window.ready {
+            if let (Some(target), Some(jump)) = (target, spec.jump.as_ref()) {
+                if window.jump_plan(list, target) == JumpPlan::InWindow {
+                    window.jump_to_message(jump);
+                    return false;
+                }
+            } else if present && window.has_present() {
+                window.jump_to_present(list, spec.limit as usize);
+                return false;
+            } else if let Some(before) = spec.before
+                && !window.before_cache().is_empty()
+                && list.first().is_some_and(|first| first.id == before)
+            {
+                window.load_from_cache(list, true, spec.limit as usize);
+                return false;
+            } else if let Some(after) = spec.after
+                && !window.after_cache().is_empty()
+                && list.last().is_some_and(|last| last.id == after)
+            {
+                window.load_from_cache(list, false, spec.limit as usize);
+                return false;
+            }
+        }
+        window.load_start(spec.jump.as_ref());
+        true
+    }
+
+    /// `LOAD_MESSAGES_SUCCESS`: the page is newest first, as the route returns it.
+    pub fn messages_loaded(&mut self, spec: &message_window::FetchSpec, page: &Value) {
+        let channel = spec.channel;
         let guild = self
             .guilds
             .iter()
@@ -2421,6 +2621,7 @@ impl Stores {
                     || guild.threads.iter().any(|known| known.id == channel)
             })
             .map(|guild| guild.id);
+        let mut fetched = Vec::new();
         for value in page.as_array().into_iter().flatten() {
             let Some(mut message) = Message::from_value(value) else {
                 continue;
@@ -2432,8 +2633,39 @@ impl Stores {
                     .apply_member(guild, &value["member"], Some(&value["author"]));
             }
             message.channel_id = channel;
-            self.insert_message(message);
+            fetched.push(message);
         }
+        let ids: Vec<Id> = fetched.iter().map(|message| message.id).collect();
+        let (more_before, more_after) = message_window::has_more(spec, &ids);
+        let loaded = message_window::Loaded {
+            is_before: spec.is_before(),
+            is_after: spec.is_after(),
+            before: spec.before,
+            after: spec.after,
+            limit: Some(spec.limit as usize),
+            jump: spec.jump.clone(),
+            has_more_before: more_before,
+            has_more_after: more_after,
+            avoid_initial_scroll: false,
+            request_start_ms: (spec.started_ms > 0).then_some(spec.started_ms),
+        };
+        let list = self.messages.entry(channel).or_default();
+        let window = self.windows.entry(channel).or_default();
+        window.load_complete(list, fetched, &loaded);
+        if spec.truncate && spec.is_before() != spec.is_after() {
+            window.truncate(list, spec.is_before(), spec.is_after());
+        }
+    }
+
+    /// `LOAD_MESSAGES_FAILURE`.
+    pub fn messages_failed(&mut self, channel: Id) {
+        self.windows.entry(channel).or_default().load_failed();
+    }
+
+    /// `CLEAR_MESSAGES` (`clearChannel`): the window is forgotten.
+    pub fn clear_messages(&mut self, channel: Id) {
+        self.messages.remove(&channel);
+        self.windows.remove(&channel);
     }
 
     pub fn guild(&self, guild: Id) -> Option<&Guild> {
@@ -2443,6 +2675,34 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    /// Module 451919: users, `@everyone`/`@here` and roles, with the two suppress settings.
+    #[test]
+    fn mentions_me_follows_the_official_rule() {
+        let message = |extra: serde_json::Value| {
+            let mut value = serde_json::json!({
+                "id":"1","channel_id":"2","content":"x","timestamp":"2026-11-07T12:00:00Z",
+                "author":{"id":"9","username":"other"},"mentions":[],"mention_roles":[],"mention_everyone":false
+            });
+            for (key, field) in extra.as_object().unwrap() {
+                value[key] = field.clone();
+            }
+            super::Message::from_value(&value).unwrap()
+        };
+        let me = 5;
+        let roles = [70, 71];
+        let user = message(serde_json::json!({"mentions":[{"id":"5","username":"me"}]}));
+        assert!(user.mentions_me(me, &roles, true, true));
+        let other = message(serde_json::json!({"mentions":[{"id":"6","username":"you"}]}));
+        assert!(!other.mentions_me(me, &roles, false, false));
+        let everyone = message(serde_json::json!({"mention_everyone":true}));
+        assert!(everyone.mentions_me(me, &roles, false, false));
+        assert!(!everyone.mentions_me(me, &roles, true, false));
+        let role = message(serde_json::json!({"mention_roles":["71"]}));
+        assert!(role.mentions_me(me, &roles, false, false));
+        assert!(!role.mentions_me(me, &roles, false, true));
+        assert!(!role.mentions_me(me, &[], false, false));
+    }
+
     #[test]
     fn guide_metadata_and_member_flags_preserve_partial_updates() {
         let mut guild = super::Guild::from_value(&serde_json::json!({
@@ -2675,6 +2935,7 @@ mod tests {
             roles: HashMap::new(),
             role_permissions: HashMap::new(),
             role_info: HashMap::new(),
+            role_icons: HashMap::new(),
             my_roles: Vec::new(),
             my_pending: false,
             my_flags: 0,
@@ -3068,6 +3329,44 @@ mod tests {
         let list = &stores.messages[&23];
         assert_eq!(list.iter().map(|m| m.id).collect::<Vec<_>>(), [3, 5]);
         assert_eq!(list[1].content, "edited");
+    }
+
+    #[test]
+    fn a_detached_window_ignores_gateway_messages_and_around_pages_replace_it() {
+        use message_window::{FetchSpec, Jump};
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("900", "newest"));
+        let spec = FetchSpec {
+            channel: 23,
+            limit: 30,
+            jump: Some(Jump::to_message(115, true, None)),
+            ..FetchSpec::default()
+        };
+        assert!(
+            stores.fetch_messages(&spec),
+            "a message that is not loaded needs a fetch"
+        );
+        let page: Vec<Value> = (100..130u64)
+            .rev()
+            .map(|id| message(&id.to_string(), "old"))
+            .collect();
+        stores.messages_loaded(&spec, &Value::Array(page));
+        let window = stores.window(23);
+        assert!(window.has_more_before && window.has_more_after);
+        assert_eq!(window.jump_target_id, Some(115));
+        assert_eq!(stores.messages[&23].len(), 30);
+        // A message that arrives now only counts as unread: the window does not take it.
+        stores.dispatch("MESSAGE_CREATE", &message("950", "new"));
+        assert_eq!(stores.messages[&23].last().map(|m| m.id), Some(129));
+        // A jump to a message the window holds needs no fetch.
+        let inside = FetchSpec {
+            channel: 23,
+            limit: 30,
+            jump: Some(Jump::to_message(120, true, None)),
+            ..FetchSpec::default()
+        };
+        assert!(!stores.fetch_messages(&inside));
+        assert_eq!(stores.window(23).jump_target_id, Some(120));
     }
 
     #[test]

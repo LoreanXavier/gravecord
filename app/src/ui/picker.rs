@@ -883,7 +883,19 @@ impl Root {
                             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                                 this.choose_emoji(chosen.clone(), event.modifiers().shift, cx);
                             }))
-                            .children(picture.map(|picture| img(picture).size(px(40.))))
+                            .children(picture.map(|picture| {
+                                let art = img(picture).size(px(40.));
+                                // An animated emoji plays under the pointer only (module 565645: hover or
+                                // interaction); the renderer advances the frames of an identified image.
+                                if selected {
+                                    art.id(SharedString::from(format!(
+                                        "picker-art-{index}-{offset}"
+                                    )))
+                                    .into_any_element()
+                                } else {
+                                    art.into_any_element()
+                                }
+                            }))
                     }))
                     .into_any_element()
             }
@@ -1056,11 +1068,9 @@ impl Root {
                         self.images.get(&item.image_key(self.skin_tone)).cloned()
                     }
                 };
-                this.child(
-                    div()
-                        .size(px(28.))
-                        .children(picture.map(|picture| img(picture).size(px(28.)))),
-                )
+                this.child(div().size(px(28.)).children(
+                    picture.map(|picture| img(picture).id("picker-inspector-art").size(px(28.))),
+                ))
                 .child(
                     div()
                         .ml(px(8.))
@@ -1490,7 +1500,7 @@ impl Root {
                         this.child(div().px(px(16.)).flex().gap(px(8.)).children(tabs))
                     })
                     .child(match current {
-                        Tab::Gifs => self.gif_panel(cx),
+                        Tab::Gifs => self.gif_panel(window, cx),
                         Tab::Stickers => self.sticker_panel(window, cx),
                         Tab::Emoji => panel.into_any_element(),
                     }),

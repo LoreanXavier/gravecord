@@ -200,7 +200,7 @@ fn hitch_scripts() -> Vec<(&'static str, String)> {
 
 /// One sticker playing in the fixture's channel: the cost of a frame redrawn back to back and where it went.
 fn anim_script() -> String {
-    "perf start; wait 3000; perf sample anim0; frames animate 4000 one_sticker; perf sample anim1; wait 12000; perf sample idle0; wait 20000; perf sample idle1; "
+    "perf start; wait 3000; perf sample anim0; perf ticks 12000 a_one_sticker; click 1202 683; wait 3500; perf ticks 12000 b_gif_trending; key escape; wait 1500; perf ticks 6000 c_idle; perf sample anim1; "
         .to_owned()
 }
 

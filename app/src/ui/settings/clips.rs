@@ -9,7 +9,7 @@
 //! `alt+c`, module 532624), kept under its own key. Capture runs start from the defaults, so a frame never depends on
 //! what an earlier run saved.
 
-mod engine;
+pub(in crate::ui) mod engine;
 
 use super::model::{ButtonKind, Choice, Runs};
 use super::render::{self, PANEL};
@@ -535,10 +535,15 @@ pub(in crate::ui) struct ClipsState {
     /// The folder dialog is open.
     picking: bool,
     /// The capture engine's side: the clips known, the save counter, the keybind hook (`engine.rs`).
-    engine: engine::Engine,
+    pub(in crate::ui) engine: engine::Engine,
 }
 
 impl ClipsState {
+    /// `canShowReminders()`: the Reminders switch.
+    pub(in crate::ui) fn reminders_enabled(&self) -> bool {
+        self.store.settings.reminders_enabled
+    }
+
     /// At start: the stored settings, with the default location resolved as the store does.
     pub(in crate::ui) fn restore() -> Self {
         let (mut store, keybind) = if storage::is_capture_run() {
@@ -1785,6 +1790,65 @@ impl Root {
                     engine::SaveStart::NoOp(reason) => format!("no-op {}", reason.code()),
                 };
                 format!("save {outcome}")
+            }
+            // Gives the clip path a visible game without the scan (which would also send presence): the harness
+            // window of a stand-in process, or none.
+            #[cfg(windows)]
+            ["game", "off"] => {
+                self.clips.engine.test_game = true;
+                self.clips_game_changed(None, cx);
+                "game off".to_owned()
+            }
+            // A test game without a window: the pattern source stands in for the capture.
+            #[cfg(windows)]
+            ["game", "test", name @ ..] => {
+                self.clips.engine.test_game = true;
+                let game = crate::clips_capture::Game {
+                    pid: 0,
+                    window: crate::clips_capture::TEST_WINDOW,
+                    name: name.join(" "),
+                    application_id: None,
+                };
+                self.clips_game_changed(Some(game), cx);
+                "game test".to_owned()
+            }
+            #[cfg(windows)]
+            ["game", pid, name @ ..] => {
+                let Ok(pid) = pid.parse::<u32>() else {
+                    return format!("bad pid {pid}");
+                };
+                let Some(window) = dc_detect::main_window(pid) else {
+                    return format!("pid {pid} has no main window");
+                };
+                self.clips.engine.test_game = true;
+                let game = crate::clips_capture::Game {
+                    pid,
+                    window,
+                    name: name.join(" "),
+                    application_id: None,
+                };
+                self.clips_game_changed(Some(game), cx);
+                format!("game {pid} window {window:#x}")
+            }
+            // The page's controls by their setters, for what the page's scroll cannot reach in a capture run:
+            // `clips set length|rate|resolution <index into the select's options>` and `clips set percent <1-100>`.
+            ["set", what, value] => {
+                let Ok(number) = value.parse::<usize>() else {
+                    return format!("bad value {value}");
+                };
+                match *what {
+                    "length" => self.clips_choose(ClipSelect::Length, number),
+                    "rate" => self.clips_choose(ClipSelect::FrameRate, number),
+                    "resolution" => self.clips_choose(ClipSelect::Resolution, number),
+                    "percent" => self.clips_set_percent(
+                        number.clamp(QUALITY_MIN as usize, QUALITY_MAX as usize) as u8,
+                    ),
+                    _ => return format!("unknown setting {what}"),
+                }
+                self.clips.save();
+                self.clips_sync_engine();
+                cx.notify();
+                format!("{what} = {value}")
             }
             ["status"] => self.clips_status_line(),
             ["list"] => self.clips_list_line(),

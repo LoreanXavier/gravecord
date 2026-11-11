@@ -181,11 +181,57 @@ pub struct ProtoPref {
     pub key: &'static str,
     pub path: &'static [u64],
     pub field: u64,
+    /// A `StringValue` preference (`render_spoilers`): the strings the account holds, in the order the page's options
+    /// list them; the value of the preference is the index. Empty for a varint preference.
+    pub strings: &'static [&'static str],
+    /// The page's switch is the opposite of the stored boolean: "Use my Discord activity to personalize Sponsored
+    /// Content" is on while `drops_opted_out` is off (`CO`/`CL` in module 158935).
+    pub invert: bool,
 }
 
 const fn pref(key: &'static str, path: &'static [u64], field: u64) -> ProtoPref {
-    ProtoPref { key, path, field }
+    ProtoPref {
+        key,
+        path,
+        field,
+        strings: &[],
+        invert: false,
+    }
 }
+
+/// A preference whose switch shows the opposite of the stored boolean.
+const fn inverted(key: &'static str, path: &'static [u64], field: u64) -> ProtoPref {
+    ProtoPref {
+        key,
+        path,
+        field,
+        strings: &[],
+        invert: true,
+    }
+}
+
+const fn string_pref(
+    key: &'static str,
+    path: &'static [u64],
+    field: u64,
+    strings: &'static [&'static str],
+) -> ProtoPref {
+    ProtoPref {
+        key,
+        path,
+        field,
+        strings,
+        invert: false,
+    }
+}
+
+/// The locale codes of the language select, in its order (module 296437, the `enabled` entries): the strings
+/// `localization.locale` holds.
+pub const LOCALES: &[&str] = &[
+    "en-US", "en-GB", "zh-CN", "zh-TW", "cs", "da", "nl", "fr", "de", "el", "hu", "it", "ja", "ko",
+    "no", "hr", "pl", "pt-BR", "ru", "es-ES", "es-419", "sv-SE", "tr", "bg", "uk", "fi", "ro",
+    "lt", "th", "vi", "hi",
+];
 
 /// `text_and_images` is message 6 and `appearance` 13 of `PreloadedUserSettings`.
 pub const PROTO_PREFS: &[ProtoPref] = &[
@@ -208,6 +254,18 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("chat_emoji_convert_emoticons", &[6, 21], 1),
     pref("enable_legacy_chat_input", &[6, 24], 1),
     pref("chat_stickers_autocomplete", &[6, 28], 1),
+    // render_spoilers 4 (`StringValue`: module 652215 `ALWAYS`, `ON_CLICK`, `IF_MODERATOR`; the page lists On click,
+    // Always, On servers I moderate), is_cross_dm_search_enabled 36, include_game_mentions_in_autocomplete 39,
+    // display_compact_avatars 41.
+    string_pref(
+        "chat_spoilers_show_spoilers",
+        &[6, 4],
+        1,
+        &["ON_CLICK", "ALWAYS", "IF_MODERATOR"],
+    ),
+    pref("message_search_default_dm_search_behavior", &[6, 36], 1),
+    pref("chat_game_mentions_autocomplete", &[6, 39], 1),
+    pref("appearance_display_compact_avatars", &[6, 41], 1),
     // notifications (7): notify_friends_on_go_live 2, enable_friend_online_notifications 12,
     // enable_friend_anniversary_notifications 14, enable_profile_updates_notifications 16,
     // enable_upcoming_server_event_notifications 22, notify_friends_on_profile_update 24,
@@ -234,8 +292,34 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("activity_privacy_voice_join_setting", &[8, 2], 1),
     pref("activity_privacy_setting", &[11, 3], 1),
     // appearance: developer_mode 2, timestamp_hour_cycle 9.
+    // localization (12): locale 1, a `StringValue`.
+    string_pref("language_select_setting", &[12, 1], 1, LOCALES),
     pref("developer_mode", &[13], 2),
     pref("time_format_setting", &[13], 9),
+    // ui_density 12: COMPACT 1, COZY 2 (Spacious), DEFAULT 4 (the page's radio values, `eJ.NS`).
+    pref("appearance_ui_density", &[13], 12),
+    // Enums that sit directly in their message (module 253932): privacy.profile_visibility 32, text_and_images.
+    // dm_spam_filter_v2 27, notifications.reaction_notifications 7 (ENABLED 0, ONLY_DMS 1, DISABLED 2).
+    pref("profile_privacy_setting", &[8], 32),
+    pref("dm_spam_setting", &[6], 27),
+    pref("reaction_notifications", &[7], 7),
+    // appearance.client_theme_settings (3).background_gradient_preset_id (2, a UInt32Value): the Nitro colour theme,
+    // `BackgroundGradientPresetId` of module 873298 (MINT_APPLE 0 ... HEXAGON 23).
+    pref("appearance_client_theme_preset", &[13, 3, 2], 1),
+    // clips (19): allow_voice_recording 1, a BoolValue (`U.Q$`, module 253932).
+    pref("clips_allow_voice_recording_setting", &[19, 1], 1),
+    // privacy (8): drops_opted_out 18 and quests_3p_data_opted_out 30 are "opted out" booleans, so their switches
+    // read the opposite (`CO`, `Cb` in module 158935); hide_friend_request_notes 33 likewise (`y9`).
+    inverted("data_usage_quests_setting", &[8, 18], 1),
+    inverted("data_usage_quests_3p_setting", &[8, 30], 1),
+    // swp_message_promotion_opted_out 35 (`pinot_member_setting`, module 410310).
+    inverted("pinot_member_setting", &[8, 35], 1),
+    inverted("friend_requests_notes_setting", &[8, 33], 1),
+    // text_and_images: view_nsfw_commands 23 and view_nsfw_guilds 20, both BoolValues (`U.Qe`, `U.Kg`).
+    pref("age_restricted_dm_setting", &[6, 23], 1),
+    pref("age_restricted_ios_setting", &[6, 20], 1),
+    // privacy: default_guilds_activity_restricted_v2 29, an enum at the message's own level.
+    pref("activity_sharing_per_guild_default_setting", &[8], 29),
 ];
 
 /// `notifications.quiet_mode`, read from the merged account settings rather than a settings-page row.
@@ -260,6 +344,27 @@ pub fn varint_at(settings_base64: &str, path: &[u64], field: u64) -> Option<u64>
     Some(varint_of(current, field).unwrap_or(0))
 }
 
+/// What the account holds for a preference: the varint, or for a string preference the index of its string.
+pub fn pref_value(settings_base64: &str, pref: &ProtoPref) -> Option<u64> {
+    if pref.strings.is_empty() {
+        return varint_at(settings_base64, pref.path, pref.field);
+    }
+    let settings = STANDARD.decode(settings_base64).ok()?;
+    let mut current: &[u8] = &settings;
+    for number in pref.path {
+        current = fields(current)
+            .find(|(known, _)| known == number)
+            .map(|(_, payload)| payload)?;
+    }
+    let text = fields(current).find(|(number, _)| *number == pref.field);
+    Some(text.map_or(0, |(_, bytes)| {
+        pref.strings
+            .iter()
+            .position(|known| known.as_bytes() == bytes)
+            .unwrap_or(0) as u64
+    }))
+}
+
 /// The PATCH body value that sets one preference on its own. The server swaps in whole any top-level message it is
 /// sent, so a live change goes through `set_pref`, which carries the rest of that message along.
 pub fn pref_patch(pref: &ProtoPref, value: u64) -> String {
@@ -268,6 +373,8 @@ pub fn pref_patch(pref: &ProtoPref, value: u64) -> String {
 
 /// The theme, which the Appearance page's swatches set; kept here so a test and the harness can write it back.
 pub const THEME: ProtoPref = pref("appearance_theme", &[13], 1);
+/// `appearance.client_theme_settings.background_gradient_preset_id`: the Nitro colour theme (see `PROTO_PREFS`).
+pub const CLIENT_THEME_PRESET: ProtoPref = pref("appearance_client_theme_preset", &[13, 3, 2], 1);
 
 /// The fields of `bytes` as (number, the field's own bytes, tag included), in order. Stops at a malformed one.
 fn raw_fields(bytes: &[u8]) -> Vec<(u64, &[u8])> {
@@ -299,6 +406,14 @@ fn raw_fields(bytes: &[u8]) -> Vec<(u64, &[u8])> {
 
 /// `message` with the varint `field` of the nested message at `path` set, everything else kept byte for byte.
 fn with_varint(message: &[u8], path: &[u64], field: u64, value: u64) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    push_varint(&mut encoded, field << 3 | WIRE_VARINT);
+    push_varint(&mut encoded, value);
+    with_encoded(message, path, field, &encoded)
+}
+
+/// `message` with the field at `path` replaced by `encoded` (tag and payload), everything else kept byte for byte.
+fn with_encoded(message: &[u8], path: &[u64], field: u64, encoded: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let Some((head, tail)) = path.split_first() else {
         for (number, raw) in raw_fields(message) {
@@ -306,14 +421,13 @@ fn with_varint(message: &[u8], path: &[u64], field: u64, value: u64) -> Vec<u8> 
                 out.extend_from_slice(raw);
             }
         }
-        push_varint(&mut out, field << 3 | WIRE_VARINT);
-        push_varint(&mut out, value);
+        out.extend_from_slice(encoded);
         return out;
     };
     let inner = fields(message)
         .find(|(number, _)| number == head)
         .map_or(&[][..], |(_, payload)| payload);
-    let rebuilt = with_varint(inner, tail, field, value);
+    let rebuilt = with_encoded(inner, tail, field, encoded);
     for (number, raw) in raw_fields(message) {
         if number != *head {
             out.extend_from_slice(raw);
@@ -334,8 +448,110 @@ pub fn decode(settings_base64: &str) -> Vec<u8> {
 /// top-level message it is sent as a whole, so the patch is the whole of `appearance` or `text_and_images`, built from
 /// `current`; sending only the changed field would wipe the rest of its message (the theme, the other switches).
 pub fn set_pref(current: &[u8], pref: &ProtoPref, value: u64) -> (String, Vec<u8>) {
-    let updated = with_varint(current, pref.path, pref.field, value);
+    let updated = if pref.strings.is_empty() {
+        with_varint(current, pref.path, pref.field, value)
+    } else {
+        let text = pref
+            .strings
+            .get(value as usize)
+            .copied()
+            .unwrap_or_default();
+        let mut encoded = Vec::new();
+        push_bytes_field(&mut encoded, pref.field, text.as_bytes());
+        with_encoded(current, pref.path, pref.field, &encoded)
+    };
     let top = pref.path.first().copied().unwrap_or(0);
+    whole_message_patch(updated, top)
+}
+
+/// `privacy.friend_source_flags` (a `UInt32Value`): who may send the account a friend request. The bits are
+/// `MUTUAL_FRIENDS` 2, `MUTUAL_GUILDS` 4 and `NO_RELATION` 8 (module 652215); all three is "Everyone".
+pub const FRIEND_SOURCE_FLAGS: ProtoPref = pref("friend_source_flags", &[8, 11], 1);
+/// `default_guilds_restricted_v2` (27) and `default_message_request_restricted` (17), both `BoolValue`s: direct
+/// messages and message requests off for servers that have no entry of their own.
+pub const DM_DEFAULT_RESTRICTED: ProtoPref = pref("permissions_dms_default", &[8, 27], 1);
+pub const REQUESTS_DEFAULT_RESTRICTED: ProtoPref =
+    pref("permissions_requests_default", &[8, 17], 1);
+/// The sensitive content filters (`text_and_images`): `explicit_content_settings` 29 and `gore_content_settings` 32,
+/// each with `*_guilds` 1, `*_friend_dm` 2 and `*_non_friend_dm` 3 (`ExplicitContentRedaction`: SHOW 1, BLUR 2,
+/// BLOCK 3, unset 0). Indexed by kind (Mature Sexual Media, Graphic Media), then row (friends' DMs, other DMs, servers).
+pub const CONTENT_REDACTION: [[ProtoPref; 3]; 2] = [
+    [
+        pref("explicit_content_friend_dm", &[6, 29], 2),
+        pref("explicit_content_non_friend_dm", &[6, 29], 3),
+        pref("explicit_content_guilds", &[6, 29], 1),
+    ],
+    [
+        pref("gore_content_friend_dm", &[6, 32], 2),
+        pref("gore_content_non_friend_dm", &[6, 32], 3),
+        pref("gore_content_guilds", &[6, 32], 1),
+    ],
+];
+/// `text_and_images.explicit_content_filter` (19, a `UInt32Value`): DISABLED 0, NON_FRIENDS 1, FRIENDS_AND_NON_FRIENDS 2.
+/// It decides the defaults the filters show while the account has not chosen.
+pub const EXPLICIT_CONTENT_FILTER: ProtoPref = pref("explicit_content_filter", &[6, 19], 1);
+pub const FRIEND_MUTUAL_FRIENDS: u64 = 2;
+pub const FRIEND_MUTUAL_GUILDS: u64 = 4;
+pub const FRIEND_NO_RELATION: u64 = 8;
+pub const FRIEND_EVERYONE: u64 = 14;
+
+/// A repeated fixed64 field (the guild lists of `privacy`): `restricted_guild_ids` 3 and
+/// `message_request_restricted_guild_ids` 16 (direct messages and message requests off per server),
+/// `activity_restricted_guild_ids` 13 (activity not shared per server) and `activity_joining_restricted_guild_ids` 15.
+pub struct IdList {
+    pub path: &'static [u64],
+    pub field: u64,
+}
+
+pub const DM_RESTRICTED_GUILDS: IdList = IdList {
+    path: &[8],
+    field: 3,
+};
+pub const MESSAGE_REQUEST_RESTRICTED_GUILDS: IdList = IdList {
+    path: &[8],
+    field: 16,
+};
+pub const ACTIVITY_RESTRICTED_GUILDS: IdList = IdList {
+    path: &[8],
+    field: 13,
+};
+
+/// The varint at `field` of the message found by following `path` through raw settings bytes.
+pub fn varint_in(settings: &[u8], path: &[u64], field: u64) -> Option<u64> {
+    let mut current = settings;
+    for number in path {
+        current = fields(current)
+            .find(|(known, _)| known == number)
+            .map(|(_, payload)| payload)?;
+    }
+    Some(varint_of(current, field).unwrap_or(0))
+}
+
+/// The ids of a repeated fixed64 field, packed or not (a proto3 reader accepts both).
+pub fn ids_in(settings: &[u8], list: &IdList) -> Vec<u64> {
+    let mut current = settings;
+    for number in list.path {
+        let Some((_, payload)) = fields(current).find(|(known, _)| known == number) else {
+            return Vec::new();
+        };
+        current = payload;
+    }
+    fields(current)
+        .filter(|(number, _)| *number == list.field)
+        .flat_map(|(_, bytes)| fixed64_list(bytes))
+        .collect()
+}
+
+/// Replaces a guild list: the PATCH body value (the whole top-level message, as `set_pref`) and the new settings.
+/// The ids are written packed, as `ob(ProtoClass, ...)` encodes a repeated fixed64.
+pub fn set_ids(current: &[u8], list: &IdList, ids: &[u64]) -> (String, Vec<u8>) {
+    let mut encoded = Vec::new();
+    if !ids.is_empty() {
+        let packed: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+        push_bytes_field(&mut encoded, list.field, &packed);
+    }
+    let updated = with_encoded(current, list.path, list.field, &encoded);
+    let top = list.path.first().copied().unwrap_or(0);
     whole_message_patch(updated, top)
 }
 
@@ -683,13 +899,45 @@ mod tests {
     }
 
     #[test]
+    fn a_string_preference_is_written_as_its_string_and_read_back_as_its_index() {
+        let spoilers = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "chat_spoilers_show_spoilers")
+            .expect("spoilers");
+        let mut current = Vec::new();
+        push_bytes_field(&mut current, 13, &[0x08, 0x03]);
+        let (patch, updated) = set_pref(&current, spoilers, 1);
+        // text_and_images (6) holds render_spoilers (4), a StringValue whose field 1 is "ALWAYS".
+        let part = STANDARD.decode(&patch).unwrap();
+        assert!(part.windows(6).any(|window| window == b"ALWAYS"));
+        assert_eq!(pref_value(&patch, spoilers), Some(1));
+        assert_eq!(pref_value(&STANDARD.encode(&updated), spoilers), Some(1));
+        assert_eq!(theme(&STANDARD.encode(&updated)), Some(3));
+        let (_, back) = set_pref(&updated, spoilers, 2);
+        assert_eq!(pref_value(&STANDARD.encode(&back), spoilers), Some(2));
+    }
+
+    #[test]
+    fn ui_density_is_a_field_of_appearance() {
+        let density = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "appearance_ui_density")
+            .expect("density");
+        let mut current = Vec::new();
+        push_bytes_field(&mut current, 13, &[0x08, 0x03]);
+        let (patch, _) = set_pref(&current, density, 4);
+        assert_eq!(varint_at(&patch, &[13], 12), Some(4));
+        assert_eq!(theme(&patch), Some(3));
+    }
+
+    #[test]
     fn a_runaway_varint_stops() {
         assert_eq!(guild_order(&encoded(&[0xff; 12])), None);
     }
 
     #[test]
     fn every_pref_round_trips_through_a_patch() {
-        for pref in PROTO_PREFS {
+        for pref in PROTO_PREFS.iter().filter(|pref| pref.strings.is_empty()) {
             let patch = pref_patch(pref, 2);
             assert_eq!(
                 varint_at(&patch, pref.path, pref.field),
@@ -775,6 +1023,22 @@ mod tests {
     }
 
     #[test]
+    fn the_colour_theme_is_saved_as_the_gradient_preset_of_the_client_theme() {
+        let preset = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "appearance_client_theme_preset")
+            .unwrap();
+        // SUNSET is 8: appearance (13) { client_theme_settings (3) { background_gradient_preset_id (2) { value (1) } } }.
+        let (patch, updated) = set_pref(&[], preset, 8);
+        assert_eq!(varint_at(&patch, &[13, 3, 2], 1), Some(8));
+        assert_eq!(
+            updated,
+            bytes_field(13, &bytes_field(3, &bytes_field(2, &[8, 8])))
+        );
+        assert_eq!(STANDARD.encode(&updated), patch);
+    }
+
+    #[test]
     fn updates_fold_into_the_settings() {
         let mut current = bytes_field(6, &bytes_field(12, &[8, 1]));
         current.extend(bytes_field(13, &[8, 3]));
@@ -828,5 +1092,60 @@ mod tests {
         push_bytes_field(&mut appearance, 13, &[0x08, 0x03]);
         let (_, updated) = set_status(&appearance, "online", 0, 1);
         assert_eq!(theme(&STANDARD.encode(&updated)), Some(3));
+    }
+
+    #[test]
+    fn a_guild_list_is_written_packed_and_read_back() {
+        let mut current = bytes_field(8, &[0x10, 0x01]);
+        current.extend(bytes_field(13, &[8, 3]));
+        let (patch, updated) = set_ids(&current, &DM_RESTRICTED_GUILDS, &[10, 20]);
+        assert_eq!(ids_in(&updated, &DM_RESTRICTED_GUILDS), vec![10, 20]);
+        // The patch is the whole of privacy (8), the rest of it kept.
+        let part = STANDARD.decode(&patch).unwrap();
+        assert_eq!(raw_fields(&part).len(), 1);
+        assert_eq!(ids_in(&part, &DM_RESTRICTED_GUILDS), vec![10, 20]);
+        assert_eq!(varint_in(&part, &[8], 2), Some(1));
+        // Another list of the same message stays as it was; emptying removes the field.
+        let (_, other) = set_ids(&updated, &ACTIVITY_RESTRICTED_GUILDS, &[5]);
+        assert_eq!(ids_in(&other, &DM_RESTRICTED_GUILDS), vec![10, 20]);
+        assert_eq!(ids_in(&other, &ACTIVITY_RESTRICTED_GUILDS), vec![5]);
+        let (_, emptied) = set_ids(&other, &DM_RESTRICTED_GUILDS, &[]);
+        assert!(ids_in(&emptied, &DM_RESTRICTED_GUILDS).is_empty());
+        assert_eq!(ids_in(&emptied, &ACTIVITY_RESTRICTED_GUILDS), vec![5]);
+        // A snowflake keeps all 64 bits.
+        let big = 1_568_692_564_637_524_109u64;
+        let (_, wide) = set_ids(&[], &MESSAGE_REQUEST_RESTRICTED_GUILDS, &[big]);
+        assert_eq!(ids_in(&wide, &MESSAGE_REQUEST_RESTRICTED_GUILDS), vec![big]);
+    }
+
+    #[test]
+    fn friend_source_flags_are_a_wrapper_in_privacy() {
+        let (patch, updated) = set_pref(&[], &FRIEND_SOURCE_FLAGS, FRIEND_EVERYONE);
+        assert_eq!(
+            varint_in(&updated, &[8, 11], 1),
+            Some(FRIEND_EVERYONE),
+            "{patch}"
+        );
+        assert_eq!(
+            FRIEND_MUTUAL_FRIENDS | FRIEND_MUTUAL_GUILDS | FRIEND_NO_RELATION,
+            14
+        );
+    }
+
+    #[test]
+    fn inverted_preferences_name_their_rows() {
+        let quests = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "data_usage_quests_setting")
+            .unwrap();
+        assert!(quests.invert);
+        assert_eq!((quests.path, quests.field), (&[8u64, 18][..], 1));
+        assert!(
+            !PROTO_PREFS
+                .iter()
+                .find(|pref| pref.key == "developer_mode")
+                .unwrap()
+                .invert
+        );
     }
 }

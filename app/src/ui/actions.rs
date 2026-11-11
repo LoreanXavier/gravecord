@@ -126,7 +126,7 @@ impl Root {
                     .map(|user| user.display_name().to_owned())
             },
         );
-        self.speech.speak(text);
+        self.speech.speak(text, self.speech_rate());
         self.speaking_message = Some(message.id);
         // Back to Speak Message once the voice falls silent.
         cx.spawn(async move |this, cx| {

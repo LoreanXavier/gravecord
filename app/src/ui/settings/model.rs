@@ -134,4 +134,6 @@ pub(in crate::ui) struct Swatch {
 pub(in crate::ui) enum Choice {
     On(bool),
     Index(usize),
+    /// A slider's value (a device setting: text size, zoom, saturation, ...).
+    Number(f32),
 }

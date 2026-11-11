@@ -933,8 +933,12 @@ impl Root {
             self.apply_stream_attenuation();
             return;
         }
+        if self.action_switch_changed(key, on, index) {
+            return;
+        }
         self.system_setting_changed(key, on);
         if self.pref_changed(key, on, index) {
+            self.setting_applied(key);
             return;
         }
         let effective_mode = self.voice.stored.effective().push_to_talk;
@@ -1058,7 +1062,15 @@ impl Root {
             if self.voice.camera.test.is_some() {
                 self.camera_test_stop(cx);
             }
-            self.voice.drag = None;
+            // A drag of the marked sliders of the other pages (text size, spacing, zoom...) is not the voice page's.
+            if self
+                .voice
+                .drag
+                .as_ref()
+                .is_some_and(|drag| super::controls::spec(drag.key).is_none())
+            {
+                self.voice.drag = None;
+            }
         }
         let wanted = visible && (self.call.is_none() || self.voice.mic_test.is_some());
         if !wanted {
@@ -1069,7 +1081,12 @@ impl Root {
                 .preview_failed
                 .is_none_or(|at| at.elapsed() > Duration::from_secs(2))
         {
-            match dc_voice::preview(self.voice.mic_test.is_some()) {
+            let opened = if crate::inert::skip("microphone preview") {
+                Err("inert".to_owned())
+            } else {
+                dc_voice::preview(self.voice.mic_test.is_some()).map_err(|error| error.to_string())
+            };
+            match opened {
                 Ok(preview) => {
                     self.voice.preview = Some(preview);
                     self.voice.preview_failed = None;
@@ -1471,6 +1488,98 @@ impl Root {
             .into_any_element()
     }
 
+    /// A slider of the generated pages with its marks (`sN`): the label, the marks above the bar, and a bar that
+    /// drags, snaps to the markers and answers the arrow keys. The bar's area is its own probe, so the drag maths of
+    /// the voice sliders (5px of grabber inset each side) holds here too.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn marked_slider_row(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        badge: bool,
+        description: Runs,
+        marks: &'static [(&'static str, f32)],
+        _default_mark: Option<usize>,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fraction = self.slider_fraction(key);
+        // The marker the grabber rests on is the one drawn green (`markValue` of the selected value).
+        let current = marks
+            .iter()
+            .position(|(_, at)| (at - fraction).abs() < 0.002);
+        let dragging = self.voice.drag.as_ref().is_some_and(|drag| drag.key == key);
+        let focus = self
+            .voice
+            .slider_focus
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let bar = div()
+            .id(SharedString::from(format!("voice-slider-{key}")))
+            .absolute()
+            .top(px(24.))
+            .left_0()
+            .w_full()
+            .h(px(24.))
+            .cursor_pointer()
+            .track_focus(&focus)
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let direction = match event.keystroke.key.as_str() {
+                    "left" | "down" => -1,
+                    "right" | "up" => 1,
+                    _ => return,
+                };
+                this.nudge_slider(key, direction, cx);
+                cx.stop_propagation();
+            }))
+            .child(self.anchor_probe(format!("voice-slider-{key}")))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.show_slider_bubble(key);
+                } else if this.voice.drag.is_none() {
+                    this.hide_tip(&format!("voice-bubble-{key}"));
+                }
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if let Some(handle) = this.voice.slider_focus.borrow().get(key) {
+                        window.focus(handle, cx);
+                    }
+                    this.start_slider_drag(key, event.position.x, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() && this.voice.drag.as_ref().is_some_and(|drag| drag.key == key)
+                {
+                    this.move_slider_drag(event.position.x, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_slider_drag(cx)),
+            )
+            .when(dragging, |this| this.child(self.drag_listener()));
+        div()
+            .min_h(px(48.))
+            .py(px(8.))
+            .flex()
+            .flex_col()
+            .child(super::render::label_block(label, badge, description).mb(px(8.)))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(48.))
+                    .child(super::render::slider(marks, current, fraction, width))
+                    .child(bar),
+            )
+            .into_any_element()
+    }
+
     /// Where a slider is, 0 to 1: its drag while dragged, else the stored value.
     fn slider_fraction(&self, key: &'static str) -> f32 {
         if let Some(drag) = self.voice.drag.as_ref().filter(|drag| drag.key == key) {
@@ -1485,7 +1594,8 @@ impl Root {
             SENSITIVITY => (self.voice.stored.threshold + 100.) / 100.,
             extra::ATTENUATION => self.attenuation_fraction(),
             extra::STREAM_ATTEN_STRENGTH => self.stream_attenuation_fraction(),
-            _ => 0.,
+            _ => super::controls::spec(key)
+                .map_or(0., |spec| spec.fraction_of(self.slider_value(spec))),
         }
         .clamp(0., 1.)
     }
@@ -1501,7 +1611,9 @@ impl Root {
             // The default `formatValue`: the position as a percentage.
             extra::ATTENUATION => format!("{}%", to_fixed(fraction * 100., 0)),
             extra::STREAM_ATTEN_STRENGTH => format!("{}%", to_fixed(fraction * 99. + 1., 0)),
-            _ => String::new(),
+            _ => super::controls::spec(key)
+                .map(|spec| (spec.format)(spec.value_at(fraction)))
+                .unwrap_or_default(),
         }
     }
 
@@ -1717,12 +1829,21 @@ impl Root {
         let track = f32::from(drag.bounds.size.width) - 10.;
         let mut fraction = ((f32::from(x - drag.bounds.left()) - 5.) / track).clamp(0., 1.);
         // The new slider moves in steps of 1 (310592 `step`); the sensitivity slider drags smoothly.
-        if drag.key != SENSITIVITY {
+        let marked = super::controls::spec(drag.key);
+        if let Some(spec) = marked {
+            // `stickToMarkers`: the grabber rests on a marker.
+            fraction = spec.fraction_of(spec.value_at(fraction));
+        } else if drag.key != SENSITIVITY {
             let steps = slider_steps(drag.key);
             fraction = (fraction * steps).round() / steps;
         }
         drag.fraction = fraction;
         let key = drag.key;
+        if let Some(spec) = marked {
+            // `asValueChanges`: the text size, spacing, zoom, saturation and the toast time follow the drag.
+            self.setting_choices
+                .insert(key, Choice::Number(spec.value_at(fraction)));
+        }
         // `asValueChanges`: the volumes follow the drag.
         store_slider_volume(key, fraction);
         self.show_slider_bubble(key);
@@ -1736,6 +1857,13 @@ impl Root {
         direction: i32,
         cx: &mut Context<Self>,
     ) {
+        if let Some(spec) = super::controls::spec(key) {
+            let value = spec.step(self.slider_value(spec), direction);
+            self.slider_committed(key, value);
+            self.setting_applied(key);
+            cx.notify();
+            return;
+        }
         let steps = slider_steps(key);
         let current = (self.slider_fraction(key) * steps).round();
         let fraction = ((current + direction as f32).clamp(0., steps)) / steps;
@@ -1767,7 +1895,12 @@ impl Root {
                 self.commit_stream_attenuation(fraction);
                 self.apply_stream_attenuation();
             }
-            _ => {}
+            _ => {
+                if let Some(spec) = super::controls::spec(key) {
+                    self.slider_committed(key, spec.value_at(fraction));
+                    self.setting_applied(key);
+                }
+            }
         }
     }
 

@@ -2,14 +2,22 @@
 //! content `content_3Rvb29`, panel `panel_nNq2Vb`, rows `baseControlItem_FiiQ6I`, buttons `button_F7qvhY`.
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
+mod actions;
 mod appearance;
 mod billing;
+pub(in crate::ui) mod client_theme;
 mod clips;
+mod connections;
+mod content_filters;
+mod controls;
 mod gift_inventory_page;
+mod languages;
 mod model;
 mod nitro_page;
 mod pages;
 pub(super) mod prefs;
+mod preview;
+mod privacy;
 mod render;
 mod server_boost_page;
 mod soundboard;
@@ -18,6 +26,7 @@ mod swatches;
 mod system;
 mod voice;
 mod voice_camera;
+pub(super) use actions::State as ActionsState;
 pub(super) use clips::ClipsState;
 pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
@@ -60,6 +69,28 @@ pub(super) enum Page {
     Developer,
     LogOut,
 }
+
+/// Every page that is drawn from the generated rows.
+pub(super) const ALL_PAGES: &[Page] = &[
+    Page::DataPrivacy,
+    Page::MessagingPermissions,
+    Page::Notifications,
+    Page::Nitro,
+    Page::ServerBoost,
+    Page::Subscriptions,
+    Page::GiftInventory,
+    Page::Billing,
+    Page::VoiceVideo,
+    Page::Appearance,
+    Page::Accessibility,
+    Page::System,
+    Page::LanguageTime,
+    Page::RegisteredGames,
+    Page::ActivityPrivacy,
+    Page::GameOverlay,
+    Page::ConnectedApps,
+    Page::Developer,
+];
 
 struct Entry {
     page: Page,
@@ -518,6 +549,11 @@ impl Row {
 }
 
 fn new_badge() -> impl IntoElement {
+    badge("NEW")
+}
+
+/// `badge_...`: a pill beside a title, NEW or BETA.
+fn badge(text: &'static str) -> impl IntoElement {
     div()
         .flex_none()
         .h(px(16.))
@@ -528,7 +564,7 @@ fn new_badge() -> impl IntoElement {
         .line_height(px(16.))
         .font_weight(FontWeight(600.))
         .text_color(gpui::white())
-        .child("NEW")
+        .child(text)
 }
 
 /// 48px square behind a row's leading icon.
@@ -655,10 +691,23 @@ impl Root {
             "https://cdn.discordapp.com/assets/content/568728735ebc2ee3eb3a7ab29d37c1f698f413d29cee50f9a19ed2d2eefea27f.svg"
                 .to_owned(),
         );
+        for (key, url) in preview::requests() {
+            self.request_image(key, url);
+        }
+        for glyph in ["\u{1f940}", "\u{1faa4}"] {
+            self.request_emoji_image(glyph);
+        }
+        for index in 0..appearance::APP_ICONS.len() {
+            self.request_image(
+                appearance::app_icon_key(index),
+                appearance::app_icon_url(index),
+            );
+        }
         let _ = self.requests.send(Request::Fetch {
             key: "sessions".to_owned(),
             route: "/auth/sessions".to_owned(),
         });
+        self.settings_pages_opened();
         cx.notify();
     }
 
@@ -1204,11 +1253,25 @@ impl Root {
             .into_any_element()
     }
 
-    fn account_page(&self) -> Vec<AnyElement> {
+    fn account_page(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let account = &self.stores.account;
         let email = account.email.as_deref().map(mask_email);
-        let edit = || button("settings-edit", "Edit", ButtonKind::Secondary);
+        // A button that opens the first dialog of its action (`actions::Dialog::Account`).
+        let opens = |kind: &'static str,
+                     id: &'static str,
+                     label: &'static str,
+                     tone: ButtonKind,
+                     cx: &mut Context<Self>| {
+            div()
+                .id(SharedString::from(format!("account-{kind}")))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings_extra.dialog = Some(actions::Dialog::Account(kind));
+                    cx.notify();
+                }))
+                .child(button(id, label, tone))
+        };
         let info = category(
             Some("Account Info"),
             vec![
@@ -1218,7 +1281,13 @@ impl Root {
                         .items_center()
                         .gap(px(16.))
                         .child(value(user.username.clone()))
-                        .child(edit()),
+                        .child(opens(
+                            "username",
+                            "settings-edit",
+                            "Edit",
+                            ButtonKind::Secondary,
+                            cx,
+                        )),
                 ),
                 Row::new("Email").trailing(
                     div()
@@ -1236,7 +1305,13 @@ impl Root {
                                     .child("Reveal"),
                             ),
                         )
-                        .child(edit()),
+                        .child(opens(
+                            "email",
+                            "settings-edit-email",
+                            "Edit",
+                            ButtonKind::Secondary,
+                            cx,
+                        )),
                 ),
                 Row::new("Phone Number").trailing(
                     div()
@@ -1247,7 +1322,8 @@ impl Root {
                             Some(phone) => mask_phone(phone),
                             None => "You haven't added a phone number yet.".to_owned(),
                         }))
-                        .child(button(
+                        .child(opens(
+                            "phone",
                             "settings-phone",
                             if account.phone.is_some() {
                                 "Edit"
@@ -1255,6 +1331,7 @@ impl Root {
                                 "Add"
                             },
                             ButtonKind::Secondary,
+                            cx,
                         )),
                 ),
             ],
@@ -1267,7 +1344,13 @@ impl Root {
         let security = category(
             Some("Password & Security"),
             vec![
-                Row::new("Password").trailing(edit()),
+                Row::new("Password").trailing(opens(
+                    "password",
+                    "settings-edit-password",
+                    "Edit",
+                    ButtonKind::Secondary,
+                    cx,
+                )),
                 Row::new("Multi-Factor Authentication")
                     .link((!account.mfa_enabled).then(|| "Set up".to_owned())),
                 Row::new("Logged-in Devices").link(sessions),
@@ -1372,20 +1455,24 @@ impl Root {
                         &[("Temporarily disable your account.", false)],
                         "--text-subtle",
                     ))
-                    .trailing(button(
+                    .trailing(opens(
+                        "disable",
                         "settings-disable",
                         "Disable Account",
                         ButtonKind::CriticalSecondary,
+                        cx,
                     )),
                 Row::new("Close your account")
                     .description(described(
                         &[("Permanently close your account.", false)],
                         "--text-subtle",
                     ))
-                    .trailing(button(
+                    .trailing(opens(
+                        "delete",
                         "settings-delete",
                         "Delete Account",
                         ButtonKind::CriticalPrimary,
+                        cx,
                     )),
             ],
         );
@@ -1406,8 +1493,9 @@ impl Root {
         let Some(open) = self.settings.as_ref() else {
             return div().into_any_element();
         };
+        actions::link_owner_clear();
         let mut body = match open.page {
-            Page::Account => self.account_page(),
+            Page::Account => self.account_page(cx),
             Page::Clips => self.clips_page(window, cx),
             page => pages::nodes(page)
                 .iter()
@@ -1499,6 +1587,9 @@ impl Root {
                             // with, which adds that pixel to the scrollable height.
                             .child(div().w_full().h(px(1.))),
                     )
+                    .when(open.page == Page::Accessibility, |this| {
+                        this.child(self.accessibility_preview(window))
+                    })
                     .child(auto_scrollbar(open.content.clone()))
                     .child(scroll_spy(
                         open.content.clone(),

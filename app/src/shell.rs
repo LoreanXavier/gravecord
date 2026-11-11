@@ -141,7 +141,11 @@ impl Shell {
         crate::ui::memory_trim::start(&root, cx);
         self._subscriptions = vec![
             cx.subscribe_in(&root, window, |this, _, event, window, cx| match event {
-                RootEvent::LogOut => this.end_session(true, window, cx),
+                RootEvent::LogOut => {
+                    if !crate::inert::skip("log out") {
+                        this.end_session(true, window, cx);
+                    }
+                }
             }),
         ];
         self.screen = Screen::Main(root);

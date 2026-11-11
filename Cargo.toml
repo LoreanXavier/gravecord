@@ -125,6 +125,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.dc-voice]
 opt-level = 3
+# The clip editor converts and scales decoded pictures in real time, even in debug builds.
+[profile.dev.package.dc-clips]
+opt-level = 3
 # RSA-2048 key generation for the QR login, in debug builds.
 [profile.dev.package.num-bigint-dig]
 opt-level = 3

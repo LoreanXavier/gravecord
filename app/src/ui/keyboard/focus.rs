@@ -256,6 +256,7 @@ impl Root {
                 self.leaving.is_some(),
                 self.leave_guild.is_some(),
                 self.logout_confirm,
+                self.settings_extra.has_dialog(),
                 self.add_server.is_some(),
                 self.group_dm.is_some(),
                 self.forward.is_some(),
@@ -476,8 +477,7 @@ impl Root {
             sticker_preview: false,
             create_thread_panel: self.new_thread.is_some(),
             sidebar_open: self.new_thread.is_some(),
-            // The message window is always the newest one: there is no "jumped back in history" state.
-            has_more_after: false,
+            has_more_after: self.window_detached(),
             unread,
             at_bottom: self.list.is_scrolled_to_end().unwrap_or(true),
             voice_chat_open: self.voice_chat_docked(),
@@ -512,6 +512,10 @@ impl Root {
         }
         if effects.mark_read {
             self.mark_current_read(cx);
+        }
+        if effects.jump_to_present {
+            // `jumpToPresent(channelId, 30)`, module 92960.
+            self.jump_to_present_with(30);
         }
         if effects.scroll_to_present {
             self.list.scroll_to_end();

@@ -6,6 +6,7 @@ pub mod buffer;
 pub mod library;
 pub mod metadata;
 pub mod mp4;
+pub mod preview;
 pub mod recorder;
 pub mod sps;
 

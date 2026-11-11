@@ -736,3 +736,43 @@ fn the_picker_category_rule_is_100ms_ease_in_out_on_the_background() {
     assert_eq!(props, Props::BACKGROUND_COLOR);
     assert_eq!((hovering.duration_ms, resting.duration_ms), (100., 100.));
 }
+
+#[test]
+fn an_animation_in_a_region_marks_only_that_region_active() {
+    let (root, region) = (gpui::EntityId::from(1), gpui::EntityId::from(2));
+    with(|motion| *motion = Motion::default());
+    begin_view(root);
+    begin_view(region);
+    with(|motion| motion.mark_active());
+    leave_view();
+    with(|motion| {
+        assert!(motion.active_views.contains(&region));
+        assert!(!motion.active_views.contains(&root));
+        assert!(!motion.active);
+    });
+    // Outside any view the whole window is marked.
+    with(|motion| motion.mark_active());
+    with(|motion| assert!(motion.active));
+    // A new render of the region forgets what it asked for last time.
+    begin_view(region);
+    with(|motion| assert!(!motion.active_views.contains(&region)));
+    leave_view();
+}
+
+#[test]
+fn the_gap_floor_follows_the_view_being_built() {
+    let (a, b) = (gpui::EntityId::from(3), gpui::EntityId::from(4));
+    with(|motion| *motion = Motion::default());
+    with(|motion| motion.frame = 10);
+    begin_view(a);
+    with(|motion| motion.frame = 20);
+    begin_view(b);
+    with(|motion| motion.frame = 30);
+    begin_view(a);
+    // `a` last rendered in draw 10 (current was 10 before this render), so 10 is the floor; `b` has no earlier render.
+    with(|motion| assert_eq!(motion.gap_floor(), 10));
+    enter_view(b);
+    with(|motion| assert_eq!(motion.gap_floor(), 0));
+    leave_view();
+    with(|motion| assert_eq!(motion.gap_floor(), 29));
+}

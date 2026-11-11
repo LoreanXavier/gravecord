@@ -91,6 +91,8 @@ mod tests {
             mentions: 0,
             mention_roles: 0,
             mention_everyone: false,
+            mention_user_ids: Vec::new(),
+            mention_role_ids: Vec::new(),
             blocked: false,
             ignored: false,
             forwarded: None,

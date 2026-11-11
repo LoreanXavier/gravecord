@@ -3,7 +3,8 @@
 //! read once and written through on every change. Never holds tokens.
 //!
 //! Capture runs (`--capture`, or a build with the `capture` feature: the parity harness) keep theirs at
-//! `%LOCALAPPDATA%\gravecord-capture\storage.json`, so tests never read or change the owner's settings.
+//! `%LOCALAPPDATA%\gravecord-capture\storage.json`, so tests never read or change the owner's settings, and they
+//! do not write it either unless the run sets `GRAVECORD_STORAGE_WRITE=1`.
 
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -70,7 +71,18 @@ pub fn remove(key: &str) {
     }
 }
 
+/// A harness run reads its file and keeps its changes in memory only, so every run starts from the same state and
+/// a control clicked in one run (a volume slider, a theme) cannot change the next. A run that tests a restart says
+/// `GRAVECORD_STORAGE_WRITE=1`.
+fn writes_through(capture: bool, asked: bool) -> bool {
+    !capture || asked
+}
+
 fn save(map: &Map<String, Value>) {
+    let asked = std::env::var("GRAVECORD_STORAGE_WRITE").as_deref() == Ok("1");
+    if !writes_through(is_capture_run(), asked) {
+        return;
+    }
     let Some(path) = path() else {
         return;
     };
@@ -89,6 +101,13 @@ fn save(map: &Map<String, Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_run_keeps_its_changes_in_memory_unless_it_asks() {
+        assert!(writes_through(false, false));
+        assert!(!writes_through(true, false));
+        assert!(writes_through(true, true));
+    }
 
     #[test]
     fn capture_runs_never_share_the_owners_file() {

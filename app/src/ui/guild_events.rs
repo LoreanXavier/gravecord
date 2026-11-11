@@ -156,6 +156,7 @@ impl Root {
             .child(
                 div()
                     .id("guild-events-row")
+                    .group("guild-events-row")
                     .h(px(32.))
                     .w(px(286.))
                     .pl(px(8.))
@@ -164,7 +165,9 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     .cursor_pointer()
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    // A channel-like row: `.wrapper:hover .link` and `:active .link` (f4b2f93f8f92b7).
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .active(|style| style.bg(color("--interactive-background-active")))
                     .on_click(cx.listener(|this, _, _, cx| this.open_guild_events(cx)))
                     .child(icon("events", 20., "--channels-default"))
                     .child(
@@ -173,6 +176,9 @@ impl Root {
                             .line_height(px(24.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--channels-default"))
+                            .group_hover("guild-events-row", |style| {
+                                style.text_color(color("--interactive-text-hover"))
+                            })
                             .child(label),
                     ),
             )

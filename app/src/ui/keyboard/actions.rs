@@ -134,15 +134,17 @@ impl Root {
             }
             Action::ToggleFullscreen => window.toggle_fullscreen(),
             // No picture of the Keyboard Shortcuts help exists to build it from, there is no scaling of the whole
-            // interface, no direct message call UI, no context menu opened from a focused control and nothing to
-            // answer, so the key is left alone.
+            // interface and no direct message call UI, so those keys are left alone. Shift+F10 opens the menu of the
+            // focused element (`context_key`).
             Action::ToggleHotkeys => self.toggle_keyboard_help(cx),
+            Action::OpenContextMenu => return self.open_focused_context_menu(window, cx),
             Action::ZoomIn
             | Action::ZoomOut
             | Action::ZoomReset
             | Action::CallAccept
-            | Action::CallStart
-            | Action::OpenContextMenu => return false,
+            | Action::CallStart => {
+                return false;
+            }
             Action::VibeWithWumpus
             | Action::CloseChannelTab
             | Action::ToggleChannelTabPin
@@ -165,12 +167,17 @@ impl Root {
     }
 
     /// The channel last open in a server (`SelectedChannelStore.getChannelId(guild)`), else its first text channel.
-    fn last_channel_of(&self, guild: Id) -> Option<Id> {
+    pub(in crate::ui) fn last_channel_of(&self, guild: Id) -> Option<Id> {
         let known = self.stores.guild(guild)?;
         self.channel_history
             .iter()
             .copied()
             .find(|channel| self.guild_of(*channel) == Some(guild))
+            // From an earlier run: only a channel the server still has.
+            .or_else(|| {
+                crate::ui::last_channel::channel_of(guild)
+                    .filter(|channel| self.guild_of(*channel) == Some(guild))
+            })
             .or_else(|| {
                 known
                     .sidebar_rows()

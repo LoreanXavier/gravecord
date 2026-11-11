@@ -657,9 +657,19 @@ impl Root {
             )
             .child(body);
         Some(
-            deferred(div().absolute().top(px(81.)).left(px(left)).child(popout))
-                .with_priority(2)
-                .into_any_element(),
+            deferred(
+                div()
+                    .absolute()
+                    .top(px(81.))
+                    .left(px(left))
+                    .child(super::keyboard::outside(
+                        popout,
+                        super::keyboard::Layer::ThreadBrowser,
+                        cx,
+                    )),
+            )
+            .with_priority(2)
+            .into_any_element(),
         )
     }
 

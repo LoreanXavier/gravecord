@@ -262,7 +262,7 @@ pub(super) fn text(size: f32, line: f32, weight: f32, token: &str) -> gpui::Div 
 }
 
 /// `Y0`: the placeholder while the data is on its way, from the mask in `popoutLoadingBackground_j9Vvzj`.
-fn loader() -> AnyElement {
+pub(super) fn loader() -> AnyElement {
     let block = |left: f32, top: f32, width: f32, height: f32| {
         div()
             .absolute()

@@ -275,6 +275,10 @@ impl Root {
             .map(|open| open.editor.clone())
     }
 
+    pub(super) fn inventory_popout_is_open(&self) -> bool {
+        self.inventory_popout.open.is_some()
+    }
+
     pub(super) fn close_inventory_popout(&mut self) -> bool {
         self.inventory_popout.timer = None;
         self.inventory_popout.hovered = None;

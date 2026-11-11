@@ -46,6 +46,37 @@ pub(crate) fn split(url: &str) -> Parts {
     }
 }
 
+/// `(guild, channel, message)` of a link to a message: `https://discord.com/channels/<guild or @me>/<channel>/<message>`
+/// on discord.com, ptb.discord.com or canary.discord.com.
+pub(crate) fn message_link(url: &str) -> Option<(Option<u64>, u64, u64)> {
+    let parts = split(url);
+    if !matches!(protocol_of(url).as_str(), "http:" | "https:")
+        || !matches!(
+            hostname(url).as_str(),
+            "discord.com" | "ptb.discord.com" | "canary.discord.com" | "discordapp.com"
+        )
+    {
+        return None;
+    }
+    let path = parts.rest.split(['?', '#']).next().unwrap_or_default();
+    let mut segments = path.trim_matches('/').split('/');
+    if segments.next()? != "channels" {
+        return None;
+    }
+    let guild = segments.next()?;
+    let channel = segments.next()?.parse().ok()?;
+    let message = segments.next()?.parse().ok()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    let guild = if guild == "@me" {
+        None
+    } else {
+        Some(guild.parse().ok()?)
+    };
+    Some((guild, channel, message))
+}
+
 /// `b.E`: the hostname, lowercased, without credentials or port.
 pub(crate) fn hostname(url: &str) -> String {
     let host = split(url).host;
@@ -120,6 +151,24 @@ fn is_trusted_protocol(url: &str) -> bool {
 impl Root {
     /// A click on a link in rendered markdown. `label` is the link's visible text.
     pub(super) fn follow_link(&mut self, url: &str, label: &str, cx: &mut Context<Self>) {
+        // A link to a message of Discord (`/channels/<guild>/<channel>/<message>`) is a route of this client: it
+        // opens the channel and jumps to the message.
+        if let Some((guild, channel, message)) = message_link(url) {
+            let known = self.stores.guilds.iter().any(|guild| {
+                guild.channels.iter().any(|known| known.id == channel)
+                    || guild.threads.iter().any(|known| known.id == channel)
+            }) || (guild.is_none()
+                && self
+                    .stores
+                    .private_channels
+                    .iter()
+                    .any(|dm| dm.id == channel));
+            if known {
+                self.jump_to_message_id(channel, message, true, None);
+                cx.notify();
+                return;
+            }
+        }
         // `W`: the text being the address trusts it, except in a DM with someone who is not a friend.
         let friendly = self
             .current_dm()
@@ -419,6 +468,25 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    use super::message_link;
+
+    #[test]
+    fn a_message_link_names_the_guild_channel_and_message() {
+        assert_eq!(
+            message_link("https://discord.com/channels/1/2/3"),
+            Some((Some(1), 2, 3))
+        );
+        assert_eq!(
+            message_link("https://canary.discord.com/channels/@me/20/30?x=1"),
+            Some((None, 20, 30))
+        );
+        // A channel link has no message; other hosts and paths are not routes of this client.
+        assert_eq!(message_link("https://discord.com/channels/1/2"), None);
+        assert_eq!(message_link("https://example.com/channels/1/2/3"), None);
+        assert_eq!(message_link("https://discord.com/channels/1/2/3/4"), None);
+        assert_eq!(message_link("https://discord.com/channels/x/2/3"), None);
+    }
+
     use super::{hostname, is_trusted_domain, split};
 
     #[test]

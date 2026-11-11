@@ -72,6 +72,9 @@ impl Root {
             let opened = cx
                 .background_executor()
                 .spawn(async move {
+                    if crate::inert::skip("camera") {
+                        return Err(dc_media::Error::Unsupported("camera capture"));
+                    }
                     Camera::start(device.as_deref(), move |frame| {
                         *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame.preview);
                     })

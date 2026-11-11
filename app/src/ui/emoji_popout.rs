@@ -4,16 +4,22 @@
 //! 48px picture 4px down, the text column 10px right of it; the popout sits 8px right of the emoji, centred on it).
 //!
 //! The custom branch follows `O`: the line under the name depends on Nitro, on whether the emoji's server is one the
-//! user is in, and on whether it is the open server. The server lookup the official client makes for servers the user
-//! is not in (`GET /emojis/{id}/guild`) is not made here, so such an emoji reads as one from an invite-only server.
+//! user is in, and on whether it is the open server. For a server the user is not in (or a discoverable one) the
+//! popout looks the emoji's source up first (`GET /emojis/{id}/source`, `g_` in module 624793, answered with
+//! `{type: GUILD | APPLICATION | PACK, ...}`), shows the loader meanwhile, and offers "Join Server" or "Get Nitro".
 
 use super::sticker_popout::{shell, small_button, text};
+use super::tooltip::{Body, Side, Tip};
 use super::{Root, color};
+use crate::net::Request;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Bounds, Context, IntoElement, Pixels, SharedString, anchored, deferred, div, img,
-    point, prelude::*, px,
+    AnyElement, Bounds, Context, FontWeight, IntoElement, Pixels, SharedString, anchored, deferred,
+    div, img, point, prelude::*, px,
 };
+
+/// `otherEmoji_Gl3WZ2`: 32px tiles.
+const OTHER: f32 = 32.;
 
 /// `popoutContainer` padding, shared with the sticker popout.
 const PADDING: f32 = 16.;
@@ -33,6 +39,8 @@ pub(super) enum Kind {
 pub(super) struct EmojiPopout {
     kind: Kind,
     anchor: Bounds<Pixels>,
+    /// `eN` in `ee`: the other emoji of the server are listed.
+    show_more: bool,
 }
 
 /// What `O` knows when it writes the line under the name.
@@ -149,8 +157,38 @@ impl Root {
     ) {
         self.tip = None;
         self.tip_pending = None;
-        self.emoji_popout = Some(EmojiPopout { kind, anchor });
+        let custom = matches!(kind, Kind::Custom { .. });
+        self.emoji_popout = Some(EmojiPopout {
+            kind,
+            anchor,
+            show_more: false,
+        });
+        self.emoji_popout_requests();
         cx.notify();
+        if custom {
+            // The answers land in `fetched`; this redraws and asks for what each answer names, until the popout closes.
+            cx.spawn(async move |this, cx| {
+                for _ in 0..40 {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                    let alive = this
+                        .update(cx, |this, cx| {
+                            let alive = this.emoji_popout.is_some();
+                            if alive {
+                                this.emoji_popout_requests();
+                                cx.notify();
+                            }
+                            alive
+                        })
+                        .unwrap_or(false);
+                    if !alive {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
     }
 
     pub(super) fn close_emoji_popout(&mut self, cx: &mut Context<Self>) {
@@ -212,7 +250,7 @@ impl Root {
                     )))
                     .into_any_element()
             }
-            Kind::Custom { id, name } => self.custom_emoji_card(&open.kind, *id, name, cx),
+            Kind::Custom { id, name } => self.custom_emoji_card(open, &open.kind, *id, name, cx),
         };
         Some(
             deferred(
@@ -239,42 +277,72 @@ impl Root {
         )
     }
 
-    /// `ee`: the emoji, its line, the button, and for a server the user is in the card of that server.
+    /// `ee`: the emoji, its line, the button, and the card of the server it comes from.
     fn custom_emoji_card(
         &self,
+        open: &EmojiPopout,
         kind: &Kind,
         id: Id,
         name: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let source = self
+        let joined_guild = self
             .stores
             .guilds
             .iter()
             .find(|guild| guild.emojis.iter().any(|emoji| emoji.id == id));
+        let joined = joined_guild.is_some();
+        let key = source_key(id);
+        // Module 695282: the lookup runs for an emoji whose server the user is not in, or one that is discoverable.
+        let needs_lookup = joined_guild.is_none_or(|guild| is_discoverable(&guild.features));
+        let looked_up = self.fetched.contains_key(&key) || self.fetch_failures.contains_key(&key);
+        if needs_lookup && !looked_up {
+            return super::sticker_popout::loader();
+        }
+        let found = self.fetched.get(&key).and_then(Source::from_value);
+        let guild: Option<SourceGuild> = match &found {
+            Some(Source::Guild(guild)) => Some(guild.clone()),
+            Some(_) => None,
+            None => joined_guild.map(|guild| SourceGuild {
+                id: guild.id,
+                name: guild.name.clone(),
+                icon: guild.icon.clone(),
+                discoverable: is_discoverable(&guild.features),
+                online: None,
+                emojis: Vec::new(),
+            }),
+        };
         let facts = Facts {
             premium: self
                 .premium()
                 .has(dc_state::premium::Feature::EmojisEverywhere),
-            joined: source.is_some(),
-            same_guild: source.is_some_and(|guild| Some(guild.id) == self.guild),
-            discoverable: source.is_some_and(|guild| {
-                guild
-                    .features
-                    .iter()
-                    .any(|feature| feature == "DISCOVERABLE")
-            }),
+            joined,
+            same_guild: self.guild.is_some()
+                && (guild.as_ref().map(|guild| guild.id) == self.guild
+                    || joined_guild.map(|guild| guild.id) == self.guild),
+            discoverable: guild.as_ref().is_some_and(|guild| guild.discoverable),
         };
         let (line, cta) = branch(facts);
-        let mut top = div().p(px(PADDING)).flex().flex_col().child(
-            self.emoji_header(
-                kind,
-                name.to_owned(),
-                text(14., 18., 400., "--text-default")
-                    .child(line.text())
-                    .into_any_element(),
-            ),
-        );
+        let description: AnyElement = match &found {
+            // `uERlTd`.
+            Some(Source::Application(app)) => text(14., 18., 400., "--text-default")
+                .child(SharedString::from(format!(
+                    "This emoji is from the {app} app"
+                )))
+                .into_any_element(),
+            // `/jdd/7` (a Nitro emoji pack) is not in the message catalog the snapshot dumps; read as unavailable.
+            Some(Source::Pack) => text(14., 18., 400., "--text-default")
+                .child(Line::InviteOnly.text())
+                .into_any_element(),
+            _ => text(14., 18., 400., "--text-default")
+                .child(line.text())
+                .into_any_element(),
+        };
+        let mut top = div()
+            .p(px(PADDING))
+            .flex()
+            .flex_col()
+            .child(self.emoji_header(kind, name.to_owned(), description));
         if cta == Cta::GetNitro {
             top = top.child(div().mt(px(PADDING)).child(
                 small_button("emoji-popout-nitro", "Get Nitro", true).on_click(cx.listener(
@@ -285,67 +353,373 @@ impl Root {
                 )),
             ));
         }
-        let section = source.map(|guild| {
-            let icon = self.images.get(&format!("guild:{}", guild.id)).cloned();
-            let acronym = dc_state::Guild::acronym_of(&guild.name);
-            div()
-                .p(px(PADDING))
-                .bg(color("--background-base-lower"))
-                .flex()
-                .flex_col()
-                .child(
-                    // `ohTzZH`.
-                    text(14., 18., 400., "--text-default")
-                        .mb(px(8.))
-                        .child("This emoji is from"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .child(
-                            div()
-                                .size(px(32.))
-                                .flex_none()
-                                .rounded(px(10.))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(guild.icon.is_none() || icon.is_none(), |this| {
-                                    this.bg(color("--background-mod-muted"))
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(color("--text-default"))
-                                        .child(acronym.clone())
-                                })
-                                .children(
-                                    icon.filter(|_| guild.icon.is_some())
-                                        .map(|picture| img(picture).size(px(32.))),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .ml(px(10.))
-                                .min_w(px(0.))
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    text(16., 20., 600., "--text-default")
-                                        .truncate()
-                                        .child(SharedString::from(guild.name.clone())),
-                                )
-                                // `H29mx4`: the presence count of a discoverable server is not fetched.
-                                .child(
-                                    text(12., 16., 400., "--text-default")
-                                        .child("Invite-only server"),
-                                ),
-                        ),
-                )
+        if cta == Cta::JoinServer
+            && let Some(guild) = guild.as_ref()
+        {
+            let target = guild.id;
+            top = top.child(div().mt(px(PADDING)).child(
+                small_button("emoji-popout-join", "Join Server", true).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.close_emoji_popout(cx);
+                        this.join_emoji_guild(target);
+                    },
+                )),
+            ));
+        }
+        let section = guild.as_ref().map(|guild| {
+            self.emoji_source_section(open, guild, joined, cta == Cta::JoinServer, id, cx)
         });
         shell().child(top).children(section).into_any_element()
     }
+
+    /// The darker section of `ee`: "This emoji is from" or "Get this emoji from" and the server's card `Q`, and for a
+    /// server the user is not in, the toggle that lists its other emoji.
+    fn emoji_source_section(
+        &self,
+        open: &EmojiPopout,
+        guild: &SourceGuild,
+        joined: bool,
+        join_button: bool,
+        emoji: Id,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let target = guild.id;
+        let icon = self.images.get(&format!("guild:{target}")).cloned();
+        let acronym = dc_state::Guild::acronym_of(&guild.name);
+        // `Q`: the picture and the name are buttons when the user is in the server or it is discoverable.
+        let clickable = joined || guild.discoverable;
+        let go = move |this: &mut Self, cx: &mut Context<Self>| {
+            this.close_emoji_popout(cx);
+            if joined {
+                this.select(target, None);
+                cx.notify();
+            } else {
+                this.join_emoji_guild(target);
+            }
+        };
+        let second: AnyElement = match guild.online.filter(|_| guild.discoverable) {
+            Some(count) => {
+                let row = div()
+                    .flex()
+                    .items_center()
+                    // `LC+S+m`.
+                    .child(text(12., 16., 400., "--text-default").child(format!("{count} Online")))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(4.))
+                            .mx(px(8.))
+                            .rounded_full()
+                            .bg(color("--background-mod-muted")),
+                    );
+                if !join_button && !joined {
+                    row.child(
+                        div()
+                            .id("emoji-popout-guild-join")
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            // `riu2R5`.
+                            .child(text(12., 16., 400., "--text-link").child("Join Server"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_emoji_popout(cx);
+                                this.join_emoji_guild(target);
+                            })),
+                    )
+                } else {
+                    // `inyJqO`.
+                    row.child(text(12., 16., 400., "--text-default").child("Discoverable Server"))
+                }
+                .into_any_element()
+            }
+            // `H29mx4`.
+            None => text(12., 16., 400., "--text-default")
+                .child("Invite-only server")
+                .into_any_element(),
+        };
+        let picture = div()
+            .id("emoji-popout-guild-icon")
+            .size(px(32.))
+            .flex_none()
+            .rounded(px(10.))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(guild.icon.is_none() || icon.is_none(), |this| {
+                this.bg(color("--background-mod-muted"))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-default"))
+                    .child(acronym.clone())
+            })
+            .children(
+                icon.filter(|_| guild.icon.is_some())
+                    .map(|picture| img(picture).size(px(32.))),
+            )
+            .when(clickable, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| go(this, cx)))
+            });
+        let name = text(16., 20., 600., "--text-default")
+            .truncate()
+            .child(SharedString::from(guild.name.clone()));
+        let name: AnyElement = if clickable {
+            div()
+                .id("emoji-popout-guild-name")
+                .cursor_pointer()
+                .min_w(px(0.))
+                .hover(|style| style.underline())
+                .child(name)
+                .on_click(cx.listener(move |this, _, _, cx| go(this, cx)))
+                .into_any_element()
+        } else {
+            name.into_any_element()
+        };
+        let card = div().flex().items_center().child(picture).child(
+            div()
+                .ml(px(10.))
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(name)
+                .child(second),
+        );
+        let mut section = div()
+            .p(px(PADDING))
+            .bg(color("--background-base-lower"))
+            .flex()
+            .flex_col()
+            .child(
+                text(14., 18., 400., "--text-default")
+                    .mb(px(8.))
+                    // `ohTzZH` and `eLfh+a`.
+                    .child(if joined {
+                        "This emoji is from"
+                    } else {
+                        "Get this emoji from"
+                    }),
+            )
+            .child(card);
+        if !joined && guild.discoverable && guild.emojis.len() > 1 {
+            let expanded = open.show_more;
+            section = section.child(
+                div()
+                    .id("emoji-popout-show-more")
+                    .mt(px(8.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_color(color("--interactive-text-default"))
+                    .hover(|style| style.text_color(color("--interactive-text-active")))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    // `pnsAS2`.
+                    .child("Show More Emoji")
+                    .child(
+                        div()
+                            .relative()
+                            .left(px(4.))
+                            .size(px(16.))
+                            .flex_none()
+                            .child(
+                                gpui::svg()
+                                    .path("icons/chevron_down.svg")
+                                    .size(px(16.))
+                                    .when(!expanded, |this| {
+                                        this.with_transformation(gpui::Transformation::rotate(
+                                            gpui::radians(-std::f32::consts::FRAC_PI_2),
+                                        ))
+                                    }),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.emoji_popout.as_mut() {
+                            open.show_more = !open.show_more;
+                        }
+                        cx.notify();
+                    })),
+            );
+            if expanded {
+                let tiles = others(&guild.emojis, emoji);
+                section =
+                    section.child(div().mt(px(4.)).flex().flex_wrap().items_center().children(
+                        tiles.into_iter().map(|other| {
+                            let picture = self.images.get(&format!("custom:{}", other.id)).cloned();
+                            let label = if other.require_colons {
+                                format!(":{}:", other.name)
+                            } else {
+                                other.name.clone()
+                            };
+                            let tile = div()
+                                .id(SharedString::from(format!(
+                                    "emoji-popout-other-{}",
+                                    other.id
+                                )))
+                                .size(px(OTHER))
+                                .mx(px(2.))
+                                .my(px(4.))
+                                .flex_none()
+                                .children(picture.map(|picture| img(picture).size(px(OTHER))));
+                            self.with_tip(
+                                format!("emoji-popout-other-tip-{}", other.id),
+                                Tip::body(Body::Text(label.into()), Side::Top),
+                                tile,
+                                cx,
+                            )
+                        }),
+                    ));
+            }
+        }
+        section.into_any_element()
+    }
+
+    /// `joinGuild` for the server an emoji came from.
+    fn join_emoji_guild(&mut self, guild: Id) {
+        let (method, route) = super::sticker_popout::join_request(guild);
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method,
+            route,
+            body: Some(serde_json::Value::Object(Default::default())),
+        });
+    }
+
+    /// Asks for what the open custom emoji's popout lacks: the lookup, the server's icon and its other emoji.
+    pub(super) fn emoji_popout_requests(&mut self) {
+        let Some(Kind::Custom { id, .. }) =
+            self.emoji_popout.as_ref().map(|open| open.kind.clone())
+        else {
+            return;
+        };
+        let joined = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.emojis.iter().any(|emoji| emoji.id == id));
+        let needs_lookup = joined.is_none_or(|guild| is_discoverable(&guild.features));
+        if needs_lookup && self.requested.insert(source_key(id)) {
+            let _ = self.requests.send(Request::Fetch {
+                key: source_key(id),
+                route: source_route(id),
+            });
+        }
+        let Some(Source::Guild(guild)) = self
+            .fetched
+            .get(&source_key(id))
+            .and_then(Source::from_value)
+        else {
+            return;
+        };
+        if let Some(icon) = guild.icon.as_deref() {
+            self.request_image(
+                format!("guild:{}", guild.id),
+                format!(
+                    "https://cdn.discordapp.com/icons/{}/{icon}.webp?size=96",
+                    guild.id
+                ),
+            );
+        }
+        for other in others(&guild.emojis, id) {
+            let extension = if other.animated { "gif" } else { "webp" };
+            self.request_image(
+                format!("custom:{}", other.id),
+                format!(
+                    "https://cdn.discordapp.com/emojis/{}.{extension}?size=48",
+                    other.id
+                ),
+            );
+        }
+    }
+}
+
+/// `GET /emojis/{id}/source` (`EMOJI_SOURCE_DATA`, read by `g_` in module 624793).
+pub(super) fn source_route(id: Id) -> String {
+    format!("/emojis/{id}/source")
+}
+
+pub(super) fn source_key(id: Id) -> String {
+    format!("emoji-source:{id}")
+}
+
+fn is_discoverable(features: &[String]) -> bool {
+    features.iter().any(|feature| feature == "DISCOVERABLE")
+}
+
+/// What `g_` returns: where an emoji comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Source {
+    Guild(SourceGuild),
+    Application(String),
+    Pack,
+}
+
+/// `_.createFromServer`: the fields of the server the popout reads.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SourceGuild {
+    pub id: Id,
+    pub name: String,
+    pub icon: Option<String>,
+    pub discoverable: bool,
+    /// `approximate_presence_count`.
+    pub online: Option<u64>,
+    pub emojis: Vec<OtherEmoji>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct OtherEmoji {
+    pub id: Id,
+    pub name: String,
+    pub animated: bool,
+    pub require_colons: bool,
+}
+
+impl Source {
+    pub(super) fn from_value(body: &serde_json::Value) -> Option<Self> {
+        match body["type"].as_str()? {
+            "GUILD" => {
+                let guild = &body["guild"];
+                Some(Self::Guild(SourceGuild {
+                    id: guild["id"].as_str()?.parse().ok()?,
+                    name: guild["name"].as_str()?.to_owned(),
+                    icon: guild["icon"].as_str().map(str::to_owned),
+                    discoverable: guild["features"]
+                        .as_array()
+                        .is_some_and(|list| list.iter().any(|one| one == "DISCOVERABLE")),
+                    online: guild["approximate_presence_count"].as_u64(),
+                    emojis: guild["emojis"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|emoji| {
+                            Some(OtherEmoji {
+                                id: emoji["id"].as_str()?.parse().ok()?,
+                                name: emoji["name"].as_str()?.to_owned(),
+                                animated: emoji["animated"].as_bool().unwrap_or(false),
+                                require_colons: emoji["require_colons"].as_bool().unwrap_or(true),
+                            })
+                        })
+                        .collect(),
+                }))
+            }
+            "APPLICATION" => Some(Self::Application(
+                body["application"]["name"].as_str()?.to_owned(),
+            )),
+            "PACK" => Some(Self::Pack),
+            _ => None,
+        }
+    }
+}
+
+/// `en`: the server's first thirteen emoji without the open one, at most twelve.
+pub(super) fn others(emojis: &[OtherEmoji], open: Id) -> Vec<&OtherEmoji> {
+    emojis
+        .iter()
+        .take(13)
+        .filter(|emoji| emoji.id != open)
+        .take(12)
+        .collect()
 }
 
 #[cfg(test)]
@@ -412,5 +786,66 @@ mod tests {
         let at = popout_position(anchor);
         assert_eq!(f32::from(at.x), 513.5);
         assert_eq!(f32::from(at.y), 376.);
+    }
+
+    #[test]
+    fn a_guild_source_reads_its_card_and_other_emoji() {
+        let body = serde_json::json!({
+            "type": "GUILD",
+            "guild": {
+                "id": "5", "name": "Blob Land", "icon": null,
+                "features": ["COMMUNITY", "DISCOVERABLE"],
+                "approximate_presence_count": 1234,
+                "emojis": [
+                    {"id": "10", "name": "a", "animated": false, "require_colons": true},
+                    {"id": "11", "name": "b", "animated": true, "require_colons": false},
+                ],
+            },
+        });
+        let Some(Source::Guild(guild)) = Source::from_value(&body) else {
+            panic!("a guild source");
+        };
+        assert!(guild.discoverable);
+        assert_eq!(guild.online, Some(1234));
+        assert_eq!(guild.emojis.len(), 2);
+        assert!(guild.emojis[1].animated && !guild.emojis[1].require_colons);
+    }
+
+    #[test]
+    fn an_application_or_pack_source_has_no_guild() {
+        let app = serde_json::json!({"type": "APPLICATION", "application": {"id": "1", "name": "Helper"}});
+        assert_eq!(
+            Source::from_value(&app),
+            Some(Source::Application("Helper".into()))
+        );
+        assert_eq!(
+            Source::from_value(&serde_json::json!({"type": "PACK", "pack": null})),
+            Some(Source::Pack)
+        );
+        assert_eq!(
+            Source::from_value(&serde_json::json!({"type": "OTHER"})),
+            None
+        );
+    }
+
+    #[test]
+    fn the_other_emoji_are_the_first_thirteen_without_the_open_one_at_most_twelve() {
+        let list: Vec<OtherEmoji> = (1..=20)
+            .map(|id| OtherEmoji {
+                id,
+                name: format!("e{id}"),
+                animated: false,
+                require_colons: true,
+            })
+            .collect();
+        let shown = others(&list, 3);
+        assert_eq!(shown.len(), 12);
+        assert!(shown.iter().all(|emoji| emoji.id != 3 && emoji.id <= 13));
+        assert_eq!(others(&list[..2], 1).len(), 1);
+    }
+
+    #[test]
+    fn the_lookup_route_is_the_source_route() {
+        assert_eq!(source_route(77), "/emojis/77/source");
     }
 }

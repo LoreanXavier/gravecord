@@ -166,6 +166,12 @@ fn gallery_height(width: f32, media: bool) -> f32 {
 }
 
 impl Root {
+    pub(super) fn forum_menu_is_open(&self) -> bool {
+        self.channel
+            .and_then(|id| self.forums.get(&id))
+            .is_some_and(|view| view.menu.is_some())
+    }
+
     pub(super) fn close_forum_menu(&mut self) -> bool {
         self.channel
             .and_then(|id| self.forums.get_mut(&id))

@@ -242,7 +242,7 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(self.profile_avatar(&user, &presence)),
+                            .child(self.profile_avatar(&user, &presence, cx)),
                     ),
             )
             .into_any_element();

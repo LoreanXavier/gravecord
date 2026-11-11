@@ -456,16 +456,38 @@ impl Root {
         });
     }
 
-    pub(super) fn member_avatar(&self, user: &User, status: &str, probe: bool) -> gpui::Div {
-        self.decorated_avatar(user, status, Size::Member, probe)
+    pub(super) fn member_avatar(
+        &self,
+        user: &User,
+        status: &str,
+        probe: bool,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        self.decorated_avatar(user, status, Size::Member, probe, hovered, cx)
     }
 
-    pub(super) fn profile_avatar(&self, user: &User, status: &str) -> gpui::Div {
-        self.decorated_avatar(user, status, Size::Profile, false)
+    /// The profile popout's avatar plays whenever it is shown (module 891522 draws it as hovered).
+    pub(super) fn profile_avatar(
+        &self,
+        user: &User,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        self.decorated_avatar(user, status, Size::Profile, false, true, cx)
             .parity("profile-avatar")
     }
 
-    fn decorated_avatar(&self, user: &User, status: &str, size: Size, probe: bool) -> gpui::Div {
+    fn decorated_avatar(
+        &self,
+        user: &User,
+        status: &str,
+        size: Size,
+        probe: bool,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let live = self.live_image(user, size.geometry().base, hovered, cx);
         let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
         let decoration = self
             .equipped_decoration(user)
@@ -480,6 +502,30 @@ impl Root {
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
         let geometry = size.geometry();
+        // Playing: every frame of the animated file goes through the same composition as the still one (status
+        // ring, decoration) before it is drawn.
+        let animation = live.map(|(key, image)| {
+            let scale = self.ui_scale.get();
+            let spec = Spec {
+                size,
+                pixels: (geometry.art * scale * 2.).ceil() as u32,
+                status,
+                tint,
+            };
+            let decoration = decoration.clone();
+            let decoded: Arc<std::sync::OnceLock<Option<RgbaImage>>> = Arc::default();
+            let post: super::gif_tiles::Post = Arc::new(move |frame| {
+                let art = decoded.get_or_init(|| {
+                    decoration
+                        .as_ref()
+                        .and_then(|art| image::load_from_memory(art.bytes()).ok())
+                        .map(|art| art.to_rgba8())
+                });
+                compose(&frame, art.as_ref(), spec)
+            });
+            let side = (geometry.base * scale).round() as u32;
+            self.gif_art_pixels(&key, image, (side, side), 0., Some(post), cx)
+        });
         div().relative().size(px(geometry.base)).flex_none().child(
             div()
                 .when(probe && decoration.is_some(), |this| {
@@ -526,7 +572,8 @@ impl Root {
                         },
                     )
                     .size_full(),
-                ),
+                )
+                .children(animation),
         )
     }
 }

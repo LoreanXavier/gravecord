@@ -105,6 +105,44 @@ fn diff_image(ours: &RgbaImage, golden: &RgbaImage) -> RgbaImage {
     })
 }
 
+/// The name of a run's own copy of the app.
+fn is_run_copy(name: &str) -> bool {
+    name.starts_with("gravecord-run-") && name.ends_with(".exe")
+}
+
+/// Each run starts its own copy of the built app, beside it. A running app holds its file, so an app that is still
+/// running, or stuck, would otherwise stop the next build from replacing `gravecord.exe` for every other run. Copies
+/// of finished runs are removed here; one that is still running cannot be, and is left for a later run.
+fn run_copy(built: &Path) -> Result<PathBuf> {
+    let dir = built.parent().context("the built app has no folder")?;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if is_run_copy(&entry.file_name().to_string_lossy()) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let copy = dir.join(format!("gravecord-run-{}-{stamp}.exe", std::process::id()));
+    // Another build may be writing the file at this moment: try again shortly.
+    let mut tries = 0;
+    loop {
+        match fs::copy(built, &copy) {
+            Ok(_) => return Ok(copy),
+            Err(error) if tries < 10 => {
+                tries += 1;
+                let _ = error;
+                sleep(Duration::from_millis(500));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("copying {}", built.display()));
+            }
+        }
+    }
+}
+
 fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
     let status = Command::new("cargo")
         .args([
@@ -121,7 +159,7 @@ fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
         bail!("gravecord did not build");
     }
     let _ = fs::remove_file(out);
-    let exe = repo.join("target").join("debug").join("gravecord.exe");
+    let exe = run_copy(&repo.join("target").join("debug").join("gravecord.exe"))?;
     let mut args = vec![
         "--capture".to_owned(),
         out.display().to_string(),
@@ -232,6 +270,14 @@ fn map_for(maps: &Path, screen: &str, variant: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_runs_own_copy_is_swept() {
+        assert!(super::is_run_copy("gravecord-run-1234-1700000000000.exe"));
+        assert!(!super::is_run_copy("gravecord.exe"));
+        assert!(!super::is_run_copy("gravecord-run-1234.pdb"));
+        assert!(!super::is_run_copy("xtask.exe"));
+    }
+
     use super::*;
 
     #[test]

@@ -536,7 +536,7 @@ impl Root {
         };
         let preview = match (&forward.message, &forward.profile) {
             (Some(message), _) => self
-                .preview_text(&super::first_spans(&message.content))
+                .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
             (None, Some(user)) => self.profile_preview(user),
             (None, None) => div().into_any_element(),

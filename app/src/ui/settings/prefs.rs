@@ -23,6 +23,51 @@ pub(super) const LOCAL: &[(&str, bool)] = &[
     ("enable_switch_icons", false),
     ("os_minimize_to_tray", false),
     ("os_start_minimized", false),
+    // `enableHardwareAcceleration` of the desktop settings. The window always renders on the GPU here, so the switch
+    // is kept and applies to nothing.
+    ("hardware_acceleration", false),
+    // `AccessibilityStore` (module 775602): contrast, saturation of custom colours, the system hooks, how role
+    // colours and official messages show, the send button, and whether a profile's theme follows the user's.
+    ("desaturate_custom_colors", false),
+    ("high_contrast_mode", false),
+    ("sync_forced_colors", false),
+    ("sync_reduced_motion", false),
+    ("role_style", true),
+    ("official_message_style", true),
+    ("enable_send_button_outside_experiment", false),
+    ("sync_profile_themes", false),
+    // `ThemeStore.syncedThemesEnabled` ("Same as Device Theme") and the theme sync switch of this device.
+    ("appearance_same_as_device_theme", false),
+    ("appearance_sync_theme", false),
+    // `StreamerModeStore`.
+    ("streamer_mode_hide_personal_information", false),
+    ("streamer_mode_hide_invite_links", false),
+    (
+        "streamer_mode_hide_discord_window_from_screen_capture",
+        false,
+    ),
+    ("chat_favorites_toggle", false),
+    // Game Overlay: the official overlay keeps these in the desktop client's own settings, so they stay on this
+    // machine. There is no in-game overlay behind them yet; they hold their state across a restart and change nothing
+    // else.
+    ("overlay_oop_setting", false),
+    ("overlay_legacy_setting", false),
+    ("overlay_clickable_regions_setting", false),
+    ("overlay_widgets_voice", false),
+    ("overlay_widgets_quick_actions", false),
+    ("overlay_widgets_notifications", false),
+    ("overlay_widgets_chat", false),
+    ("overlay_widgets_activity", false),
+    ("overlay_widgets_video", false),
+    ("overlay_widgets_streams", false),
+    ("overlay_voice_widget_avatar_size", true),
+    ("overlay_voice_widget_display_names", true),
+    ("overlay_voice_widget_display_users", true),
+    ("overlay_notifications_text_chat", false),
+    ("overlay_notifications_welcome", false),
+    ("overlay_notifications_go_live", false),
+    ("overlay_notifications_game_activity", false),
+    ("overlay_notifications_now_playing", false),
 ];
 
 const STORAGE_KEY: &str = "settings.prefs";
@@ -42,26 +87,130 @@ fn proto_spec(key: &str) -> Option<&'static ProtoPref> {
 /// The local preferences saved by an earlier run, as the pages show them.
 pub(in crate::ui) fn restore() -> HashMap<&'static str, Choice> {
     let saved = storage::get(STORAGE_KEY).unwrap_or(Value::Null);
-    local_choices(&saved)
+    let mut choices = local_choices(&saved);
+    let generic = storage::get(GENERIC_KEY).unwrap_or(Value::Null);
+    choices.extend(generic_choices(&generic));
+    choices
 }
 
 fn local_choices(saved: &Value) -> HashMap<&'static str, Choice> {
-    LOCAL
-        .iter()
-        .filter_map(|(key, radio)| {
-            let value = saved.get(*key)?;
-            let choice = if *radio {
-                Choice::Index(usize::try_from(value.as_u64()?).ok()?)
+    let switches = LOCAL.iter().filter_map(|(key, radio)| {
+        let value = saved.get(*key)?;
+        let choice = if *radio {
+            Choice::Index(usize::try_from(value.as_u64()?).ok()?)
+        } else {
+            Choice::On(value.as_bool()?)
+        };
+        Some((*key, choice))
+    });
+    let numbers = super::controls::SLIDERS.iter().filter_map(|spec| {
+        let value = saved.get(spec.key)?.as_f64()? as f32;
+        Some((spec.key, Choice::Number(value)))
+    });
+    switches.chain(numbers).collect()
+}
+
+/// Every row key of every generated page, to give a saved key its `'static` name.
+fn page_keys() -> &'static HashMap<&'static str, ()> {
+    static KEYS: std::sync::OnceLock<HashMap<&'static str, ()>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        fn walk(nodes: &'static [super::model::Node], keys: &mut HashMap<&'static str, ()>) {
+            use super::model::Node;
+            for node in nodes {
+                if !node.key().is_empty() {
+                    keys.insert(node.key(), ());
+                }
+                if let Node::Category { children, .. } | Node::Accordion { children, .. } = node {
+                    walk(children, keys);
+                }
+            }
+        }
+        let mut keys = HashMap::new();
+        for page in super::ALL_PAGES {
+            walk(super::pages::nodes(*page), &mut keys);
+        }
+        keys
+    })
+}
+
+/// Choices of rows that no other module handles (`GENERIC_KEY`): a switch is a boolean, a radio or select an
+/// integer, a slider a float.
+fn generic_choices(saved: &Value) -> HashMap<&'static str, Choice> {
+    let Some(map) = saved.as_object() else {
+        return HashMap::new();
+    };
+    page_keys()
+        .keys()
+        .filter_map(|key| {
+            let value = map.get(*key)?;
+            let choice = if let Some(on) = value.as_bool() {
+                Choice::On(on)
+            } else if let Some(index) = value.as_u64() {
+                Choice::Index(usize::try_from(index).ok()?)
             } else {
-                Choice::On(value.as_bool()?)
+                Choice::Number(value.as_f64()? as f32)
             };
             Some((*key, choice))
         })
         .collect()
 }
 
+const GENERIC_KEY: &str = "settings.generic";
+
+/// A harness run that must not write settings keeps its choices in memory only.
+fn writes_blocked() -> bool {
+    storage::is_capture_run() && std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() == Ok("1")
+}
+
+fn save_local(key: &str, value: Value) {
+    if writes_blocked() {
+        return;
+    }
+    let mut saved = storage::get(STORAGE_KEY)
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    saved[key] = value;
+    storage::set(STORAGE_KEY, saved);
+}
+
+fn save_generic(key: &str, value: Value) {
+    if writes_blocked() {
+        return;
+    }
+    let mut saved = storage::get(GENERIC_KEY)
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    saved[key] = value;
+    storage::set(GENERIC_KEY, saved);
+}
+
+/// The raw `ui_density` values the Spacing radio holds, in the page's order: Compact, Default, Spacious.
+/// Radios whose options are not the enum's own numbering: the enum value of each option, in the page's order.
+/// `ui_density` lists Compact, Default, Spacious (`eJ.NS` 1, 4, 2); Profile Privacy lists friends and all servers,
+/// friends and small servers, friends only (`profile_visibility` 3, 2, 1); the spam filter lists Filter all, Filter
+/// non-friends, Don't filter (`dm_spam_filter_v2` 3, 2, 1).
+const RAW: &[(&str, &[u64])] = &[
+    (UI_DENSITY, &[1, 4, 2]),
+    // Activity Privacy's default for new servers: Don't share, Share in large servers, Share (`eJ.Qd` 1, 2, 3; 0 is
+    // unset).
+    ("activity_sharing_per_guild_default_setting", &[1, 2, 3]),
+    ("profile_privacy_setting", &[3, 2, 1]),
+    ("dm_spam_setting", &[3, 2, 1]),
+];
+
+fn raw_of(key: &str) -> Option<&'static [u64]> {
+    RAW.iter()
+        .find(|(known, _)| *known == key)
+        .map(|(_, raw)| *raw)
+}
+const UI_DENSITY: &str = "appearance_ui_density";
+
 /// Whether Time format is 24-hour, for the formatting functions that have no `Root` at hand. Set each frame.
 static CLOCK_24: AtomicBool = AtomicBool::new(false);
+
+pub(in crate::ui) fn clock_24() -> bool {
+    CLOCK_24.load(Ordering::Relaxed)
+}
 
 pub(in crate::ui) fn set_clock_24(on: bool) {
     CLOCK_24.store(on, Ordering::Relaxed);
@@ -101,22 +250,23 @@ impl Root {
     pub(in crate::ui) fn pref_on(&self, key: &'static str, default: bool) -> bool {
         match self.setting_choices.get(key) {
             Some(Choice::On(on)) => *on,
-            _ => self
-                .stores
-                .prefs
-                .get(key)
-                .map_or(default, |value| *value != 0),
+            _ => self.stores.prefs.get(key).map_or(default, |value| {
+                // `drops_opted_out` and friends: the switch is the opposite of what the account stores.
+                (*value != 0) != proto_spec(key).is_some_and(|pref| pref.invert)
+            }),
         }
     }
 
     pub(in crate::ui) fn pref_index(&self, key: &'static str, default: usize) -> usize {
         match self.setting_choices.get(key) {
             Some(Choice::Index(index)) => *index,
-            _ => self
-                .stores
-                .prefs
-                .get(key)
-                .map_or(default, |value| *value as usize),
+            _ => self.stores.prefs.get(key).map_or(default, |value| {
+                match raw_of(key) {
+                    // The account holds the enum's value; the page lists its options in its own order.
+                    Some(raw) => raw.iter().position(|raw| raw == value).unwrap_or(default),
+                    None => *value as usize,
+                }
+            }),
         }
     }
 
@@ -125,7 +275,13 @@ impl Root {
     pub(super) fn pref_changed(&mut self, key: &'static str, on: bool, index: usize) -> bool {
         if let Some(pref) = proto_spec(key) {
             let radio = matches!(self.setting_choices.get(key), Some(Choice::Index(_)));
-            let value = if radio { index as u64 } else { u64::from(on) };
+            let value = if let Some(raw) = raw_of(key) {
+                raw[index.min(raw.len() - 1)]
+            } else if radio {
+                index as u64
+            } else {
+                u64::from(on != pref.invert)
+            };
             // The account's value shows from now on; the page reads it from `Stores::prefs`.
             self.setting_choices.remove(key);
             let patch = self.stores.set_pref(pref, value);
@@ -133,23 +289,34 @@ impl Root {
                 // Share my detected activities: what the presence carries changes at once.
                 self.refresh_own_presence();
             }
-            let _ = self.requests.send(Request::Rest {
-                key: None,
-                method: reqwest::Method::PATCH,
-                route: "/users/@me/settings-proto/1".to_owned(),
-                body: Some(json!({"settings": patch})),
-            });
+            if !patch.is_empty() {
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::PATCH,
+                    route: "/users/@me/settings-proto/1".to_owned(),
+                    body: Some(json!({"settings": patch})),
+                });
+            }
             return true;
         }
         if let Some((key, radio)) = local_spec(key) {
-            let mut saved = storage::get(STORAGE_KEY)
-                .filter(Value::is_object)
-                .unwrap_or_else(|| json!({}));
-            saved[key] = if radio { json!(index) } else { json!(on) };
-            storage::set(STORAGE_KEY, saved);
+            save_local(key, if radio { json!(index) } else { json!(on) });
             return true;
         }
-        false
+        // Rows no other module handles keep their value on this machine, so they come back after a restart.
+        match self.setting_choices.get(key) {
+            Some(Choice::On(on)) => save_generic(key, json!(on)),
+            Some(Choice::Index(index)) => save_generic(key, json!(index)),
+            Some(Choice::Number(value)) => save_generic(key, json!(value)),
+            None => return false,
+        }
+        true
+    }
+
+    /// A slider was let go (or moved by a key): its value is a device setting.
+    pub(super) fn slider_committed(&mut self, key: &'static str, value: f32) {
+        self.setting_choices.insert(key, Choice::Number(value));
+        save_local(key, json!(value));
     }
 
     /// The harness's `pref get <key>` and `pref set <key> on|off|<index>`: what the account holds for a proto
@@ -162,17 +329,31 @@ impl Root {
         if *verb == "local" {
             let key_name = proto_spec(key)
                 .map(|pref| pref.key)
-                .or_else(|| local_spec(key).map(|(known, _)| known));
+                .or_else(|| local_spec(key).map(|(known, _)| known))
+                .or_else(|| page_keys().get_key_value(*key).map(|(known, _)| *known));
             let Some(key_name) = key_name else {
                 return format!("{key} is not a preference");
             };
-            let on = match rest.first().copied() {
-                Some("on") => true,
-                Some("off") => false,
-                _ => return "usage: pref local <key> on|off".to_owned(),
+            let choice = match rest.first().copied() {
+                Some("on") => Choice::On(true),
+                Some("off") => Choice::On(false),
+                Some(number) if number.contains('.') => match number.parse::<f32>() {
+                    Ok(value) => Choice::Number(value),
+                    Err(_) => return format!("cannot read {number}"),
+                },
+                Some(index) => match index.parse::<usize>() {
+                    Ok(index) => Choice::Index(index),
+                    Err(_) => return format!("cannot read {index}"),
+                },
+                None => return "usage: pref local <key> on|off|<index>|<number.0>".to_owned(),
             };
-            self.setting_choices.insert(key_name, Choice::On(on));
-            return format!("{key} local = {on}");
+            // A numeric slider given as a whole number ("16") is still a number.
+            let choice = match (choice, super::controls::spec(key_name)) {
+                (Choice::Index(index), Some(_)) => Choice::Number(index as f32),
+                (other, _) => other,
+            };
+            self.setting_choices.insert(key_name, choice);
+            return format!("{key} local = {choice:?}");
         }
         if *key == "theme" {
             if let ("set", Some(Ok(value))) = (*verb, rest.first().map(|text| text.parse::<u64>()))
@@ -246,7 +427,9 @@ mod tests {
     #[test]
     fn every_pref_names_a_row_of_a_generated_page() {
         let pages = include_str!("pages.rs");
-        for pref in PROTO_PREFS {
+        // The colour theme is set by the Appearance page's colour tiles (`client_theme.rs`), which have no row key.
+        const TILES: &[&str] = &["appearance_client_theme_preset"];
+        for pref in PROTO_PREFS.iter().filter(|pref| !TILES.contains(&pref.key)) {
             assert!(
                 pages.contains(&format!("key: \"{}\"", pref.key)),
                 "{} has no row",
@@ -259,5 +442,18 @@ mod tests {
                 "{key} has no row"
             );
         }
+    }
+
+    #[test]
+    fn radios_with_their_own_order_map_to_the_enum_values() {
+        // Profile Privacy lists friends and all servers first, which is `profile_visibility` 3.
+        let raw = raw_of("profile_privacy_setting").unwrap();
+        assert_eq!(raw, &[3, 2, 1]);
+        assert_eq!(raw.iter().position(|value| *value == 1), Some(2));
+        assert_eq!(raw_of("appearance_ui_density"), Some(&[1, 4, 2][..]));
+        assert!(raw_of("reaction_notifications").is_none());
+        // Every option of such a radio has an enum value.
+        let pages = include_str!("pages.rs");
+        assert!(pages.contains("key: \"dm_spam_setting\""));
     }
 }

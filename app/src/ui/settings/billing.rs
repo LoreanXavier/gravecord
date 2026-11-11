@@ -47,7 +47,7 @@ impl Root {
             "premium_guild_subscriptions_setting" => self.server_boost_body(cx),
             "nitro_setting" => self.nitro_settings_body(cx),
             "subscriptions_settings" => self.subscriptions_body(),
-            "billing_payment_methods" => self.payment_methods_body(),
+            "billing_payment_methods" => self.payment_methods_body(cx),
             "billing_transaction_history" => self.transactions_body(),
             _ => return self.gift_inventory_custom(key, cx),
         })
@@ -111,7 +111,7 @@ impl Root {
 
     /// No saved payment source: the notice and "Add Payment Method". The button is drawn but not wired: the
     /// browser page that adds a source on its own is not in the snapshot.
-    fn payment_methods_body(&self) -> AnyElement {
+    fn payment_methods_body(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         if !empty(self.nitro.sources.as_ref()) {
             return div().h(px(76.)).into_any_element();
         }
@@ -139,11 +139,22 @@ impl Root {
                             .child("Checkout faster by saving a payment method"),
                     ),
             )
-            .child(div().id("billing-add-payment").child(button(
-                "billing-add-payment-button",
-                "Add Payment Method",
-                ButtonKind::Primary,
-            )))
+            .child(
+                div()
+                    .id("billing-add-payment")
+                    .cursor_pointer()
+                    // A money flow: only its first dialog opens here (`actions::Dialog::Account("payment")`).
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings_extra.dialog =
+                            Some(super::actions::Dialog::Account("payment"));
+                        cx.notify();
+                    }))
+                    .child(button(
+                        "billing-add-payment-button",
+                        "Add Payment Method",
+                        ButtonKind::Primary,
+                    )),
+            )
             .into_any_element()
     }
 

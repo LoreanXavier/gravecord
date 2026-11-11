@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 enum Command {
-    Speak(String),
+    Speak(String, f32),
     Stop,
 }
 
@@ -33,7 +33,13 @@ impl Speech {
                 };
                 loop {
                     match received.recv_timeout(Duration::from_millis(200)) {
-                        Ok(Command::Speak(text)) => {
+                        Ok(Command::Speak(text, rate)) => {
+                            // `TTSStore.speechRate`: 1 is the voice's normal pace; the engine's own range bounds it.
+                            let rate = if rate > 0. { rate } else { 1. };
+                            let _ = voice.set_rate(
+                                (voice.normal_rate() * rate)
+                                    .clamp(voice.min_rate(), voice.max_rate()),
+                            );
                             // `interrupt`: a new message replaces the one being read.
                             if voice.speak(text, true).is_ok() {
                                 flag.store(true, Ordering::SeqCst);
@@ -57,9 +63,9 @@ impl Speech {
         Self { commands, speaking }
     }
 
-    pub fn speak(&self, text: String) {
+    pub fn speak(&self, text: String, rate: f32) {
         self.speaking.store(true, Ordering::SeqCst);
-        let _ = self.commands.send(Command::Speak(text));
+        let _ = self.commands.send(Command::Speak(text, rate));
     }
 
     pub fn stop(&self) {

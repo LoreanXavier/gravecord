@@ -1,8 +1,9 @@
 //! The app's side of the Clips engine (`crates/dc-clips`): the save keybind, the save itself with the official limits and
 //! outcomes, the clips found in the storage folder, and the settings pushed to the recorder.
 //!
-//! Go Live path only (plan section 1.2 item 1). The decoupled path, auto clips, the gallery, the editor and sharing are
-//! not here. What follows module 489496 `yd` (the save), module 419490 (the store's counters and its handling of
+//! Two sources feed the buffer: the stream's own encoder (Go Live) and, with no stream, the capture of the visible
+//! game's window (`crate::clips_capture`, the decoupled branch of `yd`). Auto clips are not here; the gallery, the
+//! editor and the toast are in `ui::clips`. What follows module 489496 `yd` (the save), module 419490 (the store's counters and its handling of
 //! `CLIPS_SAVE_CLIP_*` and `CLIPS_LOAD_DIRECTORY_SUCCESS`) and module 596339 (the keybind).
 use super::*;
 use crate::net::Update;
@@ -50,7 +51,7 @@ pub(in crate::ui) enum SaveStart {
 /// The engine's part of the Clips state: the store's non-persisted fields (`clips`, `newClipIds`, `hasClips`, the save
 /// counter, `lastClipsError`), the keybind hook, and a short trace of what happened.
 #[derive(Default)]
-pub(super) struct Engine {
+pub(in crate::ui) struct Engine {
     /// `m` in the store: every clip loaded from the folder or saved since, by id.
     pub clips: BTreeMap<String, Clip>,
     /// `newClipIds`.
@@ -66,6 +67,28 @@ pub(super) struct Engine {
     hook: Option<dc_hotkey::Hook>,
     /// What the engine did, newest last: dispatches, sounds and the texts of the notifications.
     pub trace: Vec<String>,
+    /// `getVisibleGame()` with its `windowHandle`: the game the decoupled path records.
+    #[cfg(windows)]
+    pub game: Option<crate::clips_capture::Game>,
+    /// The running capture of that game.
+    #[cfg(windows)]
+    pub capture: Option<crate::clips_capture::GameCapture>,
+    #[cfg(windows)]
+    pub capture_starting: bool,
+    /// What the capture runs with, so a change of the page's quality restarts it: height, frame rate, percent.
+    #[cfg(windows)]
+    pub capture_quality: Option<(u32, u32, u32)>,
+    /// The one-second loop that keeps the capture in step with the game, the settings and the stream runs.
+    pub ticking: bool,
+    /// Set by the harness: the visible game is given by a script, and the scan does not replace it.
+    pub test_game: bool,
+    /// The Quick Bar state and picture cache (`ui::clips`).
+    pub ui: crate::ui::clips::State,
+    /// When the visible game became the visible one, and how long it is left alone before its window is captured.
+    #[cfg(windows)]
+    pub game_since: Option<std::time::Instant>,
+    #[cfg(windows)]
+    pub game_delay: Duration,
 }
 
 impl Engine {
@@ -193,6 +216,161 @@ impl Root {
         self.clips.engine.configure(&self.clips.store.settings);
     }
 
+    /// The game the decoupled path records changed (`getVisibleGame()`): `None` when there is none or it has no window.
+    #[cfg(windows)]
+    pub(in crate::ui) fn clips_game_changed(
+        &mut self,
+        game: Option<crate::clips_capture::Game>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.clips.engine.game != game {
+            // A game that is new to the list waits before its window is captured (module 516130); a test game does not.
+            let new_process = self.clips.engine.game.as_ref().map(|game| game.pid)
+                != game.as_ref().map(|game| game.pid);
+            if new_process {
+                self.clips.engine.game_since = Some(std::time::Instant::now());
+                self.clips.engine.game_delay = if self.clips.engine.test_game {
+                    Duration::ZERO
+                } else {
+                    crate::clips_capture::NEW_GAME_DELAY
+                };
+            }
+            self.clips.engine.note(match &game {
+                Some(game) => format!(
+                    "visible game {} pid {} window {:#x}",
+                    game.name, game.pid, game.window
+                ),
+                None => "visible game none".to_owned(),
+            });
+            self.clips.engine.game = game;
+        }
+        self.clips_ensure_ticking(cx);
+        self.clips_sync_capture(cx);
+    }
+
+    /// Starts the one-second loop once.
+    pub(in crate::ui) fn clips_ensure_ticking(&mut self, cx: &mut Context<Self>) {
+        if self.clips.engine.ticking {
+            return;
+        }
+        self.clips.engine.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this
+                    .update(cx, |this, cx| {
+                        #[cfg(windows)]
+                        this.clips_sync_capture(cx);
+                        this.clips_ui_tick(cx);
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The decoupled path (module 489496 `yd`, `B = U && x && k`): while Enable Clipping is on, a visible game has a
+    /// window and no stream of ours feeds the buffer, the game's window is captured with the page's quality. It stops
+    /// when the game goes, Clipping is turned off, a stream takes the buffer (its sender feeds the same clips: one
+    /// capture serves both) or the quality changes (it restarts).
+    #[cfg(windows)]
+    pub(in crate::ui) fn clips_sync_capture(&mut self, cx: &mut Context<Self>) {
+        self.clips_sync_engine();
+        let quality = &self.clips.store.settings.clips_quality;
+        let wanted_quality = (
+            quality.resolution.height() as u32,
+            quality.frame_rate.fps() as u32,
+            quality.bitrate_percent as u32,
+        );
+        let game = self.clips.engine.game.clone();
+        let location = &self.clips.store.settings.storage_location;
+        let location_set = !location.is_empty() && location != DEFAULT_LOCATION;
+        let enabled = self.clips_enabled();
+        let own_stream = self.own_stream_active();
+        let engine = &mut self.clips.engine;
+        let ended = engine.capture.as_ref().and_then(|capture| capture.ended());
+        let plan = crate::clips_capture::plan(&crate::clips_capture::Situation {
+            enabled,
+            own_stream,
+            location_set,
+            game: game.as_ref(),
+            game_age: engine
+                .game_since
+                .map_or(Duration::ZERO, |since| since.elapsed()),
+            delay: engine.game_delay,
+            quality: wanted_quality,
+            running: engine
+                .capture
+                .as_ref()
+                .zip(engine.capture_quality)
+                .map(|(capture, quality)| (&capture.game, quality, ended)),
+            starting: engine.capture_starting,
+        });
+        if let Some(why) = plan.stop
+            && let Some(capture) = engine.capture.take()
+        {
+            let (captured, encoded) = capture.counts();
+            let line = format!(
+                "clip buffer stopped for {}: {why} ({captured} pictures captured, {encoded} encoded)",
+                capture.game.name
+            );
+            tracing::info!("{line}");
+            engine.note(line);
+        }
+        if !plan.start {
+            return;
+        }
+        let Some(game) = game else { return };
+        engine.capture_starting = true;
+        let (height, fps, percent) = wanted_quality;
+        let started = game.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::clips_capture::GameCapture::start(started, height, fps, percent)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let engine = &mut this.clips.engine;
+                engine.capture_starting = false;
+                match result {
+                    Ok(capture) => {
+                        let line = format!(
+                            "clip buffer started for {}: {}x{} at {} fps, {} b/s, encoder {}, game sound {}",
+                            capture.game.name,
+                            capture.settings.width,
+                            capture.settings.height,
+                            capture.settings.fps,
+                            capture.settings.bitrate,
+                            capture.backend(),
+                            capture.audio_error.as_deref().unwrap_or("recorded")
+                        );
+                        tracing::info!("{line}");
+                        engine.capture = Some(capture);
+                        engine.capture_quality = Some((height, fps, percent));
+                        engine.last_error = None;
+                        engine.note(line);
+                    }
+                    Err(error) => {
+                        let line = format!("clip buffer could not start: {error}");
+                        tracing::info!("{line}");
+                        engine.note(line);
+                        engine.last_error = Some(error);
+                        // Try again in ten seconds, not every second.
+                        engine.game_since = Some(std::time::Instant::now());
+                        engine.game_delay = Duration::from_secs(10);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// A stream of ours is about to start: the recorder learns what it shows (`sourceName`) and the settings are
     /// current.
     pub(in crate::ui) fn clips_stream_starting(&mut self, source_name: &str) {
@@ -296,8 +474,13 @@ impl Root {
             return noop(self, NoOp::MaxConcurrentSaves);
         }
         // The native module is part of this client, so it is always loaded. A source: the account is clipping and
-        // streaming (the decoupled path has no source here).
-        if !self.clips_enabled() || !self.own_stream_active() {
+        // streaming (`F`), or clipping with a visible game whose window is being captured (`B`).
+        let streaming = self.own_stream_active();
+        #[cfg(windows)]
+        let decoupled = self.clips.engine.game.is_some() && self.clips.engine.capture.is_some();
+        #[cfg(not(windows))]
+        let decoupled = false;
+        if !self.clips_enabled() || !(streaming || decoupled) {
             return noop(self, NoOp::NoEligibleSource);
         }
         let recorder = dc_clips::recorder();
@@ -312,9 +495,10 @@ impl Root {
         // `CLIPS_SAVE_CLIP_START`, the `clip_save` sound for a manual clip, and the "Saving clip" notification.
         self.clips.engine.in_flight += 1;
         let sound = crate::sounds::play_with("clip_save", SAVE_SOUND_VOLUME, Output::Default);
-        self.clips
-            .engine
-            .note("CLIPS_SAVE_CLIP_START clipType=streamer clipMethod=manual");
+        self.clips.engine.note(format!(
+            "CLIPS_SAVE_CLIP_START clipType={} clipMethod=manual",
+            if streaming { "streamer" } else { "decoupled" }
+        ));
         self.clips.engine.note("sound clip_save volume=0.5");
         self.clips
             .engine
@@ -386,6 +570,7 @@ impl Root {
                     clip.meta.length
                 ));
                 self.clips.engine.clip_saved(clip);
+                self.clips_after_save(cx);
             }
             Err(SaveFailure::WarmingUp) => {
                 // A no-op that gives the counter back: the sound stops, nothing is shown.
