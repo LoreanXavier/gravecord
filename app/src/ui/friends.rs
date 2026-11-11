@@ -255,8 +255,12 @@ impl Root {
                     .and_then(|id| id.parse::<Id>().ok())
                 {
                     self.select_home(Some(channel));
+                    if let Some(video) = self.pending_call.take() {
+                        self.start_call(channel, video, true, cx);
+                    }
                 }
             }
+            self.pending_call = None;
             cx.notify();
             return true;
         }
@@ -566,6 +570,22 @@ impl Root {
                     .when(menu_open, |this| this.bg(color("--background-mod-normal")))
                     .hover(|style| style.bg(color("--background-mod-subtle")))
                     .rule(motion::Rule::PeopleRow)
+                    // A person's row opens the same user menu as their name does elsewhere (a row of the people
+                    // list has no server behind it).
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::User {
+                                    user: id,
+                                    guild: None,
+                                },
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .when(kind == RELATIONSHIP_FRIEND, |this| {
                         this.on_click(cx.listener(move |this, _, _, cx| this.open_dm_with(id, cx)))
                     })
@@ -1203,13 +1223,13 @@ impl Root {
                             .child(row("friend-video", "Start Video Call", false).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.friend_menu = None;
-                                    this.start_dm_call(user, cx);
+                                    this.start_dm_call_with(user, true, cx);
                                 }),
                             ))
                             .child(row("friend-voice", "Start Voice Call", false).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.friend_menu = None;
-                                    this.start_dm_call(user, cx);
+                                    this.start_dm_call_with(user, false, cx);
                                 }),
                             ))
                             .child(row("friend-remove", "Remove Friend", true).on_click(
@@ -1227,8 +1247,26 @@ impl Root {
     }
 
     /// A call from the friends list: the DM opens and the call starts there.
-    pub(super) fn start_dm_call(&mut self, user: Id, cx: &mut Context<Self>) {
-        self.open_dm_with(user, cx);
+    /// Start Voice Call / Start Video Call of a person: their DM opens (created first when there is none) and the
+    /// call starts in it.
+    pub(super) fn start_dm_call_with(&mut self, user: Id, video: bool, cx: &mut Context<Self>) {
+        let existing = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|channel| channel.recipients == [user])
+            .map(|channel| channel.id);
+        match existing {
+            Some(channel) => {
+                self.select_home(Some(channel));
+                let active = self.stores.calls.is_call_active(channel, None);
+                self.start_call(channel, video, !active, cx);
+            }
+            None => {
+                self.pending_call = Some(video);
+                self.open_dm_with(user, cx);
+            }
+        }
     }
 
     /// "Remove 'name'" (`fPLvZd`, `l5FFq6`).

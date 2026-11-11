@@ -404,7 +404,7 @@ impl Root {
     }
 
     /// The pointer moved over the view: the bar shows, and a redraw is due when the two seconds are over.
-    fn voice_view_moved(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn voice_view_moved(&mut self, cx: &mut Context<Self>) {
         let was_idle = self.vv.last_move.elapsed() >= IDLE;
         self.vv.last_move = Instant::now();
         if was_idle {
@@ -437,7 +437,7 @@ impl Root {
         .detach();
     }
 
-    fn controls_shown(&self) -> bool {
+    pub(super) fn controls_shown(&self) -> bool {
         self.vv.last_move.elapsed() < IDLE || self.vv.menu.is_some()
     }
 
@@ -691,7 +691,7 @@ impl Root {
         view.into_any_element()
     }
 
-    fn call_view(
+    pub(super) fn call_view(
         &mut self,
         guild: Id,
         channel: Id,
@@ -817,7 +817,9 @@ impl Root {
                     .child(fade(true))
                     .child(fade(false)),
             )
-            .child(self.call_header(channel, shown, focus_head, cx))
+            .when(guild != 0, |this| {
+                this.child(self.call_header(channel, shown, focus_head, cx))
+            })
             .children(activity_stage.then(|| self.activity_leave_button(cx)))
             .child(self.call_bar(guild, channel, shown, cx))
             .children(self.voice_menus(channel, width, height, cx))
@@ -1401,10 +1403,16 @@ impl Root {
     }
 
     /// `bottomControls_rTsZa_`: Invite, the centre buttons, Pop Out and Full Screen.
-    fn call_bar(&self, guild: Id, channel: Id, shown: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn call_bar(
+        &self,
+        guild: Id,
+        channel: Id,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let muted = self.self_mute || self.self_deaf;
         let soundboard_reason = self.soundboard_disabled();
-        let _ = (guild, channel);
+        let _ = channel;
         let tray = |id: &'static str, glyph: &'static str| {
             div().id(id).size(px(24.)).cursor_pointer().child(icon(
                 glyph,
@@ -1714,15 +1722,22 @@ impl Root {
             .items_center()
             .when(!shown, |this| this.opacity(0.).invisible())
             .child(
-                div().flex_1().flex().items_center().child(
-                    self.with_tip(
-                        "call-invite-tip",
-                        Tip::text("Invite", Side::Top),
-                        tray("call-invite", "voice_view_invite")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx))),
-                        cx,
-                    ),
-                ),
+                // A DM call has no Invite: its left slot is empty (Show/Hide chat only appears with video, module 156652).
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .when(guild != 0, |this| {
+                        this.child(
+                            self.with_tip(
+                                "call-invite-tip",
+                                Tip::text("Invite", Side::Top),
+                                tray("call-invite", "voice_view_invite")
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx))),
+                                cx,
+                            ),
+                        )
+                    }),
             )
             .child(centre)
             .child(
@@ -1732,22 +1747,26 @@ impl Root {
                     .items_center()
                     .justify_end()
                     .gap(px(20.))
-                    .child(self.with_tip(
-                        "call-popout-tip",
-                        Tip::text("Pop Out", Side::Top),
-                        tray("call-popout", "voice_view_popout"),
-                        cx,
-                    ))
-                    .child(self.with_tip(
-                        "call-fullscreen-tip",
-                        Tip::text("Full Screen", Side::Top),
-                        tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(
-                            |_, _, window, _| {
-                                window.toggle_fullscreen();
-                            },
-                        )),
-                        cx,
-                    )),
+                    // Module 540462: Pop Out and Full Screen only exist in video mode (`mode === VIDEO && inCall`),
+                    // so a DM's voice call has neither (golden `dm-call/in-call-alone`).
+                    .when(guild != 0 || self.dmc.video, |this| {
+                        this.child(self.with_tip(
+                            "call-popout-tip",
+                            Tip::text("Pop Out", Side::Top),
+                            tray("call-popout", "voice_view_popout"),
+                            cx,
+                        ))
+                        .child(self.with_tip(
+                            "call-fullscreen-tip",
+                            Tip::text("Full Screen", Side::Top),
+                            tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(
+                                |_, _, window, _| {
+                                    window.toggle_fullscreen();
+                                },
+                            )),
+                            cx,
+                        ))
+                    }),
             )
             .into_any_element()
     }
@@ -1893,7 +1912,7 @@ impl Root {
     }
 
     /// The More Options menu (module M3qk4j) and a tile's Options menu.
-    fn voice_menus(
+    pub(super) fn voice_menus(
         &self,
         channel: Id,
         width: f32,

@@ -130,7 +130,7 @@ impl Root {
     }
 
     pub(super) fn dm_profile(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.show_dm_profile {
+        if !self.show_dm_profile || self.dm_call_shown() {
             return None;
         }
         let channel = self.current_dm()?;
@@ -350,7 +350,6 @@ impl Root {
                     .child(mutuals),
             )
             .when_some(bio, |this, bio| this.child(self.bio(&bio, text, cx)))
-            .children(self.live_activity_cards(user_id, false, text, subtle, cx))
             .child(
                 div()
                     .flex()
@@ -371,7 +370,9 @@ impl Root {
                             .text_color(text)
                             .child(member_since(user.id)),
                     ),
-            );
+            )
+            // `design/dom/dm-call/idle`: the activity card follows Member Since.
+            .children(self.live_activity_cards(user_id, false, text, subtle, cx));
         let footer = div().p(px(16.)).child(
             div()
                 .id("dm-profile-full")

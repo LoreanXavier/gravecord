@@ -39,6 +39,14 @@ impl Root {
         }
         if let Some(channel) = channel {
             self.open_channel_messages(channel);
+            // `CHANNEL_SELECT` asks the gateway for the channel's call (module 470710 `A`).
+            let private = self
+                .stores
+                .private_channels
+                .iter()
+                .any(|dm| dm.id == channel);
+            self.stores.calls.connect_channel(channel, private, false);
+            self.calls_after_dispatch_effects();
         }
         // The DM welcome shows mutual servers from the other person's profile.
         let recipient = self
@@ -189,6 +197,11 @@ impl Root {
         // Blocked or ignored people carry their mark where the close button would be.
         let marked = self.is_blocked(recipient.id) || self.stores.is_ignored(recipient.id);
         let id = channel.id;
+        let timer = self
+            .call
+            .as_ref()
+            .filter(|call| call.guild == 0 && call.channel == id)
+            .and_then(|_| self.call_timer());
         let selected = self.channel == Some(id);
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
         let status = self.stores.status(recipient.id).to_owned();
@@ -317,8 +330,32 @@ impl Root {
                                                 .map(|tag| self.server_tag_chip(tag)),
                                         ),
                                 )
-                                .children(self.presence_line(&recipient, None, true)),
+                                .children(self.presence_line_with(
+                                    &recipient,
+                                    None,
+                                    true,
+                                    16.,
+                                    // A selected or hovered row lifts its activity line to the row's text colour.
+                                    if selected || self.hovered_dm == Some(id) {
+                                        "--text-strong"
+                                    } else {
+                                        "--channels-default"
+                                    },
+                                )),
                         )
+                        // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
+                        // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
+                        .children(timer.clone().map(|text| {
+                            div()
+                                .flex_none()
+                                .pl(px(4.))
+                                .pr(px(8.))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_family(super::MONO)
+                                .text_color(color("--text-feedback-positive"))
+                                .child(text)
+                        }))
                         .when(marked, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.
                             this.child(div().mr(px(8.)).child(icon(
@@ -331,7 +368,8 @@ impl Root {
                                 "--text-default",
                             )))
                         })
-                        .when(!marked, |this| {
+                        .when(!marked && timer.is_none(), |this| {
+                            // The close button is not laid out while the call timer shows.
                             this.child(
                                 // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
                                 // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it

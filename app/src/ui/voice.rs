@@ -103,7 +103,7 @@ impl Root {
         if let Some(call) = &self.call {
             if call.channel == channel {
                 // The row of the call this client is in opens its view.
-                self.open_voice_view(guild, channel, cx);
+                self.show_call_channel(guild, channel, cx);
                 return;
             }
             call.controls.disconnect();
@@ -136,8 +136,36 @@ impl Root {
         self.video_call_started(cx);
         self.sync_ptt_hook();
         self.vv.invite_dismissed = false;
-        self.open_voice_view(guild, channel, cx);
+        self.show_call_channel(guild, channel, cx);
         cx.notify();
+    }
+
+    /// Harness only: this account "in" the call of a DM without any voice state sent anywhere or any media opened,
+    /// for frames of the in-call screens. Nothing leaves the process.
+    #[cfg(feature = "capture")]
+    pub(super) fn fake_dm_call(&mut self, channel: Id, cx: &mut Context<Self>) {
+        self.call = Some(Call {
+            stats: Default::default(),
+            camera: false,
+            guild: 0,
+            channel,
+            controls: dc_voice::Controls::new(),
+            started: true,
+            connected: true,
+            connected_at: Some(std::time::Instant::now()),
+            rtc_users: Vec::new(),
+            tracker: Default::default(),
+        });
+        self.start_voice_tick(cx);
+    }
+
+    /// A guild call opens the voice view; a DM or group DM call opens its channel, whose call area shows it.
+    fn show_call_channel(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        if guild == 0 {
+            self.select_home(Some(channel));
+        } else {
+            self.open_voice_view(guild, channel, cx);
+        }
     }
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
@@ -209,12 +237,10 @@ impl Root {
         if call.started {
             return;
         }
-        let Some(server) = self
-            .stores
-            .voice_server
-            .as_ref()
-            .filter(|server| server.guild_id == call.guild)
-        else {
+        let Some(server) = self.stores.voice_server.as_ref().filter(|server| {
+            server.guild_id == call.guild
+                && (call.guild != 0 || server.channel_id == Some(call.channel))
+        }) else {
             return;
         };
         let Some(session) = self
@@ -231,7 +257,12 @@ impl Root {
             endpoint: server.endpoint.clone(),
             token: server.token.clone(),
             session_id: session,
-            server_id: call.guild,
+            // A private call names the channel as its server (`VOICE_SERVER_UPDATE` has no guild_id).
+            server_id: if call.guild == 0 {
+                call.channel
+            } else {
+                call.guild
+            },
             channel_id: call.channel,
             user_id: me,
         };
@@ -460,13 +491,29 @@ impl Root {
     /// row. Measured in `design/dom/channel/voice-connected-darker-cozy.json`.
     pub(super) fn voice_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let call = self.call.as_ref()?;
-        let guild = self.stores.guild(call.guild)?;
-        let channel = guild
-            .channels
-            .iter()
-            .find(|channel| channel.id == call.channel)
-            .map(|channel| channel.name.clone())
-            .unwrap_or_default();
+        // A DM call has no guild: the panel's second line is the DM's name (module 289287 `channel_9U6LUN`).
+        let guild = self.stores.guild(call.guild);
+        if guild.is_none() && call.guild != 0 {
+            return None;
+        }
+        let channel = if call.guild == 0 {
+            self.stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == call.channel)
+                .map(|known| self.private_channel_name(known))
+                .unwrap_or_default()
+        } else {
+            guild
+                .and_then(|guild| {
+                    guild
+                        .channels
+                        .iter()
+                        .find(|channel| channel.id == call.channel)
+                })
+                .map(|channel| channel.name.clone())
+                .unwrap_or_default()
+        };
         let camera_on = call.camera;
         let own_stream = self.own_stream();
         let (status, status_color) = if call.connected {
@@ -818,7 +865,12 @@ impl Root {
                                                         guild_id, channel_id, cx,
                                                     );
                                                 }))
-                                                .child(format!("{channel} / {}", guild.name)),
+                                                .child(match guild {
+                                                    Some(guild) => {
+                                                        format!("{channel} / {}", guild.name)
+                                                    }
+                                                    None => channel.clone(),
+                                                }),
                                         ),
                                 )
                                 .child(

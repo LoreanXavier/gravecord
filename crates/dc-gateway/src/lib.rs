@@ -77,6 +77,10 @@ struct Session {
     resume_url: Option<String>,
     last_ack: Option<Instant>,
     active: bool,
+    /// The last op 4 that put this account in a voice channel or call, until one takes it out. A shutdown sends
+    /// the leave itself: a call left open at exit stays open on the service for minutes (a DM call's message then
+    /// reads "lasted 2 minutes" for a call that ended at once).
+    voice: Option<serde_json::Value>,
 }
 
 pub fn gateway_url(base: &str) -> String {
@@ -108,6 +112,7 @@ pub fn spawn(
         session_id: None,
         resume_url: None,
         last_ack: None,
+        voice: None,
     };
     tokio::spawn(session.run());
     (command_tx, event_rx)
@@ -263,12 +268,18 @@ impl Session {
                 }
                 command = self.commands.recv() => match command {
                     None | Some(Command::Shutdown) => {
+                        if let Some(leave) = voice_leave(self.voice.as_ref()) {
+                            let _ = self.send(&mut socket, Op::VoiceStateUpdate, leave).await;
+                        }
                         let _ = close(&mut socket, 1000).await;
                         return Next::Stop;
                     }
                     Some(Command::SetActive(active)) => self.active = active,
                     Some(Command::SetToken(token)) => self.config.token = token,
                     Some(Command::Send { op, data }) => {
+                        if op == Op::VoiceStateUpdate {
+                            self.voice = (!data["channel_id"].is_null()).then(|| data.clone());
+                        }
                         if self.send(&mut socket, op, data).await.is_err() {
                             return Next::Reconnect;
                         }
@@ -378,9 +389,32 @@ async fn close(socket: &mut Socket, code: u16) -> Result<(), tungstenite::Error>
         .await
 }
 
+/// The op 4 that undoes `last`: the same guild (null for a DM call) with a null channel, no camera.
+pub fn voice_leave(last: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let mut leave = last?.clone();
+    leave["channel_id"] = serde_json::Value::Null;
+    leave["self_video"] = serde_json::Value::Bool(false);
+    Some(leave)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn shutdown_leaves_a_dm_call_with_a_null_channel_and_null_guild() {
+        let joined = json!({"guild_id": null, "channel_id": "5", "self_mute": false, "self_deaf": false, "self_video": true});
+        let leave = voice_leave(Some(&joined)).expect("a call is open");
+        assert!(leave["channel_id"].is_null());
+        assert!(leave["guild_id"].is_null());
+        assert_eq!(leave["self_video"], json!(false));
+    }
+
+    #[test]
+    fn shutdown_has_nothing_to_leave_when_no_call_is_open() {
+        assert!(voice_leave(None).is_none());
+    }
 
     #[test]
     fn url_matches_the_recorded_connection() {

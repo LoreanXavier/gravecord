@@ -758,7 +758,12 @@ impl Root {
         channel: Id,
         cx: &mut Context<Self>,
     ) {
-        self.open_voice_view(guild, channel, cx);
+        if guild == 0 {
+            // A DM call's second line opens the DM.
+            self.select_home(Some(channel));
+        } else {
+            self.open_voice_view(guild, channel, cx);
+        }
     }
 
     /// Share Your Screen, panel and bar: the Go Live picker; while our stream runs the click stops it (`Tv` of module

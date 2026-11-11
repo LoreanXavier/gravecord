@@ -95,15 +95,36 @@ impl Root {
             }
             return vec![(channel, count)];
         }
-        dc_state::private_channels::unread_channels(&self.stores)
-            .into_iter()
-            .map(|channel| {
+        let mut entries: Vec<(PrivateChannel, u64)> =
+            dc_state::private_channels::unread_channels(&self.stores)
+                .into_iter()
+                .map(|channel| {
+                    (
+                        channel.clone(),
+                        self.stores.read_states.mentions(channel.id),
+                    )
+                })
+                .collect();
+        // The DM this account is in a call of takes a tile too (`isCurrentUserConnected`, module 396655).
+        if let Some(call) = self.call.as_ref().filter(|call| call.guild == 0)
+            && !entries
+                .iter()
+                .any(|(channel, _)| channel.id == call.channel)
+            && let Some(channel) = self
+                .stores
+                .private_channels
+                .iter()
+                .find(|channel| channel.id == call.channel)
+        {
+            entries.insert(
+                0,
                 (
                     channel.clone(),
                     self.stores.read_states.mentions(channel.id),
-                )
-            })
-            .collect()
+                ),
+            );
+        }
+        entries
     }
 
     pub(super) fn request_rail_dm_images(&mut self) {
@@ -304,11 +325,31 @@ impl Root {
                         tile,
                         cx,
                     ))
-                    .child(unread_badges::rail_number(
-                        count,
-                        false,
-                        probe.then_some("dm-rail-badge"),
-                    ))
+                    .children((count > 0).then(|| {
+                        unread_badges::rail_number(count, false, probe.then_some("dm-rail-badge"))
+                    }))
+                    // `upperBadge_hqZPsU` (top 0, end 0) holding `iconBadge_rwEpIL.isCurrentUserConnected_rwEpIL`:
+                    // 16px, `--status-positive`, the speaker glyph, white.
+                    .when(
+                        self.call
+                            .as_ref()
+                            .is_some_and(|call| call.guild == 0 && call.channel == id),
+                        |tile| {
+                            tile.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left(px(40.))
+                                    .size(px(16.))
+                                    .rounded_full()
+                                    .bg(color("--status-positive"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(super::icon("rail_speaker", 16., "--white")),
+                            )
+                        },
+                    )
                     .into_any_element()
             })
             .collect()
