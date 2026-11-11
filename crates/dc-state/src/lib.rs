@@ -11,6 +11,7 @@ pub mod content_inventory_manager;
 pub mod display_name_styles;
 pub mod experiments;
 pub mod frecency;
+mod gateway_extra;
 pub mod grouping;
 pub mod guild_member_counts;
 pub mod guild_settings;
@@ -34,6 +35,7 @@ pub mod scheduled_events;
 pub mod scheduled_message;
 pub mod slowmode;
 pub mod stickers;
+pub mod thread_list;
 pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
@@ -324,6 +326,11 @@ pub struct Thread {
     pub muted: bool,
     pub mute_end: Option<DateTime<Utc>>,
     pub join_timestamp: Option<String>,
+    /// `thread_metadata.auto_archive_duration` in minutes (0 when absent).
+    pub auto_archive_duration: u64,
+    /// `thread_metadata.archive_timestamp` and `last_non_message_activity_timestamp`, in Unix milliseconds.
+    pub archive_timestamp_ms: Option<i64>,
+    pub last_non_message_activity_ms: Option<i64>,
 }
 
 /// `ThreadMemberFlags` (37411).
@@ -392,6 +399,15 @@ impl Thread {
             locked: value["thread_metadata"]["locked"]
                 .as_bool()
                 .unwrap_or(false),
+            auto_archive_duration: value["thread_metadata"]["auto_archive_duration"]
+                .as_u64()
+                .unwrap_or(0),
+            archive_timestamp_ms: thread_list::time_ms(
+                &value["thread_metadata"]["archive_timestamp"],
+            ),
+            last_non_message_activity_ms: thread_list::time_ms(
+                &value["last_non_message_activity_timestamp"],
+            ),
             ..Self::default()
         };
         if value["member"].is_object() {
@@ -1009,6 +1025,8 @@ pub struct Forwarded {
     pub timestamp: DateTime<Utc>,
     pub attachments: Vec<Attachment>,
     pub embeds: Vec<Embed>,
+    /// The original's message flags (the copy of a voice message keeps `IS_VOICE_MESSAGE`).
+    pub flags: u64,
     pub guild_id: Option<Id>,
     pub channel_id: Option<Id>,
     pub message_id: Option<Id>,
@@ -1043,6 +1061,7 @@ impl Forwarded {
                 .flatten()
                 .map(Embed::from_value)
                 .collect(),
+            flags: snapshot["flags"].as_u64().unwrap_or(0),
             guild_id: id(&message["message_reference"]["guild_id"]),
             channel_id: id(&message["message_reference"]["channel_id"]),
             message_id: id(&message["message_reference"]["message_id"]),
@@ -1920,6 +1939,11 @@ impl Stores {
                         .remove(list, message);
                 }
             }
+            "MESSAGE_DELETE_BULK" => self.message_delete_bulk(data),
+            "MESSAGE_REACTION_REMOVE_ALL" => self.reactions_removed(data, false),
+            "MESSAGE_REACTION_REMOVE_EMOJI" => self.reactions_removed(data, true),
+            "MESSAGE_REACTION_ADD_MANY" => self.reaction_add_many(data),
+            "USER_UPDATE" => self.user_update(data),
             _ => {}
         }
         self.after_dispatch(name, data);
@@ -2768,6 +2792,31 @@ impl Stores {
 
 #[cfg(test)]
 mod tests {
+    /// A forward of a voice message: the copy keeps the original's flag, so it draws as a player.
+    #[test]
+    fn a_forwarded_voice_message_keeps_its_flag() {
+        let original: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/voice_message.json"))
+                .unwrap();
+        let forward = serde_json::json!({
+            "id": "5", "channel_id": "7", "type": 0, "content": "", "flags": 16384,
+            "timestamp": "2026-11-11T10:00:00.000000+00:00",
+            "author": {"id": "1", "username": "a"},
+            "message_reference": {"type": 1, "message_id": "4", "channel_id": "7"},
+            "message_snapshots": [{"message": {
+                "content": "", "flags": original["flags"], "timestamp": original["timestamp"],
+                "attachments": original["attachments"], "embeds": [],
+            }}],
+        });
+        let message = super::Message::from_value(&forward).unwrap();
+        let copy = message.forwarded.unwrap();
+        assert_eq!(
+            copy.flags & super::VOICE_MESSAGE_FLAG,
+            super::VOICE_MESSAGE_FLAG
+        );
+        assert_eq!(copy.attachments[0].duration_secs, Some(6.0065));
+    }
+
     /// A voice message as the gateway delivers it: the flag, one `audio/ogg` attachment with its length and waveform.
     #[test]
     fn a_voice_message_payload_keeps_its_flag_length_and_waveform() {
@@ -2781,8 +2830,8 @@ mod tests {
         let file = &message.attachments[0];
         assert_eq!(file.filename, "voice-message.ogg");
         assert_eq!(file.content_type.as_deref(), Some("audio/ogg"));
-        assert_eq!(file.duration_secs, Some(2.4));
-        assert_eq!(file.waveform.as_deref().map(str::len), Some(60));
+        assert_eq!(file.duration_secs, Some(6.0065));
+        assert_eq!(file.waveform.as_deref().map(str::len), Some(200));
         // An ordinary upload has neither field.
         let mut plain = payload.clone();
         plain["flags"] = 0.into();

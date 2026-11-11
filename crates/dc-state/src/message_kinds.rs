@@ -260,6 +260,9 @@ pub struct Poll {
     pub me_voted: Vec<bool>,
     /// `layout_type`: 1 default, 2 image-only answers (module 744593).
     pub layout: u64,
+    /// The people known to have picked each answer, by answer id: what a vote event or a loaded voters list told
+    /// this session (the VOTE reactions of `ReactionStore`, which the vote-count tooltip reads).
+    pub voters: std::collections::HashMap<u64, Vec<Id>>,
 }
 
 /// `poll_media.emoji`: a custom emoji by id, or a unicode one by its characters.

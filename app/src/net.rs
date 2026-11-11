@@ -320,6 +320,45 @@ pub(crate) const MESSAGE_PAGE: u32 = dc_state::message_window::INITIAL_PAGE;
 /// Pictures downloaded at once. Opening a picker or a shop asks for hundreds together; without a limit they all start
 /// at once and the connections, the memory and the CPU are shared out among them.
 static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(24);
+/// The longest one picture download may take before it counts as failed.
+const IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Download slots not in use, for the harness's `badge state` line.
+#[cfg(feature = "capture")]
+pub(crate) fn image_permits_free() -> usize {
+    IMAGE_FETCHES.available_permits()
+}
+/// The last transport error of each picture that failed, by image key, for the harness's `badge state` line.
+#[cfg(feature = "capture")]
+pub(crate) static IMAGE_ERRORS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// Capture runs only: `GRAVECORD_IMAGE_FAIL_FIRST=<key prefix>=<count>` makes the first `count` downloads of each
+/// matching picture fail, to reproduce a transport error that the retry has to survive.
+#[cfg(feature = "capture")]
+fn injected_image_failure(key: &str) -> bool {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> =
+        std::sync::Mutex::new(None);
+    let Ok(spec) = std::env::var("GRAVECORD_IMAGE_FAIL_FIRST") else {
+        return false;
+    };
+    let Some((prefix, count)) = spec.rsplit_once('=') else {
+        return false;
+    };
+    let Ok(count) = count.parse::<u32>() else {
+        return false;
+    };
+    if !key.starts_with(prefix) {
+        return false;
+    }
+    let Ok(mut seen) = SEEN.lock() else {
+        return false;
+    };
+    let tries = seen
+        .get_or_insert_with(Default::default)
+        .entry(key.to_owned())
+        .or_insert(0);
+    *tries += 1;
+    *tries <= count
+}
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
@@ -1728,7 +1767,25 @@ pub async fn run(
                 tokio::spawn(async move {
                     let fetched = {
                         let _slot = IMAGE_FETCHES.acquire().await;
-                        client.fetch_public(&url).await
+                        // The client has no timeout of its own: a request that stalls would hold its slot for ever
+                        // and its picture would never arrive. It fails after `IMAGE_TIMEOUT` instead, and the UI
+                        // asks again.
+                        #[cfg(feature = "capture")]
+                        let injected = injected_image_failure(&key);
+                        #[cfg(not(feature = "capture"))]
+                        let injected = false;
+                        if injected {
+                            Err("injected failure".to_owned())
+                        } else {
+                            match tokio::time::timeout(IMAGE_TIMEOUT, client.fetch_public(&url))
+                                .await
+                            {
+                                Ok(result) => result.map_err(|error| error.to_string()),
+                                Err(_) => {
+                                    Err(format!("no answer in {} s", IMAGE_TIMEOUT.as_secs()))
+                                }
+                            }
+                        }
                     };
                     match fetched {
                         Ok(bytes)
@@ -1820,6 +1877,10 @@ pub async fn run(
                         }
                         Err(error) => {
                             warn!("image failed: {error}");
+                            #[cfg(feature = "capture")]
+                            if let Ok(mut errors) = IMAGE_ERRORS.lock() {
+                                errors.insert(key.clone(), error.to_string());
+                            }
                             let _ = updates.send(Update::ImageFailed { key });
                         }
                     }

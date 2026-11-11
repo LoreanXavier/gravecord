@@ -290,6 +290,16 @@ pub async fn run(
                     cx.update(|cx| root.update(cx, |root, cx| root.script_context(kind, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            // Capture only: `menu-run <row label with _ for spaces>` runs a row of the open message menu.
+            ["menu-run", label] => {
+                let label = label.replace('_', " ");
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_menu_run(&label, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             ["context-sub-state"] => {
                 let note = root.update(cx, |root, _| root.script_context_sub_state());
                 let _ = writeln!(output, "{note}");
@@ -591,6 +601,18 @@ pub async fn run(
             ["stream", "stop"] => {
                 root.update(cx, |root, cx| root.stream_stop(cx));
             }
+            ["badge", "catalog"] => {
+                let line = root.update(cx, |root, _| root.script_badge_catalog());
+                let _ = writeln!(output, "badge catalog: {line}");
+            }
+            ["badge", "shape"] => {
+                let line = root.read_with(cx, |root, _| root.script_badge_shape());
+                let _ = writeln!(output, "badge shape: {line}");
+            }
+            ["badge", "state"] => {
+                let state = root.read_with(cx, |root, _| root.badge_state_line());
+                let _ = writeln!(output, "badge: {state}");
+            }
             ["activity", "state"] => {
                 let state = root.read_with(cx, |root, _| root.activity_state_line());
                 let _ = writeln!(output, "activity: {state}");
@@ -729,12 +751,28 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "{line}");
             }
+            // Capture only: opens the Forward modal on the newest voice message of the open channel.
+            ["vmfwd"] => {
+                let line = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.update(cx, |root, cx| root.voice_forward_modal(window, cx))
+                        })
+                        .unwrap_or_default()
+                });
+                let _ = writeln!(output, "{line}");
+            }
             ["layers"] => {
                 let line = root.update(cx, |root, _| root.layers_report());
                 let _ = writeln!(output, "{line}");
             }
             // Capture only: `content demo <set>` puts messages with clickable content into the open channel (memory only).
             // Capture only: `vm demo|play|pause|seek|speed|volume|state` drive the voice message player.
+            // Capture only: `au play|pause|seek|state` drive the audio attachment cards.
+            ["au", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_au(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["vm", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_vm(rest, cx));
                 let _ = writeln!(output, "{line}");
@@ -748,6 +786,15 @@ pub async fn run(
             ["jump", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
                     let line = root.script_jump(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `threads facts` logs what decides each thread's row in the channel list.
+            ["threads", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_threads(rest);
                     cx.notify();
                     line
                 });

@@ -36,9 +36,11 @@ mod add_server;
 mod alt_text;
 mod apps;
 mod attachment_modal;
+mod audio_attachment;
 mod audio_menu;
 mod audit_spec;
 mod autocomplete;
+mod badge_modal;
 mod badge_paths;
 mod blocked;
 mod call_background;
@@ -120,6 +122,7 @@ mod guild_guide;
 mod guild_navigation;
 pub(crate) mod image_cache;
 pub(crate) mod image_fit;
+mod image_retry;
 mod inline_video;
 mod jump;
 mod media_image;
@@ -375,6 +378,8 @@ pub struct Root {
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
+    /// The scroll position of the open context menu (a menu taller than the window scrolls).
+    pub(crate) menu_scroll: gpui::ScrollHandle,
     channel_browser_open: bool,
     channel_browser: Option<channel_browser::Browser>,
     hovered_nameplate: Option<Id>,
@@ -412,6 +417,9 @@ pub struct Root {
     keys: keyboard::State,
     images: HashMap<String, Arc<Image>>,
     requested: HashSet<String>,
+    /// Retry state of the pictures asked for through `request_image`.
+    image_retries: image_retry::Retries,
+    badge_modal: Option<badge_modal::BadgeModal>,
     /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
     avatar_wants: std::cell::RefCell<Vec<(String, String)>>,
     /// The window's pixel ratio as the last frame had it, for builders that have no window at hand.
@@ -723,6 +731,7 @@ impl Root {
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
+            menu_scroll: gpui::ScrollHandle::new(),
             channel_browser_open: false,
             channel_browser: None,
             hovered_nameplate: None,
@@ -754,6 +763,8 @@ impl Root {
             keys: Default::default(),
             images: HashMap::new(),
             requested: HashSet::new(),
+            image_retries: image_retry::Retries::default(),
+            badge_modal: None,
             avatar_wants: std::cell::RefCell::new(Vec::new()),
             ui_scale: std::cell::Cell::new(1.),
             avatar_over: None,
@@ -1140,6 +1151,10 @@ impl Root {
                     self.webhook_demo_done(&body);
                     return;
                 }
+                if key.starts_with("dm-call-ringable:") {
+                    self.dm_call_ringable(&key, &body, cx);
+                    return;
+                }
                 if let Some(nonce) = key.strip_prefix("interaction:") {
                     self.interaction_answered(nonce, &body, cx);
                     return;
@@ -1436,6 +1451,9 @@ impl Root {
                     self.stores.load_saved(&body);
                 }
                 self.fetched.insert(key.clone(), body);
+                if key.starts_with(badge_modal::CATALOG_PREFIX) {
+                    self.badge_catalog_fetched(&key);
+                }
                 if key.starts_with("invite:") {
                     self.invite_fetched(&key);
                 }
@@ -1513,13 +1531,14 @@ impl Root {
             Update::ImageFailed { key } => {
                 if key.starts_with(profile_effects::ART_PREFIX) {
                     self.profile_effect_art_failed(&key, cx);
-                }
-                if key.starts_with(sticker_player::PREFIX) {
+                } else if key.starts_with(sticker_player::PREFIX) {
                     self.sticker_art_failed(&key);
-                }
-                if key.starts_with(inline_video::PREFIX) {
+                } else if key.starts_with(inline_video::PREFIX) {
                     self.inline_video_failed(&key);
                     cx.notify();
+                } else {
+                    // Every other picture is asked for again.
+                    self.image_retry_after_failure(key, cx);
                 }
             }
             Update::Image { key, bytes } if key.starts_with(profile_effects::ART_PREFIX) => {
@@ -1546,6 +1565,7 @@ impl Root {
                 let format = if key.starts_with("emoji:")
                     || key.starts_with("filekind:")
                     || bytes.starts_with(b"<svg")
+                    || bytes.starts_with(b"<?xml")
                 {
                     ImageFormat::Svg
                 } else if bytes.starts_with(b"\x89PNG") {
@@ -1557,6 +1577,7 @@ impl Root {
                 } else {
                     ImageFormat::Jpeg
                 };
+                self.image_retries.arrived(&key);
                 self.images
                     .insert(key, Arc::new(Image::from_bytes(format, bytes)));
             }
@@ -1650,8 +1671,43 @@ impl Root {
 
     fn request_image(&mut self, key: String, url: String) {
         if self.requested.insert(key.clone()) {
+            self.image_retries.sent(&key, &url);
+            let _ = self.requests.send(Request::Image { key, url });
+        } else if !self.images.contains_key(&key)
+            && self.image_retries.again(&key, &url, image_retry::now_ms())
+        {
+            // It failed every attempt a while ago and is wanted again.
             let _ = self.requests.send(Request::Image { key, url });
         }
+    }
+
+    /// Failed downloads of `key` since it last arrived, for the harness's state lines.
+    #[cfg(feature = "capture")]
+    pub(crate) fn image_failures(&self, key: &str) -> u32 {
+        self.image_retries.failures(key)
+    }
+
+    /// A picture requested through `request_image` failed to download: ask again after a doubling delay.
+    fn image_retry_after_failure(&mut self, key: String, cx: &mut Context<Self>) {
+        if self.images.contains_key(&key) {
+            return;
+        }
+        let Some(retry) = self.image_retries.failed(&key, image_retry::now_ms()) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(retry.after_ms))
+                .await;
+            let _ = this.update(cx, |this, _| {
+                if this.images.contains_key(&key) {
+                    this.image_retries.arrived(&key);
+                } else if let Some(url) = this.image_retries.resend(&key) {
+                    let _ = this.requests.send(Request::Image { key, url });
+                }
+            });
+        })
+        .detach();
     }
 
     fn request_images(&mut self) {
@@ -2059,10 +2115,19 @@ impl Root {
                                                 .map(|rgb| {
                                                     div()
                                                         .flex_none()
-                                                        .size(px(8.))
+                                                        .size(px(20.))
                                                         .mr(px(4.))
-                                                        .rounded_full()
-                                                        .bg(gpui::rgb(rgb))
+                                                        .rounded(px(4.))
+                                                        .bg(color("--background-mod-normal"))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            div()
+                                                                .size(px(12.))
+                                                                .rounded_full()
+                                                                .bg(gpui::rgb(rgb)),
+                                                        )
                                                 }),
                                         )
                                         .child(
@@ -4349,46 +4414,12 @@ impl Root {
                         .children(
                             self.channel
                                 .map(|channel| {
-                                    let buttons = self.dm_call_buttons(
+                                    self.header_call_buttons(
                                         channel,
                                         dm_user.as_ref().map(|user| user.id),
-                                    );
-                                    let one = |id: &'static str,
-                                       icon_name: &str,
-                                       video: bool,
-                                       state: Option<(&'static str, bool)>,
-                                       cx: &mut Context<Self>| {
-                                state.map(|(tip, disabled)| {
-                                    let button = self.header_stop(
-                                        self.with_tip(
-                                            id,
-                                            Tip::text(tip, Side::Bottom),
-                                            tool(icon_name),
-                                            cx,
-                                        ),
-                                        id,
+                                        &tool,
                                         cx,
-                                    );
-                                    if disabled {
-                                        button
-                                    } else {
-                                        button.cursor_pointer().on_click(cx.listener(
-                                            move |this, event: &gpui::ClickEvent, _, cx| {
-                                                this.tip = None;
-                                                let shift = event.modifiers().shift;
-                                                this.dm_call_clicked(channel, video, shift, cx);
-                                            },
-                                        ))
-                                    }
-                                })
-                            };
-                                    [
-                                        one("dm-call", "dm_call", false, buttons.voice, cx),
-                                        one("dm-video", "dm_video", true, buttons.video, cx),
-                                    ]
-                                    .into_iter()
-                                    .flatten()
-                                    .collect::<Vec<_>>()
+                                    )
                                 })
                                 .into_iter()
                                 .flatten(),
@@ -4473,7 +4504,81 @@ impl Root {
                         ),
                 )
             })
-            .when(dm_user.is_none(), |this| {
+            .when(dm_user.is_none() && self.current_dm().is_some(), |this| {
+                // 289287 `GROUP_DM`: calls, pins, "Invite to Group DM" (unless managed) and the members toggle.
+                this.child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .children(
+                            self.channel
+                                .map(|channel| self.header_call_buttons(channel, None, &tool, cx))
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .child(
+                            self.header_stop(
+                                self.with_tip(
+                                    "dm-pins",
+                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    tool("pin"),
+                                    cx,
+                                ),
+                                "dm-pins",
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tip = None;
+                                this.toggle_pins("dm-pins", cx);
+                            })),
+                        )
+                        .child(
+                            self.header_stop(
+                                self.with_tip(
+                                    "dm-add",
+                                    Tip::text("Invite to Group DM", Side::Bottom),
+                                    tool("dm_add"),
+                                    cx,
+                                ),
+                                "dm-add",
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.tip = None;
+                                    this.open_add_to_dm(window, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            self.header_stop(div().id("toggle-members"), "toggle-members", cx)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_members = !this.show_members;
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(32.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "members",
+                                            20.,
+                                            if self.show_members {
+                                                "--text-strong"
+                                            } else {
+                                                "--text-muted"
+                                            },
+                                        )),
+                                ),
+                        ),
+                )
+            })
+            .when(dm_user.is_none() && self.current_dm().is_none(), |this| {
                 this.child(
                     div()
                         .flex()
@@ -5402,6 +5507,7 @@ impl Root {
             content: forwarded.content.clone(),
             attachments: forwarded.attachments.clone(),
             embeds: forwarded.embeds.clone(),
+            flags: forwarded.flags,
             reactions: Vec::new(),
             edited: false,
             edited_at: None,
@@ -5989,10 +6095,19 @@ impl Root {
                                             .map(|rgb| {
                                                 div()
                                                     .flex_none()
-                                                    .size(px(8.))
+                                                    .size(px(20.))
                                                     .mr(px(4.))
-                                                    .rounded_full()
-                                                    .bg(gpui::rgb(rgb))
+                                                    .rounded(px(4.))
+                                                    .bg(color("--background-mod-normal"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        div()
+                                                            .size(px(12.))
+                                                            .rounded_full()
+                                                            .bg(gpui::rgb(rgb)),
+                                                    )
                                             }),
                                     )
                                     .child(
@@ -7152,6 +7267,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.voice_rec.borrow().confirm {
+                    this.voice_rec.borrow_mut().confirm = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 // Enter in the recorder bar stops the recording or sends the draft; the bar has no text field.
                 if keys.key == "enter"
                     && !keys.modifiers.modified()
@@ -7169,6 +7290,10 @@ impl Render for Root {
                 }
                 // The media viewer is the top layer: Escape and the arrows are its.
                 if this.guild_events_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.badge_modal_key(&keys.key, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -7195,6 +7320,10 @@ impl Render for Root {
                 // 165862 closes the whole menu on Escape, before an underlying field consumes it.
                 if keys.key == "escape" && this.picker.is_none() && this.context.open.is_some() {
                     this.close_context_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.incoming_escape(cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -7558,12 +7687,17 @@ impl Render for Root {
                 this.on_drop_files(paths, cx);
             }))
             // Capture runs before the text under the pointer starts its own selection.
-            .capture_any_mouse_down(cx.listener(|this, _, window, _| {
-                this.selection.borrow_mut().clear();
-                this.keys.pointer_used();
-                this.vv.row_focus = false;
-                window.refresh();
-            }))
+            .capture_any_mouse_down(
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, _| {
+                    // A right press keeps the selection: the message menu then offers Copy and Search with Google.
+                    if event.button != MouseButton::Right {
+                        this.selection.borrow_mut().clear();
+                    }
+                    this.keys.pointer_used();
+                    this.vv.row_focus = false;
+                    window.refresh();
+                }),
+            )
             .relative()
             .size_full()
             .flex()
@@ -7819,6 +7953,7 @@ impl Render for Root {
             .children(self.leaving_modal(cx))
             .children(self.voice_dialog_layer(cx))
             .children(self.pin_modal(cx))
+            .children(self.voice_discard_modal(cx))
             .children(self.too_long_modal(cx))
             .children(self.context_menu_layer(window, cx))
             .children(self.search_popout(window, cx))
@@ -7843,6 +7978,7 @@ impl Render for Root {
             .children(self.mentions_filter_layer(cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
+            .children(self.not_friend_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.member_action_layer(window, cx))
             .children(self.inventory_about_layer(cx))
@@ -7876,6 +8012,7 @@ impl Render for Root {
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))
             .children(self.schedule_modal_layer(window, cx))
+            .children(self.badge_modal_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.clips_modal(window, cx))
             .children(self.clips_delete_modal(cx))
