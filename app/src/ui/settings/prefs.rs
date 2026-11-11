@@ -253,6 +253,9 @@ where
 impl Root {
     /// A preference's switch: the user's choice here, else the account's, else the default.
     pub(in crate::ui) fn pref_on(&self, key: &'static str, default: bool) -> bool {
+        if key == "chat_favorites_toggle" {
+            return self.favorites_guild_enabled();
+        }
         match self.setting_choices.get(key) {
             Some(Choice::On(on)) => *on,
             _ => self.stores.prefs.get(key).map_or(default, |value| {
@@ -278,6 +281,12 @@ impl Root {
     /// A generated row of one of these preferences changed (`setting_choices` already holds the new value). True when
     /// the key is one of them.
     pub(super) fn pref_changed(&mut self, key: &'static str, on: bool, index: usize) -> bool {
+        if key == "chat_favorites_toggle" {
+            // Show Favorites server: `favorites.guild_visible` of the settings proto (`favoriteGuildEnabled`).
+            self.setting_choices.remove(key);
+            self.favorites_toggled(on);
+            return true;
+        }
         if let Some(pref) = proto_spec(key) {
             let radio = matches!(self.setting_choices.get(key), Some(Choice::Index(_)));
             let value = if let Some(raw) = raw_of(key) {

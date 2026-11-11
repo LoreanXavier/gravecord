@@ -259,6 +259,9 @@ pub(in crate::ui) fn field_error(body: &Value, field: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Module 181658 `aTVNes`: what the phone dialog shows when the failure has no message of its own.
+const PHONE_FAILURE: &str = "Oops! You've caught an ultra rare error. This is probably our fault, so please try again or check our status page.";
+
 /// The mask of the country dialing code: digits only.
 fn digits(text: &str) -> String {
     text.chars().filter(char::is_ascii_digit).collect()
@@ -461,6 +464,8 @@ impl Root {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_single_line(true);
             editor.set_masked(secret);
+            // Enter submits the form from the field's text: it must not empty the box first.
+            editor.set_keeps_text(true);
             editor
         });
         // Tab walks the form's inputs: the window's tab order, as the browser's.
@@ -1244,10 +1249,12 @@ impl Root {
                 format!("status {}", body["status"])
             });
             if body["refused"].as_bool() == Some(true) {
-                // The guard of a harness run stands in for the server turning the number down: the box shows the
-                // error the answer would carry (`errorMessage` of module 938401, string `pDXJct`).
+                // A refused call never reaches the server, so the answer carries no body: module 615715 hands the
+                // thrown error to `getAnyErrorMessage()` (module 319400), which falls back to the message of
+                // module 181658 (`aTVNes`). A server answer shows its own field message or `message` instead
+                // (invalid number, rate limit: the text is the server's, handled below).
                 if form.step == Step::PhoneNumber {
-                    form.set_error("phone", Some("Phone number is not valid.".to_owned()));
+                    form.set_error("phone", Some(PHONE_FAILURE.to_owned()));
                 }
                 return;
             }
@@ -1299,6 +1306,18 @@ impl Root {
                     }
                     _ => form.notice = Some(message.to_owned()),
                 }
+            } else if matches!(step, Step::PhoneNumber | Step::PhoneCode)
+                && form.fields.iter().all(|f| f.error.is_none())
+            {
+                // No field error and no `message` in the body (a 5xx page, say): module 181658's own text.
+                form.set_error(
+                    if step == Step::PhoneNumber {
+                        "phone"
+                    } else {
+                        "code"
+                    },
+                    Some(PHONE_FAILURE.to_owned()),
+                );
             }
             return;
         }
@@ -2441,7 +2460,10 @@ impl Root {
                     .gap(px(4.))
                     .child(icon("login_error", 16., "--text-feedback-critical"))
                     .child(
+                        // A long message wraps inside the field's width instead of running past the dialog.
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .text_color(color("--text-feedback-critical"))

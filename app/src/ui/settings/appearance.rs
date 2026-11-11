@@ -318,9 +318,10 @@ impl Root {
                             .children(banner.map(|picture| img(picture).w(px(117.)).h(px(69.)))),
                     )
                     .child(
+                        // No `min_w(0)`: a flex child keeps its longest word (`min-width:auto`), so a narrow page
+                        // overflows to the right instead of folding the title into a column of single letters.
                         div()
                             .flex_1()
-                            .min_w(px(0.))
                             .flex()
                             .flex_col()
                             .gap(px(4.))

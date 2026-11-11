@@ -412,6 +412,34 @@ impl Root {
     }
 
     /// Where I Share Activity: the toggle-all row and a switch per server (`S3`).
+    /// The box of "Search my servers" exists from the time settings open (`input_0PLWhS`, module 158935 `searchQuery`).
+    pub(super) fn guild_search_ready(&mut self, cx: &mut Context<Self>) {
+        if self.settings_extra.guild_search.is_some() {
+            return;
+        }
+        let editor = cx.new(|cx| {
+            let mut editor = crate::editor::Editor::new(crate::ui::editor_style(), cx);
+            editor.set_single_line(true);
+            editor.set_placeholder("Search my servers".to_owned());
+            editor
+        });
+        self.settings_extra.guild_search_sub = Some(
+            cx.subscribe(&editor, |_, _, _: &crate::editor::EditorEvent, cx| {
+                cx.notify()
+            }),
+        );
+        self.settings_extra.guild_search = Some(editor);
+    }
+
+    /// The servers whose name holds what the search box says, ignoring case.
+    fn guild_query(&self, cx: &gpui::App) -> String {
+        self.settings_extra
+            .guild_search
+            .as_ref()
+            .map(|editor| editor.read(cx).text().trim().to_lowercase())
+            .unwrap_or_default()
+    }
+
     pub(super) fn activity_guild_list(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let restricted = self.stores.proto_ids(&ACTIVITY_RESTRICTED_GUILDS);
         let guilds: Vec<(u64, String)> = self
@@ -428,9 +456,11 @@ impl Root {
             .find(|(known, _)| *known == sort)
             .map_or("", |(_, label)| *label);
         let open = self.setting_choices.get(ACTIVITY_SORT_OPEN) == Some(&super::Choice::On(true));
+        let query = self.guild_query(cx);
         let rows: Vec<AnyElement> = order
             .iter()
             .filter_map(|id| self.stores.guilds.iter().find(|guild| guild.id == *id))
+            .filter(|guild| query.is_empty() || guild.name.to_lowercase().contains(&query))
             .map(|guild| {
                 let id = guild.id;
                 let on = !restricted.contains(&id);
@@ -537,10 +567,32 @@ impl Root {
             .with_priority(2)
         });
         let _ = width;
+        let search = self.settings_extra.guild_search.clone().map(|editor| {
+            div()
+                .h(px(40.))
+                .pl(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(crate::ui::color("--input-border-default"))
+                .bg(crate::ui::color("--input-background-default"))
+                .child(
+                    div()
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(super::mask_icon("settings_search", 16., "--icon-default")),
+                )
+                .child(div().flex_1().min_w(px(0.)).child(editor))
+        });
         div()
             .flex()
             .flex_col()
             .gap(px(16.))
+            .children(search)
             .child(
                 div()
                     .flex()

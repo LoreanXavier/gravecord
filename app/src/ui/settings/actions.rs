@@ -122,6 +122,14 @@ pub(in crate::ui) struct State {
     /// `GET /users/@me/connections` and `GET /oauth2/tokens`, once they came back.
     pub connections: Option<Vec<Value>>,
     pub tokens: Option<Vec<Value>>,
+    /// `GET /applications/public` for the two applications of the add grid (module 534952 `Gl`).
+    pub connection_apps: Option<Vec<Value>>,
+    /// The "Search my servers" box of Activity Privacy, and what keeps it listening.
+    pub guild_search: Option<gpui::Entity<crate::editor::Editor>>,
+    pub guild_search_sub: Option<gpui::Subscription>,
+    /// The sidebar's search box (`te`, module 276530); its text is the query that filters the sidebar.
+    pub search: Option<gpui::Entity<crate::editor::Editor>>,
+    pub search_sub: Option<gpui::Subscription>,
     connections_asked: bool,
 }
 
@@ -334,6 +342,11 @@ impl Root {
                 key: super::connections::TOKENS_KEY.to_owned(),
                 route: super::connections::TOKENS_ROUTE.to_owned(),
             });
+            let _ = self.requests.send(Request::Fetch {
+                key: super::connections::APPS_KEY.to_owned(),
+                route: super::connections::apps_route(),
+            });
+            self.request_connection_icons();
         }
         if !self.settings_extra.harvest_loaded {
             let _ = self.requests.send(Request::Fetch {
@@ -372,6 +385,11 @@ impl Root {
             }
             super::connections::TOKENS_KEY => {
                 self.settings_extra.tokens = body.as_array().cloned();
+                true
+            }
+            super::connections::APPS_KEY => {
+                self.settings_extra.connection_apps = body.as_array().cloned();
+                self.request_connection_app_icons();
                 true
             }
             HARVEST_KEY => {

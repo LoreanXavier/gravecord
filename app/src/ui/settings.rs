@@ -32,6 +32,8 @@ pub(super) mod prefs;
 mod preview;
 mod privacy;
 mod render;
+mod search;
+mod search_terms;
 mod server_boost_page;
 mod soundboard;
 mod streamer;
@@ -771,6 +773,8 @@ fn info_notice(parts: Runs) -> impl IntoElement {
 impl Root {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = Some(Open::new(Page::Account));
+        self.guild_search_ready(cx);
+        self.settings_search_ready(cx);
         self.request_nitro();
         // The custom theme card's banner (`bannerImage_yH_g_W`).
         self.request_image(
@@ -1139,16 +1143,28 @@ impl Root {
             .into_any_element()
     }
 
-    fn settings_search(&self) -> AnyElement {
+    fn settings_search(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(editor) = self.settings_extra.search.clone() else {
+            return div().h(px(40.)).into_any_element();
+        };
+        let focused = gpui::Focusable::focus_handle(editor.read(cx), cx).is_focused(window);
+        let typed = !editor.read(cx).text().is_empty();
+        let clear = editor.clone();
         div()
             .h(px(40.))
             .pl(px(4.))
+            .pr(px(4.))
             .flex()
             .items_center()
             .gap(px(4.))
             .rounded(px(8.))
             .border_1()
-            .border_color(color("--input-border-default"))
+            // `wrapper_UcGqzv` focused: `--input-border-active` (search-voice-darker-cozy dump).
+            .border_color(color(if focused {
+                "--input-border-active"
+            } else {
+                "--input-border-default"
+            }))
             .bg(color("--input-background-default"))
             .child(
                 div()
@@ -1163,13 +1179,31 @@ impl Root {
                 div()
                     .h(px(38.))
                     .pt(px(2.))
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .items_center()
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .text_color(color("--input-placeholder-text-default"))
-                    .child("Search"),
+                    .child(div().w_full().child(editor)),
             )
+            // The clear control: a 30px box with the 16px round X, centred 20px in from the field's edge.
+            .children(typed.then(|| {
+                div()
+                    .id("settings-search-clear")
+                    .size(px(30.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(mask_icon("discover_clear", 16., "--icon-default"))
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        clear.update(cx, |editor, cx| {
+                            editor.set_text("");
+                            window.focus(&gpui::Focusable::focus_handle(editor, cx), cx);
+                        });
+                        cx.notify();
+                    }))
+            }))
             .into_any_element()
     }
 
@@ -1254,40 +1288,49 @@ impl Root {
         let shadow = nav_scroll.offset().y < px(-12.);
         let base: gpui::Hsla = color("--background-base-lower").into();
         let profile_card = self.settings_profile(cx);
-        let sections = SECTIONS
+        let query = self.settings_query(cx);
+        // The search keeps the items whose panel matches, and the section labels above them (module 122088).
+        let kept = |entry: &&Entry| {
+            (entry.page != Page::Clips || self.clips_listed())
+                && search::page_matches(entry.page, entry.label, &query)
+        };
+        let visible: Vec<_> = SECTIONS
             .iter()
-            .enumerate()
-            .map(|(index, (label, entries))| {
-                let last = index + 1 == SECTIONS.len();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .pb(px(8.))
-                    .when(!last, |this| {
-                        this.border_b_1().border_color(color("--border-subtle"))
-                    })
-                    .children(label.map(|label| {
-                        div()
-                            .h(px(30.))
-                            .px(px(8.))
-                            .pt(px(8.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-muted"))
-                            .child(label)
-                    }))
-                    .child(
-                        div().flex().flex_col().gap(px(4.)).children(
-                            entries
-                                .iter()
-                                // Clips is listed for Nitro only (`sw`, module 734066).
-                                .filter(|entry| entry.page != Page::Clips || self.clips_listed())
-                                .map(|entry| self.settings_nav_item(entry, window, cx)),
-                        ),
-                    )
-            });
+            .filter(|(_, entries)| entries.iter().any(|entry| kept(&entry)))
+            .collect();
+        let no_results = visible.is_empty();
+        let search_box = self.settings_search(window, cx);
+        let sections = visible.iter().enumerate().map(|(index, (label, entries))| {
+            let last = index + 1 == visible.len();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .pb(px(8.))
+                .when(!last, |this| {
+                    this.border_b_1().border_color(color("--border-subtle"))
+                })
+                .children(label.map(|label| {
+                    div()
+                        .h(px(30.))
+                        .px(px(8.))
+                        .pt(px(8.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-muted"))
+                        .child(label)
+                }))
+                .child(
+                    div().flex().flex_col().gap(px(4.)).children(
+                        entries
+                            .iter()
+                            // Clips is listed for Nitro only (`sw`, module 734066).
+                            .filter(|entry| kept(entry))
+                            .map(|entry| self.settings_nav_item(entry, window, cx)),
+                    ),
+                )
+        });
         div()
             .parity_right("settings-sidebar", 1.)
             .flex_none()
@@ -1306,7 +1349,31 @@ impl Root {
                     .pl(px(4.))
                     .pr(px(16.))
                     .child(div().pb(px(8.)).child(profile_card))
-                    .child(self.settings_search()),
+                    .child(search_box)
+                    // `emptySearchResultsContainer_eCEVGd`: 24px above and below, the two lines 4px apart, centred.
+                    .when(no_results, |this| {
+                        this.child(
+                            div()
+                                .py(px(24.))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child("No search results found"),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(color("--text-subtle"))
+                                        .child("We tried, but came up empty."),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1748,10 +1815,11 @@ impl Root {
                             .overflow_y_scroll()
                             .track_scroll(&open.content)
                             .child(
-                                div().flex().justify_center().child(
+                                div().flex().justify_center().px(px(16.)).child(
                                     div()
                                         .parity("settings-panel")
                                         .w_full()
+                                        .min_w(px(300.))
                                         .max_w(px(728.))
                                         .ml(px(panel_nudge(window.viewport_size().width.into())))
                                         .my(px(64.))
@@ -1812,31 +1880,45 @@ impl Root {
         let pose = motion::modal_pose("settings");
         let mut scrim = color("--background-scrim");
         scrim.a *= pose.scrim;
+        // At 1080 CSS pixels and under the modal fills the window (`modal__F9ieB`): no margin, border, radius or
+        // shadow, the 32px top bar kept clear above it and a 1px `--border-muted` line under that.
+        let full = f32::from(window.viewport_size().width) <= FULL_WINDOW_MODAL;
         let modal = div()
-            .parity_with_border("settings-modal", 1.)
+            .parity_with_border("settings-modal", if full { 0. } else { 1. })
             .id("settings-modal")
             .opacity(pose.opacity)
             .paint_scale(pose.scale, point(0.5, 0.5))
             .occlude()
             .size_full()
             .max_w(px(1400.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(color("--border-subtle"))
+            .when(!full, |this| {
+                this.rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .shadow(vec![BoxShadow {
+                        color: hsla(0., 0., 0., 0.24),
+                        offset: point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+            })
+            .when(full, |this| this.pt(px(32.)))
             .bg(color("--background-base-lower"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.24),
-                offset: point(px(0.), px(12.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
             .overflow_hidden()
             .flex()
             .font_family(SANS)
             .font_features(kerning())
-            .child(self.settings_sidebar(window, cx))
-            .child(self.settings_content(window, cx));
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .when(full, |this| {
+                        this.border_t_1().border_color(color("--border-muted"))
+                    })
+                    .child(self.settings_sidebar(window, cx))
+                    .child(self.settings_content(window, cx)),
+            );
         // The window's own buttons stay above the scrim, and they are not part of the dialog: drawn as a layer of
         // their own, the copy of the dialog that plays its exit does not carry them.
         let layer = deferred(
@@ -1848,7 +1930,11 @@ impl Root {
                 .left_0()
                 .size_full()
                 .bg(scrim)
-                .p(px(40.))
+                .p(px(if full {
+                    0.
+                } else {
+                    modal_padding(f32::from(window.viewport_size().width))
+                }))
                 .flex()
                 .justify_center()
                 .child(modal),
@@ -2012,8 +2098,7 @@ fn scroll_spy(
 /// Chromium lays the panel on a half pixel and paints it at the next whole one; the layout here would round it down.
 /// A 1px left margin moves the centre by half a pixel, which makes it land on that whole pixel.
 fn panel_nudge(viewport_width: f32) -> f32 {
-    let modal = (viewport_width - 80.).min(1400.);
-    let content = modal - 2. - SETTINGS_SIDEBAR_WIDTH;
+    let content = content_width(viewport_width);
     let spare = content - 728.;
     if spare > 0. && spare.rem_euclid(2.) == 1. {
         1.
@@ -2026,9 +2111,30 @@ fn panel_nudge(viewport_width: f32) -> f32 {
 /// `min-width: 300px` and 728, less its 16px of padding on each side (`panel_nNq2Vb`). 696 in a window of ordinary size,
 /// narrower when the zoom leaves the window fewer logical pixels.
 fn panel_inner_width(viewport_width: f32) -> f32 {
-    let modal = (viewport_width - 80.).min(1400.);
-    let content = modal - 2. - SETTINGS_SIDEBAR_WIDTH;
-    content.clamp(300., 728.) - 32.
+    // The column keeps 16px clear on each side of the panel box (the 200 % capture: 387 wide content, panel box 355,
+    // rows 323).
+    (content_width(viewport_width) - 32.).clamp(300., 728.) - 32.
+}
+
+/// The viewport width, in CSS pixels, at and under which the modal fills the window (`@container outer-container
+/// (max-width: 1080px)` of `modal__F9ieB`: no border, no radius, no margin).
+pub(super) const FULL_WINDOW_MODAL: f32 = 1080.;
+
+/// `--custom-viewport-padding` of `modal__F9ieB`: 40, and the 32px top bar more above 1600 CSS pixels.
+fn modal_padding(viewport_width: f32) -> f32 {
+    if viewport_width > 1600. { 72. } else { 40. }
+}
+
+/// The width of the content column: the modal less its border and the sidebar; the whole window less the sidebar
+/// once the modal fills it.
+fn content_width(viewport_width: f32) -> f32 {
+    if viewport_width <= FULL_WINDOW_MODAL {
+        viewport_width - SETTINGS_SIDEBAR_WIDTH
+    } else {
+        (viewport_width - 2. * modal_padding(viewport_width)).min(1400.)
+            - 2.
+            - SETTINGS_SIDEBAR_WIDTH
+    }
 }
 
 /// The settings sidebar's width, `sidebar_cR4ic2`: 253 inside the modal's border.

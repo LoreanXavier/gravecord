@@ -850,6 +850,7 @@ impl Root {
                         // The sensitivity row is drawn whole now; its captured height no longer holds its place.
                         let padded = (child.key() != voice::SENSITIVITY
                             && child.key() != super::content_filters::FILTERS
+                            && child.key() != super::connections::ADD
                             && child.key() != super::connections::ACCOUNTS
                             && child.key() != super::connections::APPS
                             && child.key() != super::privacy::ACTIVITY_GUILDS
@@ -952,6 +953,7 @@ impl Root {
             Node::Switch { key, .. } if *key == voice::SENSITIVITY => {
                 self.sensitivity_row(width, window, cx)
             }
+            Node::Custom { key, .. } if *key == super::connections::ADD => self.connection_grid(cx),
             Node::Custom { key, .. } if *key == super::connections::ACCOUNTS => {
                 self.connected_accounts(cx)
             }
