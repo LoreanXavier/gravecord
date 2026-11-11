@@ -438,6 +438,11 @@ impl Root {
     }
 
     pub(super) fn controls_shown(&self) -> bool {
+        // `dmcall controls`: a capture keeps the idle fade away, as the pointer resting in the area does.
+        #[cfg(feature = "capture")]
+        if self.dmc.pin_controls {
+            return true;
+        }
         self.vv.last_move.elapsed() < IDLE || self.vv.menu.is_some()
     }
 
@@ -1521,7 +1526,7 @@ impl Root {
         let active_fill = gpui::rgba(0x00854520);
         let active_text = "--text-feedback-positive";
         let camera_button = if camera_on {
-            primary("call-camera", "voice_camera_on")
+            primary("call-camera", "dm_video")
                 .rounded_l(px(8.))
                 .bg(active_fill)
         } else {
@@ -1599,6 +1604,7 @@ impl Root {
                 this.on_click(cx.listener(|this, _, window, cx| this.toggle_soundboard(window, cx)))
             });
         let centre = div()
+            .parity("dm-call-tray")
             .flex()
             .flex_none()
             .items_center()

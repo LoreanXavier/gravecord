@@ -188,6 +188,41 @@ impl Root {
         }
     }
 
+    /// 411238 `J`: a system message's body is its own line as text ("X started a call."); anything else reads its
+    /// content, sticker, poll, embed or file.
+    fn notification_body(&self, message: &Value) -> String {
+        use dc_state::message_kinds::{LineContext, Part, is_system, system_line};
+        let kind = message["type"].as_u64().unwrap_or(0);
+        if is_system(kind)
+            && let Some(parsed) = dc_state::Message::from_value(message)
+            && let Some(me) = self.stores.current_user.as_ref().map(|user| user.id)
+            && let Some(line) = system_line(
+                &parsed,
+                &LineContext {
+                    in_group_dm: self
+                        .stores
+                        .private_channels
+                        .iter()
+                        .any(|known| known.id == parsed.channel_id && known.kind == 3),
+                    me,
+                    ..LineContext::default()
+                },
+            )
+        {
+            return line
+                .parts
+                .iter()
+                .map(|part| match part {
+                    Part::User(user) => self.dm_display_name(user),
+                    Part::Text(text) | Part::Name(text) | Part::Bold(text) | Part::Link(text) => {
+                        text.clone()
+                    }
+                })
+                .collect();
+        }
+        fallback_body(message)
+    }
+
     pub(super) fn notify_message(&mut self, message: &Value, cx: &mut Context<Self>) {
         self.speak_incoming(message, cx);
         let decision = message_decision(
@@ -261,7 +296,7 @@ impl Root {
             channel,
             message: id,
             title,
-            body: fallback_body(message),
+            body: self.notification_body(message),
         });
     }
 

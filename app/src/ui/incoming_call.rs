@@ -73,6 +73,8 @@ pub struct CardDrag {
     pub pointer: gpui::Point<gpui::Pixels>,
     pub from: (f32, f32),
     pub now: (f32, f32),
+    /// The pointer left the press point: only then is it a drag (a press that stays is a click on a button).
+    pub moved: bool,
 }
 
 /// The looping ring: the sound that plays now and its handle.
@@ -165,6 +167,24 @@ impl Root {
         cx.notify();
     }
 
+    /// Starts the camera behind the card's preview: the same worker as Test Video. A capture run shows the synthetic
+    /// pattern instead of a real camera.
+    fn incoming_preview_start(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "capture")]
+        {
+            self.camera_test_synthetic(cx);
+        }
+        #[cfg(not(feature = "capture"))]
+        {
+            self.camera_test_start(cx);
+        }
+    }
+
+    /// The preview's newest picture, once the camera delivered one.
+    fn camera_preview_picture(&self) -> Option<std::sync::Arc<gpui::RenderImage>> {
+        self.camera_test_image()
+    }
+
     /// The cards that are up: every call that rings us, hidden while that DM is the open channel (596339 `UH`).
     fn incoming_visible(&self) -> Vec<dc_state::calls::IncomingCall> {
         let gated = self.incoming_gated();
@@ -240,16 +260,36 @@ impl Root {
             };
             let name = self.private_channel_name(&channel);
             // Js8cK3 "Incoming Call..." for a voice call, KcnWCO "Incoming Video Call..." for a video one.
-            let subtitle = if self
+            let video_mode = self
                 .stores
                 .voice_members(0, id)
                 .iter()
-                .any(|state| state.self_video || state.self_stream)
-            {
+                .any(|state| state.self_video || state.self_stream);
+            let subtitle = if video_mode {
                 "Incoming Video Call..."
             } else {
                 "Incoming Call..."
             };
+            // 760571 `T`: the video card needs video support and at least one camera. A capture run has the
+            // synthetic source standing in for one.
+            let can_video =
+                video_mode && (cfg!(feature = "capture") || !dc_voice::camera_devices().is_empty());
+            // `u`: "Preview my camera" was pressed; the card widens to 475 x 267 around the live picture.
+            let preview = can_video && self.dmc.incoming_preview == Some(id);
+            let (card_w, card_h) = if preview {
+                (475., 267.)
+            } else if can_video {
+                (232., 315.)
+            } else {
+                (232., 267.)
+            };
+            // `translateX: [0, -|475 - 232| / 2]` while the card widens.
+            let left = if preview {
+                left - (475. - 232.) / 2.
+            } else {
+                left
+            };
+            let picture = preview.then(|| self.camera_preview_picture()).flatten();
             let button = |key: &'static str, fill: &'static str, glyph: &'static str| {
                 div()
                     .id(key)
@@ -268,12 +308,24 @@ impl Root {
                     .absolute()
                     .left(px(left))
                     .top(px(top))
-                    .w(px(232.))
-                    .h(px(267.))
+                    .w(px(card_w))
+                    .h(px(card_h))
                     .p(px(16.))
                     .rounded(px(8.))
-                    .bg(color("--background-surface-high"))
+                    .overflow_hidden()
+                    .bg(color(if preview {
+                        "--black"
+                    } else {
+                        "--background-surface-high"
+                    }))
                     .shadow(card_shadow())
+                    .children(picture.map(|image| {
+                        div().absolute().inset_0().child(
+                            gpui::img(image)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover),
+                        )
+                    }))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
@@ -282,8 +334,32 @@ impl Root {
                                 pointer: event.position,
                                 from: (left, top),
                                 now: (left, top),
+                                moved: false,
                             });
                             cx.notify();
+                        }),
+                    )
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                            if let Some(drag) = this.dmc.incoming_drag.as_mut()
+                                && drag.channel == id
+                                && !drag.moved
+                                && event.dragging()
+                            {
+                                let delta = event.position - drag.pointer;
+                                if f32::from(delta.x).abs() + f32::from(delta.y).abs() > 3. {
+                                    drag.moved = true;
+                                    cx.notify();
+                                }
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                            if this.dmc.incoming_drag.is_some_and(|drag| !drag.moved) {
+                                this.dmc.incoming_drag = None;
+                            }
                         }),
                     )
                     .flex()
@@ -298,7 +374,7 @@ impl Root {
                             .child(div().mt(px(16.)).child(self.call_avatar_kind(
                                 &sender,
                                 &person,
-                                80.,
+                                if preview { 40. } else { 80. },
                                 RingKind::Incoming,
                             )))
                             .child(
@@ -329,22 +405,61 @@ impl Root {
                                     "--control-critical-primary-background-default",
                                     "close",
                                 )
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if this.dmc.incoming_preview.take().is_some() {
+                                            this.camera_test_stop(cx);
+                                        }
                                         this.dismiss_incoming(id, cx)
-                                    }),
-                                ),
+                                    },
+                                )),
                             )
+                            .children(can_video.then(|| {
+                                // `K.A` with `join` and `color: "green"`: joins with the camera on.
+                                button("incoming-join-video", "--green-360", "dm_video").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.dmc.incoming_preview = None;
+                                        this.join_dm_call(id, true, cx);
+                                    }),
+                                )
+                            }))
                             .child(button("incoming-join", "--green-360", "dm_call").on_click(
                                 cx.listener(move |this, _, _, cx| {
+                                    if this.dmc.incoming_preview.take().is_some() {
+                                        this.camera_test_stop(cx);
+                                    }
                                     this.join_dm_call(id, false, cx);
                                 }),
                             )),
                     )
+                    // 760571: "Preview my camera" (8B0UDr), a full-width small secondary button under the row.
+                    .children((can_video && !preview).then(|| {
+                        div()
+                            .id("incoming-preview")
+                            .w_full()
+                            .h(px(32.))
+                            .mt(px(8.))
+                            .rounded(px(8.))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child("Preview my camera")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dmc.incoming_preview = Some(id);
+                                this.incoming_preview_start(cx);
+                            }))
+                    }))
                     .into_any_element(),
             );
         }
-        if self.dmc.incoming_drag.is_some() {
+        if self.dmc.incoming_drag.is_some_and(|drag| drag.moved) {
             // A transparent sheet follows the pointer so a fast drag cannot leave the card behind.
             cards.push(
                 div()

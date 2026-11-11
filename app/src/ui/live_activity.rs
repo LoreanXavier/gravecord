@@ -98,6 +98,34 @@ fn connection_url(application: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The application id the account link is looked up under: `parentId ?? id` (module 591022, 724302).
+fn link_id(application: &Value) -> Option<String> {
+    application["parent_id"]
+        .as_str()
+        .or_else(|| application["id"].as_str())
+        .map(str::to_owned)
+}
+
+/// The key of the `GET /oauth2/tokens?application_ids=` that says whether an application is already linked.
+fn tokens_key(id: &str) -> String {
+    format!("oauth-token:{id}")
+}
+
+/// Whether "Connect Account" shows (802880: `fetched && canStartAuthorization && !hasAlreadyLinked`): the token
+/// lookup for the application answered (`tokens` is its array; a failed lookup counts as answered with no token,
+/// 733110 `USER_AUTHORIZED_APPS_REQUEST_FAILED` -> FETCHED), nothing in it is for this application, and the
+/// application has a connection entry point (the web flow of 724302; the RPC flow needs a game connected over
+/// local RPC, which a client without one never has).
+pub(super) fn needs_account_link(application: &Value, tokens: Option<&Value>) -> Option<String> {
+    let url = connection_url(application)?;
+    let id = link_id(application)?;
+    let tokens = tokens?.as_array()?;
+    let linked = tokens
+        .iter()
+        .any(|token| token["application"]["id"].as_str() == Some(id.as_str()));
+    (!linked).then_some(url)
+}
+
 fn heading(activity: &Value) -> String {
     let kind = activity["type"].as_u64().unwrap_or(0);
     let base = match kind {
@@ -247,6 +275,24 @@ impl Root {
                         route: format!("/applications/public?application_ids={app}"),
                     });
                 }
+                // 704824 `useEffect`: the first render of a card with a known application asks the token store
+                // about it (`GET /oauth2/tokens?application_ids=`), once.
+                let linked_id = self
+                    .fetched
+                    .get(&format!("presence-app:{app}"))
+                    .and_then(|body| body.as_array())
+                    .and_then(|apps| apps.first())
+                    .and_then(link_id);
+                if let Some(id) = linked_id {
+                    let key = tokens_key(&id);
+                    if !self.fetched.contains_key(&key) {
+                        self.fetched.insert(key.clone(), Value::Null);
+                        let _ = self.requests.send(Request::Fetch {
+                            key,
+                            route: format!("/oauth2/tokens?application_ids={id}"),
+                        });
+                    }
+                }
             }
         }
         if let Some(mut delay) = self.live_clock_delay()
@@ -273,6 +319,17 @@ impl Root {
             })
             .detach();
         }
+    }
+
+    /// The answer of the token lookup: the array of tokens, or none when the lookup failed (733110 still counts the
+    /// application as fetched then).
+    pub(super) fn live_tokens_fetched(&mut self, key: String, body: Value) {
+        let tokens = if crate::net::is_fetch_failure(&body) || !body.is_array() {
+            Value::Array(Vec::new())
+        } else {
+            body
+        };
+        self.fetched.insert(key, tokens);
     }
 
     pub(super) fn live_application_fetched(&mut self, body: &Value) {
@@ -319,6 +376,12 @@ impl Root {
                     .and_then(|id| self.fetched.get(&format!("presence-app:{id}")))
                     .and_then(|a| a.as_array())
                     .and_then(|a| a.first());
+                let connect_url = application.and_then(|application| {
+                    needs_account_link(
+                        application,
+                        link_id(application).and_then(|id| self.fetched.get(&tokens_key(&id))),
+                    )
+                });
                 let art = asset_url(activity, "large_image")
                     .and_then(|url| self.images.get(&url))
                     .cloned()
@@ -399,24 +462,62 @@ impl Root {
                             .children(subtitle.map(text_line))
                             .children(extra.map(|s| text_line(s.to_owned()))),
                     );
+                // 282197 `A`: after the timer the badges of the matching feed entry; 506326 `te`: "New Player" for the
+                // FIRST_TIME trait (USER_PROFILE location: subtle icon and text).
+                let new_player = !bot
+                    && kind == 0
+                    && self
+                        .stores
+                        .content_inventory
+                        .matching_inbox_entry(
+                            dc_state::content_inventory::GLOBAL_FEED,
+                            user,
+                            activity,
+                        )
+                        .is_some_and(|entry| entry.first_time());
+                let mut new_player_badge = new_player.then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon("activity_new_player", 12., "--text-subtle"))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-subtle"))
+                                .child("New Player"),
+                        )
+                });
+                if duration.is_none()
+                    && let Some(badge) = new_player_badge.take()
+                {
+                    details = details.child(badge);
+                }
                 if let Some(duration) = duration {
                     details = details.child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(4.))
-                            .child(icon(glyph, 12., "--text-feedback-positive"))
+                            .gap(px(8.))
                             .child(
                                 div()
-                                    .font_features(gpui::FontFeatures(std::sync::Arc::new(vec![
-                                        ("kern".into(), 1),
-                                        ("tnum".into(), 1),
-                                    ])))
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(color("--text-feedback-positive"))
-                                    .child(duration),
-                            ),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(icon(glyph, 12., "--text-feedback-positive"))
+                                    .child(
+                                        div()
+                                            .font_features(gpui::FontFeatures(std::sync::Arc::new(
+                                                vec![("kern".into(), 1), ("tnum".into(), 1)],
+                                            )))
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-feedback-positive"))
+                                            .child(duration),
+                                    ),
+                            )
+                            .children(new_player_badge),
                     );
                 }
                 if spotify
@@ -501,14 +602,12 @@ impl Root {
                             .children(buttons)
                             .into_any_element(),
                     );
-                } else if application.and_then(steam_url).is_some()
-                    || application.and_then(connection_url).is_some()
-                {
+                } else if application.and_then(steam_url).is_some() || connect_url.is_some() {
                     let mut stack = div().flex().flex_col().gap(px(8.));
                     // 802880 `th`: Connect Account, when the application has a connection entry point and this
                     // account has no linked account for it (the token fetch is not made: an unlinked account is
                     // assumed, so the button shows).
-                    if let Some(url) = application.and_then(connection_url) {
+                    if let Some(url) = connect_url.clone() {
                         stack = stack.child(
                             div()
                                 .id(SharedString::from(format!(
@@ -712,6 +811,30 @@ mod tests {
         assert_eq!(elapsed(&a, 3663000).as_deref(), Some("1:01:02"));
         assert_eq!(elapsed(&a, 0).as_deref(), Some("1:01:02"));
     }
+    #[test]
+    fn connect_account_follows_the_token_lookup() {
+        let app = json!({"id": "7", "connection_entrypoint_url": "https://example.com/link"});
+        // Not answered yet: nothing shows (`fetched` is false).
+        assert_eq!(needs_account_link(&app, None), None);
+        assert_eq!(needs_account_link(&app, Some(&Value::Null)), None);
+        // Answered without a token for it: shows.
+        assert_eq!(
+            needs_account_link(&app, Some(&json!([]))).as_deref(),
+            Some("https://example.com/link")
+        );
+        // Linked: gone.
+        let tokens = json!([{"id": "1", "application": {"id": "7"}}]);
+        assert_eq!(needs_account_link(&app, Some(&tokens)), None);
+        // No entry point, no button.
+        assert_eq!(
+            needs_account_link(&json!({"id": "7"}), Some(&json!([]))),
+            None
+        );
+        // A child application is looked up under its parent.
+        let child = json!({"id": "8", "parent_id": "7", "connection_entrypoint_url": "u"});
+        assert_eq!(needs_account_link(&child, Some(&tokens)), None);
+    }
+
     #[test]
     fn rich_asset_routes_and_store_links_preserve_encoding() {
         let a = json!({"application_id":"42", "assets":{"large_image":"spotify:cover", "small_image":"mp:external/a/image.gif"}});

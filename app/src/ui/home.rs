@@ -346,15 +346,15 @@ impl Root {
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
                         .children(timer.clone().map(|text| {
-                            div()
-                                .flex_none()
-                                .pl(px(4.))
-                                .pr(px(8.))
-                                .text_size(px(12.))
-                                .line_height(px(16.))
-                                .font_family(super::MONO)
-                                .text_color(color("--text-feedback-positive"))
-                                .child(text)
+                            div().flex_none().pl(px(4.)).pr(px(8.)).child(
+                                div()
+                                    .parity("dm-call-timer")
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_family(super::MONO)
+                                    .text_color(color("--text-feedback-positive"))
+                                    .child(text),
+                            )
                         }))
                         .when(marked, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.

@@ -635,7 +635,7 @@ impl Root {
                 Side::Top,
             ),
             if camera_on {
-                wide_active("voice-camera", "voice_camera_on")
+                wide_active("voice-camera", "dm_video")
             } else {
                 wide("voice-camera", "voice_camera")
             }

@@ -417,6 +417,10 @@ impl Root {
 #[cfg(feature = "capture")]
 pub const TEST_DM: Id = 1_568_693_333_864_480_939;
 
+/// The local group DM of the harness (`dmcall group`): never sent anywhere.
+#[cfg(feature = "capture")]
+const GROUP_DM: Id = 1_570_000_000_000_000_100;
+
 #[cfg(feature = "capture")]
 impl Root {
     /// The `dmcall` steps of the harness. `open`, `start voice|video`, `leave`, `state`, and `inject ...`, which
@@ -459,6 +463,51 @@ impl Root {
                 self.leave_voice(cx);
                 "left".to_owned()
             }
+            // `activity` / `activity linked`: the test person plays a made-up game whose application has a
+            // connection entry point; its token lookup answers with no token (or with one), and the global feed holds a
+            // live first-session entry for it. Nothing is sent.
+            ["activity"] | ["activity", "linked"] => {
+                let linked = words.len() > 1;
+                let app = "1570000000000000200";
+                let now = chrono::Utc::now().timestamp_millis();
+                self.stores.dispatch(
+                    "PRESENCE_UPDATE",
+                    &json!({
+                        "user": {"id": other.to_string()},
+                        "status": "online",
+                        "activities": [{
+                            "type": 0, "name": "Fixture Game", "application_id": app,
+                            "created_at": now,
+                            "timestamps": {"start": now - 5_406_000},
+                        }],
+                    }),
+                );
+                self.fetched.insert(
+                    format!("presence-app:{app}"),
+                    json!([{"id": app, "name": "Fixture Game",
+                            "connection_entrypoint_url": "https://example.com/link"}]),
+                );
+                self.fetched.insert(
+                    format!("oauth-token:{app}"),
+                    if linked {
+                        json!([{"id": "1", "application": {"id": app}}])
+                    } else {
+                        json!([])
+                    },
+                );
+                self.stores.content_inventory.set_feed(
+                    dc_state::content_inventory::GLOBAL_FEED,
+                    &json!({"entries": [{"content": {
+                        "id": "1570000000000000300", "author_id": other.to_string(),
+                        "author_type": 1, "content_type": 1,
+                        "traits": [{"type": 3, "is_live": true}, {"type": 1, "first_time": true}],
+                        "extra": {"application_id": app, "game_name": "Fixture Game"},
+                    }}]}),
+                    now,
+                );
+                cx.notify();
+                "a fixture game activity with a connection entry point".to_owned()
+            }
             ["online"] => {
                 // The fixture account is Do Not Disturb, which gates the incoming card away; show it as online.
                 self.dmc.shown_online = true;
@@ -467,7 +516,7 @@ impl Root {
             }
             ["group"] => {
                 // A local-only group DM of the test person and two made-up people, to see the group header.
-                let group: Id = 1_570_000_000_000_000_100;
+                let group: Id = GROUP_DM;
                 self.stores.dispatch(
                     "CHANNEL_CREATE",
                     &json!({
@@ -495,12 +544,103 @@ impl Root {
             ["state"] => {
                 let call = self.stores.calls.get_call(channel);
                 format!(
-                    "stop-ringing asked {:?}; call {:?}; incoming {}; in voice {}",
+                    "stop-ringing asked {:?}; call {:?}; incoming {}; in voice {}; controls shown {}",
                     self.dmc.stops,
                     call.map(|call| (call.message_id, call.ringing.clone(), call.unavailable)),
                     self.stores.calls.get_incoming_calls(false).len(),
-                    self.call.is_some()
+                    self.call.is_some(),
+                    self.controls_shown()
                 )
+            }
+            ["controls"] => {
+                self.dmc.pin_controls = true;
+                cx.notify();
+                "the call controls stay shown".to_owned()
+            }
+            // `fake-join video`: this account and the test person both have their cameras on.
+            ["fake-join", "video"] => {
+                self.select_home(Some(channel));
+                self.stores.dispatch("VOICE_STATE_UPDATE", &state(me, true));
+                self.stores.dispatch("VOICE_STATE_UPDATE", &state(other, true));
+                self.fake_dm_call(channel, cx);
+                if let Some(call) = self.call.as_mut() {
+                    call.camera = true;
+                }
+                cx.notify();
+                "both accounts are shown with video; nothing was sent".to_owned()
+            }
+            // Group DM calls, all local: `group join <n>` / `group leave <n>` put member n (0 = the test person,
+            // 1 and 2 the made-up ones, 3 = this account) in or out of the call; `group ring <n>` rings member n from
+            // this account (the request is refused by the harness, the ring shows through a local CALL_UPDATE).
+            ["group", verb, who] => {
+                let group: Id = GROUP_DM;
+                let member = |n: &str| -> Option<Id> {
+                    match n {
+                        "0" => Some(other),
+                        "1" => Some(1_570_000_000_000_000_201),
+                        "2" => Some(1_570_000_000_000_000_202),
+                        "3" => Some(me),
+                        _ => None,
+                    }
+                };
+                let Some(user) = member(who) else {
+                    return "member is 0..3".to_owned();
+                };
+                let voice = |user: Id, here: bool| {
+                    json!({
+                        "channel_id": if here { json!(group.to_string()) } else { Value::Null },
+                        "user_id": user.to_string(), "session_id": "harness",
+                        "self_mute": false, "self_deaf": false, "self_video": false,
+                        "mute": false, "deaf": false,
+                    })
+                };
+                match *verb {
+                    "join" | "leave" => {
+                        let here = *verb == "join";
+                        if self.stores.calls.get_call(group).is_none() {
+                            self.inject_call(
+                                "CALL_CREATE",
+                                json!({"channel_id": group.to_string(),
+                                    "message_id": "1570000000000000002", "region": "us-east",
+                                    "ongoing_rings": {}, "voice_states": []}),
+                                cx,
+                            );
+                        }
+                        self.stores.dispatch("VOICE_STATE_UPDATE", &voice(user, here));
+                        if user == me {
+                            if here {
+                                self.fake_dm_call(group, cx);
+                            } else {
+                                self.call = None;
+                            }
+                        }
+                        cx.notify();
+                        format!("member {who} {verb}s the group call; nothing was sent")
+                    }
+                    "ring" => {
+                        self.ring_call(group, Some(vec![user]), Some("script"));
+                        let ringing = self
+                            .stores
+                            .calls
+                            .get_call(group)
+                            .map(|call| call.ringing.clone())
+                            .unwrap_or_default();
+                        let mut rung: serde_json::Map<String, Value> = ringing
+                            .iter()
+                            .map(|id| (id.to_string(), json!(me.to_string())))
+                            .collect();
+                        rung.insert(user.to_string(), json!(me.to_string()));
+                        self.inject_call(
+                            "CALL_UPDATE",
+                            json!({"channel_id": group.to_string(),
+                                "message_id": "1570000000000000002", "region": "us-east",
+                                "ongoing_rings": Value::Object(rung)}),
+                            cx,
+                        );
+                        format!("rang member {who} locally; the request was refused")
+                    }
+                    _ => "group join|leave|ring 0..3".to_owned(),
+                }
             }
             ["fake-join"] => {
                 self.select_home(Some(channel));
@@ -559,6 +699,19 @@ impl Root {
                         "region": "us-east",
                         "ongoing_rings": rings(other, me),
                         "voice_states": [state(other, false)],
+                    }),
+                    cx,
+                )
+            }
+            ["inject", "incoming", mode] => {
+                self.inject_call(
+                    "CALL_CREATE",
+                    json!({
+                        "channel_id": channel.to_string(),
+                        "message_id": "1570000000000000001",
+                        "region": "us-east",
+                        "ongoing_rings": rings(other, me),
+                        "voice_states": [state(other, *mode == "video")],
                     }),
                     cx,
                 )

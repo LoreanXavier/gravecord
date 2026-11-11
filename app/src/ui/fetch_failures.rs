@@ -12,6 +12,7 @@ pub(super) const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Keys whose readers inspect the failure body themselves.
 fn reads_own_failure(key: &str) -> bool {
     key.starts_with("invite:")
+        || key.starts_with("oauth-token:")
         || key.starts_with(super::activity_shelf::SHELF_PREFIX)
         || key == "content-inventory:feed"
 }

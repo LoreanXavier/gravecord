@@ -68,6 +68,13 @@ impl Entry {
             .unwrap_or(false)
     }
 
+    /// 583846 `Rf`: the FIRST_TIME trait (type 1) says this is the first session of the game ("New Player").
+    pub fn first_time(&self) -> bool {
+        self.trait_value(1, "first_time")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
     pub fn expired(&self, now_ms: i64) -> bool {
         self.expires_at.is_some_and(|expires| expires < now_ms)
     }
@@ -196,6 +203,16 @@ impl ContentInventoryStore {
         self.fetched_at.insert(feed.to_owned(), now_ms);
     }
 
+    /// 99753 `getMatchingInboxEntry`: the live entry of `user` in `feed` that stands for `activity` (83971 `nU`).
+    pub fn matching_inbox_entry(&self, feed: &str, user: Id, activity: &Value) -> Option<&Entry> {
+        self.feeds
+            .get(feed)?
+            .entries
+            .iter()
+            .filter(|entry| entry.author == user && entry.is_live())
+            .find(|entry| entry.matches_activity(activity))
+    }
+
     pub fn clear_feed(&mut self, feed: &str) {
         self.feeds.remove(feed);
     }
@@ -230,6 +247,26 @@ mod tests {
 
     fn entry(kind: u64) -> Entry {
         Entry::from_value(&json!({"id":"4194304000","author_id":"2","author_type":1,"content_type":kind,"participants":["2"],"traits":[],"extra":{"application_id":"3","game_name":"Game"}})).unwrap()
+    }
+
+    #[test]
+    fn a_live_first_time_entry_matches_its_activity() {
+        let mut store = ContentInventoryStore::default();
+        let body = json!({"entries": [{"content": {
+            "id": "4194304000", "author_id": "2", "author_type": 1, "content_type": 1,
+            "traits": [{"type": 3, "is_live": true}, {"type": 1, "first_time": true}],
+            "extra": {"application_id": "3", "game_name": "Game"}
+        }}]});
+        store.set_feed("global", &body, 0);
+        let activity = json!({"type": 0, "application_id": "3", "name": "Game"});
+        let entry = store.matching_inbox_entry("global", 2, &activity).unwrap();
+        assert!(entry.first_time());
+        assert!(store.matching_inbox_entry("global", 9, &activity).is_none());
+        assert!(
+            store
+                .matching_inbox_entry("global", 2, &json!({"type": 0, "name": "Other"}))
+                .is_none()
+        );
     }
 
     #[test]

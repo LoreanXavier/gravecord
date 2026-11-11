@@ -131,8 +131,13 @@ pub struct State {
     pub asking: Option<dc_state::Id>,
     /// The "Start Call" prompt is up for this person.
     pub not_friend: Option<dc_state::Id>,
+    /// The incoming card of this channel shows the camera preview (760571 `u`).
+    pub incoming_preview: Option<dc_state::Id>,
     /// A call rings this account (its card is up).
     pub incoming: bool,
+    /// Capture only: the call controls stay shown (the idle fade would hide them before the frame is taken).
+    #[cfg(feature = "capture")]
+    pub pin_controls: bool,
     /// The area shows a video call (set while it is built, read by the call tray).
     pub video: bool,
 }
@@ -306,13 +311,9 @@ impl Root {
             .justify_center()
             .gap(px(12.))
             .child(
-                button(
-                    "dm-join-video",
-                    "--green-360",
-                    "--green-360",
-                    "voice_camera_on",
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.join_dm_call(channel, true, cx))),
+                button("dm-join-video", "--green-360", "--green-360", "dm_video").on_click(
+                    cx.listener(move |this, _, _, cx| this.join_dm_call(channel, true, cx)),
+                ),
             )
             .child(
                 button("dm-join-call", "--green-360", "--green-360", "dm_call").on_click(
@@ -549,5 +550,73 @@ mod tests {
             pulse(RingKind::Outgoing, 100.),
             pulse(RingKind::Outgoing, 100. + OUTGOING_MS)
         );
+    }
+    /// Every icon name used by the call views, the incoming card and the DM header buttons exists as an asset, and is
+    /// a plain mask: a full-size `<rect>` in the svg (the Lottie exports) draws as a white square when tinted.
+    #[test]
+    fn the_icons_used_by_the_call_views_resolve() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let mut names = vec!["dm_call", "dm_video", "close", "more_horizontal"];
+        for file in [
+            "dm_call_view.rs",
+            "incoming_call.rs",
+            "dm_call.rs",
+            "live_activity.rs",
+            "voice_view.rs",
+            "voice.rs",
+            "voice_panel.rs",
+        ] {
+            let text = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/ui")
+                    .join(file),
+            )
+            .unwrap();
+            let text = text
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            for part in text.split("icon(").skip(1) {
+                let part = part.trim_start();
+                if let Some(rest) = part.strip_prefix('"')
+                    && let Some(end) = rest.find('"')
+                    && rest[..end]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    names.push(Box::leak(rest[..end].to_owned().into_boxed_str()));
+                }
+            }
+        }
+        for name in names {
+            let svg = std::fs::read_to_string(dir.join(format!("{name}.svg")))
+                .unwrap_or_else(|_| panic!("icon {name} has no asset"));
+            // Rects inside defs, clip paths and masks only shape the glyph; a bare one of the full viewBox size is a
+            // filled square once the svg is used as a mask.
+            let mut bare = svg.clone();
+            for (open, close) in [
+                ("<defs>", "</defs>"),
+                ("<clipPath", "</clipPath>"),
+                ("<mask", "</mask>"),
+            ] {
+                while let (Some(from), Some(to)) = (bare.find(open), bare.find(close)) {
+                    if to < from {
+                        break;
+                    }
+                    bare.replace_range(from..to + close.len(), "");
+                }
+            }
+            let square = bare.split("<rect").skip(1).any(|rect| {
+                let tag = rect.split('>').next().unwrap_or_default();
+                !tag.contains("mask=")
+                    && tag.contains("width=\"24\"")
+                    && tag.contains("height=\"24\"")
+            });
+            assert!(
+                !square,
+                "icon {name} has a full-size filled rect and draws as a square"
+            );
+        }
     }
 }
