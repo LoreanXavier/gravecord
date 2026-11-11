@@ -846,6 +846,102 @@ pub fn guild_order(settings_base64: &str) -> Option<Vec<u64>> {
     Some(if order.is_empty() { positions } else { order })
 }
 
+/// One `GuildFolder` of `guild_folders.folders` (`discord_users.v1`): `guild_ids` 1 (packed fixed64), `id` 2
+/// (`Int64Value`), `name` 3 (`StringValue`), `color` 4 (`UInt64Value`). A guild outside any folder is an entry
+/// without an id (module 711014 `S`, `folderId: void 0`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildFolderEntry {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub color: Option<u64>,
+    pub guild_ids: Vec<u64>,
+}
+
+/// The `guild_folders` message of `settings`: its folder entries in order and the legacy `guild_positions` list.
+pub fn guild_folders(settings: &[u8]) -> (Vec<GuildFolderEntry>, Vec<u64>) {
+    let Some((_, message)) = fields(settings).find(|(number, _)| *number == FIELD_GUILD_FOLDERS)
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut entries = Vec::new();
+    let mut positions = Vec::new();
+    for (number, payload) in fields(message) {
+        match number {
+            FOLDERS_FOLDER => {
+                let mut entry = GuildFolderEntry::default();
+                for (inner, bytes) in fields(payload) {
+                    match inner {
+                        FOLDER_GUILD_IDS => entry.guild_ids.extend(fixed64_list(bytes)),
+                        2 => entry.id = Some(varint_of(bytes, 1).unwrap_or(0)),
+                        3 => entry.name = Some(string_of(bytes, 1).unwrap_or_default()),
+                        4 => entry.color = Some(varint_of(bytes, 1).unwrap_or(0)),
+                        _ => {}
+                    }
+                }
+                entries.push(entry);
+            }
+            FOLDERS_POSITIONS => positions.extend(fixed64_list(payload)),
+            _ => {}
+        }
+    }
+    (entries, positions)
+}
+
+fn wrapper_field(out: &mut Vec<u8>, number: u64, inner: &[u8]) {
+    push_bytes_field(out, number, inner);
+}
+
+/// Replaces the folders of `guild_folders` (`updateAsync("guildFolders", ...)`, module 817281 `um`): every entry is
+/// written again, an id as `Int64Value`, a colour as `UInt64Value`, a name as `StringValue` (only when not empty).
+/// `guild_positions` is carried over untouched. Returns the PATCH body value (the whole `guild_folders` message, as
+/// the server replaces a top-level message it is sent) and the new settings.
+pub fn set_guild_folders(current: &[u8], folders: &[GuildFolderEntry]) -> (String, Vec<u8>) {
+    let existing = fields(current)
+        .find(|(number, _)| *number == FIELD_GUILD_FOLDERS)
+        .map_or(&[][..], |(_, message)| message);
+    let mut message = Vec::new();
+    for entry in folders {
+        let mut body = Vec::new();
+        if !entry.guild_ids.is_empty() {
+            let packed: Vec<u8> = entry
+                .guild_ids
+                .iter()
+                .flat_map(|id| id.to_le_bytes())
+                .collect();
+            push_bytes_field(&mut body, FOLDER_GUILD_IDS, &packed);
+        }
+        let varint_wrapper = |value: u64| {
+            let mut inner = Vec::new();
+            if value != 0 {
+                push_varint(&mut inner, 1 << 3 | WIRE_VARINT);
+                push_varint(&mut inner, value);
+            }
+            inner
+        };
+        if let Some(id) = entry.id {
+            wrapper_field(&mut body, 2, &varint_wrapper(id));
+        }
+        if let Some(name) = entry.name.as_deref().filter(|name| !name.is_empty()) {
+            let mut inner = Vec::new();
+            push_bytes_field(&mut inner, 1, name.as_bytes());
+            wrapper_field(&mut body, 3, &inner);
+        }
+        if let Some(color) = entry.color {
+            wrapper_field(&mut body, 4, &varint_wrapper(color));
+        }
+        push_bytes_field(&mut message, FOLDERS_FOLDER, &body);
+    }
+    for (number, raw) in raw_fields(existing) {
+        if number == FOLDERS_POSITIONS {
+            message.extend_from_slice(raw);
+        }
+    }
+    let mut encoded = Vec::new();
+    push_bytes_field(&mut encoded, FIELD_GUILD_FOLDERS, &message);
+    let updated = with_encoded(current, &[], FIELD_GUILD_FOLDERS, &encoded);
+    whole_message_patch(updated, FIELD_GUILD_FOLDERS)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1233,5 +1329,82 @@ mod tests {
                 .unwrap()
                 .invert
         );
+    }
+}
+
+#[cfg(test)]
+mod guild_folder_tests {
+    use super::*;
+
+    fn folder(
+        id: Option<u64>,
+        name: Option<&str>,
+        color: Option<u64>,
+        ids: &[u64],
+    ) -> GuildFolderEntry {
+        GuildFolderEntry {
+            id,
+            name: name.map(str::to_owned),
+            color,
+            guild_ids: ids.to_vec(),
+        }
+    }
+
+    #[test]
+    fn folders_round_trip_through_the_patch() {
+        let entries = vec![
+            folder(None, None, None, &[7]),
+            folder(Some(1_234_567), Some("Games"), Some(0x5865F2), &[8, 9]),
+            folder(Some(42), None, None, &[10]),
+        ];
+        let (patch, updated) = set_guild_folders(&[], &entries);
+        let (read, positions) = guild_folders(&updated);
+        assert_eq!(read, entries);
+        assert!(positions.is_empty());
+        // The PATCH value is the whole guild_folders message and nothing else.
+        let sent = decode(&patch);
+        let top: Vec<_> = fields(&sent).collect();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0, 14);
+        assert_eq!(guild_folders(&sent).0, entries);
+    }
+
+    #[test]
+    fn exact_bytes_of_one_folder() {
+        let (patch, _) = set_guild_folders(&[], &[folder(Some(5), Some("ab"), Some(3), &[1])]);
+        let expected = vec![
+            0x72, 0x1a, // guild_folders (14), 26 bytes
+            0x0a, 0x18, // folders[0], 24 bytes
+            0x0a, 0x08, 1, 0, 0, 0, 0, 0, 0, 0, // guild_ids packed
+            0x12, 0x02, 0x08, 0x05, // id: Int64Value 5
+            0x1a, 0x04, 0x0a, 0x02, b'a', b'b', // name: StringValue
+            0x22, 0x02, 0x08, 0x03, // color: UInt64Value 3
+        ];
+        assert_eq!(STANDARD.decode(patch).unwrap(), expected);
+    }
+
+    #[test]
+    fn other_settings_and_positions_survive() {
+        let mut current = Vec::new();
+        push_bytes_field(&mut current, 77, b"other");
+        let mut old = Vec::new();
+        let packed: Vec<u8> = [3u64, 4].iter().flat_map(|id| id.to_le_bytes()).collect();
+        push_bytes_field(&mut old, 2, &packed);
+        push_bytes_field(&mut current, 14, &old);
+        let (patch, updated) = set_guild_folders(&current, &[folder(None, None, None, &[3])]);
+        assert!(fields(&updated).any(|(n, p)| n == 77 && p == b"other"));
+        let (entries, positions) = guild_folders(&updated);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(positions, vec![3, 4]);
+        // The patch carries only the guild_folders message.
+        assert!(fields(&decode(&patch)).all(|(n, _)| n == 14));
+    }
+
+    #[test]
+    fn an_empty_name_is_not_written_and_reads_back_as_none() {
+        let (_, updated) = set_guild_folders(&[], &[folder(Some(9), Some(""), None, &[1, 2])]);
+        let (entries, _) = guild_folders(&updated);
+        assert_eq!(entries[0].name, None);
+        assert_eq!(entries[0].id, Some(9));
     }
 }

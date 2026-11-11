@@ -48,6 +48,37 @@ pub(in crate::ui) fn chosen(devices: &[CameraDevice]) -> Option<String> {
 }
 
 impl Root {
+    /// The newest picture of the running test camera, as an image.
+    pub(in crate::ui) fn camera_test_image(&self) -> Option<Arc<RenderImage>> {
+        self.voice
+            .camera
+            .test
+            .as_ref()
+            .and_then(|test| test.image.clone())
+    }
+}
+
+impl Root {
+    /// Capture only: a Test with the synthetic pattern as its picture, standing for a camera.
+    #[cfg(feature = "capture")]
+    pub(in crate::ui) fn camera_test_synthetic(&mut self, cx: &mut Context<Self>) {
+        self.camera_test_stop(cx);
+        let picture = Picture {
+            width: 640,
+            height: 360,
+            layout: dc_media::Layout::I420,
+            data: dc_media::synthetic::pattern_i420(640, 360, 7),
+        };
+        self.voice.camera.test = Some(Test {
+            camera: None,
+            latest: Arc::new(Mutex::new(None)),
+            image: render_image(&picture),
+            error: None,
+            _task: Task::ready(()),
+        });
+        cx.notify();
+    }
+
     /// Closes the test camera and gives its image back (leaving the page, Stop Testing, a call's camera starting).
     pub(in crate::ui) fn camera_test_stop(&mut self, cx: &mut Context<Self>) {
         if let Some(test) = self.voice.camera.test.take()

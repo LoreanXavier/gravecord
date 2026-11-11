@@ -1096,7 +1096,8 @@ impl Root {
             self.voice.device_open = None;
             self.voice.camera.open = false;
             self.voice_sync_select_flag();
-            if self.voice.camera.test.is_some() {
+            // The incoming-call card's camera preview runs without this page.
+            if self.voice.camera.test.is_some() && self.dmc.incoming_preview.is_none() {
                 self.camera_test_stop(cx);
             }
             // A drag of the marked sliders of the other pages (text size, spacing, zoom...) is not the voice page's.

@@ -433,6 +433,9 @@ fn backdrop_image(swatch: &'static Swatch, width: f32, height: f32) -> Arc<gpui:
 struct ThemeMix {
     base: Rgba,
     text: Rgba,
+    /// `--custom-theme-base-color-amount` and `--custom-theme-text-color-amount`, in percent.
+    base_amount: f32,
+    text_amount: f32,
 }
 
 fn luminance(colour: Rgba) -> f32 {
@@ -446,12 +449,76 @@ fn luminance(colour: Rgba) -> f32 {
     0.2126 * linear(colour.r) + 0.7152 * linear(colour.g) + 0.0722 * linear(colour.b)
 }
 
+/// The variables of a custom theme (module 162772 `u`, fed by the editor's colours, direction, `baseMix` and theme):
+/// the dark theme mixes `darkest` at saturation 1 and lightness .05 into the base tokens by 60 + 0.4 * (100 - mix)
+/// percent and `darkest` at lightness (100 - 0.1 * (100 - mix)) / 100 into the text tokens by 30 percent; the light
+/// theme mixes `lightest` at saturation 1 and lightness .9 by 30 - 0.2 * mix percent and `lightest` at lightness
+/// 0.05 * (100 - mix) / 100 into the text by 40 percent. Lightness is written with `toFixed(2)`.
+fn custom_theme_mix(custom: &Custom) -> ThemeMix {
+    let colours: Vec<Rgba> = custom
+        .colors
+        .iter()
+        .map(|rgb| rgba(rgb << 8 | 0xff))
+        .collect();
+    let by_luminance = |pick_max: bool| {
+        let mut best = colours.first().copied().unwrap_or(rgba(0x5865f2ff));
+        for colour in &colours {
+            let better = if pick_max {
+                luminance(*colour) > luminance(best)
+            } else {
+                luminance(*colour) < luminance(best)
+            };
+            if better {
+                best = *colour;
+            }
+        }
+        best
+    };
+    let rounded = |lightness: f32| (lightness * 100.).round() / 100.;
+    let hsl = |colour: Rgba| -> Hsla { colour.into() };
+    let with = |colour: Rgba, saturation: Option<f32>, lightness: f32| -> Rgba {
+        let own = hsl(colour);
+        Hsla {
+            s: saturation.unwrap_or(own.s),
+            l: lightness,
+            a: 1.,
+            ..own
+        }
+        .into()
+    };
+    let inverse = 100. - custom.base_mix;
+    if custom.light {
+        let lightest = by_luminance(true);
+        ThemeMix {
+            base: with(lightest, Some(1.), 0.9),
+            text: with(lightest, None, rounded(0.05 * inverse / 100.)),
+            base_amount: 30. - 0.2 * custom.base_mix,
+            text_amount: 40.,
+        }
+    } else {
+        let darkest = by_luminance(false);
+        ThemeMix {
+            base: with(darkest, Some(1.), 0.05),
+            text: with(darkest, None, rounded((100. - 0.1 * inverse) / 100.)),
+            base_amount: 60. + 0.4 * inverse,
+            text_amount: 30.,
+        }
+    }
+}
+
 fn theme_mix(swatch: &Swatch) -> ThemeMix {
+    if swatch.name == CUSTOM_NAME
+        && let Some(custom) = custom_params()
+    {
+        return custom_theme_mix(&custom);
+    }
     let stops = swatch.layers.last().map_or(&[][..], |layer| layer.stops);
     let (Some(first), Some(last)) = (stops.first(), stops.last()) else {
         return ThemeMix {
             base: rgba(0x000000ff),
             text: rgba(0xffffffff),
+            base_amount: BASE_AMOUNT,
+            text_amount: TEXT_AMOUNT,
         };
     };
     let (primary, secondary) = (rgba(first.0 | 0xff), rgba(last.0 | 0xff));
@@ -490,6 +557,8 @@ fn theme_mix(swatch: &Swatch) -> ThemeMix {
             with(lighter, 0.9)
         },
         text: with(text_source, text_lightness),
+        base_amount: BASE_AMOUNT,
+        text_amount: TEXT_AMOUNT,
     }
 }
 
@@ -575,9 +644,9 @@ fn mixed(name: &str, swatch: &'static Swatch) -> Option<Rgba> {
     let own = rgba(theme().color(name));
     let mix = active_mix(swatch);
     Some(if is_base {
-        mix_oklab(own, mix.base, BASE_AMOUNT)
+        mix_oklab(own, mix.base, mix.base_amount)
     } else {
-        mix_oklab(own, mix.text, TEXT_AMOUNT)
+        mix_oklab(own, mix.text, mix.text_amount)
     })
 }
 
@@ -587,7 +656,8 @@ pub(super) fn tinted(name: &str) -> Rgba {
     let Some(swatch) = active() else {
         return own;
     };
-    mix_oklab(own, active_mix(swatch).base, BASE_AMOUNT)
+    let mix = active_mix(swatch);
+    mix_oklab(own, mix.base, mix.base_amount)
 }
 
 fn theme_value(theme: Theme) -> u8 {

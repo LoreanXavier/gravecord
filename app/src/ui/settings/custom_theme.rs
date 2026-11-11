@@ -13,8 +13,8 @@ use crate::editor::{Editor, EditorEvent};
 use crate::ui::editor_style;
 use gpui::{
     AnyElement, Bounds, Context, Entity, FontWeight, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Pixels, Subscription, canvas, div, linear_color_stop, linear_gradient,
-    prelude::*, px, rgba,
+    MouseMoveEvent, Pixels, ScrollHandle, Subscription, canvas, div, linear_color_stop,
+    linear_gradient, prelude::*, px, rgba,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -45,6 +45,7 @@ struct State {
     square: Rc<Cell<Bounds<Pixels>>>,
     hue_bar: Rc<Cell<Bounds<Pixels>>>,
     track: Rc<Cell<Bounds<Pixels>>>,
+    scroll: ScrollHandle,
     _events: [Subscription; 3],
 }
 
@@ -65,11 +66,62 @@ fn hex_text(rgb: u32) -> String {
     format!("#{rgb:06X}")
 }
 
+/// `chroma.valid("#" + text)` for what the field can hold (7 characters): three, four or six hex digits; a fourth
+/// digit is an alpha the editor drops.
 fn parse_hex(text: &str) -> Option<u32> {
     let digits = text.trim().trim_start_matches('#');
-    (digits.len() == 6 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then(|| u32::from_str_radix(digits, 16).ok())
-        .flatten()
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let expand = |digit: u8| {
+        let value = (digit as char).to_digit(16).unwrap_or(0);
+        value * 16 + value
+    };
+    match digits.len() {
+        6 => u32::from_str_radix(digits, 16).ok(),
+        3 | 4 => {
+            let bytes = digits.as_bytes();
+            Some((expand(bytes[0]) << 16) | (expand(bytes[1]) << 8) | expand(bytes[2]))
+        }
+        _ => None,
+    }
+}
+
+/// What the hex field shows (`g`): the text trimmed, a `#` in front, in capitals (`value.toUpperCase()`).
+fn hex_field_text(text: &str) -> String {
+    let trimmed = text.trim();
+    let hashed = if trimmed.starts_with('#') || trimmed.is_empty() {
+        trimmed.to_owned()
+    } else {
+        format!("#{trimmed}")
+    };
+    hashed.to_uppercase()
+}
+
+/// A number field of the panel (`controlLabelInput`: `Math.round(value)` plus its suffix): the text without the suffix
+/// read like `parseInt` and clamped. Text that is not a number keeps the field's last value, and an empty field shows
+/// nothing without changing the value.
+enum Typed {
+    Empty,
+    Number(f32),
+    Rejected,
+}
+
+fn typed_number(text: &str, suffix: char, max: f32) -> Typed {
+    let text: String = text.chars().filter(|c| *c != suffix).collect();
+    let text = text.trim();
+    if text.is_empty() {
+        return Typed::Empty;
+    }
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => (-1., rest),
+        None => (1., text.strip_prefix('+').unwrap_or(text)),
+    };
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    match digits.parse::<f32>() {
+        Ok(number) => Typed::Number((sign * number).clamp(0., max)),
+        Err(_) => Typed::Rejected,
+    }
 }
 
 fn to_hsl(rgb: u32) -> (f32, f32, f32) {
@@ -197,18 +249,69 @@ pub(super) fn surprise(mut random: impl FnMut() -> f32) -> Custom {
     }
 }
 
-/// The direction slider snaps to 0, 90, 180, 270 and 360 within 10 degrees of them.
+/// The direction slider snaps to 90, 180 and 270 within 10 degrees of them (module 500779 `eG`).
 pub(super) fn snap_angle(angle: f32) -> f32 {
-    [0., 90., 180., 270., 360.]
+    [90., 180., 270.]
         .into_iter()
         .find(|stop| (angle - stop).abs() <= 10.)
         .unwrap_or(angle)
 }
 
-/// The colour "Add Color" adds: the last colour with its hue 15 degrees on.
+/// The colour "Add Color" adds (module 500779): the last colour with its hue 15 degrees on, by chroma.js's `hsl`
+/// conversions (`set("hsl.h", (h + 15) % 360).hex()`), in double precision with halves rounded up.
 pub(super) fn next_colour(last: u32) -> u32 {
-    let (h, s, l) = to_hsl(last);
-    from_hsl(h + 15., s, l)
+    let unit = |shift: u32| f64::from((last >> shift) & 0xff) / 255.;
+    let (r, g, b) = (unit(16), unit(8), unit(0));
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let delta = max - min;
+    let l = (max + min) / 2.;
+    let s = if delta == 0. {
+        0.
+    } else if l < 0.5 {
+        delta / (max + min)
+    } else {
+        delta / (2. - max - min)
+    };
+    let mut h = if delta == 0. {
+        0.
+    } else if max == r {
+        (g - b) / delta
+    } else if max == g {
+        2. + (b - r) / delta
+    } else {
+        4. + (r - g) / delta
+    } * 60.;
+    if h < 0. {
+        h += 360.;
+    }
+    let h = (h + 15.) % 360.;
+    let channel = |value: f64| (value * 255. + 0.5).floor().clamp(0., 255.) as u32;
+    if s == 0. {
+        let grey = channel(l);
+        return (grey << 16) | (grey << 8) | grey;
+    }
+    let t2 = if l < 0.5 { l * (1. + s) } else { l + s - l * s };
+    let t1 = 2. * l - t2;
+    let along = |offset: f64| {
+        let mut t = h / 360. + offset;
+        if t < 0. {
+            t += 1.;
+        }
+        if t > 1. {
+            t -= 1.;
+        }
+        let value = if 6. * t < 1. {
+            t1 + (t2 - t1) * 6. * t
+        } else if 2. * t < 1. {
+            t2
+        } else if 3. * t < 2. {
+            t1 + (t2 - t1) * (2. / 3. - t) * 6.
+        } else {
+            t1
+        };
+        channel(value)
+    };
+    (along(1. / 3.) << 16) | (along(0.) << 8) | along(-1. / 3.)
 }
 
 fn with_state<R>(run: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -230,6 +333,17 @@ fn random_unit() -> f32 {
         seed.set(x);
         (x >> 40) as f32 / (1u64 << 24) as f32
     })
+}
+
+/// One black box shadow of the panel's controls (`0 <dy> <blur> 0 rgba(0 0 0 / <alpha>)`, optionally inset).
+fn shadow(alpha: f32, dy: f32, blur: f32, inset: bool) -> gpui::BoxShadow {
+    gpui::BoxShadow {
+        color: gpui::hsla(0., 0., 0., alpha),
+        offset: gpui::point(px(0.), px(dy)),
+        blur_radius: px(blur),
+        spread_radius: px(0.),
+        inset,
+    }
 }
 
 /// A slider of the panel (`slider_p3RiOL`): a 4 px bar over 264, the fill and a 16 px white grabber on a 254 px track
@@ -270,32 +384,41 @@ fn custom_slider(
                 .w(px(264.))
                 .h(px(4.))
                 .rounded(px(2.))
-                .bg(tinted("--background-base-low")),
+                .bg(color("--slider-track-background")),
         )
         .when(dots, |slider| {
-            (0..5).fold(slider, |slider, index| {
-                let size = if index == 2 { 10. } else { 8. };
-                slider.child(
-                    div()
-                        .absolute()
-                        .left(px(1. + 63.5 * index as f32 + (8. - size) / 2. - 0.))
-                        .top(px(12. - size / 2.))
-                        .size(px(size))
-                        .rounded_full()
-                        .bg(color("--control-secondary-background-default")),
-                )
-            })
+            // `angleIndicatorOverlay`: 263 wide, .5 inset, the five dots spread evenly (measured left edges).
+            const LEFTS: [f32; 5] = [0.5, 63.75, 127., 192.25, 255.5];
+            LEFTS
+                .iter()
+                .enumerate()
+                .fold(slider, |slider, (index, left)| {
+                    let size = if index == 2 { 10. } else { 8. };
+                    slider.child(
+                        div()
+                            .absolute()
+                            .left(px(*left))
+                            .top(px(11.5 - size / 2.))
+                            .size(px(size))
+                            .rounded_full()
+                            .bg(color("--background-mod-muted")),
+                    )
+                })
         })
         .when(ratio > 0., |slider| {
+            // `barFill`: 100% of the 4 px bar plus its 1px `hsla(0 0% 100% .1)` border, clipped by the bar; it is
+            // `ratio * 264 + 2` wide (measured: 197.36 at 74%).
             slider.child(
                 div()
                     .absolute()
-                    .top(px(9.))
+                    .top(px(10.))
                     .left_0()
-                    .w(px(5. + ratio * 254.))
-                    .h(px(6.))
-                    .rounded(px(3.))
-                    .bg(color("--background-brand")),
+                    .w(px((ratio * 264. + 2.).min(264.)))
+                    .h(px(4.))
+                    .rounded_l(px(2.))
+                    .bg(color("--background-brand"))
+                    .border_t_1()
+                    .border_color(rgba(0xffffff1a)),
             )
         })
         .child(
@@ -319,6 +442,7 @@ fn custom_slider(
                         .rounded_full()
                         .border_1()
                         .border_color(color("--border-normal"))
+                        .shadow(vec![shadow(0.14, 1., 4., false)])
                         .bg(rgba(0xffffffff)),
                 ),
         )
@@ -339,50 +463,53 @@ impl Root {
     /// Opens the editor from "Try it out": the whole app takes the theme, the panel goes on the right.
     pub(super) fn open_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
         let custom = default_custom();
-        let hex = cx.new(|cx| {
-            let mut editor = Editor::new(editor_style(), cx);
-            editor.set_single_line(true);
-            editor.set_max_utf16(7);
-            editor.set_text(&hex_text(DEFAULT_COLOUR));
-            editor
-        });
-        let intensity = cx.new(|cx| {
-            let mut editor = Editor::new(editor_style(), cx);
-            editor.set_single_line(true);
-            editor.set_max_utf16(4);
-            editor.set_text(&format!("{}%", DEFAULT_MIX as u32));
-            editor
-        });
-        let angle = cx.new(|cx| {
-            let mut editor = Editor::new(editor_style(), cx);
-            editor.set_single_line(true);
-            editor.set_max_utf16(4);
-            editor.set_text("0°");
-            editor
-        });
+        let field = |cx: &mut Context<Self>, limit: usize, end: bool, text: &str| {
+            let text = text.to_owned();
+            cx.new(|cx| {
+                let mut editor = Editor::new(editor_style(), cx);
+                editor.set_single_line(true);
+                editor.set_max_utf16(limit);
+                // Deleting edits the value too, and Enter leaves the text where it is.
+                editor.set_reports_all_edits(true);
+                editor.set_keeps_text(true);
+                editor.set_align_end(end);
+                editor.set_text(&text);
+                editor
+            })
+        };
+        let hex = field(cx, 7, false, &hex_text(DEFAULT_COLOUR));
+        let intensity = field(cx, 4, true, &format!("{}%", DEFAULT_MIX as u32));
+        let angle = field(cx, 4, true, "0\u{b0}");
         let angle_events = cx.subscribe(&angle, |this, editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited) {
-                let text = editor.read(cx).text();
-                let digits: String = text.chars().filter(char::is_ascii_digit).collect();
-                if let Ok(number) = digits.parse::<f32>() {
-                    this.custom_theme_set_angle(number.min(360.), false, cx);
-                }
+            if matches!(event, EditorEvent::Edited | EditorEvent::Submit(_)) {
+                this.custom_theme_typed_number(&editor, '\u{b0}', 360., true, cx);
             }
         });
         let hex_events = cx.subscribe(&hex, |this, editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited)
-                && let Some(rgb) = parse_hex(editor.read(cx).text())
-            {
-                this.custom_theme_set_colour(rgb, false, cx);
+            let text = editor.read(cx).text().to_owned();
+            let shown = hex_field_text(&text);
+            if shown != text {
+                editor.update(cx, |editor, cx| {
+                    editor.set_text(&shown);
+                    cx.notify();
+                });
+            }
+            match event {
+                EditorEvent::Edited => {
+                    if let Some(rgb) = parse_hex(&shown) {
+                        this.custom_theme_set_colour(rgb, false, cx);
+                    }
+                }
+                // Enter on text that is not a colour puts the selected colour back.
+                EditorEvent::Submit(_) if parse_hex(&shown).is_none() => {
+                    this.custom_theme_write_fields(cx)
+                }
+                _ => {}
             }
         });
         let intensity_events = cx.subscribe(&intensity, |this, editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited) {
-                let text = editor.read(cx).text();
-                let digits: String = text.chars().filter(char::is_ascii_digit).collect();
-                if let Ok(number) = digits.parse::<f32>() {
-                    this.custom_theme_set_intensity(number.min(100.), false, cx);
-                }
+            if matches!(event, EditorEvent::Edited | EditorEvent::Submit(_)) {
+                this.custom_theme_typed_number(&editor, '%', 100., false, cx);
             }
         });
         let (hue, saturation, value) = to_hsv(DEFAULT_COLOUR);
@@ -400,6 +527,7 @@ impl Root {
                 square: Rc::default(),
                 hue_bar: Rc::default(),
                 track: Rc::default(),
+                scroll: ScrollHandle::new(),
                 _events: [hex_events, intensity_events, angle_events],
             });
         });
@@ -515,9 +643,66 @@ impl Root {
         }
     }
 
-    fn custom_theme_set_angle(&mut self, angle: f32, write: bool, cx: &mut Context<Self>) {
+    /// A number typed into the direction (`angle` true) or intensity field: clamped, written back with its suffix and
+    /// applied at once; text that is not a number puts the last value back; a cleared field stays empty.
+    fn custom_theme_typed_number(
+        &mut self,
+        editor: &Entity<Editor>,
+        suffix: char,
+        max: f32,
+        angle: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let text = editor.read(cx).text().to_owned();
+        let shown = match typed_number(&text, suffix, max) {
+            Typed::Empty => {
+                if !text.is_empty() {
+                    editor.update(cx, |editor, cx| {
+                        editor.set_text("");
+                        cx.notify();
+                    });
+                }
+                return;
+            }
+            Typed::Number(number) => {
+                let number = number as u32;
+                if angle {
+                    self.custom_theme_set_angle(number as f32, false, false, cx);
+                } else {
+                    self.custom_theme_set_intensity(number as f32, false, cx);
+                }
+                format!("{number}{suffix}")
+            }
+            Typed::Rejected => {
+                let value = with_state(|state| {
+                    if angle {
+                        state.custom.angle
+                    } else {
+                        state.custom.base_mix
+                    }
+                })
+                .unwrap_or(0.);
+                format!("{}{suffix}", value.round() as u32)
+            }
+        };
+        if shown != text {
+            editor.update(cx, |editor, cx| {
+                editor.set_text(&shown);
+                cx.notify();
+            });
+        }
+    }
+
+    fn custom_theme_set_angle(
+        &mut self,
+        angle: f32,
+        write: bool,
+        snap: bool,
+        cx: &mut Context<Self>,
+    ) {
         let editor = with_state(|state| {
-            state.custom.angle = snap_angle(angle.clamp(0., 360.));
+            let angle = angle.clamp(0., 360.);
+            state.custom.angle = if snap { snap_angle(angle) } else { angle };
             state.angle.clone()
         });
         if write && let Some(editor) = editor {
@@ -596,26 +781,28 @@ impl Root {
         if !client_theme::editing() {
             return None;
         }
-        let (custom, selected, hue, saturation, value, fields, bounds) = with_state(|state| {
-            (
-                state.custom.clone(),
-                state.selected,
-                state.hue,
-                state.saturation,
-                state.value,
+        let (custom, selected, hue, saturation, value, fields, bounds, scroll) =
+            with_state(|state| {
                 (
-                    state.hex.clone(),
-                    state.intensity.clone(),
-                    state.angle.clone(),
-                ),
-                (
-                    state.square.clone(),
-                    state.hue_bar.clone(),
-                    state.track.clone(),
-                    state.angle_track.clone(),
-                ),
-            )
-        })?;
+                    state.custom.clone(),
+                    state.selected,
+                    state.hue,
+                    state.saturation,
+                    state.value,
+                    (
+                        state.hex.clone(),
+                        state.intensity.clone(),
+                        state.angle.clone(),
+                    ),
+                    (
+                        state.square.clone(),
+                        state.hue_bar.clone(),
+                        state.track.clone(),
+                        state.angle_track.clone(),
+                    ),
+                    state.scroll.clone(),
+                )
+            })?;
         let (hex, intensity, angle) = fields;
         let (square, hue_bar, track, angle_track) = bounds;
         let slider = custom_slider(
@@ -632,7 +819,7 @@ impl Root {
             angle_track,
             true,
             cx,
-            |ratio, this, cx| this.custom_theme_set_angle((ratio * 360.).round(), true, cx),
+            |ratio, this, cx| this.custom_theme_set_angle((ratio * 360.).round(), true, true, cx),
         );
         let rgb = custom
             .colors
@@ -646,7 +833,7 @@ impl Root {
                 .font_weight(FontWeight(weight))
                 .text_color(color(tint))
         };
-        let label = |name: &'static str| text(14., 600., "--text-default").h(px(18.)).child(name);
+        let label = |name: &'static str| text(14., 600., "--text-subtle").h(px(18.)).child(name);
         let section = || div().flex().flex_col().gap(px(12.));
         let pointer = |left: f32, top: f32, fill: Option<u32>| {
             div()
@@ -657,27 +844,33 @@ impl Root {
                 .rounded_full()
                 .border(px(3.))
                 .border_color(rgba(0xffffffff))
+                .shadow(vec![
+                    shadow(0.15, 3., 13.2, false),
+                    shadow(0.05, 1., 2., false),
+                ])
                 .when_some(fill, |pointer, fill| pointer.bg(rgba((fill << 8) | 0xff)))
         };
+        // `pillItem` (module of the tab list pill): 32 high, the selected one 34 with a 1px `--border-subtle` border on
+        // `--background-mod-subtle` and the strong text, the other the `--text-subtle` colour.
         let pill = |id: &'static str, icon: &'static str, light: bool, on: bool| {
             div()
                 .id(id)
                 .flex_1()
-                .h(px(32.))
+                .h(px(if on { 34. } else { 32. }))
                 .rounded(px(4.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .when(on, |pill| pill.bg(tinted("--background-base-low")))
+                .when(on, |pill| {
+                    pill.border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-mod-muted"))
+                })
                 .child(mask_icon(
                     icon,
                     16.,
-                    if on {
-                        "--text-strong"
-                    } else {
-                        "--text-default"
-                    },
+                    if on { "--text-strong" } else { "--text-subtle" },
                 ))
                 .on_click(cx.listener(move |this, _, _, cx| this.custom_theme_set_light(light, cx)))
         };
@@ -728,20 +921,28 @@ impl Root {
             }
         };
         let pick_hue_move = pick_hue.clone();
-        let stops: [u32; 7] = [
-            0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff, 0xff0000,
+        // `hue-horizontal`: red, yellow 17%, lime 33%, cyan 50%, blue 67%, magenta 83%, red, 8 px corners.
+        let stops: [(u32, f32); 7] = [
+            (0xff0000, 0.),
+            (0xffff00, 17.),
+            (0x00ff00, 33.),
+            (0x00ffff, 50.),
+            (0x0000ff, 67.),
+            (0xff00ff, 83.),
+            (0xff0000, 100.),
         ];
         let last_segment = stops.len() - 2;
         let segments = stops.windows(2).enumerate().map(|(index, pair)| {
             div()
-                .flex_1()
+                .flex_none()
+                .w(px(264. * (pair[1].1 - pair[0].1) / 100.))
                 .h_full()
-                .when(index == 0, |segment| segment.rounded_l(px(10.)))
-                .when(index == last_segment, |segment| segment.rounded_r(px(10.)))
+                .when(index == 0, |segment| segment.rounded_l(px(8.)))
+                .when(index == last_segment, |segment| segment.rounded_r(px(8.)))
                 .bg(linear_gradient(
                     90.,
-                    linear_color_stop(rgba((pair[0] << 8) | 0xff), 0.),
-                    linear_color_stop(rgba((pair[1] << 8) | 0xff), 1.),
+                    linear_color_stop(rgba((pair[0].0 << 8) | 0xff), 0.),
+                    linear_color_stop(rgba((pair[1].0 << 8) | 0xff), 1.),
                 ))
         });
         let saturation_box = div()
@@ -780,9 +981,10 @@ impl Root {
                         linear_color_stop(rgba(0x000000ff), 1.),
                     )),
             )
+            // The pointer sits 1 px right and below the exact spot (measured: 1172, 315.7 for s .636, v .949).
             .child(pointer(
-                saturation * 264. - 9.,
-                (1. - value) * 152. - 9.,
+                saturation * 264. - 8.,
+                (1. - value) * 152. - 8.,
                 None,
             ))
             .on_mouse_down(
@@ -802,7 +1004,6 @@ impl Root {
             .flex_none()
             .w(px(264.))
             .h(px(20.))
-            .px(px(2.))
             .cursor_crosshair()
             .child(
                 div()
@@ -816,11 +1017,8 @@ impl Root {
                     )
                     .children(segments),
             )
-            .child(pointer(
-                2. + hue / 360. * 260. - 9.,
-                1.,
-                Some(from_hsv(hue, 1., 1.)),
-            ))
+            // `huePointer`: transparent inside, centred 1 px right of `hue / 360` of the 264 px bar.
+            .child(pointer(1. + hue / 360. * 264. - 9., 1., None))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -834,6 +1032,20 @@ impl Root {
             }));
 
         // Sliders: bar 4 high, fill and a 16 white grabber over a 254 wide track; the direction one has five dots.
+        // `controlLabelInput`: 54 wide (40 plus 12 padding and the 1px border), 22 high, text at the end.
+        let number_field = |editor: Entity<Editor>| {
+            div()
+                .w(px(54.))
+                .h(px(22.))
+                .flex_none()
+                .pl(px(12.))
+                .border_1()
+                .border_color(rgba(0))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .child(div().w(px(40.)).child(editor))
+        };
         let several = custom.colors.len() > 1;
         // The colour strip above the square (`gradientBar_YWrQKs`): the colours as the gradient from 10% to 90%, a
         // square on each at its stop, the selected one larger with a notch under it.
@@ -861,6 +1073,11 @@ impl Root {
                         .bg(flat(*colour))
                         .border(px(if chosen { 4. } else { 2. }))
                         .border_color(rgba(0xffffffff))
+                        .shadow(vec![
+                            shadow(0.15, 3., 13.2, false),
+                            shadow(0.05, 1., 2., false),
+                            shadow(0.15, 1., 6., true),
+                        ])
                         .cursor_pointer()
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.custom_theme_select(index, cx)),
@@ -938,8 +1155,14 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(text(16., 500., "--text-strong").child("Gradient Direction"))
-                        .child(div().w(px(32.)).child(angle)),
+                        .child(
+                            text(16., 500., "--text-default")
+                                .line_height(px(22.))
+                                .relative()
+                                .top(px(-1.))
+                                .child("Gradient Direction"),
+                        )
+                        .child(number_field(angle)),
                 )
                 .child(angle_slider)
         });
@@ -956,13 +1179,14 @@ impl Root {
                 .w(px(PANEL_WIDTH))
                 .border_1()
                 .border_color(color("--border-muted"))
-                .bg(tinted("--background-base-lower"))
+                .bg(tinted("--background-base-low"))
                 .occlude()
                 .child(
                     div()
                         .id("custom-theme-scroll")
                         .size_full()
                         .overflow_y_scroll()
+                        .track_scroll(&scroll)
                         .pl(px(12.))
                         .pr(px(12.))
                         .pt(px(16.))
@@ -1003,7 +1227,7 @@ impl Root {
                                                 )),
                                         ),
                                 )
-                                .child(text(14., 500., "--text-default").child(
+                                .child(text(14., 500., "--text-muted").child(
                                     "Match your mood with endless color combinations. Try it now!",
                                 )),
                         )
@@ -1015,7 +1239,9 @@ impl Root {
                                     .rounded(px(8.))
                                     .border_1()
                                     .border_color(color("--border-subtle"))
+                                    .bg(tinted("--background-base-lowest"))
                                     .flex()
+                                    .items_start()
                                     .gap(px(4.))
                                     .child(pill(
                                         "custom-theme-dark",
@@ -1048,7 +1274,7 @@ impl Root {
                                             .rounded(px(8.))
                                             .border_1()
                                             .border_color(color("--border-muted"))
-                                            .bg(color("--control-secondary-background-default"))
+                                            .bg(color("--background-mod-subtle"))
                                             .flex()
                                             .items_center()
                                             .child(
@@ -1061,8 +1287,7 @@ impl Root {
                                                     .border_color(color("--border-subtle"))
                                                     .bg(rgba((rgb << 8) | 0xff)),
                                             )
-                                            .child(div().flex_1().child(hex))
-                                            .children(remove)
+                                            .child(div().flex_1().pt(px(1.)).child(hex))
                                             .child(
                                                 div()
                                                     .size(px(32.))
@@ -1074,7 +1299,8 @@ impl Root {
                                                         16.,
                                                         "--interactive-text-default",
                                                     )),
-                                            ),
+                                            )
+                                            .children(remove),
                                     )
                                     .child(
                                         button(
@@ -1110,10 +1336,13 @@ impl Root {
                                                     .items_center()
                                                     .justify_between()
                                                     .child(
-                                                        text(16., 500., "--text-strong")
+                                                        text(16., 500., "--text-default")
+                                                            .line_height(px(22.))
+                                                            .relative()
+                                                            .top(px(-1.))
                                                             .child("Color Intensity"),
                                                     )
-                                                    .child(div().w(px(32.)).child(intensity)),
+                                                    .child(number_field(intensity)),
                                             )
                                             .child(slider),
                                     ),
@@ -1150,6 +1379,16 @@ impl Root {
                                 )),
                         ),
                 )
+                // The thin scrollbar of `scrollbarGutterStable thin` over the 593 px above the footer.
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(593.))
+                        .child(crate::ui::menu::menu_scrollbar(scroll)),
+                )
                 .child(
                     div()
                         .absolute()
@@ -1161,7 +1400,7 @@ impl Root {
                         .py(px(16.))
                         .border_t_1()
                         .border_color(color("--border-subtle"))
-                        .bg(tinted("--background-base-lower"))
+                        .bg(tinted("--background-base-low"))
                         .flex()
                         .flex_col()
                         .gap(px(12.))
@@ -1369,6 +1608,12 @@ mod tests {
         assert_eq!(parse_hex("5865f2"), Some(0x5865f2));
         assert_eq!(parse_hex("#5865F"), None);
         assert_eq!(parse_hex("#58GGF2"), None);
+    }
+
+    #[test]
+    fn add_color_matches_the_official_pair() {
+        // `custom-theme-editor-two-colors-darker-cozy@1.png`: Add Color on the default colour.
+        assert_eq!(next_colour(0x5865f2), 0x7258f2);
     }
 
     #[test]

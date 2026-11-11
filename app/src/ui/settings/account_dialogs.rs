@@ -8,12 +8,14 @@
 //! refusal gives.
 
 use super::mfa;
+use super::model::Choice;
+use super::phone_countries::COUNTRIES;
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::ui::{Root, color, editor_style, icon, modal};
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, SharedString, Subscription,
+    Window, div, prelude::*, px,
 };
 use serde_json::{Value, json};
 
@@ -267,6 +269,112 @@ pub(in crate::ui) fn phone_number(code: &str, number: &str) -> String {
     format!("+{}{}", digits(code), digits(number))
 }
 
+/// `c.A.find(name === "United States")` of module 938401: the option the select starts on.
+fn default_country() -> usize {
+    COUNTRIES
+        .iter()
+        .position(|country| country.alpha2 == "US")
+        .unwrap_or(0)
+}
+
+/// The two regional-indicator letters of the option's flag (`String.fromCodePoint(...alpha2.map(127397 + code))`);
+/// Windows has no flag glyphs and draws the pair as the two letters.
+fn flag_letters(alpha2: &str) -> String {
+    alpha2.to_ascii_uppercase()
+}
+
+/// How well a name answers a query: the ranks of the match-sorter the select filters with (module 873200: its
+/// default keys are `label`), best first. `None` when the letters do not even occur in order.
+fn match_rank(name: &str, query: &str) -> Option<u8> {
+    let name = name.to_lowercase();
+    let query = query.to_lowercase();
+    if name == query {
+        return Some(6);
+    }
+    if name.starts_with(&query) {
+        return Some(5);
+    }
+    if name.contains(&format!(" {query}")) {
+        return Some(4);
+    }
+    if name.contains(&query) {
+        return Some(3);
+    }
+    let initials: String = name
+        .split([' ', '-'])
+        .filter_map(|word| word.chars().next())
+        .collect();
+    if initials.contains(&query) {
+        return Some(2);
+    }
+    let mut rest = name.chars();
+    query
+        .chars()
+        .all(|letter| rest.any(|have| have == letter))
+        .then_some(1)
+}
+
+/// The options a query leaves (all of them for an empty one): by rank, then by name, as match-sorter orders ties.
+fn country_matches(query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..COUNTRIES.len()).collect();
+    }
+    let mut ranked: Vec<(u8, usize)> = COUNTRIES
+        .iter()
+        .enumerate()
+        .filter_map(|(index, country)| Some((match_rank(country.name, query)?, index)))
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0).then_with(|| {
+            COUNTRIES[a.1]
+                .name
+                .to_lowercase()
+                .cmp(&COUNTRIES[b.1].name.to_lowercase())
+        })
+    });
+    ranked.into_iter().map(|(_, index)| index).collect()
+}
+
+/// The dialing code shown in front of the number box (`leading: P?.code`, as the option lists it).
+fn country_prefix(index: usize) -> String {
+    COUNTRIES[index].code.to_owned()
+}
+
+/// The active border is two pixels wide in the captures: the 1px border and a 1px ring inside it.
+fn focus_ring() -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .rounded(px(7.))
+        .border_1()
+        .border_color(color("--input-border-active"))
+}
+
+/// Where the open flag of the country list lives: a key that ends in `/open`, so a press outside the list and Escape
+/// close it like any select list.
+const COUNTRY_OPEN: &str = "phone_country/open";
+/// `maxOptionsVisible` (module 890497): the list shows five rows of 40px (`listBoxItem_b5PEJH`).
+const COUNTRY_ROWS: f32 = 5.;
+const COUNTRY_ROW: f32 = 40.;
+
+/// Scrolls the list the least that shows `row` fully, as `scrollIntoView` does.
+fn country_scroll_to(handle: &ScrollHandle, row: usize) {
+    let view = COUNTRY_ROW * COUNTRY_ROWS;
+    let now = -f32::from(handle.offset().y);
+    let top = row as f32 * COUNTRY_ROW;
+    let to = if top < now {
+        top
+    } else if top + COUNTRY_ROW > now + view {
+        top + COUNTRY_ROW - view
+    } else {
+        now
+    };
+    handle.set_offset(gpui::point(px(0.), px(-to)));
+}
+
 pub(in crate::ui) struct Field {
     name: &'static str,
     label: &'static str,
@@ -279,7 +387,7 @@ pub(in crate::ui) struct Field {
     /// The positive message under the box (`successMessage` of module 452027).
     success: Option<String>,
     helper: Option<&'static str>,
-    leading: Option<&'static str>,
+    leading: Option<SharedString>,
     width: Option<f32>,
 }
 
@@ -302,6 +410,19 @@ pub(in crate::ui) struct Form {
     check_wait: Option<gpui::Task<()>>,
     check_asked: String,
     mfa: mfa::Draft,
+    /// The Add phone dialog's country select (module 938401 `f`): the picked option of `COUNTRIES`, the search box of
+    /// its open list, the list's scroll and the row the arrow keys are on (in the filtered list).
+    country: usize,
+    country_search: Option<(Entity<Editor>, Subscription)>,
+    country_scroll: ScrollHandle,
+    country_active: Option<usize>,
+    /// The search box takes the focus on the next frame (the list just opened).
+    country_focus: bool,
+    /// The `phone` state of module 938401 `j`: empty until the box or the select changes once, then
+    /// `${code}${digits}`; the Send button stays dimmed while it is empty.
+    phone_typed: String,
+    /// The field that holds the focus, drawn with the active border.
+    focused: Option<&'static str>,
 }
 
 /// The reasons of module 162282 in `FL` order, with the strings `naBTFO`, `LQ0RUP`, `oOqQjw`, `p38n1b`.
@@ -367,6 +488,386 @@ impl Root {
         }
     }
 
+    fn country_is_open(&self) -> bool {
+        matches!(
+            self.setting_choices.get(COUNTRY_OPEN),
+            Some(Choice::On(true))
+        )
+    }
+
+    /// The search box of the open country list (`comboBoxInput_vWC4bk`): typing narrows the options, Enter takes the
+    /// row the arrow keys are on.
+    fn country_search_editor(&self, cx: &mut Context<Self>) -> (Entity<Editor>, Subscription) {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_single_line(true);
+            editor
+        });
+        let sub = cx.subscribe(&editor, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Edited => {
+                    if let Some(form) = this.settings_extra.form.as_mut() {
+                        // The first match is the row Enter takes.
+                        let typed = !Self::country_query(form, cx).is_empty();
+                        form.country_active = typed.then_some(0);
+                        form.country_scroll.set_offset(gpui::point(px(0.), px(0.)));
+                    }
+                }
+                EditorEvent::Submit(query) => this.country_pick_active(query, cx),
+                EditorEvent::Cancel => {
+                    this.setting_choices.insert(COUNTRY_OPEN, Choice::On(false));
+                }
+            }
+            cx.notify();
+        });
+        (editor, sub)
+    }
+
+    /// The select field or its chevron: the list opens on the picked option, or closes.
+    fn country_toggle(&mut self, cx: &mut Context<Self>) {
+        if self.country_is_open() {
+            self.setting_choices.insert(COUNTRY_OPEN, Choice::On(false));
+        } else if let Some(form) = self.settings_extra.form.as_mut() {
+            if let Some((search, _)) = form.country_search.as_ref() {
+                search.update(cx, |editor, _| editor.set_text(""));
+            }
+            form.country_active = None;
+            form.country_focus = true;
+            country_scroll_to(&form.country_scroll, form.country);
+            self.setting_choices.insert(COUNTRY_OPEN, Choice::On(true));
+        }
+        cx.notify();
+    }
+
+    /// An option was taken (`S` of module 938401): the dialing code changes, the number box takes the focus.
+    fn country_pick(&mut self, option: usize, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        form.country = option;
+        if let Some(phone) = form.fields.iter_mut().find(|f| f.name == "phone") {
+            phone.leading = Some(country_prefix(option).into());
+        }
+        form.phone_typed = phone_number(COUNTRIES[option].code, &form.text("phone", cx));
+        form.focus_pending = true;
+        self.setting_choices.insert(COUNTRY_OPEN, Choice::On(false));
+        cx.notify();
+    }
+
+    /// The query in the search box.
+    fn country_query(form: &Form, cx: &gpui::App) -> String {
+        form.country_search
+            .as_ref()
+            .map(|(search, _)| search.read(cx).text().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Enter in the search box; `query` is what the box held (the editor empties itself on Enter).
+    fn country_pick_active(&mut self, query: &str, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_ref() else {
+            return;
+        };
+        let matches = country_matches(query);
+        if let Some(option) = form
+            .country_active
+            .and_then(|row| matches.get(row).copied())
+        {
+            self.country_pick(option, cx);
+        }
+    }
+
+    /// Arrow keys on the open list move the active row; the list follows it.
+    fn country_arrow(&mut self, down: bool, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        let matches = country_matches(&Self::country_query(form, cx));
+        if matches.is_empty() {
+            return;
+        }
+        // The first arrow starts from the picked option's row.
+        let base = form
+            .country_active
+            .or_else(|| matches.iter().position(|&option| option == form.country));
+        let row = match (down, base) {
+            (true, Some(base)) => (base + 1).min(matches.len() - 1),
+            (false, Some(base)) => base.saturating_sub(1),
+            (_, None) => 0,
+        };
+        form.country_active = Some(row);
+        country_scroll_to(&form.country_scroll, row);
+        cx.notify();
+    }
+
+    /// `f` of module 938401: the "Country Code" select beside the number box, and the note under them.
+    fn phone_number_body(&self, form: &Form, cx: &mut Context<Self>) -> AnyElement {
+        let note = "Your phone number can be used to verify one Discord account at a time and is only used for verification and login.";
+        let bold = "one Discord account";
+        let start = note.find(bold).unwrap_or(0);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .items_start()
+                    .child(
+                        div()
+                            .w(px(192.))
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child("Country Code"),
+                            )
+                            .child(self.country_select(form, cx)),
+                    )
+                    .child(
+                        div().flex_1().min_w(px(0.)).children(
+                            form.fields
+                                .first()
+                                .map(|field| self.account_field_element(field, 0, cx)),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(gpui::StyledText::new(note).with_highlights([(
+                        start..start + bold.len(),
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight(600.)),
+                            ..Default::default()
+                        },
+                    )])),
+            )
+            .into_any_element()
+    }
+
+    /// The flag cell of an option (`leading_o2hjBM`, 32 square): on Windows the flag is the two letters.
+    /// `closed`: the picked option in the field is drawn lower case and a little larger (golden of the closed field).
+    fn country_flag(alpha2: &str, closed: bool) -> gpui::Div {
+        div()
+            .flex_none()
+            .size(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .pt(px(2.))
+            .text_size(px(if closed { 12. } else { 11. }))
+            .font_weight(FontWeight(if closed { 500. } else { 600. }))
+            .text_color(color("--text-subtle"))
+            .child(if closed {
+                flag_letters(alpha2).to_lowercase()
+            } else {
+                flag_letters(alpha2)
+            })
+    }
+
+    /// The searchable select of module 890497 (`selectField_vWC4bk`): the picked option with its flag, or the search
+    /// box while the list is open; the list shows five 40px rows.
+    fn country_select(&self, form: &Form, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.country_is_open();
+        let current = &COUNTRIES[form.country];
+        let query = Self::country_query(form, cx);
+        let chevron = super::mask_icon("settings_select_chevron", 20., "--text-strong")
+            .when(open, |this| {
+                this.with_transformation(gpui::Transformation::rotate(gpui::percentage(0.5)))
+            });
+        let field = div()
+            .id("phone-country-field")
+            .w(px(192.))
+            .h(px(40.))
+            .flex_none()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if open {
+                color("--input-border-active")
+            } else {
+                color("--input-border-default")
+            })
+            .bg(color("--input-background-default"))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.country_toggle(cx)))
+            .child(match (open, form.country_search.as_ref()) {
+                (true, Some((search, _))) => div()
+                    .relative()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .pl(px(12.))
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w(px(0.)).child(search.clone()))
+                    // The box starts with the picked name in it; typing replaces it.
+                    .when(query.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(px(12.))
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-strong"))
+                                .child(current.name),
+                        )
+                    })
+                    .into_any_element(),
+                _ => div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .pl(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(Self::country_flag(current.alpha2, true))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-strong"))
+                            .child(current.name),
+                    )
+                    .into_any_element(),
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(36.))
+                    .pr(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(chevron),
+            )
+            .when(open, |this| this.child(focus_ring()));
+        let list = open.then(|| {
+            let matches = country_matches(&query);
+            let rows: Vec<AnyElement> = matches
+                .iter()
+                .enumerate()
+                .map(|(row, &option)| {
+                    let country = &COUNTRIES[option];
+                    let selected = option == form.country;
+                    div()
+                        .id(SharedString::from(format!("phone-country-{option}")))
+                        .flex_none()
+                        .w(px(166.))
+                        .h(px(COUNTRY_ROW))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .when(form.country_active == Some(row), |this| {
+                            this.bg(color("--background-mod-normal"))
+                        })
+                        .hover(|style| style.bg(color("--background-mod-normal")))
+                        .flex()
+                        .items_center()
+                        .child(Self::country_flag(country.alpha2, false))
+                        // The name has 98px beside the empty check cell, 94 beside the check (dump of the open list).
+                        .child(
+                            div()
+                                .flex_none()
+                                .ml(px(4.))
+                                .w(px(if selected { 94. } else { 98. }))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-strong"))
+                                .child(country.name),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .ml(px(8.))
+                                .w(px(if selected { 28. } else { 24. }))
+                                .p(px(4.))
+                                .when(selected, |this| {
+                                    this.child(icon("select_check", 20., "--text-strong"))
+                                }),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.country_pick(option, cx)))
+                        .into_any_element()
+                })
+                .collect();
+            gpui::deferred(
+                crate::ui::keyboard::outside(
+                    div().id("phone-country-list"),
+                    crate::ui::keyboard::Layer::SettingsSelect,
+                    cx,
+                )
+                .occlude()
+                .absolute()
+                .top(px(44.))
+                .left_0()
+                .w(px(192.))
+                .p(px(4.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.16),
+                    offset: gpui::point(px(0.), px(2.)),
+                    blur_radius: px(8.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .child(
+                    div()
+                        .relative()
+                        .w(px(182.))
+                        .child(
+                            div()
+                                .id("phone-country-rows")
+                                .w(px(182.))
+                                .max_h(px(COUNTRY_ROW * COUNTRY_ROWS))
+                                .overflow_y_scroll()
+                                .track_scroll(&form.country_scroll)
+                                .child(div().flex().flex_col().children(rows)),
+                        )
+                        .child(super::auto_scrollbar(form.country_scroll.clone())),
+                ),
+            )
+            .with_priority(2)
+        });
+        div()
+            .relative()
+            .flex_none()
+            .w(px(192.))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if !this.country_is_open() {
+                    return;
+                }
+                match event.keystroke.key.as_str() {
+                    "down" => this.country_arrow(true, cx),
+                    "up" => this.country_arrow(false, cx),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
+            .child(field)
+            .children(list)
+            .into_any_element()
+    }
+
     /// An Account page button: the first step of its dialog.
     pub(in crate::ui) fn open_account_form(&mut self, kind: &str, cx: &mut Context<Self>) {
         let mut form = Form {
@@ -385,6 +886,13 @@ impl Root {
             check_wait: None,
             check_asked: String::new(),
             mfa: mfa::Draft::default(),
+            country: default_country(),
+            country_search: None,
+            country_scroll: ScrollHandle::new(),
+            country_active: None,
+            country_focus: false,
+            phone_typed: String::new(),
+            focused: None,
         };
         let verified = self.stores.account.verified && self.stores.account.email.is_some();
         let has_phone = self.stores.account.phone.is_some();
@@ -432,6 +940,7 @@ impl Root {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let premium = self.stores.account.premium_type.is_some();
         let mut fields: Vec<Field> = Vec::new();
+        let mut search = None;
         match step {
             Step::Username => {
                 let unique = user.discriminator == "0" || user.discriminator.is_empty();
@@ -445,7 +954,7 @@ impl Root {
                     let mut tag = self.account_field("discriminator", "Discriminator", false, cx);
                     tag.editor
                         .update(cx, |e, _| e.set_text(&user.discriminator));
-                    tag.leading = Some("#");
+                    tag.leading = Some("#".into());
                     tag.width = Some(96.);
                     let _ = premium;
                     fields.push(tag);
@@ -465,12 +974,17 @@ impl Root {
                 fields.push(self.account_field("password", "Current Password", true, cx));
             }
             Step::PhoneNumber => {
-                let mut code = self.account_field("country", "Country Code", false, cx);
-                code.editor.update(cx, |e, _| e.set_text("1"));
-                code.leading = Some("+");
-                code.width = Some(120.);
-                fields.push(code);
-                fields.push(self.account_field("phone", "Phone Number", false, cx));
+                // `f` of module 938401: the country select, then the number box with the dialing code in front.
+                let country = self
+                    .settings_extra
+                    .form
+                    .as_ref()
+                    .map_or_else(default_country, |form| form.country);
+                let mut phone = self.account_field("phone", "Phone Number", false, cx);
+                phone.leading = Some(country_prefix(country).into());
+                fields.push(phone);
+                search = Some(self.country_search_editor(cx));
+                self.setting_choices.insert(COUNTRY_OPEN, Choice::On(false));
             }
             Step::PhoneCode => {
                 fields.push(self.account_field("code", "Verify Your Number", false, cx))
@@ -508,6 +1022,8 @@ impl Root {
             form.focus_pending = !fields.is_empty();
             form.step = step;
             form.fields = fields;
+            form.country_search = search;
+            form.phone_typed = String::new();
             form.notice = None;
             form.working = false;
         }
@@ -518,6 +1034,10 @@ impl Root {
         let Some(form) = self.settings_extra.form.as_mut() else {
             return;
         };
+        if form.step == Step::PhoneNumber && name == "phone" {
+            // `y` of module 938401: `${code}${digits}` into the `phone` state that Send waits for.
+            form.phone_typed = phone_number(COUNTRIES[form.country].code, &form.text("phone", cx));
+        }
         // The six digits of the phone code go in as soon as they are all typed (`h.A` `onSubmit`).
         let complete = form.step == Step::PhoneCode
             && name == "code"
@@ -650,10 +1170,11 @@ impl Root {
                 )
             }
             Step::PhoneNumber => {
-                form.phone = phone_number(&text("country"), &text("phone"));
-                if digits(&text("phone")).is_empty() {
+                // Send is disabled while the `phone` state of module 938401 is empty.
+                if form.phone_typed.is_empty() {
                     return;
                 }
+                form.phone = phone_number(COUNTRIES[form.country].code, &text("phone"));
                 phone_begin_call(&form.phone)
             }
             Step::PhoneCode => phone_verify_call(&form.phone, digits(&text("code")).as_str()),
@@ -723,6 +1244,11 @@ impl Root {
                 format!("status {}", body["status"])
             });
             if body["refused"].as_bool() == Some(true) {
+                // The guard of a harness run stands in for the server turning the number down: the box shows the
+                // error the answer would carry (`errorMessage` of module 938401, string `pDXJct`).
+                if form.step == Step::PhoneNumber {
+                    form.set_error("phone", Some("Phone number is not valid.".to_owned()));
+                }
                 return;
             }
             let wrong_password = answer["code"].as_u64() == Some(INVALID_PASSWORD);
@@ -883,6 +1409,22 @@ impl Root {
         let Some(form) = self.settings_extra.form.as_mut() else {
             return;
         };
+        // The field with the focus gets the active border on the next frame.
+        let focused = form
+            .fields
+            .iter()
+            .find(|f| gpui::Focusable::focus_handle(f.editor.read(cx), cx).is_focused(window))
+            .map(|f| f.name);
+        if focused != form.focused {
+            form.focused = focused;
+            cx.notify();
+        }
+        if std::mem::take(&mut form.country_focus)
+            && let Some((search, _)) = form.country_search.as_ref()
+        {
+            window.focus(&gpui::Focusable::focus_handle(search.read(cx), cx), cx);
+            return;
+        }
         if !std::mem::take(&mut form.focus_pending) {
             return;
         }
@@ -1040,14 +1582,16 @@ impl Root {
                 Step::PhoneNumber => (
                     "Enter a phone number",
                     Some("You will receive a text message with a verification code.".to_owned()),
-                    vec![text(
-                        "Your phone number can be used to verify one Discord account at a time and is only used for verification and login.",
-                        false,
-                    )
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .into_any_element()],
-                    vec![primary("account-ok", "Send", busy(modal::Tone::Primary))],
+                    vec![self.phone_number_body(form, cx)],
+                    vec![primary(
+                        "account-ok",
+                        "Send",
+                        if form.phone_typed.is_empty() {
+                            modal::Tone::PrimaryDisabled
+                        } else {
+                            busy(modal::Tone::Primary)
+                        },
+                    )],
                 ),
                 Step::PhoneCode => (
                     "Verify your phone number",
@@ -1179,7 +1723,7 @@ impl Root {
             .fields
             .iter()
             .enumerate()
-            .filter(|_| form.step != Step::MfaEnable)
+            .filter(|_| !matches!(form.step, Step::MfaEnable | Step::PhoneNumber))
         {
             let element = self.account_field_element(field, index, cx);
             if field.width.is_some() && matches!(form.step, Step::Username | Step::PhoneNumber) {
@@ -1726,19 +2270,31 @@ impl Root {
         "ok".to_owned()
     }
 
-    /// `getDownloadFileContents`: the codes go to `discord_backup_codes.txt` in the Downloads folder.
+    /// `getDownloadFileContents`: the codes are offered as `discord_backup_codes.txt` through the save dialog, which
+    /// opens in the Downloads folder (the same path the other downloads take).
     pub(in crate::ui) fn mfa_save_codes(&mut self, contents: &str, cx: &mut Context<Self>) {
-        let folder = std::env::var_os("USERPROFILE")
-            .map(|home| std::path::PathBuf::from(home).join("Downloads"));
+        // Harness runs have no one to answer the dialog: they write straight into the export folder.
         #[cfg(feature = "capture")]
-        let folder = std::env::var_os("GRAVECORD_EXPORT_DIR")
-            .map(std::path::PathBuf::from)
-            .or(folder);
-        if let Some(folder) = folder {
+        if let Some(folder) = std::env::var_os("GRAVECORD_EXPORT_DIR").map(std::path::PathBuf::from)
+        {
             let _ = std::fs::create_dir_all(&folder);
             let _ = std::fs::write(folder.join("discord_backup_codes.txt"), contents);
+            cx.notify();
+            return;
         }
-        cx.notify();
+        let directory = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+            .unwrap_or_default();
+        let chosen = cx.prompt_for_new_path(&directory, Some("discord_backup_codes.txt"));
+        let contents = contents.to_owned();
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(path))) = chosen.await {
+                let _ = std::fs::write(path, contents);
+            }
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
     }
 
     pub(in crate::ui) fn warning_notice(&self, message: &'static str) -> AnyElement {
@@ -1793,8 +2349,16 @@ impl Root {
         index: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let focused = self
+            .settings_extra
+            .form
+            .as_ref()
+            .is_some_and(|form| form.focused == Some(field.name));
         let border = if field.error.is_some() {
             color("--border-feedback-critical")
+        } else if focused {
+            // `:focus-within` of the input wrapper (module 95477), the active border.
+            color("--input-border-active")
         } else {
             color("--input-border-default")
         };
@@ -1850,6 +2414,8 @@ impl Root {
                 div()
                     .h(px(40.))
                     .px(px(12.))
+                    // The number box keeps its dialing code 8px in (`leadingText`, dump of the Add phone dialog).
+                    .when(name == "phone", |this| this.pl(px(8.)))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(border)
@@ -1857,7 +2423,10 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .children(field.leading.map(|lead| {
+                    .when(focused && field.error.is_none(), |this| {
+                        this.relative().child(focus_ring())
+                    })
+                    .children(field.leading.clone().map(|lead| {
                         div()
                             .text_color(color("--input-placeholder-text-default"))
                             .child(lead)
@@ -1997,6 +2566,22 @@ mod tests {
         );
         let tagged = username_call("someone", Some("1234"), "pw");
         assert_eq!(tagged.body.unwrap()["discriminator"], "1234");
+    }
+
+    #[test]
+    fn the_country_list_starts_on_the_united_states_and_filters_like_the_select() {
+        let all = country_matches("");
+        assert_eq!(COUNTRIES[default_country()].name, "United States");
+        assert_eq!(all.len(), COUNTRIES.len());
+        // Names that begin with the query come before names that only contain it.
+        let kor: Vec<&str> = country_matches("kor")
+            .into_iter()
+            .map(|i| COUNTRIES[i].name)
+            .collect();
+        assert_eq!(&kor[..2], ["North Korea", "South Korea"]);
+        assert!(country_matches("zzzz").is_empty());
+        // A country with a long dialing code keeps its digits on the wire.
+        assert_eq!(phone_number("+1 684", "555 0100"), "+16845550100");
     }
 
     #[test]

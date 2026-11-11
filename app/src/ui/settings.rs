@@ -27,6 +27,7 @@ mod model;
 mod nitro_page;
 mod notifications_page;
 mod pages;
+mod phone_countries;
 pub(super) mod prefs;
 mod preview;
 mod privacy;
@@ -258,9 +259,12 @@ const ACCOUNT_KEYS: [&str; 4] = [
     "account_family_center_category",
 ];
 
-/// Where the scroll-spy puts a clicked category's marker below the top of the view: the Account page's reference
-/// frame (`account-status-darker-cozy`) holds the heading 24px under the top, so the marker sits 76px under it.
-const ACCOUNT_SCROLL_MARGIN: f32 = 76.;
+/// Where the scroll-spy puts a clicked category's marker below the top of the view. The bundle scrolls the target
+/// to `padding: 16 + r` below the top (module 397274 `scrollIntoView({..., padding: 16 + r})`, `r` the bottom of
+/// the sticky decoration, 0 on this page); the reference frame (`account-status-darker-cozy`) has the heading
+/// 24px under the top, so the category's box starts 8px above its heading. Our marker is the spacer under the
+/// heading (32px line + 20px padding = 52px below the heading's top).
+const ACCOUNT_SCROLL_MARGIN: f32 = 16. + 8. + 52.;
 
 /// The NEW badges on Account Status (subnav entry and Age Group row) go once the category has been in view
 /// (`account-status-darker-cozy` shows neither).
@@ -1655,6 +1659,7 @@ impl Root {
             return div().into_any_element();
         };
         actions::link_owner_clear();
+        let panel_width = panel_inner_width(window.viewport_size().width.into());
         let mut body = match open.page {
             Page::Account => match self.settings_extra.panel {
                 Some(account_panels::Panel::Standing) => self.standing_body(),
@@ -1670,7 +1675,7 @@ impl Root {
                         .parity(node.key())
                         .flex()
                         .flex_col()
-                        .child(self.render_node(node, render::PANEL, window, cx))
+                        .child(self.render_node(node, panel_width, window, cx))
                         .into_any_element()
                 })
                 .collect(),
@@ -2015,6 +2020,15 @@ fn panel_nudge(viewport_width: f32) -> f32 {
     } else {
         0.
     }
+}
+
+/// The width the page rows get: the content column (the modal less its border and the sidebar) held between the panel's
+/// `min-width: 300px` and 728, less its 16px of padding on each side (`panel_nNq2Vb`). 696 in a window of ordinary size,
+/// narrower when the zoom leaves the window fewer logical pixels.
+fn panel_inner_width(viewport_width: f32) -> f32 {
+    let modal = (viewport_width - 80.).min(1400.);
+    let content = modal - 2. - SETTINGS_SIDEBAR_WIDTH;
+    content.clamp(300., 728.) - 32.
 }
 
 /// The settings sidebar's width, `sidebar_cR4ic2`: 253 inside the modal's border.

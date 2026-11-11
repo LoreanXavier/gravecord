@@ -186,7 +186,8 @@ struct Card {
     icon: &'static str,
     title: &'static str,
     text: &'static str,
-    /// The card's width in the 696px panel (`container_lb1Q8G` sizes itself to its text): its share of the row.
+    /// The card's width in the 696px panel as dumped (`container_lb1Q8G` sizes itself to its text, the row shrinks the
+    /// three to fit): its share of the row.
     width: f32,
 }
 
@@ -195,19 +196,19 @@ const CARDS: [Card; 3] = [
         icon: "fam_card_private",
         title: "Messages stay private",
         text: "You can see who your teen is talking to, while still respecting their privacy.",
-        width: 217.,
+        width: 216.844,
     },
     Card {
         icon: "fam_card_sharing",
         title: "Transparent sharing",
         text: "You and your teen see the exact same information, so you're on the same page.",
-        width: 227.,
+        width: 227.078,
     },
     Card {
         icon: "fam_card_connect",
         title: "Easily connect",
         text: "Setup is as simple as using your phone to scan the QR code your teen shows you.",
-        width: 232.,
+        width: 232.078,
     },
 ];
 
@@ -655,7 +656,7 @@ impl Root {
             .child(
                 div()
                     .flex_none()
-                    .w(px(380.))
+                    .w(px(364.))
                     .child(
                         div()
                             .text_size(px(24.))
@@ -723,14 +724,7 @@ impl Root {
                             .text_color(color("--text-strong"))
                             .child(card.title),
                     )
-                    .child(
-                        div()
-                            .mt(px(6.))
-                            // GPUI's glyphs run a little wider than Chromium's: the widest card keeps the
-                            // reference's line breaks.
-                            .when(card.width > 230., |this| this.mr(px(-3.)))
-                            .child(muted(card.text, 14., 18.)),
-                    )
+                    .child(div().mt(px(6.)).child(muted(card.text, 14., 18.)))
             }));
         let sections = div()
             .flex()

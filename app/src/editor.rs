@@ -167,6 +167,8 @@ pub struct Editor {
     spell: Option<Spell>,
     /// Styles the typed markdown while the preview setting is on (the composer).
     markdown: bool,
+    /// A one-line field whose text ends at the right edge (`text-align: end`).
+    align_end: bool,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -210,6 +212,7 @@ impl Editor {
             reports_all_edits: false,
             masked: false,
             keeps_text: false,
+            align_end: false,
             spell: None,
             markdown: false,
         }
@@ -377,6 +380,11 @@ impl Editor {
 
     /// Enter in a form field submits the form, not the text: the field keeps what was typed (a failed login keeps the
     /// password), and the text does not travel through the event.
+    /// Right-aligns the text of a one-line field (`text-align: end`).
+    pub fn set_align_end(&mut self, on: bool) {
+        self.align_end = on;
+    }
+
     pub fn set_keeps_text(&mut self, on: bool) {
         self.keeps_text = on;
     }
@@ -917,7 +925,19 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, style, laid, placeholder, selection, caret, multiline, masked, ellipsis, marks) = {
+        let (
+            focus,
+            style,
+            laid,
+            placeholder,
+            selection,
+            caret,
+            multiline,
+            masked,
+            ellipsis,
+            marks,
+            align_end,
+        ) = {
             let editor = self.editor.read(cx);
             (
                 editor.focus.clone(),
@@ -930,6 +950,7 @@ impl Element for EditorElement {
                 editor.masked,
                 editor.ellipsis_placeholder,
                 editor.spell_marks(editor.focus.is_focused(window)),
+                editor.align_end,
             )
         };
         window.handle_input(
@@ -939,6 +960,20 @@ impl Element for EditorElement {
         );
 
         let lines = shape(self.editor.read(cx), Some(bounds.size.width), window);
+        // `text-align: end`: everything below is drawn from an origin moved right by the free width.
+        let bounds = if align_end && !multiline {
+            let width = lines
+                .iter()
+                .map(|(line, _)| line.size(px(style.line_height)).width)
+                .fold(px(0.), Pixels::max);
+            let shift = (bounds.size.width - width).max(px(0.));
+            Bounds::new(
+                bounds.origin + point(shift, px(0.)),
+                size(bounds.size.width - shift, bounds.size.height),
+            )
+        } else {
+            bounds
+        };
         {
             let mut laid = laid.borrow_mut();
             laid.lines = lines;
