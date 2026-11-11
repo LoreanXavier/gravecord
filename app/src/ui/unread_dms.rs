@@ -26,7 +26,7 @@ fn source(url: String) -> (String, String) {
     (format!("rail-image:{:x}", Md5::digest(url.as_bytes())), url)
 }
 
-fn avatar(user: &User, size: u32) -> (String, String) {
+pub(super) fn avatar(user: &User, size: u32) -> (String, String) {
     source(match &user.avatar {
         Some(hash) => format!(
             "https://cdn.discordapp.com/avatars/{}/{hash}.webp?size={size}",
@@ -39,7 +39,7 @@ fn avatar(user: &User, size: u32) -> (String, String) {
     })
 }
 
-fn group_icon(channel: &PrivateChannel) -> (String, String) {
+pub(super) fn group_icon(channel: &PrivateChannel) -> (String, String) {
     let url = if let Some(hash) = channel.icon.as_ref() {
         match channel.application_id {
             Some(_) if hash.starts_with("data:") => hash.clone(),

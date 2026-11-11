@@ -263,4 +263,41 @@ mod tests {
         assert!(!manager.failed(now + 2, 0.));
         assert_eq!(manager.next_fetch(), Some(now + 60002));
     }
+
+    /// The New Player badge reads a live first-session entry of the feed: four failed refreshes keep the feed (and
+    /// the badge), the fifth clears it, and a success in between starts the count again.
+    #[test]
+    fn failed_refreshes_keep_the_feed_entry_until_the_fifth() {
+        let mut store = ContentInventoryStore::default();
+        let body = json!({"entries": [{"content": {
+            "id": "30", "author_id": "7", "author_type": 1, "content_type": 1,
+            "traits": [{"type": 3, "is_live": true}, {"type": 1, "first_time": true}],
+            "extra": {"application_id": "9"},
+        }}]});
+        let activity = json!({"type": 0, "application_id": "9", "name": "G"});
+        store.set_feed(GLOBAL_FEED, &body, 0);
+        let badge = |store: &ContentInventoryStore| {
+            store
+                .matching_inbox_entry(GLOBAL_FEED, 7, &activity)
+                .is_some_and(|entry| entry.first_time())
+        };
+        let mut manager = ContentInventoryManager::default();
+        assert!(badge(&store));
+        for round in 0..2 {
+            for _ in 0..4 {
+                if manager.failed(0, 0.5) {
+                    store.clear_feed(GLOBAL_FEED);
+                }
+                assert!(badge(&store), "a failed refresh must not drop the badge");
+            }
+            if round == 0 {
+                manager.succeeded();
+                store.set_feed(GLOBAL_FEED, &body, 1);
+            }
+        }
+        if manager.failed(0, 0.5) {
+            store.clear_feed(GLOBAL_FEED);
+        }
+        assert!(!badge(&store), "the fifth failure clears the feed");
+    }
 }

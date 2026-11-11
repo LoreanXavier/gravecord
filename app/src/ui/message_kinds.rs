@@ -271,6 +271,28 @@ impl Root {
                 ),
             }
         }
+        // 4wLp25, geP3rU, AI1ZZr: the group's name and icon lines end with an inline "Edit Group" link (`$link`) that
+        // opens the group's edit modal; it follows the sentence's full stop and a space.
+        if line.action.as_deref() == Some("Edit Group") {
+            let channel = message.channel_id;
+            pieces.push(
+                div()
+                    .id(SharedString::from(format!(
+                        "system-edit-group-{}",
+                        message.id
+                    )))
+                    .ml(px(4.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-link"))
+                    .cursor_pointer()
+                    .hover(|style| style.underline())
+                    .child("Edit Group")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_group_edit(channel, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         div()
             .py(px(2.))
             .flex()
@@ -285,6 +307,7 @@ impl Root {
             .children(
                 line.action
                     .as_ref()
+                    .filter(|action| action.as_str() != "Edit Group")
                     .filter(|_| {
                         self.stores
                             .calls

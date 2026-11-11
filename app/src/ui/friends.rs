@@ -264,6 +264,21 @@ impl Root {
             cx.notify();
             return true;
         }
+        #[cfg(feature = "capture")]
+        if key == super::group_manage::SOLO_KEY {
+            if ok {
+                self.stores.add_private_channel(&report["body"]);
+                if let Some(channel) = report["body"]["id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<Id>().ok())
+                {
+                    super::group_manage::set_solo(channel);
+                    self.select_home(Some(channel));
+                }
+            }
+            cx.notify();
+            return true;
+        }
         false
     }
 

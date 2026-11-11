@@ -27,14 +27,14 @@ pub(super) fn is_system(message: &Message) -> bool {
 
 /// A `sm` secondary button: 32 tall, 11px inside a 1px border, 14px medium text.
 #[derive(Clone, Copy, PartialEq)]
-enum Tone {
+pub(super) enum Tone {
     Secondary,
     Primary,
     CriticalPrimary,
 }
 
 /// The `sm` design-system button of the DM welcome, in the variant the relationship asks for.
-fn small_button(
+pub(super) fn small_button(
     id: &'static str,
     label: &'static str,
     tone: Tone,
@@ -80,6 +80,9 @@ impl Root {
     /// The start of a DM: the other person large, the opening line, mutual servers and the friend buttons.
     pub(super) fn dm_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.current_dm()?;
+        if channel.kind == 3 {
+            return Some(self.group_welcome(channel, cx));
+        }
         let user = self.stores.dm_recipient(channel)?.clone();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let mutual = self

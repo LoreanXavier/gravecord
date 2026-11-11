@@ -419,7 +419,7 @@ pub const TEST_DM: Id = 1_568_693_333_864_480_939;
 
 /// The local group DM of the harness (`dmcall group`): never sent anywhere.
 #[cfg(feature = "capture")]
-const GROUP_DM: Id = 1_570_000_000_000_000_100;
+pub(super) const GROUP_DM: Id = 1_570_000_000_000_000_100;
 
 #[cfg(feature = "capture")]
 impl Root {
@@ -427,6 +427,9 @@ impl Root {
     /// feeds official-shaped `CALL_CREATE` / `CALL_UPDATE` / `CALL_DELETE` dispatches to the stores: nothing is sent
     /// anywhere, so a real incoming call is never produced by a script.
     pub(crate) fn script_dmcall(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        if let ["group-manage", rest @ ..] = words {
+            return self.script_group_manage(rest, cx);
+        }
         let channel = TEST_DM;
         let me = self.stores.current_user.as_ref().map(|user| user.id);
         let other = self
@@ -572,6 +575,21 @@ impl Root {
             // Group DM calls, all local: `group join <n>` / `group leave <n>` put member n (0 = the test person,
             // 1 and 2 the made-up ones, 3 = this account) in or out of the call; `group ring <n>` rings member n from
             // this account (the request is refused by the harness, the ring shows through a local CALL_UPDATE).
+            // `menu <n>`: the person's context menu in the open channel (0 = the test person), where Ring and Stop Ringing show.
+            ["menu", who] => {
+                let user = match *who {
+                    "0" => other,
+                    "1" => 1_570_000_000_000_000_201,
+                    "2" => 1_570_000_000_000_000_202,
+                    _ => return "member is 0..2".to_owned(),
+                };
+                self.open_context_menu(
+                    super::context_menu::Target::User { user, guild: None },
+                    gpui::point(gpui::px(640.), gpui::px(300.)),
+                    cx,
+                );
+                format!("menu of member {who}")
+            }
             ["group", verb, who] => {
                 let group: Id = GROUP_DM;
                 let member = |n: &str| -> Option<Id> {

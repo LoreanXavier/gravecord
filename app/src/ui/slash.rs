@@ -1077,7 +1077,18 @@ impl Root {
                     Some(format!("{ANSWER}msg:{message}")),
                 );
             }
-            (Builtin::Leave, _) => self.close_dm(channel, cx),
+            (Builtin::Leave, _) => {
+                if self
+                    .stores
+                    .private_channels
+                    .iter()
+                    .any(|known| known.id == channel && known.kind == 3)
+                {
+                    self.open_group_leave(channel, false, cx);
+                } else {
+                    self.close_dm(channel, cx);
+                }
+            }
             (Builtin::Gif, _) => self.slash.open_gif = true,
             _ => {}
         }

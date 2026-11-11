@@ -42,6 +42,8 @@ impl Root {
             create_channel,
             add_server,
             group_dm,
+            group_edit,
+            group_leave,
             invite,
             forward,
             report,
