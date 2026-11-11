@@ -1,0 +1,14 @@
+{
+  "titlebar": { "class": "bar_3zSH5d" },
+  "keyboard-help-root": { "class": "noBackground_jCEr5v" },
+  "keyboard-help-modal": { "class": "keyboardShortcutsModal_jCEr5v" },
+  "keyboard-help-title": { "class": "modalTitle_jCEr5v" },
+  "keyboard-help-combo": { "class": "combo_dMUH0f", "ancestor": "modalTitle_jCEr5v" },
+  "keyboard-help-subtitle": { "class": "modalSubtitle_jCEr5v" },
+  "keyboard-help-arrows": { "class": "ddrArrows_jCEr5v" },
+  "keyboard-help-scroller": { "class": "scrollbarGutterStable_tqapBM", "ancestor": "keyboardShortcutsModal_jCEr5v" },
+  "keyboard-help-list": { "class": "keyboardShortcutList_jCEr5v" },
+  "keyboard-help-section": { "class": "keyboardShortcutSection_jCEr5v" },
+  "keyboard-help-group": { "class": "keyboardShortcutListGroup_jCEr5v" },
+  "keyboard-help-item": { "class": "keybindGroup_jCEr5v" }
+}
