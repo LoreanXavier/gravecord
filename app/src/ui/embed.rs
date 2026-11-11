@@ -64,6 +64,11 @@ fn fit(media: &EmbedMedia, max_width: f32, max_height: f32) -> (f64, f64) {
 impl Root {
     /// Description and field text: markdown at 14/18 in the default text color, line breaks kept (`pre-line`).
     pub(super) fn embed_text(&self, text: &str, key: (u64, u32)) -> AnyElement {
+        self.embed_text_lined(text, key, 18.)
+    }
+
+    /// `embed_text` with another line height (a component's reduced text is 14/19.25).
+    pub(super) fn embed_text_lined(&self, text: &str, key: (u64, u32), line: f32) -> AnyElement {
         let base = hsla("--text-default");
         let blocks = parse(text);
         div()
@@ -84,9 +89,9 @@ impl Root {
                 };
                 let pieces = spans
                     .iter()
-                    .map(|span| self.piece(span, base, 14., 400., 18.))
+                    .map(|span| self.piece(span, base, 14., 400., line))
                     .collect();
-                crate::inline::inline(pieces, px(18.)).selectable(
+                crate::inline::inline(pieces, px(line)).selectable(
                     (key.0, key.1 + index as u32),
                     self.selection.clone(),
                     super::hsla_from(super::SELECTION),

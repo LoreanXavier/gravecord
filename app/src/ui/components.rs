@@ -118,6 +118,16 @@ fn collect_wanted(message: Id, component: &Component, out: &mut Vec<(String, Str
                 }
             }
         }
+        Component::File { file, name, .. } => {
+            let title = name
+                .clone()
+                .unwrap_or_else(|| file.url.rsplit('/').next().unwrap_or("file").to_owned());
+            let kind = super::uploads::file_kind(&title, None);
+            out.push((
+                super::uploads::kind_icon_key(kind),
+                super::uploads::kind_icon_url(kind),
+            ));
+        }
         Component::Thumbnail { id, media, .. } => {
             out.push((
                 media_key(message, id, 0),
@@ -252,7 +262,15 @@ impl Root {
         let v2 = message.flags & model::FLAG_IS_COMPONENTS_V2 != 0;
         let parts: Vec<AnyElement> = components
             .iter()
-            .map(|component| self.component(message, component, false, cx))
+            .map(|component| {
+                let part = self.component(message, component, false, cx);
+                // Dump: a loose V2 component is at most 516 wide, a container 528.
+                if v2 && !matches!(component, Component::Container { .. }) {
+                    div().max_w(px(516.)).child(part).into_any_element()
+                } else {
+                    part
+                }
+            })
             .collect();
         Some(
             div()
@@ -380,6 +398,11 @@ impl Root {
                                     .flex()
                                     .flex_col()
                                     .gap(px(4.))
+                                    // `verticallyCenterAlign_5m-AKz`: beside a button the text centers on it.
+                                    .when(
+                                        !matches!(accessory.as_ref(), Component::Thumbnail { .. }),
+                                        |this| this.justify_center(),
+                                    )
                                     .children(components.iter().map(|inner| {
                                         self.component(message, inner, inside_container, cx)
                                     })),
@@ -409,7 +432,7 @@ impl Root {
                 media: _,
                 description: _,
                 spoiler: _,
-            } => self.picture(message, id, 0, THUMBNAIL as f32, THUMBNAIL as f32, 8.),
+            } => self.picture(message, id, 0, THUMBNAIL as f32, THUMBNAIL as f32, [8.; 4]),
             Component::MediaGallery { id, items } => {
                 self.gallery(message, id, items, inside_container)
             }
@@ -487,21 +510,32 @@ impl Root {
         if inside_container {
             // `reduced`: 14/19.25 text inside a container; a heading is (## measured, # assumed the same) 20/27.5 bold with 8 below it
             // (dump of v2-container-p0: the text display is 27.5 + 8 + 19.25 tall).
+            // gpui rounds a measured text leaf UP to a whole pixel (taffy.rs), so 19.25 became 20 and the message drifted
+            // 3 px over four lines; 19 keeps every line within a quarter pixel of the official layout.
             let mut parts: Vec<AnyElement> = Vec::new();
             let mut rest = String::new();
             let mut lines = content.lines().peekable();
             while let Some(line) = lines.next() {
-                if let Some(heading) = line.strip_prefix("## ").or_else(|| line.strip_prefix("# "))
-                {
+                // The markup CSS (`.markup h1/h2/h3`): 24/33, 20/27.5, 16/22 bold, 16 above (none on the first
+                // block of a text display) and 8 below.
+                let heading = [("### ", 16., 22.), ("## ", 20., 27.5), ("# ", 24., 33.)]
+                    .into_iter()
+                    .find_map(|(prefix, size, line_height)| {
+                        line.strip_prefix(prefix)
+                            .map(|text| (text, size, line_height))
+                    });
+                if let Some((heading, size, line_height)) = heading {
+                    let first = parts.is_empty() && rest.is_empty();
                     if !rest.is_empty() {
-                        parts.push(self.embed_text(&std::mem::take(&mut rest), key));
+                        parts.push(self.embed_text_lined(&std::mem::take(&mut rest), key, 19.));
                     }
                     parts.push(
                         div()
-                            .text_size(px(20.))
-                            .line_height(px(27.5))
+                            .text_size(px(size))
+                            .line_height(px(line_height))
                             .font_weight(FontWeight(700.))
                             .text_color(color("--text-strong"))
+                            .when(!first, |this| this.mt(px(16.)))
                             .when(lines.peek().is_some(), |this| this.mb(px(8.)))
                             .child(heading.to_owned())
                             .into_any_element(),
@@ -514,7 +548,7 @@ impl Root {
                 }
             }
             if !rest.is_empty() {
-                parts.push(self.embed_text(&rest, key));
+                parts.push(self.embed_text_lined(&rest, key, 19.));
             }
             return div().flex().flex_col().children(parts).into_any_element();
         }
@@ -530,29 +564,38 @@ impl Root {
         index: usize,
         width: f32,
         height: f32,
-        radius: f32,
+        corners: [f32; 4],
     ) -> AnyElement {
         let shown = self.images.get(&media_key(message.id, id, index)).cloned();
+        let [tl, tr, br, bl] = corners.map(px);
         div()
             .flex_none()
             .w(px(width))
             .h(px(height))
-            .rounded(px(radius))
-            .overflow_hidden()
+            .rounded_tl(tl)
+            .rounded_tr(tr)
+            .rounded_br(br)
+            .rounded_bl(bl)
             .bg(color("--background-base-low"))
             .when_some(shown, |this, image| {
                 this.child(
                     img(image)
                         .w(px(width))
                         .h(px(height))
+                        .rounded_tl(tl)
+                        .rounded_tr(tr)
+                        .rounded_br(br)
+                        .rounded_bl(bl)
                         .object_fit(gpui::ObjectFit::Cover),
                 )
             })
             .into_any_element()
     }
 
-    /// The media gallery (`visualMediaItemContainer_idVBIj` in a V2 message): square tiles with a 4px gap that fill the
-    /// row (dump: 1 = 256, 2 = (W-4)/2 each, 3 = a large (W-4)*2/3 square left and two (W-4)/3 stacked right).
+    /// The media gallery, laid out as module 394839 does inside a V2 message (max width 600, the column's width when
+    /// that is less): 1 = the picture's own shape within the width by 350, never enlarged; 2 = two tiles of (W-4)/2;
+    /// 3 = a large 2/3 tile and two stacked; 4 = a 2 x 2 grid of (W-4)/2 by 173; more = a single or a pair for the
+    /// remainder of the count by 3, then rows of three (W-8)/3 squares. Gaps are 4, outer corners 8, inner 2 (dump).
     fn gallery(
         &self,
         message: &Message,
@@ -560,39 +603,99 @@ impl Root {
         items: &[GalleryItem],
         inside_container: bool,
     ) -> AnyElement {
-        let width = if inside_container { 494. } else { 516. };
-        let tile = |index: usize, size: f32| self.picture(message, id, index, size, size, 2.);
+        let width: f32 = if inside_container { 494. } else { 516. };
         let count = items.len();
-        let body = match count {
-            1 => div().child(tile(0, 256f32.min(width))),
-            2 => div()
+        // One grid row: (index, width, height) per tile.
+        let mut rows: Vec<Vec<(usize, f32, f32)>> = Vec::new();
+        let half = ((width - 4.) / 2.).round();
+        let mut next = 0;
+        let single = |index: usize| {
+            let media = &items[index].media;
+            let (w, h) = if media.width > 0 && media.height > 0 {
+                (media.width as f32, media.height as f32)
+            } else {
+                (256., 256.)
+            };
+            let scale = (width / w).min(350. / h).min(1.);
+            (index, w * scale, h * scale)
+        };
+        match count {
+            0 => {}
+            1 => rows.push(vec![single(0)]),
+            2 => rows.push(vec![(0, half, half), (1, half, half)]),
+            3 => {}
+            4 => {
+                rows.push(vec![(0, half, 173.), (1, half, 173.)]);
+                rows.push(vec![(2, half, 173.), (3, half, 173.)]);
+            }
+            _ => {
+                match count % 3 {
+                    1 => {
+                        rows.push(vec![single(0)]);
+                        next = 1;
+                    }
+                    2 => {
+                        rows.push(vec![(0, half, half), (1, half, half)]);
+                        next = 2;
+                    }
+                    _ => {}
+                }
+                let third = ((width - 8.) / 3.).round();
+                for chunk in (next..count).collect::<Vec<_>>().chunks(3) {
+                    rows.push(chunk.iter().map(|&index| (index, third, third)).collect());
+                }
+            }
+        }
+        let corner = |row: usize, col: usize, cols: usize, total: usize| -> [f32; 4] {
+            let (top, bottom) = (row == 0, row + 1 == total);
+            let (left, right) = (col == 0, col + 1 == cols);
+            let pick = |outer: bool| if outer { 8. } else { 2. };
+            [
+                pick(top && left),
+                pick(top && right),
+                pick(bottom && right),
+                pick(bottom && left),
+            ]
+        };
+        let body = if count == 3 {
+            let large = (2. * (width - 4.) / 3.).round();
+            let small = (large - 4.) / 2.;
+            let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
+                self.picture(message, id, index, w, h, corners)
+            };
+            div()
                 .flex()
                 .gap(px(4.))
-                .child(tile(0, (width - 4.) / 2.))
-                .child(tile(1, (width - 4.) / 2.)),
-            3 => {
-                let small = (width - 4.) / 3.;
-                div().flex().gap(px(4.)).child(tile(0, small * 2.)).child(
+                .child(tile(0, large, large, [8., 2., 2., 8.]))
+                .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(tile(1, (small * 2. - 4.) / 2.))
-                        .child(tile(2, (small * 2. - 4.) / 2.)),
+                        .child(tile(1, width - 4. - large, small, [2., 8., 2., 2.]))
+                        .child(tile(2, width - 4. - large, small, [2., 2., 8., 2.])),
                 )
-            }
-            _ => div()
+        } else {
+            let total = rows.len();
+            div()
                 .flex()
-                .flex_wrap()
+                .flex_col()
                 .gap(px(4.))
-                .children((0..count).map(|index| tile(index, (width - 4.) / 2.))),
+                .children(rows.iter().enumerate().map(|(row, cells)| {
+                    div()
+                        .flex()
+                        .gap(px(4.))
+                        .children(cells.iter().enumerate().map(|(col, &(index, w, h))| {
+                            let corners = if cells.len() == 1 && total == 1 {
+                                [8.; 4]
+                            } else {
+                                corner(row, col, cells.len(), total)
+                            };
+                            self.picture(message, id, index, w, h, corners)
+                        }))
+                }))
         };
-        div()
-            .w_full()
-            .overflow_hidden()
-            .rounded(px(8.))
-            .child(body)
-            .into_any_element()
+        div().w_full().child(body).into_any_element()
     }
 
     /// The File component: the plaintext card's frame (`container_BOOBu-`), a link-colored name and the size under it.
@@ -609,6 +712,11 @@ impl Root {
             .unwrap_or_else(|| file.url.rsplit('/').next().unwrap_or("file").to_owned());
         let url = file.url.clone();
         let label = title.clone();
+        let kind = super::uploads::file_kind(&title, None);
+        let icon = self
+            .images
+            .get(&super::uploads::kind_icon_key(kind))
+            .cloned();
         // Dump (file_-9z-XO): 432 x 74, padding 16, border 1 --border-subtle, radius 8, icon 30 x 40 with 8 after it,
         // name 16/20 link colour, size 12/16 muted.
         div()
@@ -632,10 +740,9 @@ impl Root {
                     .flex_none()
                     .w(px(30.))
                     .h(px(40.))
-                    .rounded(px(3.))
-                    .border_1()
-                    .border_color(color("--text-muted"))
-                    .opacity(0.8),
+                    .when_some(icon, |this, image| {
+                        this.child(img(image).w(px(30.)).h(px(40.)))
+                    }),
             )
             .child(
                 div()
