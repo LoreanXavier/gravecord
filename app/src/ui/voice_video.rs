@@ -486,7 +486,9 @@ impl Root {
                 None => "not in a call".to_owned(),
             },
             ["engine"] => dc_voice::prefs().engine_report(),
-            _ => "usage: voice join | voice leave | voice state | voice engine".to_owned(),
+            ["status", rest @ ..] => self.script_voice_status(rest),
+            _ => "usage: voice join | voice leave | voice state | voice engine | voice status <text|clear>"
+                .to_owned(),
         }
     }
 
