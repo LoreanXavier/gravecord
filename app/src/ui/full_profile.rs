@@ -621,7 +621,7 @@ impl Root {
                                 .flex()
                                 .items_center()
                                 .gap(px(2.))
-                                .children(self.badges(id)),
+                                .children(self.profile_badges("full-profile", id, cx)),
                         )
                     }),
             );

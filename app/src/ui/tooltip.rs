@@ -32,11 +32,21 @@ pub(super) enum Side {
 #[derive(Clone)]
 pub(super) enum Body {
     Text(SharedString),
+    /// Plain muted text (`body-sm/normal`, `text-muted`): the voters of a poll answer (module 119591 `L`).
+    Muted(SharedString),
     /// The rail's text, in the guild tooltip's `body-md/semibold`.
     Heading(SharedString),
     Guild(Id),
     /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
     Rich(SharedString, SharedString),
+    /// A profile badge (`ed.A` in module 328464): the art over the eyebrow, the title in the display face and a line
+    /// of text, centred in a 200px card. `image` is the key of the art in `Root::images`.
+    Badge {
+        image: Option<String>,
+        eyebrow: Option<SharedString>,
+        title: SharedString,
+        body: Option<SharedString>,
+    },
     /// A sticker's name behind `StickerSmallIcon` (module 679636 `rH`): the icon is 16px with a 2px margin, 4px
     /// from the text (`stickerIcon_y33UtT`, `stickerName_y33UtT`).
     Sticker(SharedString),
@@ -482,6 +492,12 @@ impl Root {
                 .text_center()
                 .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
                 .into_any_element(),
+            Body::Muted(text) => frame()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-muted"))
+                .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
+                .into_any_element(),
             Body::Heading(text) => frame()
                 .text_size(px(16.))
                 .line_height(px(20.))
@@ -504,6 +520,85 @@ impl Root {
                         .child(body.clone()),
                 )
                 .into_any_element(),
+            Body::Badge {
+                image,
+                eyebrow,
+                title,
+                body,
+            } => {
+                let art = image.as_ref().and_then(|key| self.images.get(key)).cloned();
+                // `content_2dzrtJ`: 12px at the sides, 16 above the art and below the text; the 1px ring is the
+                // card's border here, so each is one less.
+                div()
+                    .flex()
+                    .flex_none()
+                    .flex_col()
+                    .items_center()
+                    .w(px(200.))
+                    .px(px(11.))
+                    .pt(px(15.))
+                    .pb(px(15.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![BoxShadow {
+                        color: hsla(0., 0., 0., 0.24),
+                        offset: point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .font_family(SANS)
+                    .font_features(kerning())
+                    .text_color(color("--text-default"))
+                    // `graphic_2dzrtJ`: 64 high at the catalog's 25:16 shape.
+                    .child(
+                        div()
+                            .h(px(64.))
+                            .w(px(99.84))
+                            .flex_none()
+                            .children(art.map(|art| img(art).w(px(99.84)).h(px(64.)))),
+                    )
+                    // `titleGroup_2dzrtJ`: 16 below the art, 4 between lines.
+                    .child(
+                        div()
+                            .mt(px(16.))
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_center()
+                            .children(eyebrow.clone().map(|eyebrow| {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(eyebrow)
+                            }))
+                            .child(
+                                div()
+                                    .font_family(super::nitro::NITRO_FONT)
+                                    .italic()
+                                    .text_size(px(16.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(900.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title.to_uppercase()),
+                            )
+                            .children(body.clone().map(|body| {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(body)
+                            })),
+                    )
+                    .into_any_element()
+            }
             Body::Sticker(name) => frame()
                 .text_size(px(14.))
                 .line_height(px(18.))

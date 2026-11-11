@@ -158,7 +158,7 @@ impl Root {
         let mutual_servers = body
             .and_then(|body| body["mutual_guilds"].as_array().map(Vec::len))
             .unwrap_or(0);
-        let badges = self.badges(user.id);
+        let badges = self.profile_badges("dm-profile", user.id, cx);
         let presence = self.stores.status(user.id).to_owned();
         let text = palette.text;
         let subtle = palette.subtle;
@@ -277,6 +277,8 @@ impl Root {
                         this.child(
                             div()
                                 .h(px(22.))
+                                // The pill sits 8 px after the pronouns in the official panel (`container_IqWmhA`).
+                                .ml(px(2.))
                                 .px(px(3.))
                                 .py(px(1.))
                                 .rounded(px(8.))

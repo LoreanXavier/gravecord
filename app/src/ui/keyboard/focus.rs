@@ -270,6 +270,7 @@ impl Root {
                 self.custom_reminder.is_some(),
                 self.modify_attachment.is_some(),
                 self.view_reactions.is_some(),
+                self.badge_modal.is_some(),
                 self.polls.modal_open(),
                 self.search_filters.is_some(),
                 self.lightbox.is_some(),

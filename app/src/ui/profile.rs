@@ -199,12 +199,54 @@ impl Root {
             .collect()
     }
 
-    /// Badge icons the open popout needs.
+    /// One line per fetched profile badge: whether its picture was asked for, arrived, or failed (harness `badge state`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn badge_state_line(&self) -> String {
+        let errors = crate::net::IMAGE_ERRORS.lock().ok();
+        let mut out = Vec::new();
+        for (key, body) in &self.fetched {
+            if !key.starts_with("profile:") {
+                continue;
+            }
+            for badge in body["badges"].as_array().into_iter().flatten() {
+                let Some(icon) = badge["icon"].as_str() else {
+                    continue;
+                };
+                let image = format!("badge:{icon}");
+                out.push(format!(
+                    "{key} {} {icon} requested={} bytes={} retries={} error={:?}",
+                    badge["id"].as_str().unwrap_or("?"),
+                    self.requested.contains(&image),
+                    self.images
+                        .get(&image)
+                        .map_or(0, |image| image.bytes().len()),
+                    self.image_failures(&image),
+                    errors.as_ref().and_then(|errors| errors.get(&image)),
+                ));
+            }
+        }
+        let failed = errors.as_ref().map_or(0, |errors| errors.len());
+        let sample: Vec<String> = errors
+            .iter()
+            .flat_map(|errors| errors.iter())
+            .take(6)
+            .map(|(key, error)| format!("{key}: {error}"))
+            .collect();
+        out.push(format!(
+            "failed_total={failed} fetch_permits_free={} sample={sample:?}",
+            crate::net::image_permits_free()
+        ));
+        out.join(" | ")
+    }
+
     /// Badge icons a fetched profile names.
     pub(super) fn request_profile_images(&mut self, user: Id) {
         let Some(body) = self.fetched.get(&profile_key(user)) else {
             return;
         };
+        let has_badges = body["badges"]
+            .as_array()
+            .is_some_and(|badges| !badges.is_empty());
         let wanted: Vec<(String, String)> = body["badges"]
             .as_array()
             .into_iter()
@@ -233,6 +275,9 @@ impl Root {
             let (key, url) = self.guild_avatar_source(&user);
             self.request_image(key, url);
         }
+        if has_badges {
+            self.request_badge_catalog(user);
+        }
     }
 
     pub(super) fn profile_layer(
@@ -252,7 +297,7 @@ impl Root {
         }
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let banner = self.banner_color(&user);
-        let badges = self.badges(user.id);
+        let badges = self.profile_badges("popout", user.id, cx);
         let header = div()
             .relative()
             .h(px(152.5))

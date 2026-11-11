@@ -194,7 +194,7 @@ impl Root {
         let servers = body
             .and_then(|body| body["mutual_guilds"].as_array().map(Vec::len))
             .unwrap_or(0);
-        let badges = self.badges(id);
+        let badges = self.profile_badges("popout", id, cx);
         let subtle = hsla(0., 0., 0.78, 1.);
         let plural = |count: usize, one: &str, many: &str| {
             if count == 1 {
