@@ -11,7 +11,10 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+mod upload;
 mod webhook;
+
+pub use upload::Progress;
 
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
