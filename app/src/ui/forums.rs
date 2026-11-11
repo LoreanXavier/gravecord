@@ -379,7 +379,7 @@ impl Root {
                 .children(form.error.clone().map(|error| {
                     div()
                         .px(px(12.))
-                        .text_color(color("--text-danger"))
+                        .text_color(color("--text-feedback-critical"))
                         .child(error)
                 }))
                 .child(

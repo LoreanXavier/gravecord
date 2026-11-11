@@ -21,6 +21,13 @@ impl Theme {
         }
     }
 
+    /// Whether the palette has a token of this name (`color` panics for one it has not).
+    pub fn has(self, name: &str) -> bool {
+        self.table()
+            .binary_search_by(|(key, _)| (*key).cmp(name))
+            .is_ok()
+    }
+
     /// `0xRRGGBBAA` of a token. Unknown names are a programming error: they come from code, not from data.
     pub fn color(self, name: &str) -> u32 {
         let table = self.table();

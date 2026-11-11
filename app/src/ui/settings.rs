@@ -3,6 +3,7 @@
 //! Sizes and colors from `design/dom/settings/account-darker-cozy.json`; strings from `STRINGS/en-US.json`.
 
 mod account_dialogs;
+mod account_nested;
 mod account_panels;
 mod mfa;
 pub(in crate::ui) use account_dialogs::FORM_KEY as ACCOUNT_FORM_KEY;
@@ -59,6 +60,7 @@ pub(super) use model::Choice;
 use model::{ButtonKind, Runs};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -248,6 +250,22 @@ thread_local! {
     static PENDING_SCROLL: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
+/// The Account page's categories, in the subnav's order: the keys their markers carry.
+const ACCOUNT_KEYS: [&str; 4] = [
+    "account_info_category",
+    "account_password_security_category",
+    "account_status_category",
+    "account_family_center_category",
+];
+
+/// Where the scroll-spy puts a clicked category's marker below the top of the view: the Account page's reference
+/// frame (`account-status-darker-cozy`) holds the heading 24px under the top, so the marker sits 76px under it.
+const ACCOUNT_SCROLL_MARGIN: f32 = 76.;
+
+/// The NEW badges on Account Status (subnav entry and Age Group row) go once the category has been in view
+/// (`account-status-darker-cozy` shows neither).
+static ACCOUNT_STATUS_SEEN: AtomicBool = AtomicBool::new(false);
+
 /// The Account page lists its own anchors; every other page lists its titled sections.
 fn anchors_of(entry: &Entry) -> Vec<Anchor> {
     if !entry.anchors.is_empty() {
@@ -260,7 +278,7 @@ fn anchors_of(entry: &Entry) -> Vec<Anchor> {
                 badge: *badge,
                 // Categories sit between dividers: every other child of the panel.
                 target: index * 2,
-                key: None,
+                key: (entry.page == Page::Account).then(|| ACCOUNT_KEYS[index]),
             })
             .collect();
     }
@@ -536,8 +554,12 @@ impl Row {
         self
     }
 
-    fn badge(mut self) -> Self {
-        self.badge = true;
+    fn badge(self) -> Self {
+        self.badge_if(true)
+    }
+
+    fn badge_if(mut self, shown: bool) -> Self {
+        self.badge = shown;
         self
     }
 
@@ -661,6 +683,22 @@ fn category(title: Option<&'static str>, rows: Vec<Row>) -> AnyElement {
         .flex()
         .flex_col()
         .children(title.map(|title| category_header(title, &[], None)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(rows.into_iter().map(Row::render)),
+        )
+        .into_any_element()
+}
+
+/// `category` whose header carries the marker the subnav scrolls to and the scroll-spy watches.
+fn category_marked(title: &'static str, marker: AnyElement, rows: Vec<Row>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .child(category_header(title, &[], Some(marker)))
         .child(
             div()
                 .flex()
@@ -953,9 +991,13 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let current = self.settings.as_ref().map_or(0, |open| open.anchor.get());
+        if anchors.get(current).and_then(|anchor| anchor.key) == Some(ACCOUNT_KEYS[2]) {
+            ACCOUNT_STATUS_SEEN.store(true, Ordering::Relaxed);
+        }
+        let seen = ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed);
         let heights: Vec<f32> = anchors
             .iter()
-            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge) as f32)
+            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge && !seen) as f32)
             .collect();
         let total = heights.iter().sum::<f32>() + 16. * heights.len().saturating_sub(1) as f32;
         let thumb_top: f32 = heights
@@ -1014,7 +1056,7 @@ impl Root {
                         cx.notify();
                     }))
                     .child(div().min_w(px(0.)).child(anchor.label))
-                    .when(anchor.badge, |this| this.child(new_badge()))
+                    .when(anchor.badge && !seen, |this| this.child(new_badge()))
                     .into_any_element()
             })
             .collect();
@@ -1327,8 +1369,13 @@ impl Root {
                 }))
                 .child(button(id, label, tone))
         };
-        let info = category(
-            Some("Account Info"),
+        let marker = |index: usize| {
+            self.anchor_probe(format!("settings-marker:{}", ACCOUNT_KEYS[index]))
+                .into_any_element()
+        };
+        let info = category_marked(
+            "Account Info",
+            marker(0),
             vec![
                 Row::new("Username").trailing(
                     div()
@@ -1418,8 +1465,9 @@ impl Root {
             .get("sessions")
             .and_then(|body| body["user_sessions"].as_array())
             .map(|list| devices(list.len()));
-        let security = category(
-            Some("Password & Security"),
+        let security = category_marked(
+            "Password & Security",
+            marker(1),
             vec![
                 Row::new("Password").trailing(opens(
                     "password",
@@ -1440,7 +1488,7 @@ impl Root {
                     .press(
                         "account-mfa",
                         cx.listener(|this, _, _, cx| {
-                            this.settings_extra.panel = Some(account_panels::Panel::Mfa);
+                            this.account_panel_open(account_panels::Panel::Mfa, cx);
                             let _ = this.requests.send(mfa::credentials());
                             cx.notify();
                         }),
@@ -1448,12 +1496,13 @@ impl Root {
                 Row::new("Logged-in Devices").link(sessions).press(
                     "account-sessions",
                     cx.listener(|this, _, _, cx| {
-                        this.settings_extra.panel = Some(account_panels::Panel::Sessions);
-                        cx.notify();
+                        this.account_panel_open(account_panels::Panel::Sessions, cx);
                     }),
                 ),
             ],
         );
+        let standing = self.standing();
+        let (tile_icon, tile_tint, tile_background) = account_nested::tile_look(standing);
         let status = div()
             .flex()
             .flex_col()
@@ -1466,7 +1515,7 @@ impl Root {
                     .text_color(color("--text-strong"))
                     .child("Account Status"),
             )
-            .child(div().h(px(1.)))
+            .child(div().relative().h(px(1.)).child(marker(2)))
             .child(
                 div()
                     .flex()
@@ -1479,7 +1528,7 @@ impl Root {
                     ]))
                     .child(
                         Row::new("Age Group")
-                            .badge()
+                            .badge_if(!ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed))
                             .leading(tile(
                                 "settings_age_group",
                                 "--background-mod-subtle",
@@ -1511,28 +1560,36 @@ impl Root {
                     )
                     .child(
                         Row::new("Account Standing")
-                            .leading(tile(
-                                "settings_standing",
-                                "--background-feedback-mod-positive",
-                                "--icon-feedback-positive",
+                            .leading(tile(tile_icon, tile_background, tile_tint))
+                            .description(match standing {
+                                Some(standing) => {
+                                    described(standing.description(), "--text-subtle")
+                                        .into_any_element()
+                                }
+                                None => described(
+                                    &[("Loading your account standing...", false)],
+                                    "--text-subtle",
+                                )
+                                .into_any_element(),
+                            })
+                            .link(Some(
+                                standing
+                                    .map_or("Loading", account_nested::Standing::label)
+                                    .to_owned(),
                             ))
-                            .description(described(
-                                &[
-                                    ("Thank you for upholding Discord's ", false),
-                                    ("Terms of Service", true),
-                                    (" and ", false),
-                                    ("Community Guidelines", true),
-                                    (". If you have a violation, it will appear here.", false),
-                                ],
-                                "--text-subtle",
-                            ))
-                            .link(Some("All good".to_owned()))
+                            .press(
+                                "account-standing",
+                                cx.listener(|this, _, _, cx| {
+                                    this.account_panel_open(account_panels::Panel::Standing, cx);
+                                }),
+                            )
                             .render(),
                     ),
             )
             .into_any_element();
-        let family = category(
-            Some("Family Center"),
+        let family = category_marked(
+            "Family Center",
+            marker(3),
             vec![
                 Row::new("Set up Family Center")
                     .description(described(
@@ -1542,7 +1599,13 @@ impl Root {
                         )],
                         "--text-subtle",
                     ))
-                    .link(None),
+                    .link(None)
+                    .press(
+                        "account-family-center",
+                        cx.listener(|this, _, _, cx| {
+                            this.account_panel_open(account_panels::Panel::Family, cx);
+                        }),
+                    ),
             ],
         );
         let removal = category(
@@ -1594,6 +1657,8 @@ impl Root {
         actions::link_owner_clear();
         let mut body = match open.page {
             Page::Account => match self.settings_extra.panel {
+                Some(account_panels::Panel::Standing) => self.standing_body(),
+                Some(account_panels::Panel::Family) => self.family_body(cx),
                 Some(panel) => self.account_panel_page(panel, cx),
                 None => self.account_page(cx),
             },
@@ -1613,6 +1678,11 @@ impl Root {
         if open.page == Page::Appearance {
             body.insert(0, self.icon_set_picker(cx));
         }
+        // A nested panel's header is a back button and the breadcrumb (`contentHeaderLeft_3Rvb29`).
+        let nested = (open.page == Page::Account)
+            .then_some(self.settings_extra.panel)
+            .flatten()
+            .filter(|panel| panel.has_breadcrumb());
         div()
             .parity("settings-content")
             .flex_1()
@@ -1626,21 +1696,23 @@ impl Root {
                     .parity_below("settings-header", 1.)
                     .flex_none()
                     .h(px(49.))
-                    .pl(px(16.))
+                    .pl(px(if nested.is_some() { 8. } else { 16. }))
                     .pr(px(8.))
                     .border_b_1()
                     .border_color(color("--border-muted"))
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
+                    .child(match nested {
+                        Some(panel) => self.nested_header(panel.title(), cx),
+                        None => div()
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child(label_of(open.page)),
-                    )
+                            .child(label_of(open.page))
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .id("settings-close")
@@ -1699,6 +1771,8 @@ impl Root {
                         self.tip_anchors.clone(),
                         if open.page == Page::Clips {
                             clips::CATEGORIES.to_vec()
+                        } else if open.page == Page::Account {
+                            ACCOUNT_KEYS.to_vec()
                         } else {
                             pages::nodes(open.page)
                                 .iter()
@@ -1711,6 +1785,11 @@ impl Root {
                                     _ => None,
                                 })
                                 .collect()
+                        },
+                        if open.page == Page::Account {
+                            ACCOUNT_SCROLL_MARGIN
+                        } else {
+                            0.
                         },
                     )),
             )
@@ -1866,6 +1945,7 @@ fn scroll_spy(
     spy: Rc<Cell<(f32, bool)>>,
     markers: Rc<std::cell::RefCell<std::collections::HashMap<SharedString, Bounds<gpui::Pixels>>>>,
     keys: Vec<&'static str>,
+    margin: f32,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -1879,7 +1959,7 @@ fn scroll_spy(
                 if let Some(top) = top {
                     PENDING_SCROLL.set(None);
                     let offset = content.offset();
-                    let wanted = (offset.y - (top - content.bounds().top()))
+                    let wanted = (offset.y - (top - content.bounds().top() - px(margin)))
                         .clamp(-content.max_offset().y, px(0.));
                     content.set_offset(point(offset.x, wanted));
                     window.refresh();

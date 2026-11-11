@@ -323,6 +323,9 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("age_restricted_ios_setting", &[6, 20], 1),
     // privacy: default_guilds_activity_restricted_v2 29, an enum at the message's own level.
     pref("activity_sharing_per_guild_default_setting", &[8], 29),
+    // privacy: family_center_enabled_v2 21, a BoolValue: "Enable Family Center tab" of the Family Center panel's
+    // Settings tab (`familyCenterEnabledV2`, module 253932).
+    pref("family_center_enabled", &[8, 21], 1),
 ];
 
 /// `notifications.quiet_mode`, read from the merged account settings rather than a settings-page row.

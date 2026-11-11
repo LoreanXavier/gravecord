@@ -276,7 +276,12 @@ fn mid_surface(swatch: &Swatch, light: bool) -> Rgba {
     };
     let mid = |shift: u32| ((first.0 >> shift) & 0xff).midpoint((last.0 >> shift) & 0xff);
     let under = [mid(24), mid(16), mid(8)].map(|channel| channel as f32 / 255.);
-    let (over, opacity) = if light { (1., 0.70) } else { (0., 0.75) };
+    let amount = custom_mix_amount().unwrap_or(1.);
+    let (over, opacity) = if light {
+        (1., 0.42 + amount * 0.28)
+    } else {
+        (0., 0.45 + amount * 0.3)
+    };
     let mixed = under.map(|channel| channel * (1. - opacity) + over * opacity);
     Rgba {
         r: mixed[0],
@@ -290,14 +295,19 @@ fn mid_surface(swatch: &Swatch, light: bool) -> Rgba {
 /// (`--background-gradient-highest`: the window's gradient under 0.65 black, or 0.95 white). It fills its parent, so
 /// the parent has to be positioned, and it is drawn first.
 pub(in crate::ui) fn cover(radius: f32) -> Option<AnyElement> {
-    cover_with(radius, 0.95, 0.65)
+    cover_with(
+        radius,
+        0.95,
+        0.39 + custom_mix_amount().unwrap_or(1.) * 0.26,
+    )
 }
 
 /// The cards of the member list (`--background-surface-high`): the window's gradient at the card's own place under a
 /// 0.70 white (light) or 0.75 black (dark) layer; the Citrus capture's first card is `251,232,194` at the top, which
 /// is the first stop under 0.70 white.
 pub(in crate::ui) fn surface_cover(radius: f32) -> Option<AnyElement> {
-    cover_with(radius, 0.70, 0.75)
+    let amount = custom_mix_amount().unwrap_or(1.);
+    cover_with(radius, 0.42 + amount * 0.28, 0.45 + amount * 0.3)
 }
 
 fn cover_with(radius: f32, light_opacity: f32, dark_opacity: f32) -> Option<AnyElement> {
@@ -685,7 +695,12 @@ impl Root {
         // 0.70 black, 0.65 white) and the sidebar (`high`: 0.75, 0.70), measured on the capture at their pixels.
         // The user panel at the bottom keeps its own token layer.
         let light = is_light(swatch);
-        let (frame, side) = if light { (0.65, 0.70) } else { (0.70, 0.75) };
+        let amount = custom_mix_amount().unwrap_or(1.);
+        let (frame, side) = if light {
+            (0.325 + amount * 0.5 * 0.65, 0.42 + amount * 0.4 * 0.7)
+        } else {
+            (0.42 + amount * 0.4 * 0.7, 0.45 + amount * 0.4 * 0.75)
+        };
         let shade = |x: f32, y: f32, w: f32, h: f32, opacity: f32| {
             div()
                 .absolute()

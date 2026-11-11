@@ -450,7 +450,7 @@ impl Root {
                 .children(scroll_fader(self, -open.scroll.offset().y, true))
                 .children(scroll_fader(self, open.scroll.max_offset().y + open.scroll.offset().y, false))
                 .children(open.error.as_ref().map(|error| div().absolute().left(px(456.)).bottom(px(76.))
-                    .text_size(px(14.)).text_color(color("--text-danger")).child(error.clone())))
+                    .text_size(px(14.)).text_color(color("--text-feedback-critical")).child(error.clone())))
                 .child(div().id("screening-submit").parity("screening-submit").absolute().right(px(32.)).bottom(px(44.))
                     .h(px(40.)).w(px(100.)).rounded(px(8.)).bg(color("--control-connected-background-default"))
                     .when(!enabled, |button| button.opacity(0.5)).when(enabled, |button| button.cursor_pointer())

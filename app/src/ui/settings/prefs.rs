@@ -433,7 +433,8 @@ mod tests {
     fn every_pref_names_a_row_of_a_generated_page() {
         let pages = include_str!("pages.rs");
         // The colour theme is set by the Appearance page's colour tiles (`client_theme.rs`), which have no row key.
-        const TILES: &[&str] = &["appearance_client_theme_preset"];
+        // "Enable Family Center tab" is drawn by the Family Center panel's Settings tab (`account_nested.rs`).
+        const TILES: &[&str] = &["appearance_client_theme_preset", "family_center_enabled"];
         for pref in PROTO_PREFS.iter().filter(|pref| !TILES.contains(&pref.key)) {
             assert!(
                 pages.contains(&format!("key: \"{}\"", pref.key)),

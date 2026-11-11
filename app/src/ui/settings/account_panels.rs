@@ -14,6 +14,27 @@ pub(in crate::ui) const LOGOUT_KEY: &str = "settings-sessions-logout";
 pub(in crate::ui) enum Panel {
     Sessions,
     Mfa,
+    /// `ACCOUNT_STANDING_NESTED_PANEL` (`account_nested.rs`).
+    Standing,
+    /// `ACCOUNT_FAMILY_CENTER_NESTED_PANEL` (`account_nested.rs`).
+    Family,
+}
+
+impl Panel {
+    /// The title the nested header's breadcrumb ends with.
+    pub(in crate::ui) fn title(self) -> &'static str {
+        match self {
+            Panel::Sessions => "Logged-in Devices",
+            Panel::Mfa => "Multi-Factor Authentication",
+            Panel::Standing => "Account Standing",
+            Panel::Family => "Family Center",
+        }
+    }
+
+    /// Whether the content header shows the breadcrumb (`contentHeaderLeft_3Rvb29`) rather than the page's name.
+    pub(in crate::ui) fn has_breadcrumb(self) -> bool {
+        true
+    }
 }
 
 /// `/auth/sessions/logout` for the given `id_hash` values.
@@ -104,43 +125,14 @@ impl Root {
         panel: Panel,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let title = match panel {
-            Panel::Sessions => "Logged-in Devices",
-            Panel::Mfa => "Multi-Factor Authentication",
-        };
-        let back = div()
-            .id("account-panel-back")
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .pb(px(16.))
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.settings_extra.panel = None;
-                cx.notify();
-            }))
-            .child(mask_icon("role_back", 16., "--interactive-text-default"))
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--interactive-text-default"))
-                    .child("Back"),
-            )
-            .into_any_element();
-        let heading = div()
-            .pb(px(20.))
-            .text_size(px(24.))
-            .line_height(px(32.))
-            .font_weight(FontWeight(500.))
-            .text_color(color("--text-strong"))
-            .child(title)
-            .into_any_element();
-        let mut out = vec![back, heading];
+        // Every nested panel shares the navigator (`NESTED_PANEL_NAVIGATOR`, module 963935): the header's back
+        // button and breadcrumb are drawn by `settings_content`, the body starts right below them.
+        let mut out = Vec::new();
         match panel {
             Panel::Sessions => out.extend(self.sessions_body(cx)),
             Panel::Mfa => out.extend(self.mfa_body(cx)),
+            // Their bodies come from `account_nested`.
+            Panel::Standing | Panel::Family => {}
         }
         out
     }

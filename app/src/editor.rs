@@ -393,6 +393,11 @@ impl Editor {
         self.buffer.set_max_utf16(limit);
     }
 
+    /// A new look, for an editor that outlives a palette change.
+    pub fn set_style(&mut self, style: EditorStyle) {
+        self.style = Rc::new(style);
+    }
+
     pub fn set_single_line(&mut self, on: bool) {
         self.buffer.set_single_line(on);
     }

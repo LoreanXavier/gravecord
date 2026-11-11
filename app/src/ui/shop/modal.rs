@@ -1529,8 +1529,8 @@ impl Root {
                 ("--background-brand", "--brand-560")
             } else {
                 (
-                    "--button-secondary-background",
-                    "--button-secondary-background-hover",
+                    "--control-secondary-background-default",
+                    "--control-secondary-background-hover",
                 )
             };
             div()

@@ -40,10 +40,12 @@ struct State {
     value: f32,
     hex: Entity<Editor>,
     intensity: Entity<Editor>,
+    angle: Entity<Editor>,
+    angle_track: Rc<Cell<Bounds<Pixels>>>,
     square: Rc<Cell<Bounds<Pixels>>>,
     hue_bar: Rc<Cell<Bounds<Pixels>>>,
     track: Rc<Cell<Bounds<Pixels>>>,
-    _events: [Subscription; 2],
+    _events: [Subscription; 3],
 }
 
 thread_local! {
@@ -195,6 +197,14 @@ pub(super) fn surprise(mut random: impl FnMut() -> f32) -> Custom {
     }
 }
 
+/// The direction slider snaps to 0, 90, 180, 270 and 360 within 10 degrees of them.
+pub(super) fn snap_angle(angle: f32) -> f32 {
+    [0., 90., 180., 270., 360.]
+        .into_iter()
+        .find(|stop| (angle - stop).abs() <= 10.)
+        .unwrap_or(angle)
+}
+
 /// The colour "Add Color" adds: the last colour with its hue 15 degrees on.
 pub(super) fn next_colour(last: u32) -> u32 {
     let (h, s, l) = to_hsl(last);
@@ -222,6 +232,109 @@ fn random_unit() -> f32 {
     })
 }
 
+/// A slider of the panel (`slider_p3RiOL`): a 4 px bar over 264, the fill and a 16 px white grabber on a 254 px track
+/// inset 5; `dots` adds the direction slider's five step dots (the middle one larger).
+fn custom_slider(
+    id: &'static str,
+    ratio: f32,
+    track: Rc<Cell<Bounds<Pixels>>>,
+    dots: bool,
+    cx: &mut Context<Root>,
+    set: impl Fn(f32, &mut Root, &mut Context<Root>) + Clone + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let ratio = ratio.clamp(0., 1.);
+    let on_ratio = {
+        let area = track.clone();
+        move |position: gpui::Point<Pixels>, this: &mut Root, cx: &mut Context<Root>| {
+            let rect = area.get();
+            if rect.size.width <= px(0.) {
+                return;
+            }
+            let ratio = ((position.x - rect.origin.x) / rect.size.width).clamp(0., 1.);
+            set(ratio, this, cx);
+        }
+    };
+    let on_move = on_ratio.clone();
+    div()
+        .id(id)
+        .relative()
+        .flex_none()
+        .w(px(264.))
+        .h(px(24.))
+        .cursor_pointer()
+        .child(
+            div()
+                .absolute()
+                .top(px(10.))
+                .left_0()
+                .w(px(264.))
+                .h(px(4.))
+                .rounded(px(2.))
+                .bg(tinted("--background-base-low")),
+        )
+        .when(dots, |slider| {
+            (0..5).fold(slider, |slider, index| {
+                let size = if index == 2 { 10. } else { 8. };
+                slider.child(
+                    div()
+                        .absolute()
+                        .left(px(1. + 63.5 * index as f32 + (8. - size) / 2. - 0.))
+                        .top(px(12. - size / 2.))
+                        .size(px(size))
+                        .rounded_full()
+                        .bg(color("--control-secondary-background-default")),
+                )
+            })
+        })
+        .when(ratio > 0., |slider| {
+            slider.child(
+                div()
+                    .absolute()
+                    .top(px(9.))
+                    .left_0()
+                    .w(px(5. + ratio * 254.))
+                    .h(px(6.))
+                    .rounded(px(3.))
+                    .bg(color("--background-brand")),
+            )
+        })
+        .child(
+            div()
+                .absolute()
+                .left(px(5.))
+                .top_0()
+                .w(px(254.))
+                .h_full()
+                .child(
+                    canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(ratio * 254. - 8.))
+                        .top(px(4.))
+                        .size(px(16.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(color("--border-normal"))
+                        .bg(rgba(0xffffffff)),
+                ),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                on_ratio(event.position, this, cx)
+            }),
+        )
+        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+            if event.pressed_button == Some(MouseButton::Left) {
+                on_move(event.position, this, cx);
+            }
+        }))
+}
+
 impl Root {
     /// Opens the editor from "Try it out": the whole app takes the theme, the panel goes on the right.
     pub(super) fn open_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
@@ -239,6 +352,22 @@ impl Root {
             editor.set_max_utf16(4);
             editor.set_text(&format!("{}%", DEFAULT_MIX as u32));
             editor
+        });
+        let angle = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_single_line(true);
+            editor.set_max_utf16(4);
+            editor.set_text("0°");
+            editor
+        });
+        let angle_events = cx.subscribe(&angle, |this, editor, event: &EditorEvent, cx| {
+            if matches!(event, EditorEvent::Edited) {
+                let text = editor.read(cx).text();
+                let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+                if let Ok(number) = digits.parse::<f32>() {
+                    this.custom_theme_set_angle(number.min(360.), false, cx);
+                }
+            }
         });
         let hex_events = cx.subscribe(&hex, |this, editor, event: &EditorEvent, cx| {
             if matches!(event, EditorEvent::Edited)
@@ -266,10 +395,12 @@ impl Root {
                 value,
                 hex,
                 intensity,
+                angle,
+                angle_track: Rc::default(),
                 square: Rc::default(),
                 hue_bar: Rc::default(),
                 track: Rc::default(),
-                _events: [hex_events, intensity_events],
+                _events: [hex_events, intensity_events, angle_events],
             });
         });
         self.enter_custom_theme_editor(&custom, cx);
@@ -335,76 +466,125 @@ impl Root {
     }
 
     fn custom_theme_set_light(&mut self, light: bool, cx: &mut Context<Self>) {
-        with_state(|state| state.custom.light = light);
+        let editors = with_state(|state| {
+            state.custom.light = light;
+            [
+                state.hex.clone(),
+                state.intensity.clone(),
+                state.angle.clone(),
+            ]
+        });
+        self.custom_theme_changed(cx);
+        // The palette changed with the theme: the fields take its text colour.
+        for editor in editors.into_iter().flatten() {
+            editor.update(cx, |editor, cx| {
+                editor.set_style(editor_style());
+                cx.notify();
+            });
+        }
+    }
+
+    /// Writes the state into the three fields (the colour of the selected slot, the direction and the intensity).
+    fn custom_theme_write_fields(&mut self, cx: &mut Context<Self>) {
+        let fields = with_state(|state| {
+            let rgb = state
+                .custom
+                .colors
+                .get(state.selected)
+                .copied()
+                .unwrap_or(DEFAULT_COLOUR);
+            (state.hue, state.saturation, state.value) = to_hsv(rgb);
+            (
+                hex_text(rgb),
+                format!("{}%", state.custom.base_mix.round() as u32),
+                format!("{}°", state.custom.angle.round() as u32),
+                [
+                    state.hex.clone(),
+                    state.intensity.clone(),
+                    state.angle.clone(),
+                ],
+            )
+        });
+        if let Some((hex, mix, angle, editors)) = fields {
+            for (editor, text) in editors.into_iter().zip([hex, mix, angle]) {
+                editor.update(cx, |editor, cx| {
+                    editor.set_text(&text);
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    fn custom_theme_set_angle(&mut self, angle: f32, write: bool, cx: &mut Context<Self>) {
+        let editor = with_state(|state| {
+            state.custom.angle = snap_angle(angle.clamp(0., 360.));
+            state.angle.clone()
+        });
+        if write && let Some(editor) = editor {
+            let shown = with_state(|state| state.custom.angle).unwrap_or(0.);
+            editor.update(cx, |editor, cx| {
+                editor.set_text(&format!("{}°", shown.round() as u32));
+                cx.notify();
+            });
+        }
+        self.custom_theme_changed(cx);
+    }
+
+    fn custom_theme_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        with_state(|state| {
+            if index < state.custom.colors.len() {
+                state.selected = index;
+            }
+        });
+        self.custom_theme_write_fields(cx);
+        cx.notify();
+    }
+
+    /// The "remove colour" button next to the eyedropper: drops the selected colour (one always stays).
+    fn custom_theme_remove_colour(&mut self, cx: &mut Context<Self>) {
+        with_state(|state| {
+            if state.custom.colors.len() > 1 {
+                state.custom.colors.remove(state.selected);
+                state.selected = state.selected.min(state.custom.colors.len() - 1);
+            }
+        });
+        self.custom_theme_write_fields(cx);
         self.custom_theme_changed(cx);
     }
 
     fn custom_theme_add_colour(&mut self, cx: &mut Context<Self>) {
         let added = with_state(|state| {
             if state.custom.colors.len() >= MAX_COLOURS {
-                return None;
+                return false;
             }
             let next = next_colour(*state.custom.colors.last().unwrap_or(&DEFAULT_COLOUR));
             state.custom.colors.push(next);
             state.selected = state.custom.colors.len() - 1;
-            (state.hue, state.saturation, state.value) = to_hsv(next);
-            Some((next, state.hex.clone()))
-        })
-        .flatten();
-        if let Some((rgb, hex)) = added {
-            hex.update(cx, |editor, cx| {
-                editor.set_text(&hex_text(rgb));
-                cx.notify();
-            });
+            true
+        });
+        if added == Some(true) {
+            self.custom_theme_write_fields(cx);
             self.custom_theme_changed(cx);
         }
     }
 
     fn custom_theme_surprise(&mut self, cx: &mut Context<Self>) {
         let drawn = surprise(random_unit);
-        let editors = with_state(|state| {
+        with_state(|state| {
             let light = state.custom.light;
             state.custom = Custom { light, ..drawn };
             state.selected = 0;
-            let first = state.custom.colors[0];
-            (state.hue, state.saturation, state.value) = to_hsv(first);
-            (
-                first,
-                state.custom.base_mix,
-                state.hex.clone(),
-                state.intensity.clone(),
-            )
         });
-        if let Some((first, mix, hex, intensity)) = editors {
-            hex.update(cx, |editor, cx| {
-                editor.set_text(&hex_text(first));
-                cx.notify();
-            });
-            intensity.update(cx, |editor, cx| {
-                editor.set_text(&format!("{}%", mix as u32));
-                cx.notify();
-            });
-        }
+        self.custom_theme_write_fields(cx);
         self.custom_theme_changed(cx);
     }
 
     fn custom_theme_reset(&mut self, cx: &mut Context<Self>) {
-        let editors = with_state(|state| {
+        with_state(|state| {
             state.custom = default_custom();
             state.selected = 0;
-            (state.hue, state.saturation, state.value) = to_hsv(DEFAULT_COLOUR);
-            (state.hex.clone(), state.intensity.clone())
         });
-        if let Some((hex, intensity)) = editors {
-            hex.update(cx, |editor, cx| {
-                editor.set_text(&hex_text(DEFAULT_COLOUR));
-                cx.notify();
-            });
-            intensity.update(cx, |editor, cx| {
-                editor.set_text(&format!("{}%", DEFAULT_MIX as u32));
-                cx.notify();
-            });
-        }
+        self.custom_theme_write_fields(cx);
         self.custom_theme_changed(cx);
     }
 
@@ -416,21 +596,44 @@ impl Root {
         if !client_theme::editing() {
             return None;
         }
-        let (custom, selected, hue, saturation, value, hex, intensity, square, hue_bar, track) =
-            with_state(|state| {
+        let (custom, selected, hue, saturation, value, fields, bounds) = with_state(|state| {
+            (
+                state.custom.clone(),
+                state.selected,
+                state.hue,
+                state.saturation,
+                state.value,
                 (
-                    state.custom.clone(),
-                    state.selected,
-                    state.hue,
-                    state.saturation,
-                    state.value,
                     state.hex.clone(),
                     state.intensity.clone(),
+                    state.angle.clone(),
+                ),
+                (
                     state.square.clone(),
                     state.hue_bar.clone(),
                     state.track.clone(),
-                )
-            })?;
+                    state.angle_track.clone(),
+                ),
+            )
+        })?;
+        let (hex, intensity, angle) = fields;
+        let (square, hue_bar, track, angle_track) = bounds;
+        let slider = custom_slider(
+            "custom-theme-intensity",
+            custom.base_mix / 100.,
+            track,
+            false,
+            cx,
+            |ratio, this, cx| this.custom_theme_set_intensity((ratio * 100.).round(), true, cx),
+        );
+        let angle_slider = custom_slider(
+            "custom-theme-angle",
+            custom.angle / 360.,
+            angle_track,
+            true,
+            cx,
+            |ratio, this, cx| this.custom_theme_set_angle((ratio * 360.).round(), true, cx),
+        );
         let rgb = custom
             .colors
             .get(selected)
@@ -528,12 +731,18 @@ impl Root {
         let stops: [u32; 7] = [
             0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff, 0xff0000,
         ];
-        let segments = stops.windows(2).map(|pair| {
-            div().flex_1().h_full().bg(linear_gradient(
-                90.,
-                linear_color_stop(rgba((pair[0] << 8) | 0xff), 0.),
-                linear_color_stop(rgba((pair[1] << 8) | 0xff), 1.),
-            ))
+        let last_segment = stops.len() - 2;
+        let segments = stops.windows(2).enumerate().map(|(index, pair)| {
+            div()
+                .flex_1()
+                .h_full()
+                .when(index == 0, |segment| segment.rounded_l(px(10.)))
+                .when(index == last_segment, |segment| segment.rounded_r(px(10.)))
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(rgba((pair[0] << 8) | 0xff), 0.),
+                    linear_color_stop(rgba((pair[1] << 8) | 0xff), 1.),
+                ))
         });
         let saturation_box = div()
             .id("custom-theme-square")
@@ -541,7 +750,7 @@ impl Root {
             .flex_none()
             .w(px(264.))
             .h(px(152.))
-            .overflow_hidden()
+            .rounded(px(8.))
             .cursor_crosshair()
             .bg(rgba((from_hsv(hue, 1., 1.) << 8) | 0xff))
             .child(
@@ -549,16 +758,28 @@ impl Root {
                     .absolute()
                     .size_full(),
             )
-            .child(div().absolute().size_full().bg(linear_gradient(
-                90.,
-                linear_color_stop(rgba(0xffffffff), 0.),
-                linear_color_stop(rgba(0xffffff00), 1.),
-            )))
-            .child(div().absolute().size_full().bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0x00000000), 0.),
-                linear_color_stop(rgba(0x000000ff), 1.),
-            )))
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .rounded(px(8.))
+                    .bg(linear_gradient(
+                        90.,
+                        linear_color_stop(rgba(0xffffffff), 0.),
+                        linear_color_stop(rgba(0xffffff00), 1.),
+                    )),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .rounded(px(8.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(rgba(0x00000000), 0.),
+                        linear_color_stop(rgba(0x000000ff), 1.),
+                    )),
+            )
             .child(pointer(
                 saturation * 264. - 9.,
                 (1. - value) * 152. - 9.,
@@ -587,8 +808,6 @@ impl Root {
                 div()
                     .relative()
                     .size_full()
-                    .rounded(px(10.))
-                    .overflow_hidden()
                     .flex()
                     .child(
                         canvas(move |bounds, _, _| hue_bar.set(bounds), |_, _, _, _| {})
@@ -614,82 +833,116 @@ impl Root {
                 }
             }));
 
-        // Intensity slider: bar 4 high, fill and a 16 white grabber over a 254 wide track.
-        let ratio = custom.base_mix / 100.;
-        let set_track = {
-            let area = track.clone();
-            move |position: gpui::Point<Pixels>, this: &mut Root, cx: &mut Context<Root>| {
-                let rect = area.get();
-                if rect.size.width <= px(0.) {
-                    return;
-                }
-                let ratio = ((position.x - rect.origin.x) / rect.size.width).clamp(0., 1.);
-                this.custom_theme_set_intensity((ratio * 100.).round(), true, cx);
+        // Sliders: bar 4 high, fill and a 16 white grabber over a 254 wide track; the direction one has five dots.
+        let several = custom.colors.len() > 1;
+        // The colour strip above the square (`gradientBar_YWrQKs`): the colours as the gradient from 10% to 90%, a
+        // square on each at its stop, the selected one larger with a notch under it.
+        let strip = several.then(|| {
+            let count = custom.colors.len();
+            let flat = |colour: u32| rgba((colour << 8) | 0xff);
+            let stop = |index: usize| 10. + 80. * index as f32 / (count - 1) as f32;
+            let squares: Vec<AnyElement> = custom
+                .colors
+                .iter()
+                .enumerate()
+                .map(|(index, colour)| {
+                    let chosen = index == selected;
+                    let size = if chosen { 28. } else { 24. };
+                    let centre = 264. * stop(index) / 100.;
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "custom-theme-colour-{index}"
+                        )))
+                        .absolute()
+                        .left(px(centre - size / 2.))
+                        .top(px(if chosen { 8. } else { 10. }))
+                        .size(px(size))
+                        .rounded(px(4.))
+                        .bg(flat(*colour))
+                        .border(px(if chosen { 4. } else { 2. }))
+                        .border_color(rgba(0xffffffff))
+                        .cursor_pointer()
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.custom_theme_select(index, cx)),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let mut bar = div()
+                .relative()
+                .flex_none()
+                .w(px(264.))
+                .h(px(44.))
+                .rounded(px(8.))
+                .flex()
+                .child(
+                    div()
+                        .h_full()
+                        .w(px(264. * stop(0) / 100.))
+                        .rounded_l(px(8.))
+                        .bg(flat(custom.colors[0])),
+                );
+            for index in 0..count - 1 {
+                bar = bar.child(
+                    div()
+                        .h_full()
+                        .w(px(264. * (stop(index + 1) - stop(index)) / 100.))
+                        .bg(linear_gradient(
+                            90.,
+                            linear_color_stop(flat(custom.colors[index]), 0.),
+                            linear_color_stop(flat(custom.colors[index + 1]), 1.),
+                        )),
+                );
             }
-        };
-        let set_track_move = set_track.clone();
-        let slider = div()
-            .id("custom-theme-intensity")
-            .relative()
-            .flex_none()
-            .w(px(264.))
-            .h(px(24.))
-            .cursor_pointer()
-            .child(
+            bar = bar.child(
                 div()
-                    .absolute()
-                    .top(px(10.))
-                    .left_0()
-                    .w(px(264.))
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(tinted("--background-base-low")),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(9.))
-                    .left_0()
-                    .w(px(5. + ratio * 254.))
-                    .h(px(6.))
-                    .rounded(px(3.))
-                    .bg(color("--background-brand")),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(5.))
-                    .top_0()
-                    .w(px(254.))
                     .h_full()
-                    .child(
-                        canvas(move |bounds, _, _| track.set(bounds), |_, _, _, _| {})
-                            .absolute()
-                            .size_full(),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(ratio * 254. - 8.))
-                            .top(px(4.))
-                            .size(px(16.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(color("--border-strong"))
-                            .bg(rgba(0xffffffff)),
-                    ),
+                    .flex_1()
+                    .rounded_r(px(8.))
+                    .bg(flat(custom.colors[count - 1])),
+            );
+            let notch_left = 264. * stop(selected) / 100. - 4.;
+            bar.children(squares).child(
+                div()
+                    .absolute()
+                    .left(px(notch_left))
+                    .top(px(35.))
+                    .w(px(8.))
+                    .h(px(5.))
+                    .bg(rgba(0xffffffff)),
             )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    set_track(event.position, this, cx)
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button == Some(MouseButton::Left) {
-                    set_track_move(event.position, this, cx);
-                }
-            }));
+        });
+        let remove = several.then(|| {
+            div()
+                .id("custom-theme-remove")
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.custom_theme_remove_colour(cx)))
+                .child(mask_icon(
+                    "theme_editor_remove",
+                    16.,
+                    "--interactive-text-default",
+                ))
+        });
+        let direction = several.then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .h(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(text(16., 500., "--text-strong").child("Gradient Direction"))
+                        .child(div().w(px(32.)).child(angle)),
+                )
+                .child(angle_slider)
+        });
 
         let at_default = custom == default_custom();
         let on_unlock = "--black";
@@ -702,7 +955,7 @@ impl Root {
                 .h_full()
                 .w(px(PANEL_WIDTH))
                 .border_1()
-                .border_color(color("--border-faint"))
+                .border_color(color("--border-muted"))
                 .bg(tinted("--background-base-lower"))
                 .occlude()
                 .child(
@@ -713,7 +966,7 @@ impl Root {
                         .pl(px(12.))
                         .pr(px(12.))
                         .pt(px(16.))
-                        .pb(px(140.))
+                        .pb(px(125.))
                         .flex()
                         .flex_col()
                         .gap(px(32.))
@@ -784,6 +1037,7 @@ impl Root {
                                     .flex()
                                     .flex_col()
                                     .gap(px(8.))
+                                    .children(strip)
                                     .child(saturation_box)
                                     .child(hue_slider)
                                     .child(
@@ -792,6 +1046,8 @@ impl Root {
                                             .pl(px(8.))
                                             .pr(px(4.))
                                             .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
                                             .bg(color("--control-secondary-background-default"))
                                             .flex()
                                             .items_center()
@@ -802,10 +1058,11 @@ impl Root {
                                                     .mr(px(8.))
                                                     .rounded(px(4.))
                                                     .border_1()
-                                                    .border_color(color("--border-strong"))
+                                                    .border_color(color("--border-subtle"))
                                                     .bg(rgba((rgb << 8) | 0xff)),
                                             )
                                             .child(div().flex_1().child(hex))
+                                            .children(remove)
                                             .child(
                                                 div()
                                                     .size(px(32.))
@@ -839,20 +1096,27 @@ impl Root {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(8.))
+                                    .gap(px(16.))
+                                    .children(direction)
                                     .child(
                                         div()
-                                            .h(px(22.))
                                             .flex()
-                                            .items_center()
-                                            .justify_between()
+                                            .flex_col()
+                                            .gap(px(8.))
                                             .child(
-                                                text(16., 500., "--text-strong")
-                                                    .child("Color Intensity"),
+                                                div()
+                                                    .h(px(22.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .child(
+                                                        text(16., 500., "--text-strong")
+                                                            .child("Color Intensity"),
+                                                    )
+                                                    .child(div().w(px(32.)).child(intensity)),
                                             )
-                                            .child(div().w(px(54.)).child(intensity)),
-                                    )
-                                    .child(slider),
+                                            .child(slider),
+                                    ),
                             ),
                         )
                         .child(
@@ -972,6 +1236,132 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unknown token panics inside `color()` while a frame is drawn, so every `"--name"` literal of the app has to
+    /// be in all four palettes. Strings that are not tokens (CSS variables of other stylesheets) are listed here.
+    #[test]
+    fn every_token_literal_of_the_app_resolves() {
+        const NOT_TOKENS: &[&str] = &[];
+        fn walk(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    // Only the code before the file's test module: tests may name unknown tokens on purpose.
+                    let code = text.split("#[cfg(test)]").next().unwrap_or("");
+                    for line in code.lines() {
+                        let line = line.trim_start();
+                        if line.starts_with("//") {
+                            continue;
+                        }
+                        let mut rest = line;
+                        while let Some(at) = rest.find("\"--") {
+                            let tail = &rest[at + 1..];
+                            let end = tail
+                                .find(|c: char| {
+                                    !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                                })
+                                .unwrap_or(tail.len());
+                            if tail[end..].starts_with('"') {
+                                found.push((tail[..end].to_owned(), path.display().to_string()));
+                            }
+                            rest = &rest[at + 1 + end..];
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert!(found.len() > 500, "the scan found {} literals", found.len());
+        // Command line flags ("--capture") are literals of the same shape: only names that start like a token family
+        // of the palette are checked.
+        let families: std::collections::HashSet<String> = [
+            "background",
+            "text",
+            "border",
+            "icon",
+            "interactive",
+            "control",
+            "input",
+            "channel",
+            "chat",
+            "button",
+            "status",
+            "brand",
+            "red",
+            "green",
+            "yellow",
+            "orange",
+            "primary",
+            "white",
+            "black",
+            "bg",
+            "header",
+            "mention",
+            "scrollbar",
+            "link",
+            "focus",
+            "card",
+            "modal",
+            "guild",
+            "redesign",
+            "shadow",
+            "spoiler",
+            "opacity",
+            "radius",
+            "space",
+            "font",
+            "elevation",
+            "custom",
+            "message",
+            "voice",
+            "interactive",
+            "menu",
+            "popout",
+            "tooltip",
+            "badge",
+            "banner",
+            "profile",
+            "polls",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut unknown = Vec::new();
+        for (name, file) in &found {
+            let family = name.trim_start_matches('-').split('-').next().unwrap_or("");
+            if NOT_TOKENS.contains(&name.as_str()) || !families.contains(family) {
+                continue;
+            }
+            for theme in [
+                dc_tokens::Theme::Dark,
+                dc_tokens::Theme::Light,
+                dc_tokens::Theme::Darker,
+                dc_tokens::Theme::Midnight,
+            ] {
+                if !theme.has(name) {
+                    unknown.push(format!("{name} ({theme:?}) in {file}"));
+                }
+            }
+        }
+        unknown.sort();
+        unknown.dedup();
+        assert!(
+            unknown.is_empty(),
+            "unknown design tokens:
+{}",
+            unknown.join(
+                "
+"
+            )
+        );
+    }
 
     #[test]
     fn hex_field_takes_six_digits_with_or_without_the_hash() {

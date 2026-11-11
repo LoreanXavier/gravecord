@@ -98,6 +98,10 @@ pub(in crate::ui) struct State {
     pub form: Option<super::account_dialogs::Form>,
     /// The Reveal links of the email and phone rows (`N_`, module 158935): the full value while set.
     pub panel: Option<super::account_panels::Panel>,
+    /// The Family Center panel's tab: Activity 0, My Family 1, Settings 2.
+    pub family_tab: usize,
+    /// Where the Account page was scrolled when a nested panel opened, so Back returns there.
+    pub nested_return: Option<gpui::Point<gpui::Pixels>>,
     pub notif: super::notifications_page::State,
     /// The System page's keybinds (`keybinds.rs`).
     pub kb: super::keybinds::State,
@@ -307,6 +311,12 @@ impl Root {
     /// Settings opened: ask for what the pages list (`initialize` of the data usage category and the harvest row).
     pub(super) fn settings_pages_opened(&mut self) {
         self.settings_extra.panel = None;
+        self.settings_extra.family_tab = 0;
+        self.settings_extra.nested_return = None;
+        // `Yn` (module 308645), run by the Account Standing panel's `initialize`: the row shows the standing.
+        let _ = self
+            .requests
+            .send(super::account_nested::standing_request());
         self.notification_page_opened();
         if !self.stores.consents.contains_key(USAGE_STATISTICS) {
             let _ = self.requests.send(Request::Fetch {
