@@ -30,6 +30,8 @@ pub(in crate::ui) enum Layer {
     MentionsFilter,
     Notify,
     GuildMenu,
+    FolderMenu,
+    AccountMenu,
     StatusPopout,
     ThreadBrowser,
     SearchFilters,
@@ -53,6 +55,8 @@ pub(in crate::ui) enum Layer {
     ContextMenu,
     /// The list of a select under a bot message (`popout_uFkqU2`).
     ComponentSelect,
+    /// The list of a select in an application's form dialog (`INTERACTION_MODAL_CREATE`).
+    InteractionSelect,
 }
 
 /// Every layer, bottom to top. A test checks the count against the variants.
@@ -64,6 +68,8 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::MentionsFilter,
     Layer::Notify,
     Layer::GuildMenu,
+    Layer::FolderMenu,
+    Layer::AccountMenu,
     Layer::StatusPopout,
     Layer::ThreadBrowser,
     Layer::SearchFilters,
@@ -86,6 +92,7 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::Submenu,
     Layer::ContextMenu,
     Layer::ComponentSelect,
+    Layer::InteractionSelect,
 ];
 
 impl Layer {
@@ -99,6 +106,8 @@ impl Layer {
             | Layer::MentionsFilter
             | Layer::Notify
             | Layer::GuildMenu
+            | Layer::FolderMenu
+            | Layer::AccountMenu
             | Layer::StatusPopout
             | Layer::ThreadBrowser
             | Layer::SearchFilters
@@ -120,7 +129,8 @@ impl Layer {
             | Layer::Menu
             | Layer::Submenu
             | Layer::ContextMenu
-            | Layer::ComponentSelect => Kind::Popover,
+            | Layer::ComponentSelect
+            | Layer::InteractionSelect => Kind::Popover,
         }
     }
 }
@@ -131,6 +141,8 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::SettingsSelect,
     Layer::HeaderPopout,
     Layer::ComponentSelect,
+    Layer::InteractionSelect,
+    Layer::FolderMenu,
 ];
 
 /// The open flag of a settings select (`select_with_list`'s `open_key`); the add-game popout's flag is not one.
@@ -161,6 +173,8 @@ impl Root {
             Layer::MentionsFilter => self.mentions_filter_open,
             Layer::Notify => self.notify_open,
             Layer::GuildMenu => self.guild_menu,
+            Layer::FolderMenu => self.rail_folders.menu.is_some(),
+            Layer::AccountMenu => self.account_switcher.more.is_some(),
             Layer::StatusPopout => self.status_popout.is_some(),
             Layer::ThreadBrowser => self.thread_browser.is_some(),
             Layer::SearchFilters => self
@@ -186,6 +200,7 @@ impl Root {
             Layer::Submenu => self.submenu.is_some(),
             Layer::ContextMenu => self.context.open.is_some(),
             Layer::ComponentSelect => self.components.open.is_some(),
+            Layer::InteractionSelect => self.interaction_select_is_open(),
         }
     }
 
@@ -202,6 +217,8 @@ impl Root {
             Layer::MentionsFilter => self.mentions_filter_open = false,
             Layer::Notify => self.notify_open = false,
             Layer::GuildMenu => self.guild_menu = false,
+            Layer::FolderMenu => self.rail_folders.menu = None,
+            Layer::AccountMenu => self.account_switcher.more = None,
             Layer::StatusPopout => self.status_popout = None,
             Layer::ThreadBrowser => self.thread_browser = None,
             Layer::SearchFilters => {
@@ -232,6 +249,7 @@ impl Root {
             Layer::Submenu => self.submenu = None,
             Layer::ContextMenu => self.close_context_menu(cx),
             Layer::ComponentSelect => self.close_component_select(cx),
+            Layer::InteractionSelect => self.close_interaction_selects(),
         }
         cx.notify();
     }
@@ -317,7 +335,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 29);
+        assert_eq!(ALL.len(), 32);
     }
 
     #[test]

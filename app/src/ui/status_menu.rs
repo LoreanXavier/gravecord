@@ -846,48 +846,8 @@ impl Root {
             .into_any_element()
     }
 
-    /// Switch Accounts: the account this client is signed in to, marked as the current one.
     fn accounts_submenu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let user = self.stores.current_user.clone().unwrap_or_default();
-        div()
-            .absolute()
-            .size_full()
-            .child(
-                div()
-                    .id("status-accounts")
-                    .occlude()
-                    .absolute()
-                    .left(px(296.))
-                    .bottom(px(79.))
-                    .w(px(260.))
-                    .p(px(9.))
-                    .rounded(px(8.))
-                    .bg(menu_surface("--background-surface-higher"))
-                    .border_1()
-                    .border_color(color("--border-subtle"))
-                    .child(
-                        div()
-                            .id("status-account-current")
-                            .h(px(36.))
-                            .px(px(8.))
-                            .rounded(px(2.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .cursor_pointer()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .hover(|style| style.bg(color("--interactive-background-hover")))
-                            .child(user.display_name().to_owned())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.status_popout = None;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .into_any_element()
+        self.accounts_submenu_view(cx)
     }
 
     pub(super) fn custom_status_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

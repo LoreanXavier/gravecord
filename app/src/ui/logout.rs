@@ -7,6 +7,12 @@ use gpui::{AnyElement, Context, EventEmitter, IntoElement, div, prelude::*};
 /// What the main view asks of the shell.
 pub enum RootEvent {
     LogOut,
+    /// A user is signed in on this device: the shell keeps the session's token under that account.
+    AccountSeen(u64),
+    /// An account left the list: its stored token is forgotten.
+    AccountRemoved(u64),
+    /// The account list asked to reconnect with this account's token.
+    SwitchAccount(u64),
 }
 
 impl EventEmitter<RootEvent> for Root {}

@@ -241,6 +241,7 @@ impl Root {
         match kind {
             Kind::Titlebar => self.titlebar(cx).into_any_element(),
             Kind::Rail => self.rail(cx).into_any_element(),
+            Kind::Sidebar if self.in_favorites() => self.favorites_sidebar(cx).into_any_element(),
             Kind::Sidebar if self.guild.is_some() => self.sidebar(cx).into_any_element(),
             Kind::Sidebar => self.home_sidebar(cx).into_any_element(),
             Kind::Header => self.header(cx).into_any_element(),

@@ -195,6 +195,7 @@ impl Root {
 
     pub(in crate::ui) fn go_guild(&mut self, guild: Id, cx: &mut Context<Self>) {
         let channel = self.last_channel_of(guild);
+        self.favorites_view = false;
         self.select(guild, channel);
         self.request_images();
         cx.notify();

@@ -4,13 +4,13 @@
 //! timings, unread marks on a closed folder, a drop into an existing folder) comes from the modules and is marked.
 
 use super::motion::{self, Ease, css};
-use super::tooltip::{Body, Tip};
+use super::tooltip::{Active, Body, Tip};
 use super::{Root, color, icon, unread_badges};
 use dc_state::Id;
 use dc_state::folders::{Folder, Item};
 use gpui::{
-    AnyElement, Bounds, Context, DragMoveEvent, FontWeight, Image, IntoElement, Pixels, Render,
-    Rgba, SharedString, Window, canvas, div, img, prelude::*, px,
+    AnyElement, Bounds, Context, DragMoveEvent, FontWeight, Image, IntoElement, MouseButton,
+    MouseDownEvent, Pixels, Render, Rgba, SharedString, Window, canvas, div, img, prelude::*, px,
 };
 use serde_json::json;
 use std::cell::RefCell;
@@ -80,6 +80,8 @@ pub(super) struct State {
     /// The item being dragged, once the drag has moved.
     pub drag: Option<(Id, bool)>,
     pub over: Option<Over>,
+    pub menu: Option<super::rail_folder_menu::FolderMenu>,
+    pub settings: Option<super::rail_folder_menu::FolderSettings>,
     loaded: bool,
 }
 
@@ -270,9 +272,17 @@ impl Root {
         cx.notify();
     }
 
+    /// `collapseAllFolders` (the menu's Close All Folders).
+    pub(super) fn collapse_all_folders(&mut self, cx: &mut Context<Self>) {
+        if self.stores.folders.collapse_all() {
+            self.save_expanded();
+        }
+        cx.notify();
+    }
+
     /// Sends the settings write (the harness runs keep it off: `GRAVECORD_NO_SETTINGS_WRITE`). Empty until the
     /// account's settings have arrived.
-    fn send_rail_patch(&mut self, patch: String) {
+    pub(super) fn send_rail_patch(&mut self, patch: String) {
         if let Some(request) = guild_folders_request(&patch) {
             let _ = self.requests.send(request);
         }
@@ -740,7 +750,14 @@ impl Root {
             .overflow_hidden()
             .cursor_pointer()
             .child(content)
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_folder(id, cx)));
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_folder(id, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_folder_menu(id, event.position, cx);
+                    cx.stop_propagation();
+                }),
+            );
         if hovered_over && !expanded {
             // `[data-drop-hovering=true]:not(.isExpanded) .folderHeader`: green wash and outline.
             button = button
@@ -801,6 +818,20 @@ impl Root {
         if self.rail_folders.drag != Some(source) || self.rail_folders.over != over {
             self.rail_folders.drag = Some(source);
             self.rail_folders.over = over;
+            // The pointer stays on the server it would join, so its tooltip is open (capture: drag-combine).
+            self.tip = match over {
+                Some(Over::Center(id)) if self.stores.folders.folder(id).is_none() => {
+                    let key = format!("guild-{id}");
+                    let anchor = self.tip_anchors.borrow().get(key.as_str()).copied();
+                    let name = self.stores.guild(id).map(|guild| guild.name.clone());
+                    anchor.zip(name).map(|(mut anchor, name)| {
+                        // The capture's tooltip sits 9.5px lower than the one of a plain hover.
+                        anchor.origin.y += px(9.5);
+                        Active::new(key.into(), Tip::rail(Body::Heading(name.into())), anchor)
+                    })
+                }
+                _ => None,
+            };
             cx.notify();
         }
     }

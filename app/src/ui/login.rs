@@ -775,7 +775,7 @@ const BACKUP_WAIT: u32 = 10;
 
 // ---- drawing ----
 
-fn heading(text: impl Into<SharedString>) -> gpui::Div {
+pub(super) fn heading(text: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(24.))
         .line_height(px(32.))
@@ -784,7 +784,7 @@ fn heading(text: impl Into<SharedString>) -> gpui::Div {
         .child(text.into())
 }
 
-fn body(text: impl Into<SharedString>) -> gpui::Div {
+pub(super) fn body(text: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(16.))
         .line_height(px(20.))
@@ -793,7 +793,7 @@ fn body(text: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// A paragraph with one bold run.
-fn rich(text: &str, bold: Range<usize>) -> StyledText {
+pub(super) fn rich(text: &str, bold: Range<usize>) -> StyledText {
     StyledText::new(text.to_owned()).with_highlights(vec![(
         bold,
         HighlightStyle {
@@ -804,7 +804,7 @@ fn rich(text: &str, bold: Range<usize>) -> StyledText {
 }
 
 /// `textButton`: a link-colored 14px button.
-fn text_button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
+pub(super) fn text_button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .cursor_pointer()
@@ -900,7 +900,7 @@ fn field_error(message: &str) -> gpui::Div {
         )
 }
 
-fn label(text: &str, required: bool) -> gpui::Div {
+pub(super) fn label(text: &str, required: bool) -> gpui::Div {
     div()
         .h(px(20.))
         .flex()
@@ -1404,7 +1404,7 @@ pub(in crate::ui) fn qr_code_card(
     )
 }
 
-fn draw_matrix(matrix: Matrix) -> impl IntoElement {
+pub(super) fn draw_matrix(matrix: Matrix) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window, _| {

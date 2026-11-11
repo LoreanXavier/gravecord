@@ -259,6 +259,8 @@ impl Root {
                 self.leaving.is_some(),
                 self.leave_guild.is_some(),
                 self.logout_confirm,
+                self.rail_folders.settings.is_some(),
+                self.account_switcher_open(),
                 self.settings_extra.has_dialog(),
                 self.add_server.is_some(),
                 self.group_dm.is_some(),

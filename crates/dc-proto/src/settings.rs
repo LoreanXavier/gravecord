@@ -942,6 +942,250 @@ pub fn set_guild_folders(current: &[u8], folders: &[GuildFolderEntry]) -> (Strin
     whole_message_patch(updated, FIELD_GUILD_FOLDERS)
 }
 
+/// `favorites` is message 15 of `PreloadedUserSettings` (module 873298, `Favorites`).
+const FIELD_FAVORITES: u64 = 15;
+
+/// `FavoriteChannelType`: a channel the list points at, or a category the account made.
+pub const FAVORITE_REFERENCE: u64 = 1;
+pub const FAVORITE_CATEGORY: u64 = 2;
+
+/// `FavoriteChannel` (module 873298): nickname 1, type 2, position 3, parent_id 4 (fixed64, 0 for none), channel_type
+/// 5 (a `UInt32Value`), collapsed 6.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FavoriteChannel {
+    pub nickname: String,
+    pub kind: u64,
+    pub position: u64,
+    pub parent_id: u64,
+    pub channel_type: Option<u64>,
+    pub collapsed: bool,
+}
+
+/// `Favorites`: `favorite_channels` 1 (a map from channel id, fixed64), muted 2, guild_visible 3 (a `BoolValue`),
+/// auto_add_joined_threads 4, prune_inactive_threads 5 (a `BoolValue`), prune_inactive_threads_days 6,
+/// prune_all_favorited_threads 7.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Favorites {
+    pub channels: Vec<(u64, FavoriteChannel)>,
+    pub muted: bool,
+    pub guild_visible: Option<bool>,
+    pub auto_add_joined_threads: bool,
+    pub prune_inactive_threads: Option<bool>,
+    pub prune_inactive_threads_days: u64,
+    pub prune_all_favorited_threads: bool,
+}
+
+impl Favorites {
+    /// `favoriteGuildEnabled`: whether the Favorites server shows in the rail.
+    pub fn guild_enabled(&self) -> bool {
+        self.guild_visible == Some(true)
+    }
+
+    pub fn is_favorite(&self, channel: u64) -> bool {
+        self.channels.iter().any(|(id, _)| *id == channel)
+    }
+
+    /// `k`: the position after the largest one.
+    fn next_position(&self) -> u64 {
+        self.channels
+            .iter()
+            .map(|(_, known)| known.position)
+            .max()
+            .map_or(1, |largest| largest + 1)
+    }
+
+    /// Adds a channel (`z` of module 146092): a reference with no nickname, outside any category, at the end; the
+    /// first favourite also turns the Favorites server on. False when it already is one, or the list is full (200).
+    pub fn add_channel(&mut self, channel: u64, channel_type: Option<u64>) -> bool {
+        if self.is_favorite(channel) || self.channels.len() >= 200 {
+            return false;
+        }
+        if !self.guild_enabled() {
+            self.guild_visible = Some(true);
+        }
+        let position = self.next_position();
+        self.channels.push((
+            channel,
+            FavoriteChannel {
+                kind: FAVORITE_REFERENCE,
+                position,
+                channel_type,
+                ..FavoriteChannel::default()
+            },
+        ));
+        true
+    }
+
+    /// Removes a favourite (`Q`); the channels of a removed category fall back outside any category.
+    pub fn remove_channel(&mut self, channel: u64) -> bool {
+        let Some(at) = self.channels.iter().position(|(id, _)| *id == channel) else {
+            return false;
+        };
+        let (_, removed) = self.channels.remove(at);
+        if removed.kind == FAVORITE_CATEGORY {
+            for (_, known) in &mut self.channels {
+                if known.parent_id == channel {
+                    known.parent_id = 0;
+                }
+            }
+        }
+        true
+    }
+}
+
+fn bool_value(bytes: &[u8]) -> bool {
+    varint_of(bytes, 1) == Some(1)
+}
+
+/// The account's favourites in `settings` (raw bytes).
+pub fn read_favorites(settings: &[u8]) -> Favorites {
+    let mut favorites = Favorites::default();
+    let Some((_, message)) = fields(settings).find(|(number, _)| *number == FIELD_FAVORITES) else {
+        return favorites;
+    };
+    for (number, payload) in fields(message) {
+        match number {
+            1 => {
+                let Some(id) = fixed64_of(payload, 1) else {
+                    continue;
+                };
+                let value = fields(payload)
+                    .find(|(inner, _)| *inner == 2)
+                    .map_or(&[][..], |(_, value)| value);
+                favorites.channels.push((
+                    id,
+                    FavoriteChannel {
+                        nickname: string_of(value, 1).unwrap_or_default(),
+                        kind: varint_of(value, 2).unwrap_or(0),
+                        position: varint_of(value, 3).unwrap_or(0),
+                        parent_id: fixed64_of(value, 4).unwrap_or(0),
+                        channel_type: fields(value)
+                            .find(|(inner, _)| *inner == 5)
+                            .map(|(_, wrapper)| varint_of(wrapper, 1).unwrap_or(0)),
+                        collapsed: varint_of(value, 6) == Some(1),
+                    },
+                ));
+            }
+            3 => favorites.guild_visible = Some(bool_value(payload)),
+            5 => favorites.prune_inactive_threads = Some(bool_value(payload)),
+            _ => {}
+        }
+    }
+    favorites.muted = varint_of(message, 2) == Some(1);
+    favorites.auto_add_joined_threads = varint_of(message, 4) == Some(1);
+    favorites.prune_inactive_threads_days = varint_of(message, 6).unwrap_or(0);
+    favorites.prune_all_favorited_threads = varint_of(message, 7) == Some(1);
+    favorites
+}
+
+/// Replaces the favourites (`updateAsync("favorites", ...)`, module 146092 `K`): the whole message is written, as the
+/// server replaces a top-level message it is sent. Returns the PATCH body value and the new settings.
+pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>) {
+    let mut message = Vec::new();
+    for (id, known) in &favorites.channels {
+        let mut value = Vec::new();
+        if !known.nickname.is_empty() {
+            push_bytes_field(&mut value, 1, known.nickname.as_bytes());
+        }
+        if known.kind != 0 {
+            push_varint(&mut value, 2 << 3 | WIRE_VARINT);
+            push_varint(&mut value, known.kind);
+        }
+        if known.position != 0 {
+            push_varint(&mut value, 3 << 3 | WIRE_VARINT);
+            push_varint(&mut value, known.position);
+        }
+        if known.parent_id != 0 {
+            push_fixed64_field(&mut value, 4, known.parent_id);
+        }
+        if let Some(channel_type) = known.channel_type {
+            let mut wrapper = Vec::new();
+            if channel_type != 0 {
+                push_varint(&mut wrapper, 1 << 3 | WIRE_VARINT);
+                push_varint(&mut wrapper, channel_type);
+            }
+            push_bytes_field(&mut value, 5, &wrapper);
+        }
+        if known.collapsed {
+            push_varint(&mut value, 6 << 3 | WIRE_VARINT);
+            push_varint(&mut value, 1);
+        }
+        let mut entry = Vec::new();
+        push_fixed64_field(&mut entry, 1, *id);
+        push_bytes_field(&mut entry, 2, &value);
+        push_bytes_field(&mut message, 1, &entry);
+    }
+    let flag = |out: &mut Vec<u8>, number: u64, on: bool| {
+        if on {
+            push_varint(out, number << 3 | WIRE_VARINT);
+            push_varint(out, 1);
+        }
+    };
+    let wrapped = |out: &mut Vec<u8>, number: u64, value: Option<bool>| {
+        if let Some(value) = value {
+            let mut inner = Vec::new();
+            flag(&mut inner, 1, value);
+            push_bytes_field(out, number, &inner);
+        }
+    };
+    flag(&mut message, 2, favorites.muted);
+    wrapped(&mut message, 3, favorites.guild_visible);
+    flag(&mut message, 4, favorites.auto_add_joined_threads);
+    wrapped(&mut message, 5, favorites.prune_inactive_threads);
+    if favorites.prune_inactive_threads_days != 0 {
+        push_varint(&mut message, 6 << 3 | WIRE_VARINT);
+        push_varint(&mut message, favorites.prune_inactive_threads_days);
+    }
+    flag(&mut message, 7, favorites.prune_all_favorited_threads);
+    let mut encoded = Vec::new();
+    push_bytes_field(&mut encoded, FIELD_FAVORITES, &message);
+    let updated = with_encoded(current, &[], FIELD_FAVORITES, &encoded);
+    whole_message_patch(updated, FIELD_FAVORITES)
+}
+
+#[cfg(test)]
+mod favorites_tests {
+    use super::*;
+
+    #[test]
+    fn a_favorite_is_written_as_the_official_message() {
+        let mut favorites = Favorites::default();
+        assert!(favorites.add_channel(0x0102_0304_0506_0708, Some(2)));
+        assert!(!favorites.add_channel(0x0102_0304_0506_0708, Some(2)));
+        let (patch, settings) = set_favorites(&[], &favorites);
+        let bytes = decode(&patch);
+        // favorites (15) { favorite_channels (1) { key fixed64 (1), value (2) { type 1, position 1, channel_type
+        // (5) { 2 } } }, guild_visible (3) { true } }
+        let expected: Vec<u8> = vec![
+            0x7a, 25, 0x0a, 19, 0x09, 8, 7, 6, 5, 4, 3, 2, 1, 0x12, 8, 0x10, 1, 0x18, 1, 0x2a, 2,
+            0x08, 2, 0x1a, 2, 0x08, 1,
+        ];
+        assert_eq!(bytes, expected);
+        assert_eq!(settings, bytes);
+        let read = read_favorites(&settings);
+        assert_eq!(read, favorites);
+        assert!(read.guild_enabled());
+    }
+
+    #[test]
+    fn removing_a_favorite_and_keeping_the_rest_of_the_settings() {
+        let mut other = Vec::new();
+        push_bytes_field(&mut other, 77, b"keep");
+        let mut favorites = Favorites::default();
+        favorites.add_channel(5, Some(0));
+        favorites.add_channel(6, None);
+        let (_, with_two) = set_favorites(&other, &favorites);
+        let mut read = read_favorites(&with_two);
+        assert_eq!(read.channels.len(), 2);
+        assert_eq!(read.channels[1].1.position, 2);
+        assert_eq!(read.channels[0].1.channel_type, Some(0));
+        assert!(read.remove_channel(5));
+        let (_, one) = set_favorites(&with_two, &read);
+        assert_eq!(read_favorites(&one).channels.len(), 1);
+        assert!(raw_fields(&one).iter().any(|(number, _)| *number == 77));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
