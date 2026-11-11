@@ -9,6 +9,7 @@ use super::tooltip::{Side, Tip};
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
+use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, FontWeight, IntoElement, PathPromptOptions,
@@ -981,9 +982,147 @@ impl Root {
     }
 }
 
+/// `H.M2T[TIER_3]` (module 652215): the Boosts Level 3 takes.
+const TIER_3_BOOSTS: u64 = 14;
+/// `tg` of module 616740: Level 3 plus the price of every power-up not included in a level (module 568065 `sy`:
+/// Server Tag 3, Enhanced Role Styles 3, the badge packs 3 + 5 + 3 + 2). The experiment-gated Guild Theme and Game
+/// Servers are left out, as an account outside those experiments sees it.
+const POWERUP_BOOSTS: u64 = 3 + 3 + 3 + 5 + 3 + 2;
+
+/// The bar's goal: `tg(guild)`.
+pub(super) fn boost_goal(features: &[String]) -> u64 {
+    if features.iter().any(|f| f == "PREMIUM_TIER_3_OVERRIDE") {
+        POWERUP_BOOSTS
+    } else {
+        TIER_3_BOOSTS + POWERUP_BOOSTS
+    }
+}
+
+/// The bar's label, `/rbPDs` and `Ehpq+7` of the strings: "applied/max Boosts", or just the count at the goal.
+pub(super) fn boost_count_text(applied: u64, goal: u64) -> String {
+    if applied >= goal {
+        format!("{applied} Boosts")
+    } else {
+        format!("{applied}/{goal} Boosts")
+    }
+}
+
+/// The progress fill's width as a fraction of the bar (`Math.min(applied / max * 100, 100)`).
+pub(super) fn boost_fraction(applied: u64, goal: u64) -> f32 {
+    if goal == 0 {
+        return 0.;
+    }
+    (applied as f32 / goal as f32).min(1.)
+}
+
+impl Root {
+    /// The boost progress bar of the channel list (`tp`/`tf` of module 616740, styles `.container_BFMMcK` and
+    /// friends of `ed1ab6525c3040dd.css`): drawn when the server has the bar switched on and the New Member
+    /// "Get Started" bar is not in its slot. No official frame shows it (the captured servers show Get Started), so
+    /// its geometry is the CSS's and the row height `57` of the list's row measure.
+    pub(super) fn boost_progress_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let guild = self.current_guild()?;
+        let goal = boost_goal(&guild.features);
+        if !guild.premium_progress_bar_enabled || goal == 0 || self.guide_progress_shown() {
+            return None;
+        }
+        let applied = guild.premium_subscription_count;
+        let fraction = boost_fraction(applied, goal);
+        let pink = super::hsla("--guild-boosting-pink-refresh");
+        // `.progress` is `inset: 2px` of the 26px bar; its width is `calc(d% - 4px)` of the bar.
+        let fill = gpui::relative(fraction);
+        Some(
+            div()
+                .id("boost-progress")
+                .parity("boost-progress")
+                .flex_none()
+                .flex()
+                .flex_col()
+                .h(px(57.))
+                .child(
+                    div()
+                        .flex_none()
+                        .ml(px(8.))
+                        .pt(px(2.))
+                        .px(px(2.))
+                        .pb(px(12.))
+                        .border_b_1()
+                        .border_color(color("--border-subtle"))
+                        .id("boost-progress-open")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.open_boost_page(cx)))
+                        .child(
+                            div()
+                                .relative()
+                                .h(px(26.))
+                                .rounded(px(9999.))
+                                .bg(color("--background-base-low"))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(2.))
+                                        .left(px(2.))
+                                        .h(px(22.))
+                                        .w(fill)
+                                        .rounded(px(11.))
+                                        .when(fraction <= 0.05, |bar| {
+                                            bar.rounded_tr(px(0.)).rounded_br(px(0.))
+                                        })
+                                        .bg(gpui::linear_gradient(
+                                            270.,
+                                            linear_color_stop(pink.opacity(0.4), 0.),
+                                            linear_color_stop(pink.opacity(0.1), 1.),
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(8.))
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-default"))
+                                        .child("Boost Goal")
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(2.))
+                                                .opacity(0.7)
+                                                .child(boost_count_text(applied, goal))
+                                                .child(icon(
+                                                    "menu_caret_right",
+                                                    12.,
+                                                    "--text-default",
+                                                )),
+                                        ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_channel_list_bar_counts_to_its_goal() {
+        assert_eq!(boost_goal(&[]), 33);
+        assert_eq!(boost_goal(&["PREMIUM_TIER_3_OVERRIDE".to_owned()]), 19);
+        assert_eq!(boost_count_text(2, 33), "2/33 Boosts");
+        assert_eq!(boost_count_text(33, 33), "33 Boosts");
+        assert_eq!(boost_fraction(33, 33), 1.);
+        assert_eq!(boost_fraction(40, 33), 1.);
+        assert!((boost_fraction(2, 33) - 2. / 33.).abs() < 1e-6);
+    }
 
     #[test]
     fn only_what_changed_is_saved() {

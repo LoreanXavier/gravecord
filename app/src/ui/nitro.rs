@@ -493,6 +493,7 @@ impl Root {
                 discover: None,
                 quests: false,
                 shop: false,
+                message_requests: false,
             },
         );
         self.discover.open = false;

@@ -94,10 +94,29 @@ pub fn claim() -> anyhow::Result<Launch> {
     let Some(path) = crate::storage::data_dir() else {
         return Ok(Launch::Primary(None));
     };
-    claim_named(&name(&path), true, ACK_WAIT)
+    // A launch that carries a `discord://` link leaves it in a file for the running instance, before it signals.
+    let link = crate::deep_link::url_from_args(std::env::args());
+    claim_named_with(&name(&path), true, ACK_WAIT, || {
+        if let Some(link) = &link
+            && let Err(error) = crate::deep_link::write_pending(&path, link)
+        {
+            tracing::warn!(%error, "the link could not be handed to the running instance");
+        }
+    })
 }
 
+#[cfg(test)]
 fn claim_named(name: &str, foreground: bool, ack_wait: Duration) -> anyhow::Result<Launch> {
+    claim_named_with(name, foreground, ack_wait, || {})
+}
+
+/// `before_signal` runs only when an instance already exists, just before the request is signalled to it.
+fn claim_named_with(
+    name: &str,
+    foreground: bool,
+    ack_wait: Duration,
+    before_signal: impl FnOnce(),
+) -> anyhow::Result<Launch> {
     let ack_event = HSTRING::from(ack_name(name));
     let name = HSTRING::from(name);
     let handle = unsafe { CreateEventW(None, false, false, &name) }?;
@@ -116,6 +135,7 @@ fn claim_named(name: &str, foreground: bool, ack_wait: Duration) -> anyhow::Resu
         }
         // An acknowledgement left over from an earlier launch that gave up must not answer this one.
         unsafe { ResetEvent(ack.raw()) }?;
+        before_signal();
         unsafe { SetEvent(request.raw()) }?;
         let answer = unsafe { WaitForSingleObject(ack.raw(), ack_wait.as_millis() as u32) };
         return Ok(if answer == WAIT_OBJECT_0 {
@@ -278,6 +298,30 @@ mod tests {
         assert!(output.status.success(), "{stdout}");
         assert!(stdout.contains("RESULT:unresponsive"), "{stdout}");
         assert!(started.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn a_link_is_left_for_the_running_instance_before_it_is_signalled() {
+        let key = format!("Local\\gravecord-test-{}", uuid::Uuid::new_v4());
+        let Launch::Primary(Some(mut primary)) = claim_named(&key, false, ACK_WAIT).unwrap() else {
+            panic!("first claim");
+        };
+        let mut requests = primary.take_requests().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("gravecord-instance-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let second = claim_named_with(&key, false, Duration::from_millis(100), || {
+            crate::deep_link::write_pending(&dir, "discord://-/channels/1/2/3").unwrap();
+        })
+        .unwrap();
+        // Nobody acknowledges, so this launch reports no answer; the request and the link are what matter.
+        assert!(matches!(second, Launch::Unresponsive));
+        wait_request(&mut requests);
+        assert_eq!(
+            crate::deep_link::take_pending(&dir).as_deref(),
+            Some("discord://-/channels/1/2/3")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

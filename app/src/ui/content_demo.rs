@@ -81,6 +81,38 @@ impl Root {
                     json!({}),
                 );
             }
+            // Links the app keeps: a thread of this server, a settings page, a profile, an invite (not built).
+            "deeplinks" => {
+                let Some(guild) = guild else {
+                    return "content: open a server first".to_owned();
+                };
+                let thread = self.stores.guild(guild).and_then(|known| {
+                    known
+                        .threads
+                        .first()
+                        .map(|thread| (thread.parent_id, thread.id))
+                });
+                let Some((parent, thread)) = thread else {
+                    return "content: this server has no thread".to_owned();
+                };
+                push(
+                    person(900, "ada"),
+                    &format!(
+                        "thread: [open the thread](https://discord.com/channels/{guild}/{parent}/threads/{thread})"
+                    ),
+                    json!({}),
+                );
+                push(
+                    person(900, "ada"),
+                    "settings: [voice settings](discord://-/settings/voice) and https://discord.com/settings/appearance",
+                    json!({}),
+                );
+                push(
+                    person(900, "ada"),
+                    "invite: https://discord.com/invite/fixture and a web page [docs](https://discord.com/developers/docs)",
+                    json!({}),
+                );
+            }
             "reply" => {
                 let target = base + 1;
                 let original = json!({

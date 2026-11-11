@@ -1968,14 +1968,22 @@ pub(crate) async fn step(
         ["idle", ms] => {
             let ms = ms.parse::<u64>().unwrap_or(5000);
             let renders = || crate::perf::RENDERS.load(std::sync::atomic::Ordering::Relaxed);
-            let (renders_before, frames_before) = (renders(), frames_requested());
+            let blinks = || crate::editor::BLINK_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
+            let (renders_before, frames_before, blinks_before, cpu_before) = (
+                renders(),
+                frames_requested(),
+                blinks(),
+                crate::perf::cpu_ms(),
+            );
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(ms))
                 .await;
             format!(
-                "motion idle {ms} ms: renders={} frames_requested={} active={}",
+                "motion idle {ms} ms: renders={} frames_requested={} caret_blinks={} cpu_ms={} active={}",
                 renders() - renders_before,
                 frames_requested() - frames_before,
+                blinks() - blinks_before,
+                crate::perf::cpu_ms().saturating_sub(cpu_before),
                 is_active()
             )
         }

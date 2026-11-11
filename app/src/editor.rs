@@ -69,8 +69,91 @@ pub struct EditorStyle {
     pub caret: Hsla,
 }
 
+/// Blink's caret rhythm (`LayoutTheme::CaretBlinkInterval`, which on Windows is the system's `GetCaretBlinkTime`, 530 ms
+/// by default): shown for one interval from the last edit or selection move, hidden for the next, and so on. The
+/// bundle has no part in it, and `prefers-reduced-motion` does not touch the caret in Chromium.
+pub const CARET_BLINK_MS: u64 = 530;
+
+/// Whether the caret is drawn `since_activity_ms` after the last edit, selection move or focus. `interval_ms` 0
+/// means the system turned blinking off: the caret stays solid.
+pub fn caret_visible(since_activity_ms: u64, interval_ms: u64) -> bool {
+    interval_ms == 0 || (since_activity_ms / interval_ms).is_multiple_of(2)
+}
+
+/// Milliseconds until the caret next changes between shown and hidden.
+pub fn caret_next_toggle_ms(since_activity_ms: u64, interval_ms: u64) -> u64 {
+    interval_ms.max(1) - since_activity_ms % interval_ms.max(1)
+}
+
+/// What the caret's drawing depends on.
+#[derive(Clone, Copy)]
+pub struct CaretFacts {
+    pub active: bool,
+    /// The animation clock is stopped (parity frames): the caret stays solid.
+    pub frozen: bool,
+    pub selection_empty: bool,
+    pub interval_ms: u64,
+    pub elapsed_ms: u64,
+}
+
+/// Whether the caret of a focused field is drawn, and after how many ms the field must be drawn again (`None`: never,
+/// the state cannot change by itself). An inactive window and a range selection draw no caret and wake nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CaretPlan {
+    pub visible: bool,
+    pub wake_ms: Option<u64>,
+}
+
+pub fn caret_plan(facts: CaretFacts) -> CaretPlan {
+    if !facts.active || !facts.selection_empty {
+        return CaretPlan {
+            visible: false,
+            wake_ms: None,
+        };
+    }
+    if facts.frozen || facts.interval_ms == 0 {
+        return CaretPlan {
+            visible: true,
+            wake_ms: None,
+        };
+    }
+    CaretPlan {
+        visible: caret_visible(facts.elapsed_ms, facts.interval_ms),
+        wake_ms: Some(caret_next_toggle_ms(facts.elapsed_ms, facts.interval_ms)),
+    }
+}
+
+/// The system's caret blink time in ms; 0 when the user turned blinking off (`INFINITE`).
+#[cfg(windows)]
+fn system_blink_ms() -> u64 {
+    // SAFETY: a plain query with no arguments.
+    match unsafe { windows::Win32::UI::WindowsAndMessaging::GetCaretBlinkTime() } {
+        0 => CARET_BLINK_MS,
+        u32::MAX => 0,
+        ms => u64::from(ms),
+    }
+}
+
+#[cfg(not(windows))]
+fn system_blink_ms() -> u64 {
+    CARET_BLINK_MS
+}
+
+/// Draws that the blink asked for, over the process's life (the harness prints it with `motion idle`).
+pub static BLINK_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Where the blink stands: what the field looked like at the last paint, so a change restarts the caret solid.
+#[derive(Default)]
+struct Blink {
+    signature: u64,
+    focused: bool,
+    since: Option<std::time::Instant>,
+    task: Option<Task<()>>,
+}
+
 #[derive(Default)]
 struct Laid {
+    blink: Blink,
     line_height: Pixels,
     /// Each paragraph with the byte offset it starts at.
     lines: Vec<(WrappedLine, usize)>,
@@ -432,6 +515,16 @@ impl Editor {
         self.buffer.insert(text);
         cx.emit(EditorEvent::Edited);
         cx.notify();
+    }
+
+    /// A digest of what an edit or a selection move changes: the blink restarts solid when it differs from the last paint.
+    fn blink_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.buffer.text().hash(&mut hasher);
+        let selection = self.buffer.selection();
+        (selection.start, selection.end, self.buffer.marked()).hash(&mut hasher);
+        hasher.finish()
     }
 
     /// The caret's byte offset, when nothing is selected (autocomplete reads the word before it).
@@ -953,6 +1046,7 @@ impl Element for EditorElement {
                 editor.align_end,
             )
         };
+        let signature = self.editor.read(cx).blink_signature();
         window.handle_input(
             &focus,
             ElementInputHandler::new(bounds, self.editor.clone()),
@@ -981,6 +1075,48 @@ impl Element for EditorElement {
             laid.bounds = Some(bounds);
             laid.line_height = px(style.line_height);
         }
+        let focused = focus.is_focused(window);
+        let active = window.is_window_active();
+        let caret_shown = {
+            let mut state = laid.borrow_mut();
+            let blink = &mut state.blink;
+            if !focused || !active {
+                // An unfocused field, or an inactive or minimised window: Chromium draws no caret and nothing wakes.
+                blink.focused = false;
+                blink.since = None;
+                blink.task = None;
+                !focused
+            } else {
+                let now = std::time::Instant::now();
+                if !blink.focused || blink.signature != signature || blink.since.is_none() {
+                    blink.since = Some(now);
+                }
+                blink.focused = true;
+                blink.signature = signature;
+                let elapsed = now.duration_since(blink.since.unwrap_or(now)).as_millis() as u64;
+                let plan = caret_plan(CaretFacts {
+                    active,
+                    frozen: crate::ui::motion::is_frozen(),
+                    selection_empty: selection.is_empty(),
+                    interval_ms: system_blink_ms(),
+                    elapsed_ms: elapsed,
+                });
+                match plan.wake_ms {
+                    Some(wake) => {
+                        let wait = std::time::Duration::from_millis(wake);
+                        let editor = self.editor.downgrade();
+                        // One pending wake: a newer paint replaces (and so cancels) the one before it.
+                        blink.task = Some(cx.spawn(async move |cx| {
+                            cx.background_executor().timer(wait).await;
+                            BLINK_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let _ = editor.update(cx, |_, cx| cx.notify());
+                        }));
+                    }
+                    None => blink.task = None,
+                }
+                plan.visible
+            }
+        };
         let laid = laid.borrow();
         if !selection.is_empty()
             && let (Some(from), Some(to)) =
@@ -1007,8 +1143,9 @@ impl Element for EditorElement {
                 style.placeholder,
                 false,
             )];
-            // A text area's hint wraps; fields such as header search truncate only their hint.
-            if multiline {
+            // A text area's hint wraps; fields such as header search truncate only their hint. The composer's
+            // hint (`.placeholder_SHcSVi`: `white-space:nowrap`, `text-overflow:ellipsis`) stays on one line.
+            if multiline && !ellipsis {
                 if let Ok(mut lines) = window.text_system().shape_text(
                     placeholder,
                     px(style.size),
@@ -1048,14 +1185,17 @@ impl Element for EditorElement {
                         .text_system()
                         .shape_line(text, px(style.size), &runs, None);
                 }
-                let _ = shaped.paint(
-                    bounds.origin,
-                    px(style.line_height),
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                // A box too narrow even for the ellipsis shows no hint (the official clips it).
+                if !ellipsis || shaped.width <= bounds.size.width {
+                    let _ = shaped.paint(
+                        bounds.origin,
+                        px(style.line_height),
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
             }
         }
         let tops = laid.paragraph_tops();
@@ -1071,7 +1211,10 @@ impl Element for EditorElement {
             );
         }
         paint_squiggles(&laid, &marks, bounds.origin, style.line_height, window);
-        if focus.is_focused(window)
+        // Blink paints no caret over a range selection.
+        if focused
+            && selection.is_empty()
+            && caret_shown
             && let Some(position) = laid.position(caret)
         {
             window.paint_quad(fill(
@@ -1149,5 +1292,86 @@ fn paint_squiggles(
                 window.paint_path(path, color);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod blink_tests {
+    use super::*;
+
+    #[test]
+    fn the_caret_is_solid_for_one_interval_then_alternates() {
+        assert!(caret_visible(0, 530));
+        assert!(caret_visible(529, 530));
+        assert!(!caret_visible(530, 530));
+        assert!(!caret_visible(1059, 530));
+        assert!(caret_visible(1060, 530));
+        assert!(!caret_visible(1590, 530));
+    }
+
+    fn facts() -> CaretFacts {
+        CaretFacts {
+            active: true,
+            frozen: false,
+            selection_empty: true,
+            interval_ms: 530,
+            elapsed_ms: 600,
+        }
+    }
+
+    #[test]
+    fn an_active_window_blinks_and_asks_for_the_next_toggle() {
+        assert_eq!(
+            caret_plan(facts()),
+            CaretPlan {
+                visible: false,
+                wake_ms: Some(460)
+            }
+        );
+    }
+
+    #[test]
+    fn an_inactive_window_a_selection_and_a_frozen_clock_wake_nothing() {
+        let off = CaretPlan {
+            visible: false,
+            wake_ms: None,
+        };
+        assert_eq!(
+            caret_plan(CaretFacts {
+                active: false,
+                ..facts()
+            }),
+            off
+        );
+        assert_eq!(
+            caret_plan(CaretFacts {
+                selection_empty: false,
+                ..facts()
+            }),
+            off
+        );
+        assert_eq!(
+            caret_plan(CaretFacts {
+                frozen: true,
+                ..facts()
+            }),
+            CaretPlan {
+                visible: true,
+                wake_ms: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_zero_interval_never_blinks() {
+        assert!(caret_visible(12345, 0));
+    }
+
+    #[test]
+    fn the_next_toggle_is_the_rest_of_the_interval() {
+        assert_eq!(caret_next_toggle_ms(0, 530), 530);
+        assert_eq!(caret_next_toggle_ms(100, 530), 430);
+        assert_eq!(caret_next_toggle_ms(530, 530), 530);
+        assert_eq!(caret_next_toggle_ms(1000, 530), 60);
     }
 }

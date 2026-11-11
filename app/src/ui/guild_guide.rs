@@ -241,6 +241,20 @@ impl Root {
         cx.notify();
     }
 
+    /// Whether the "Get Started" progress row is drawn; it takes the slot of the boost progress bar
+    /// (module 616740 `useGuildActionRows`: the new-member bar first, else the boost bar).
+    pub(super) fn guide_progress_shown(&self) -> bool {
+        let Some(guild) = self.current_guild() else {
+            return false;
+        };
+        self.has_guild_guide()
+            && new_member(guild, chrono::Utc::now().timestamp_millis())
+            && self
+                .guide_home()
+                .and_then(|home| home.tasks.as_ref().map(Vec::len))
+                .is_some_and(|total| total > 0)
+    }
+
     pub(super) fn guild_guide_rows(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.has_guild_guide() {
             return None;

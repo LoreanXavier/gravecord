@@ -69,6 +69,8 @@ pub(super) enum Action {
     Reminder,
     Apps,
     MarkUnread,
+    /// "Resend message" of a message that failed to send (module 761304 `t_`).
+    Resend,
     CopyLink,
     Speak,
     /// "End Poll Now" (module 761304): the author of a poll that is still open.
@@ -129,6 +131,8 @@ pub(super) struct SavedState {
     pub image: bool,
     /// A direct message: threads grow only in server channels.
     pub no_thread: bool,
+    /// The message failed to send (`state === SEND_FAILED`): no Edit, Reply, Forward or Pin, and Resend message.
+    pub failed: bool,
 }
 
 /// How the link group of a message menu reads (module 777933).
@@ -263,7 +267,7 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ));
     }
     items.push(Item::Separator);
-    if own && !saved.poll {
+    if own && !saved.poll && !saved.failed {
         items.push(Item::Entry(
             "Edit Message",
             "menu_edit_message",
@@ -271,8 +275,10 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
-    items.push(Item::Entry("Reply", "menu_reply", Action::Reply, false));
-    if !saved.poll {
+    if !saved.failed {
+        items.push(Item::Entry("Reply", "menu_reply", Action::Reply, false));
+    }
+    if !saved.poll && !saved.failed {
         items.push(Item::Entry(
             "Forward",
             "menu_forward",
@@ -298,11 +304,13 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
-    items.push(if saved.pinned {
-        Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
-    } else {
-        Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
-    });
+    if !saved.failed {
+        items.push(if saved.pinned {
+            Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
+        } else {
+            Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
+        });
+    }
     if !saved.reminder {
         items.push(if saved.bookmarked {
             Item::Entry(
@@ -330,8 +338,17 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         Action::Reminder,
         true,
     ));
+    items.extend([Item::Entry("Apps", "menu_apps", Action::Apps, true)]);
+    if saved.failed {
+        // `lXHojr`, between Apps and Mark Unread.
+        items.push(Item::Entry(
+            "Resend message",
+            "system_refresh",
+            Action::Resend,
+            false,
+        ));
+    }
     items.extend([
-        Item::Entry("Apps", "menu_apps", Action::Apps, true),
         Item::Entry("Mark Unread", "menu_mark_unread", Action::MarkUnread, false),
         Item::Entry(
             "Copy Message Link",
@@ -500,6 +517,7 @@ impl Root {
                 None => LinkKind::None,
             },
             no_thread: self.guild.is_none(),
+            failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
         }
     }
@@ -549,6 +567,13 @@ impl Root {
                 super::actions::log_effect("Copy Message Link", "clipboard text", link.len());
                 cx.write_to_clipboard(ClipboardItem::new_string(link));
             }
+            // A failed message is deleted here only and asks nothing; Resend sends it again (module 519222 `RC`, `Io`).
+            Action::Delete
+                if self.send_state_of(message) == Some(super::send_state::SendState::Failed) =>
+            {
+                self.delete_failed(message, cx)
+            }
+            Action::Resend => self.retry_send(message, cx),
             Action::Delete => self.confirm_delete = Some(message),
             Action::RemoveAllReactions => {
                 self.menu_extra.reactions_confirm = Some(ReactionsConfirm {
@@ -571,7 +596,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> String {
         let Some(open) = self.menu else {
-            return "no message menu".to_owned();
+            return self.script_context_run(label, window, cx);
         };
         let action = message_items_saved(open.own, self.saved_flags(open.message))
             .into_iter()
@@ -599,6 +624,12 @@ impl Root {
 
     pub(super) fn run_unconfirmed(&mut self, action: Action, message: Id, cx: &mut Context<Self>) {
         self.menu = None;
+        if action == Action::Delete
+            && self.send_state_of(message) == Some(super::send_state::SendState::Failed)
+        {
+            self.delete_failed(message, cx);
+            return;
+        }
         if let Some(channel) = self.channel {
             let pinned = self
                 .stores

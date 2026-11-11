@@ -9005,6 +9005,7 @@ mod tests {
             features: Vec::new(),
             premium_tier: 0,
             premium_subscription_count: 0,
+            premium_progress_bar_enabled: false,
             emojis: Vec::new(),
             threads: Vec::new(),
         }

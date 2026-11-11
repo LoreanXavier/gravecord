@@ -141,6 +141,7 @@ impl Root {
                 discover: None,
                 quests: false,
                 shop: true,
+                message_requests: false,
             },
         );
         self.set_shop_open(cx);

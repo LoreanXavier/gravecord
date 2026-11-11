@@ -137,6 +137,7 @@ impl Root {
                 discover: Some(place),
                 quests: false,
                 shop: false,
+                message_requests: false,
             },
         );
         self.set_discover_place(place, cx);

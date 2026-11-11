@@ -368,10 +368,14 @@ impl Root {
                 format!("{count} {one}s")
             }
         };
-        let small_button = |id: &'static str, label: &'static str| {
+        // The button's width is the text's in Chromium (`button_F7qvhY sm`: 123.125 and 93.2656 in the dump); gpui's
+        // text is a little wider, so the dump's width is fixed here.
+        let small_button = |id: &'static str, label: &'static str, width: f32| {
             div()
                 .id(id)
                 .h(px(32.))
+                .w(px(width))
+                .justify_center()
                 .px(px(11.))
                 .rounded(px(8.))
                 .border_1()
@@ -461,7 +465,7 @@ impl Root {
                 "Webhooks",
                 plural(incoming, "webhook"),
                 if incoming == 0 {
-                    small_button("server-integrations-webhook", "Create Webhook")
+                    small_button("server-integrations-webhook", "Create Webhook", 123.125)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.create_server_webhook(guild);
                             cx.notify();
@@ -481,7 +485,7 @@ impl Root {
                 "integrations_followed",
                 "Channels Followed",
                 plural(followed, "channel"),
-                small_button("server-integrations-followed", "Learn More")
+                small_button("server-integrations-followed", "Learn More", 93.2656)
                     .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")))
                     .into_any_element(),
             ))

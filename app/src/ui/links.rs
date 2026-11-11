@@ -151,6 +151,10 @@ fn is_trusted_protocol(url: &str) -> bool {
 impl Root {
     /// A click on a link in rendered markdown. `label` is the link's visible text.
     pub(super) fn follow_link(&mut self, url: &str, label: &str, cx: &mut Context<Self>) {
+        // A `discord://` link, or a discord.com link to a place of the app, opens there and never in a browser.
+        if self.open_deep_link(url, cx) {
+            return;
+        }
         // A link to a message of Discord (`/channels/<guild>/<channel>/<message>`) is a route of this client: it
         // opens the channel and jumps to the message.
         if let Some((guild, channel, message)) = message_link(url) {

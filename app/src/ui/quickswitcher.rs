@@ -283,7 +283,7 @@ impl Root {
         let query = query.to_lowercase();
         let matches = |name: &str| query.is_empty() || name.to_lowercase().contains(&query);
         if mode.is_none() || mode == Some('@') {
-            for dm in &self.stores.private_channels {
+            for dm in self.stores.pickable_private_channels() {
                 if self.stores.dm_recipient(dm).is_some_and(|user| {
                     matched_user_name(user, self.nickname_for(user.id), &query).is_some()
                 }) {
