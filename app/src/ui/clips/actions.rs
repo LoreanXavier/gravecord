@@ -1,0 +1,583 @@
+//! What the editor's header and menu do to a clip: delete (module 590146 `Delete` item and the confirm modal),
+//! export the trimmed video to a file (`Export` > `Video File`) and show the file in its folder. Strings are the
+//! official ones: `Lzhuiz` "Delete this clip?", `yxCBqo` the warning, `oMoKCq` "Exporting your Clip".
+use super::super::keyboard::{Layer, outside};
+use super::super::modal::{self, Tone};
+use super::super::{Root, color, icon};
+use super::editor::Editor;
+use dc_clips::mp4;
+use gpui::{
+    AnyElement, Context, FontWeight, SharedString, Window, anchored, deferred, div, prelude::*, px,
+};
+use std::path::{Path, PathBuf};
+
+/// The More menu is open (the "More Options" button of the editor's header).
+#[derive(Default)]
+pub(in crate::ui) struct Menu {
+    pub open: bool,
+}
+
+/// How far the exported video's front can be before the handle: the copy starts at the keyframe at or before the
+/// start, so it runs from there (`ClipFile::trimmed`).
+pub(super) fn keyframe_lead_ms(file: &mp4::ClipFile, start_ms: u64) -> u64 {
+    let (starts, _) = file.video_starts_ms();
+    starts
+        .iter()
+        .enumerate()
+        .filter(|(index, start)| **start <= start_ms && file.video.samples[*index].sync)
+        .map(|(_, start)| start_ms - *start)
+        .next_back()
+        .unwrap_or(0)
+}
+
+/// What an export wrote.
+#[derive(Debug)]
+pub(super) struct Exported {
+    pub path: PathBuf,
+    /// Milliseconds the file begins before the start handle (keyframe alignment).
+    pub lead_ms: u64,
+    pub length_ms: u64,
+}
+
+/// A file name for a clip's title: the characters Windows refuses become `_`.
+pub(super) fn file_stem(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.').to_owned();
+    if cleaned.is_empty() {
+        "Clip".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// `name.mp4`, or `name (1).mp4`, `name (2).mp4` ... the first that does not exist.
+pub(super) fn free_path(folder: &Path, stem: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let first = folder.join(format!("{stem}.mp4"));
+    if !exists(&first) {
+        return first;
+    }
+    (1..)
+        .map(|n| folder.join(format!("{stem} ({n}).mp4")))
+        .find(|path| !exists(path))
+        .expect("an unbounded range has a free name")
+}
+
+/// Writes the part of `source` between the handles, with the audio the switches keep, into `folder` as a plain video
+/// file (the official export holds no clip document either).
+pub(super) fn export_trimmed(
+    source: &Path,
+    start_ms: u64,
+    end_ms: u64,
+    keep: &[&str],
+    folder: &Path,
+    stem: &str,
+) -> std::io::Result<Exported> {
+    let mut reader = std::io::BufReader::new(std::fs::File::open(source)?);
+    let file = mp4::read_clip(&mut reader)?;
+    let lead_ms = keyframe_lead_ms(&file, start_ms);
+    let mut part = file.trimmed(start_ms, end_ms).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the range holds no picture",
+        )
+    })?;
+    part.keep_audio(keep);
+    let (_, length_ms) = part.video_starts_ms();
+    std::fs::create_dir_all(folder)?;
+    let path = free_path(folder, stem, |path| path.exists());
+    let partial = path.with_extension("mp4.part");
+    let result = (|| {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&partial)?);
+        part.write(&mut out, &[])?;
+        std::io::Write::flush(&mut out)?;
+        std::fs::rename(&partial, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result?;
+    Ok(Exported {
+        path,
+        lead_ms,
+        length_ms,
+    })
+}
+
+/// Where exports go: the Downloads folder (a capture run may point `GRAVECORD_EXPORT_DIR` elsewhere).
+fn export_folder() -> Option<PathBuf> {
+    #[cfg(feature = "capture")]
+    if let Some(dir) = std::env::var_os("GRAVECORD_EXPORT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Downloads"))
+}
+
+impl Root {
+    fn clips_open_editor_ref(&self) -> Option<&Editor> {
+        self.clips
+            .engine
+            .ui
+            .modal
+            .as_ref()
+            .and_then(|modal| modal.editor.as_ref())
+    }
+
+    /// The trash button: asks first; Shift+click deletes at once (module 590146).
+    pub(super) fn clips_ask_delete(&mut self, now: bool, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .clips_open_editor_ref()
+            .map(|editor| editor.clip.meta.id.clone())
+        else {
+            return;
+        };
+        self.clips.engine.ui.confirm_delete = Some(id);
+        if now {
+            self.clips_delete_confirmed(cx);
+        }
+        cx.notify();
+    }
+
+    /// Removes the clip's file and its library entry, and closes the editor without writing anything back.
+    pub(super) fn clips_delete_confirmed(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.clips.engine.ui.confirm_delete.take() else {
+            return;
+        };
+        if let Some(modal) = self.clips.engine.ui.modal.as_mut() {
+            modal.editor = None;
+        }
+        self.clips.engine.ui.modal = None;
+        self.clips.engine.ui.menu.open = false;
+        if let Some(clip) = self.clips.engine.clips.remove(&id)
+            && let Err(error) = std::fs::remove_file(&clip.filepath)
+        {
+            tracing::warn!(
+                "clips: deleting {} failed: {error}",
+                clip.filepath.display()
+            );
+        }
+        self.clips.engine.new_clip_ids.retain(|new| *new != id);
+        if let Some(Some(old)) = self.clips.engine.ui.pictures.borrow_mut().remove(&id) {
+            cx.drop_image(old, None);
+        }
+        cx.notify();
+    }
+
+    /// The confirm dialog: "Delete this clip?" with Cancel and Delete (critical).
+    pub(in crate::ui) fn clips_delete_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.clips.engine.ui.confirm_delete.as_ref()?;
+        Some(modal::render(
+            modal::Spec {
+                id: "clips-delete-modal",
+                title: "Delete this clip?".into(),
+                subtitle: Some(
+                    div()
+                        .child("Deleting a clip cannot be undone. Would you like to delete this clip in Discord & remove the file from your computer?")
+                        .into_any_element(),
+                ),
+                body: None,
+                buttons: vec![
+                    modal::button("clips-delete-cancel", "Cancel", Tone::Secondary, |this, _, _| {
+                        this.clips.engine.ui.confirm_delete = None;
+                    }),
+                    modal::button("clips-delete-confirm", "Delete", Tone::Critical, |this, _, cx| {
+                        this.clips_delete_confirmed(cx);
+                    }),
+                ],
+                close: Box::new(|this, _, _| this.clips.engine.ui.confirm_delete = None),
+            },
+            cx,
+        ))
+    }
+
+    pub(super) fn clips_toggle_menu(&mut self, cx: &mut Context<Self>) {
+        self.clips.engine.ui.menu.open ^= true;
+        cx.notify();
+    }
+
+    pub(in crate::ui) fn clips_menu_open(&self) -> bool {
+        self.clips.engine.ui.menu.open
+    }
+
+    pub(in crate::ui) fn clips_close_menu(&mut self) {
+        self.clips.engine.ui.menu.open = false;
+    }
+
+    /// Exports the trimmed video to the export folder and says so with the official toast.
+    pub(super) fn clips_export(&mut self, cx: &mut Context<Self>) {
+        self.clips.engine.ui.menu.open = false;
+        let Some(editor) = self.clips_open_editor_ref() else {
+            return;
+        };
+        let source = editor.clip.filepath.clone();
+        let crop = editor.edit.crop;
+        let keep: Vec<&'static str> = editor.edit.kept_tracks();
+        let stem = file_stem(&super::model::title(&{
+            let mut meta = editor.clip.meta.clone();
+            meta.name = editor.edit.name.clone();
+            meta
+        }));
+        let Some(folder) = export_folder() else {
+            return;
+        };
+        let (start_ms, end_ms) = (
+            (crop.start * 1000.).round() as u64,
+            (crop.end * 1000.).round() as u64,
+        );
+        self.show_app_toast("Exporting your Clip", cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { export_trimmed(&source, start_ms, end_ms, &keep, &folder, &stem) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.clips.engine.ui.last_export = match result {
+                    Ok(done) => format!(
+                        "{} lead {} ms length {} ms",
+                        done.path.display(),
+                        done.lead_ms,
+                        done.length_ms
+                    ),
+                    Err(error) => format!("failed {error}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Show in Folder: opens the file's folder with the file selected. A capture run only notes it.
+    pub(super) fn clips_show_in_folder(&mut self, cx: &mut Context<Self>) {
+        self.clips.engine.ui.menu.open = false;
+        let Some(path) = self
+            .clips_open_editor_ref()
+            .map(|editor| editor.clip.filepath.clone())
+        else {
+            return;
+        };
+        self.clips.engine.ui.last_export = format!("show {}", path.display());
+        #[cfg(all(windows, not(feature = "capture")))]
+        {
+            let _ = std::process::Command::new("explorer")
+                .arg(format!("/select,{}", path.display()))
+                .spawn();
+        }
+        cx.notify();
+    }
+
+    /// The More menu card under its button: `Export` with `Video File`, then `Show in Folder`.
+    pub(in crate::ui) fn clips_menu_layer(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.clips.engine.ui.menu.open || self.clips_open_editor_ref().is_none() {
+            return None;
+        }
+        let at = self
+            .tip_anchors
+            .borrow()
+            .get("clips-more")
+            .map(|bounds| bounds.bottom_left() + gpui::point(px(0.), px(4.)))?;
+        let row = |id: &'static str, label: &'static str, glyph: &'static str| {
+            div()
+                .id(SharedString::from(id))
+                .h(px(36.))
+                .flex_none()
+                .p(px(8.))
+                .rounded(px(2.))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .hover(|style| {
+                    style
+                        .bg(color("--interactive-background-hover"))
+                        .rounded(px(4.))
+                })
+                .child(
+                    div()
+                        .mr(px(8.))
+                        .child(icon(glyph, 18., "--interactive-text-default")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(label),
+                )
+        };
+        let group = div()
+            .h(px(24.))
+            .flex_none()
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--text-muted"))
+            .child("Export");
+        let card = div()
+            .id("clips-menu")
+            .occlude()
+            .rounded(px(8.))
+            .bg(color("--background-surface-higher"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.24),
+                offset: gpui::point(px(0.), px(12.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .child(
+                div()
+                    .p(px(8.))
+                    .w(px(188.))
+                    .flex()
+                    .flex_col()
+                    .child(group)
+                    .child(
+                        row("clips-menu-video", "Video File", "clips_download")
+                            .on_click(cx.listener(|this, _, _, cx| this.clips_export(cx))),
+                    )
+                    .child(
+                        div()
+                            .my(px(8.))
+                            .h(px(1.))
+                            .flex_none()
+                            .bg(color("--border-subtle")),
+                    )
+                    .child(
+                        row("clips-menu-folder", "Show in Folder", "clips_folder")
+                            .on_click(cx.listener(|this, _, _, cx| this.clips_show_in_folder(cx))),
+                    ),
+            );
+        Some(
+            deferred(
+                anchored()
+                    .anchor(gpui::Anchor::TopLeft)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(outside(card, Layer::ClipMenu, cx)),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+}
+
+/// What a Share sends (module 243258 `CLIPS_SHARE_MODAL`): the clip's trimmed video, exported when the message goes.
+pub(in crate::ui) struct ShareClip {
+    pub source: PathBuf,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub keep: Vec<&'static str>,
+    /// The file name without its extension, and the title shown in the preview.
+    pub stem: String,
+    pub title: String,
+    pub thumbnail: Option<std::sync::Arc<gpui::RenderImage>>,
+}
+
+/// Where a shared clip is written before it is uploaded.
+fn share_folder() -> PathBuf {
+    std::env::temp_dir().join("gravecord-clip-share")
+}
+
+impl Root {
+    /// The editor's Share button: opens the forward modal for the clip as it is edited.
+    pub(super) fn clips_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.clips_open_editor_ref() else {
+            return;
+        };
+        let mut meta = editor.clip.meta.clone();
+        meta.name = editor.edit.name.clone();
+        let title = super::model::title(&meta);
+        let share = ShareClip {
+            source: editor.clip.filepath.clone(),
+            start_ms: (editor.edit.crop.start * 1000.).round() as u64,
+            end_ms: (editor.edit.crop.end * 1000.).round() as u64,
+            keep: editor.edit.kept_tracks(),
+            stem: file_stem(&title),
+            title,
+            thumbnail: self
+                .clips
+                .engine
+                .ui
+                .pictures
+                .borrow()
+                .get(&editor.clip.meta.id)
+                .cloned()
+                .flatten(),
+        };
+        self.open_share_clip(share, window, cx);
+    }
+
+    /// Exports the clip to a temporary file, then sends it with the note to each channel (`sendFiles` per
+    /// destination, then the note as its own message). The editor closes when it is done (`onShareComplete`).
+    pub(in crate::ui) fn clips_send_share(
+        &mut self,
+        share: ShareClip,
+        channels: Vec<dc_state::Id>,
+        note: String,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = share_folder();
+        cx.spawn(async move |this, cx| {
+            let ShareClip {
+                source,
+                start_ms,
+                end_ms,
+                keep,
+                stem,
+                ..
+            } = share;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    // Earlier shares leave their files behind once uploaded; a day is long enough.
+                    if let Ok(entries) = std::fs::read_dir(&folder) {
+                        for entry in entries.flatten() {
+                            let old = entry
+                                .metadata()
+                                .and_then(|meta| meta.modified())
+                                .ok()
+                                .and_then(|time| time.elapsed().ok())
+                                .is_some_and(|age| age > std::time::Duration::from_secs(86_400));
+                            if old {
+                                let _ = std::fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                    export_trimmed(&source, start_ms, end_ms, &keep, &folder, &stem)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(done) => {
+                        this.clips.engine.ui.last_export =
+                            format!("shared {}", done.path.display());
+                        let name = done
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        for channel in channels {
+                            let _ = this.requests.send(crate::net::Request::Send {
+                                channel,
+                                content: note.clone(),
+                                files: vec![crate::net::Upload {
+                                    path: done.path.clone(),
+                                    name: name.clone(),
+                                    description: None,
+                                }],
+                                reply: None,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        this.clips.engine.ui.last_export = format!("share failed {error}");
+                        // `iufib1`.
+                        this.show_app_toast("Oh no! Something went wrong.", cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        self.close_clips_modal(cx);
+    }
+}
+
+impl Root {
+    /// The preview of Share Clip (`forwardPreview` in stylesheet N34jMW; the modal draws its 4 px bar): the clips glyph
+    /// with the title, and the 56 px thumbnail on a black tile at 60% with a play glyph.
+    pub(in crate::ui) fn clips_share_preview(&self, clip: &ShareClip) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div().flex_1().min_w(px(0.)).py(px(4.)).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon("clips_clips", 16., "--text-muted"))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(clip.title.clone()),
+                        ),
+                ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(56.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(gpui::black())
+                    .children(clip.thumbnail.clone().map(|picture| {
+                        gpui::img(picture)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .opacity(0.6)
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("clips_play", 20., "--white")),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_names_lose_what_windows_refuses() {
+        assert_eq!(file_stem("Clip: a/b?"), "Clip_ a_b_");
+        assert_eq!(file_stem("  "), "Clip");
+        assert_eq!(file_stem("end."), "end");
+    }
+
+    #[test]
+    fn a_taken_name_gets_a_number() {
+        let folder = Path::new("out");
+        let taken = [folder.join("a.mp4"), folder.join("a (1).mp4")];
+        assert_eq!(
+            free_path(folder, "a", |path| taken.iter().any(|t| t == path)),
+            folder.join("a (2).mp4")
+        );
+        assert_eq!(free_path(folder, "b", |_| false), folder.join("b.mp4"));
+    }
+}
