@@ -68,6 +68,9 @@ impl Root {
             if let Some(level) = settings["message_notifications"].as_u64() {
                 entry.message_notifications = level;
             }
+            if let Some(flags) = settings["flags"].as_u64() {
+                entry.flags = flags;
+            }
             if let Some(muted) = settings["muted"].as_bool() {
                 entry.muted = muted;
                 entry.mute_end = settings["mute_config"]["end_time"]

@@ -26,6 +26,28 @@ const DEFAULT_REACTIONS: [&str; 13] = [
     "x",
 ];
 
+/// One info line per outside effect of a menu row: what it does and how long the payload is, never the payload.
+/// In an inert run the effect itself is then skipped and gpui notes that on its own `inert:` line.
+pub(super) fn log_effect(row: &str, effect: &str, length: usize) {
+    tracing::info!(row, effect, length, "menu action effect");
+    #[cfg(feature = "capture")]
+    if let Ok(mut lines) = EFFECTS.lock() {
+        lines.push(format!("effect: {row}: {effect}, {length} bytes"));
+    }
+}
+
+/// Harness: the effect lines of the row that just ran, for the script's answer.
+#[cfg(feature = "capture")]
+static EFFECTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "capture")]
+pub(super) fn take_effects() -> Vec<String> {
+    EFFECTS
+        .lock()
+        .map(|mut lines| std::mem::take(&mut *lines))
+        .unwrap_or_default()
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -170,15 +192,18 @@ impl Root {
             Action::Report => self.open_report_message(&message, false, window, cx),
             Action::CopySelection => {
                 let text = self.menu_extra.selection.clone();
+                log_effect("Copy", "clipboard text", text.len());
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
             }
             // Module 826308: the text goes into a Google search in the browser.
             Action::SearchGoogle => {
                 let query = dc_http::percent_encode(&self.menu_extra.selection);
+                log_effect("Search with Google", "open browser", query.len());
                 cx.open_url(&format!("https://www.google.com/search?q={query}"));
             }
             Action::CopyUrl => {
                 if let Some(url) = self.menu_url() {
+                    log_effect("Copy Link", "clipboard text", url.len());
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
                     self.show_success_toast("Link Copied!".into(), cx);
                 }
@@ -189,6 +214,7 @@ impl Root {
                     && let Some((_, rest)) = url.split_once(':')
                 {
                     let address = rest.split(['?', ';']).next().unwrap_or(rest).to_owned();
+                    log_effect("Copy Contact", "clipboard text", address.len());
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(address));
                     self.show_success_toast("Link Copied!".into(), cx);
                 }
@@ -200,6 +226,7 @@ impl Root {
             }
             Action::OpenUrl => {
                 if let Some(url) = self.menu_url() {
+                    log_effect("Open Link", "follow link", url.len());
                     let label = match &self.menu_extra.hit {
                         Some(super::menu::Hit::Link { label, .. }) => label.clone(),
                         _ => String::new(),
@@ -209,6 +236,7 @@ impl Root {
             }
             Action::CopyImage => {
                 if let Some(image) = self.menu_image() {
+                    log_effect("Copy Image", "clipboard image", image.bytes().len());
                     cx.write_to_clipboard(gpui::ClipboardItem::new_image(&image));
                     self.show_success_toast("Image Copied!".into(), cx);
                 } else {
@@ -275,6 +303,11 @@ impl Root {
             .or_else(|| std::env::var_os("HOME"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
+        log_effect(
+            "Save Image",
+            "save dialog then file write",
+            image.bytes().len(),
+        );
         let chosen = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn(async move |this, cx| {
             let saved = match chosen.await {

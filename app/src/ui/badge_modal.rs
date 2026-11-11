@@ -397,7 +397,37 @@ const SLOT: f32 = 48.;
 const ART_HEIGHT: f32 = 120.;
 const ART_WIDTH: f32 = 187.1875;
 
+/// `BadgeDirectorySeenStore` (module 319842): the badges whose "new" dot was already seen, kept across restarts.
+const SEEN_KEY: &str = "BadgeDirectorySeenStore";
+
+fn seen_indicators() -> Vec<u64> {
+    crate::storage::get(SEEN_KEY)
+        .and_then(|value| value["seenBadgeIndicatorIds"].as_array().cloned())
+        .map(|ids| ids.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default()
+}
+
 impl Root {
+    /// `BADGE_DIRECTORY_MARK_BADGE_INDICATOR_SEEN`: the detail of a badge with an indicator was shown to its owner.
+    fn mark_badge_seen(&mut self, id: u64) {
+        if !matches!(id, ACCOUNT_AGE | STREAMING | GAME_TIME | GAME_VARIETY) {
+            return;
+        }
+        if let Some(modal) = self.badge_modal.as_mut()
+            && !modal.seen.contains(&id)
+        {
+            modal.seen.push(id);
+        }
+        let mut stored = seen_indicators();
+        if !stored.contains(&id) {
+            stored.push(id);
+            crate::storage::set(
+                SEEN_KEY,
+                serde_json::json!({ "seenBadgeIndicatorIds": stored }),
+            );
+        }
+    }
+
     /// `openBadgeDirectoryModal`: asks for the catalog of the user shown and the viewer's own.
     pub(super) fn open_badge_modal(
         &mut self,
@@ -427,8 +457,13 @@ impl Root {
             username,
             selected: initial,
             own_view,
-            seen: initial.into_iter().collect(),
+            seen: seen_indicators(),
         });
+        if let Some(initial) = initial
+            && !other
+        {
+            self.mark_badge_seen(initial);
+        }
         cx.notify();
     }
 
@@ -494,9 +529,14 @@ impl Root {
                 this.request_badge_tiers(&catalog, id);
                 if let Some(modal) = this.badge_modal.as_mut() {
                     modal.selected = Some(id);
-                    if !modal.seen.contains(&id) {
-                        modal.seen.push(id);
-                    }
+                }
+                if !this.badge_modal_shown_user().is_some_and(|shown| {
+                    this.stores
+                        .current_user
+                        .as_ref()
+                        .is_none_or(|me| me.id != shown)
+                }) {
+                    this.mark_badge_seen(id);
                 }
                 cx.notify();
             }))
@@ -606,7 +646,18 @@ impl Root {
         if badge_id == PREMIUM_TENURE {
             self.open_nitro(cx);
         } else if badge_id == GUILD_BOOSTER {
-            self.open_settings_page("guild-boosting", cx);
+            // `openUserSettings(PREMIUM_GUILD_SUBSCRIPTIONS_PANEL)`, titled "Server Boost" (module 319842 `eu`).
+            self.open_settings_page("server-boost", cx);
+        } else if badge_id == STAFF {
+            // `ctaAction` of STAFF in module 319842 opens the careers page.
+            cx.open_url("https://discord.com/careers");
+        } else if badge_id == 16 {
+            // ORB_PROFILE: `COLLECTIBLES_SHOP_WITH_TAB(ORBS)`, the shop on its Orbs tab.
+            self.open_shop(cx);
+            self.shop_set_tab(super::shop::Tab::Orbs, cx);
+        } else if badge_id == 14 {
+            // QUEST_COMPLETED: `QUEST_HOME`.
+            self.open_quests(cx);
         }
         cx.notify();
     }
@@ -701,7 +752,9 @@ impl Root {
                     let id = badge["badge_id"].as_u64().unwrap_or(0);
                     let new = !other
                         && matches!(id, ACCOUNT_AGE | STREAMING | GAME_TIME | GAME_VARIETY)
-                        && !seen.contains(&id);
+                        && !seen.contains(&id)
+                        // The badge whose detail is open is marked seen at once (`useEffect` in module 319842).
+                        && Some(id) != selected;
                     self.badge_tab(badge, Some(id) == selected, new, cx)
                 })
                 .collect()

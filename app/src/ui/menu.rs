@@ -26,6 +26,35 @@ const NOT_QUICK: [&str; 5] = [
     "wink",
 ];
 
+/// The thin scrollbar of a menu (`--scrollbar-thin-thumb`): an 8px gutter whose thumb has a 2px transparent border, so
+/// it is 4px wide and starts 2px below the top; the thumb's length, border included, is the viewport's share of the
+/// content (read from the pixels of `design/golden/windows/message-menu/link-own-dm` and `member-menu/user-guild`).
+pub(super) fn menu_scrollbar(handle: gpui::ScrollHandle) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let max = handle.max_offset().y;
+            if max <= px(0.) {
+                return;
+            }
+            let viewport = bounds.size.height;
+            let thumb = (viewport * (viewport / (viewport + max))).max(px(40.));
+            let top = bounds.top() + (viewport - thumb) * (-handle.offset().y / max);
+            let area = gpui::Bounds::new(
+                gpui::point(bounds.right() - px(6.), top + px(2.)),
+                gpui::size(px(4.), thumb - px(4.)),
+            );
+            window
+                .paint_quad(gpui::fill(area, color("--scrollbar-thin-thumb")).corner_radii(px(2.)));
+        },
+    )
+    .absolute()
+    .top_0()
+    .right_0()
+    .w(px(8.))
+    .h_full()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     AddReaction,
@@ -58,6 +87,10 @@ pub(super) enum Action {
     SaveImage,
     /// "Report Message" (module 847342): other people's messages, a danger row at the bottom.
     Report,
+    /// "Remove Reactions" (a submenu of one row per emoji, `tT`) and "Remove All Reactions" (`tG`) of module 761304:
+    /// for who may manage messages.
+    RemoveReactions,
+    RemoveAllReactions,
     Delete,
 }
 
@@ -82,6 +115,8 @@ pub(super) struct SavedState {
     pub pinned: bool,
     /// Has reactions: View Reactions follows Add Reaction (`message-reactions` in the capture).
     pub reacted: bool,
+    /// Has reactions and the account manages messages here: Remove Reactions and Remove All Reactions (`tT`, `tG`).
+    pub manage_reactions: bool,
     /// A poll of this account that has not closed: "End Poll Now" follows Speak Message.
     pub poll_end: bool,
     /// A poll message: it cannot be edited (module 697470 `isPoll`) or forwarded (module 843626 `poll == null`).
@@ -157,6 +192,17 @@ pub(super) enum Hit {
 pub(super) struct MenuExtra {
     pub hit: Option<Hit>,
     pub selection: String,
+    /// The confirmation of a bulk reaction removal, asked for by Remove All Reactions or by a row of Remove Reactions.
+    pub reactions_confirm: Option<ReactionsConfirm>,
+}
+
+/// What `ConfirmModal` of module 761304 (`eH.A.show`) is asked to remove: every reaction of the message, or those of
+/// one emoji (the unicode character, or `name:id`, as the reactions route names it).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ReactionsConfirm {
+    pub channel: Id,
+    pub message: Id,
+    pub emoji: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +210,8 @@ pub(super) enum SubmenuKind {
     Reaction,
     Reminder,
     Apps,
+    /// The emoji of the message, one row each (`remove-emoji-reactions`).
+    RemoveReactions,
 }
 
 /// The submenu hanging off a menu row.
@@ -312,34 +360,52 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
+    // Module 761304: one group for Remove Reactions, Remove All Reactions, Delete (`tL`) and Report (`tR`).
+    let mut danger = Vec::new();
+    if saved.manage_reactions {
+        danger.push(Item::Danger(
+            "Remove Reactions",
+            "menu_remove_reactions",
+            Action::RemoveReactions,
+        ));
+        danger.push(Item::Danger(
+            "Remove All Reactions",
+            "menu_remove_all_reactions",
+            Action::RemoveAllReactions,
+        ));
+    }
     if !own {
-        items.push(Item::Separator);
-        items.push(Item::Danger("Report Message", "menu_flag", Action::Report));
+        danger.push(Item::Danger("Report Message", "menu_flag", Action::Report));
     }
     if own {
-        items.push(Item::Separator);
-        items.push(Item::Danger(
+        danger.push(Item::Danger(
             "Delete Message",
             "menu_delete_message",
             Action::Delete,
         ));
     }
-    // Module 761304 puts the picture rows (115184) and the link rows (777933) in a group of their own.
-    let mut media = Vec::new();
+    if !danger.is_empty() {
+        items.push(Item::Separator);
+        items.extend(danger);
+    }
+    // Module 761304 puts the picture rows (115184, in `tz`) and the link rows (777933, `tX`) in a group each, after
+    // the delete group when the menu is the hover bar's or a right press's (`to`).
     if saved.image {
-        media.push(Item::Entry(
+        items.push(Item::Separator);
+        items.push(Item::Entry(
             "Copy Image",
             "clips_image",
             Action::CopyImage,
             false,
         ));
-        media.push(Item::Entry(
+        items.push(Item::Entry(
             "Save Image",
             "clips_image",
             Action::SaveImage,
             false,
         ));
     }
+    let mut media = Vec::new();
     let (copy, open) = match saved.link {
         LinkKind::None => (None, None),
         LinkKind::ImageLink => (Some("Copy Image Link"), Some("Open Image Link")),
@@ -421,6 +487,11 @@ impl Root {
             empty,
             pinned,
             reacted,
+            manage_reactions: reacted
+                && found.is_some_and(|known| known.extra.poll.is_none())
+                && self.current_channel().is_some_and(|channel| {
+                    self.can_in_channel(channel, dc_state::permissions::MANAGE_MESSAGES)
+                }),
             poll_end: found.is_some_and(|known| self.poll_endable(known)),
             poll: found.is_some_and(|known| known.extra.poll.is_some()),
             selection: !self.menu_extra.selection.is_empty(),
@@ -463,7 +534,9 @@ impl Root {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
             Action::Reply => self.begin_reply(found, window, cx),
             Action::CopyText => {
-                cx.write_to_clipboard(ClipboardItem::new_string(parse_block_text(&found.content)))
+                let text = parse_block_text(&found.content);
+                super::actions::log_effect("Copy Text", "clipboard text", text.len());
+                cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
             Action::CopyLink => {
                 let guild = self
@@ -473,9 +546,17 @@ impl Root {
                     "https://discord.com/channels/{guild}/{}/{message}",
                     found.channel_id
                 );
+                super::actions::log_effect("Copy Message Link", "clipboard text", link.len());
                 cx.write_to_clipboard(ClipboardItem::new_string(link));
             }
             Action::Delete => self.confirm_delete = Some(message),
+            Action::RemoveAllReactions => {
+                self.menu_extra.reactions_confirm = Some(ReactionsConfirm {
+                    channel: found.channel_id,
+                    message,
+                    emoji: None,
+                });
+            }
             other => self.run_message_action(other, found, window, cx),
         }
         cx.notify();
@@ -504,8 +585,13 @@ impl Root {
             });
         match action {
             Some(action) => {
+                let before = crate::inert::line_count();
+                super::actions::take_effects();
                 self.run_action(action, open.message, window, cx);
-                format!("ran {label}")
+                let mut lines = vec![format!("ran {label}")];
+                lines.extend(super::actions::take_effects());
+                lines.extend(crate::inert::lines_since(before));
+                lines.join(" | ")
             }
             None => format!("no row {label}"),
         }
@@ -522,6 +608,11 @@ impl Root {
                 .is_some_and(|known| known.pinned);
             let request = match action {
                 Action::Delete => Request::Delete { channel, message },
+                Action::RemoveAllReactions => {
+                    self.remove_reactions(channel, message, None);
+                    cx.notify();
+                    return;
+                }
                 _ => Request::Pin {
                     channel,
                     message,
@@ -531,6 +622,149 @@ impl Root {
             let _ = self.requests.send(request);
         }
         cx.notify();
+    }
+
+    /// `Go` and `Jf` of module 649963: `DELETE /channels/{c}/messages/{m}/reactions`, or `.../reactions/{emoji}`.
+    pub(super) fn remove_reactions(&mut self, channel: Id, message: Id, emoji: Option<&str>) {
+        let route = match emoji {
+            Some(emoji) => format!(
+                "/channels/{channel}/messages/{message}/reactions/{}",
+                super::reactions_modal::encode(emoji)
+            ),
+            None => format!("/channels/{channel}/messages/{message}/reactions"),
+        };
+        super::actions::log_effect(
+            if emoji.is_some() {
+                "Remove Reactions"
+            } else {
+                "Remove All Reactions"
+            },
+            "DELETE reactions",
+            route.len(),
+        );
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::DELETE,
+            route,
+            body: None,
+        });
+    }
+
+    /// The submenu of Remove Reactions: one row per distinct emoji, named `:name:` (`b3` of module 815807). A row asks
+    /// first, as `eH.A.show` does; shift removes at once.
+    fn remove_reaction_rows(
+        &self,
+        channel: Id,
+        message: Id,
+        cx: &mut Context<Self>,
+    ) -> Vec<(AnyElement, f32)> {
+        let reactions = self
+            .stores
+            .messages
+            .get(&channel)
+            .and_then(|list| list.iter().find(|known| known.id == message))
+            .map(|known| known.reactions.clone())
+            .unwrap_or_default();
+        let mut seen: Vec<String> = Vec::new();
+        let mut rows = Vec::new();
+        for reaction in reactions {
+            let route = super::reaction_route_name(&reaction);
+            if seen.contains(&route) {
+                continue;
+            }
+            seen.push(route.clone());
+            let image = match reaction.emoji_id {
+                Some(id) => self.images.get(&format!("emoji-id:{id}")).cloned(),
+                None => self
+                    .images
+                    .get(&format!("emoji:{}", reaction.name))
+                    .cloned(),
+            };
+            let label = match reaction.emoji_id {
+                Some(_) => format!(":{}:", reaction.name),
+                None => dc_tokens::emoji_data::EMOJIS
+                    .iter()
+                    .find(|emoji| emoji.surrogates == reaction.name)
+                    .map_or_else(
+                        || reaction.name.clone(),
+                        |emoji| format!(":{}:", emoji.names[0]),
+                    ),
+            };
+            let leading = div()
+                .size(px(20.))
+                .children(image.map(|image| img(image).size(px(20.))))
+                .into_any_element();
+            rows.push((
+                self.submenu_item(
+                    SharedString::from(format!("remove-reaction-{}", rows.len())),
+                    Some(leading),
+                    label,
+                    36.,
+                )
+                .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                    this.submenu = None;
+                    this.menu = None;
+                    if event.modifiers().shift {
+                        this.remove_reactions(channel, message, Some(&route));
+                    } else {
+                        this.menu_extra.reactions_confirm = Some(ReactionsConfirm {
+                            channel,
+                            message,
+                            emoji: Some(route.clone()),
+                        });
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+                36.,
+            ));
+        }
+        rows
+    }
+
+    /// The question of a bulk removal: `73GqTz` / `dmy5bn` for one emoji, `iz3vYX` / `VpjOCo` for all of them, answered
+    /// with Yes (`p89ACt`, critical) or No (`gm1Vej`).
+    pub(super) fn reactions_confirm_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let ask = self.menu_extra.reactions_confirm.clone()?;
+        let (title, body) = if ask.emoji.is_some() {
+            (
+                "Remove Reactions for Emoji",
+                "Are you sure you want to remove all of the reactions for this emoji from this message?",
+            )
+        } else {
+            (
+                "Remove All Reactions",
+                "Are you sure you want to remove all reactions from this message?",
+            )
+        };
+        let emoji = ask.emoji.clone();
+        Some(super::modal::render(
+            super::modal::Spec {
+                id: "remove-reactions-confirm",
+                title: title.into(),
+                subtitle: Some(div().child(body).into_any_element()),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "remove-reactions-no",
+                        "No",
+                        super::modal::Tone::Secondary,
+                        |this, _, _| this.menu_extra.reactions_confirm = None,
+                    ),
+                    super::modal::button(
+                        "remove-reactions-yes",
+                        "Yes",
+                        super::modal::Tone::Critical,
+                        move |this, _, _| {
+                            this.menu_extra.reactions_confirm = None;
+                            this.remove_reactions(ask.channel, ask.message, emoji.as_deref());
+                        },
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.menu_extra.reactions_confirm = None),
+            },
+            cx,
+        ))
     }
 
     fn react_from_menu(&mut self, message: Id, surrogates: &'static str, cx: &mut Context<Self>) {
@@ -552,7 +786,9 @@ impl Root {
     fn menu_row(&self, index: usize, item: Item, target: Id, cx: &mut Context<Self>) -> AnyElement {
         let (label, icon_name, run, caret, danger) = match item {
             Item::Entry(label, icon_name, run, caret) => (label, icon_name, run, caret, false),
-            Item::Danger(label, icon_name, run) => (label, icon_name, run, false, true),
+            Item::Danger(label, icon_name, run) => {
+                (label, icon_name, run, run == Action::RemoveReactions, true)
+            }
             Item::Separator => unreachable!("separators are drawn apart"),
         };
         let group = SharedString::from(format!("menu-row-{index}"));
@@ -592,6 +828,7 @@ impl Root {
                 Action::AddReaction => Some(SubmenuKind::Reaction),
                 Action::Reminder => Some(SubmenuKind::Reminder),
                 Action::Apps => Some(SubmenuKind::Apps),
+                Action::RemoveReactions => Some(SubmenuKind::RemoveReactions),
                 _ => None,
             };
             if kind == Some(SubmenuKind::Apps) {
@@ -618,14 +855,24 @@ impl Root {
         .on_click(
             cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                 // Shift skips the confirmation of Delete and Pin, as the protip says.
-                if event.modifiers().shift && matches!(run, Action::Delete | Action::Pin) {
+                if event.modifiers().shift
+                    && matches!(
+                        run,
+                        Action::Delete | Action::Pin | Action::RemoveAllReactions
+                    )
+                {
                     this.run_unconfirmed(run, target, cx);
                 } else {
-                    if matches!(run, Action::Reminder | Action::Apps) {
+                    if matches!(
+                        run,
+                        Action::Reminder | Action::Apps | Action::RemoveReactions
+                    ) {
                         // These rows open their submenus, on a click as on a hover.
                         let kind = if run == Action::Apps {
                             this.request_command_index();
                             SubmenuKind::Apps
+                        } else if run == Action::RemoveReactions {
+                            SubmenuKind::RemoveReactions
                         } else {
                             SubmenuKind::Reminder
                         };
@@ -810,14 +1057,23 @@ impl Root {
                                 .track_scroll(&self.menu_scroll)
                                 .overflow_y_scroll()
                                 .max_h(px(max_height - 2.))
-                                .py(px(8.))
+                                .pt(px(8.))
+                                // A menu that scrolls ends flush with its last row (image-fixture-end: the last row
+                                // stands at 675..711 in a menu that ends at 712).
+                                .pb(px(
+                                    if self.menu_height(open.own, open.message) > max_height {
+                                        0.
+                                    } else {
+                                        8.
+                                    },
+                                ))
                                 .px(px(8.))
                                 .flex()
                                 .flex_col()
                                 // Rows keep their height when the menu scrolls.
                                 .children(rows.into_iter().map(|row| div().flex_none().child(row))),
                         )
-                        .child(super::discover::gutter_scrollbar(self.menu_scroll.clone())),
+                        .child(menu_scrollbar(self.menu_scroll.clone())),
                 ),
         ))
     }
@@ -835,6 +1091,7 @@ impl Root {
             SubmenuKind::Reminder => self.reminder_rows(channel, submenu.message, cx),
             SubmenuKind::Reaction => self.reaction_rows(channel, submenu.message, cx),
             SubmenuKind::Apps => self.app_rows(channel, submenu.message, cx),
+            SubmenuKind::RemoveReactions => self.remove_reaction_rows(channel, submenu.message, cx),
         };
         Some(self.submenu_frame(rows, submenu.row, window))
     }
@@ -1028,7 +1285,9 @@ impl Root {
     /// "Delete Message" (`AMvpS4`): the message, the shift protip (`2Ld8DM`, `IxY7E6`), Cancel and a critical Delete.
     /// Measured in `design/dom/modals/delete-message-darker-cozy.json`.
     pub(super) fn delete_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let target = self.confirm_delete?;
+        let Some(target) = self.confirm_delete else {
+            return self.reactions_confirm_modal(cx);
+        };
         let message = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
@@ -1111,6 +1370,7 @@ impl Root {
             matches!(anchor, Anchor::Pointer(pointer) if pointer == at).then_some(hit)
         });
         self.menu_extra = MenuExtra {
+            reactions_confirm: None,
             hit,
             selection: if matches!(anchor, Anchor::Pointer(_)) {
                 self.selected_text()
@@ -1118,13 +1378,37 @@ impl Root {
                 String::new()
             },
         };
+        // A menu always opens at its top, whatever the one before was scrolled to.
+        self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.menu = Some(OpenMenu {
             anchor,
             message,
             own,
         });
         self.request_quick_reaction_images();
+        self.request_reaction_images(message);
         cx.notify();
+    }
+
+    /// The pictures of the emoji in Remove Reactions' rows.
+    fn request_reaction_images(&mut self, message: Id) {
+        let Some(reactions) = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .and_then(|list| list.iter().find(|known| known.id == message))
+            .map(|known| known.reactions.clone())
+        else {
+            return;
+        };
+        for reaction in reactions {
+            match reaction.emoji_id {
+                Some(id) => self.request_image(
+                    format!("emoji-id:{id}"),
+                    format!("https://cdn.discordapp.com/emojis/{id}.webp?size=48"),
+                ),
+                None => self.request_emoji_image(&reaction.name),
+            }
+        }
     }
 
     fn request_quick_reaction_images(&mut self) {
@@ -1197,6 +1481,37 @@ mod tests {
                 "menu_delete_message",
                 Action::Delete
             )]
+        );
+    }
+
+    #[test]
+    fn a_picture_message_has_one_group_for_the_picture_and_one_for_its_link() {
+        let saved = super::SavedState {
+            image: true,
+            link: super::LinkKind::ImageLink,
+            ..Default::default()
+        };
+        let items = super::message_items_saved(true, saved);
+        let tail: Vec<&str> = items
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .map(|item| match item {
+                Item::Entry(label, ..) | Item::Danger(label, ..) => *label,
+                Item::Separator => "-",
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                "-",
+                "Copy Image",
+                "Save Image",
+                "-",
+                "Copy Image Link",
+                "Open Image Link"
+            ]
         );
     }
 }

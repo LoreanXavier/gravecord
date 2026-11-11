@@ -253,6 +253,7 @@ impl Root {
                 self.context.open.is_some(),
                 self.too_long.is_some(),
                 self.confirm_delete.is_some(),
+                self.menu_extra.reactions_confirm.is_some(),
                 self.confirm_pin.is_some(),
                 self.confirm_unpin.is_some(),
                 self.leaving.is_some(),

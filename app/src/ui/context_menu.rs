@@ -287,11 +287,9 @@ pub(super) enum Status {
 pub(super) fn status(act: Act) -> Status {
     use Status::{Missing, Wired};
     match act {
-        Act::MoveTo => Missing("channel and category reordering"),
-        Act::PinChannel => Missing("pinned channels (user settings proto)"),
         Act::Favorite => Missing("favorite channels (user settings proto)"),
         Act::PinDm => Missing("pinned direct messages (user settings proto)"),
-        Act::HideNames => Missing("Hide Names for a voice channel"),
+        Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
         Act::Apps => Wired,
         Act::ModView => Missing("Mod View"),
         Act::InventoryAbout
@@ -370,6 +368,12 @@ pub(super) struct SubRow {
     /// A role's colour (`0xRRGGBB`, 0 for the default dot).
     pub dot: Option<u32>,
     pub id: Id,
+    /// A second line under the label (the level a notification choice inherits).
+    pub sub: Option<String>,
+    /// Drawn as a radio choice (notification levels) instead of a tick.
+    pub radio: bool,
+    /// Opens a nested list, as the "Category" row of a channel's Move to.
+    pub caret: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -594,15 +598,16 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
             ],
         );
     }
-    group(
-        &mut out,
-        vec![
-            Row::new(Act::Mute, "Mute Channel").caret(),
+    // A voice channel's menu has no Notification Settings (its capture, `voice-row`).
+    let mut alerts = vec![Row::new(Act::Mute, "Mute Channel").caret()];
+    if !facts.voice {
+        alerts.push(
             Row::new(Act::Notifications, "Notification Settings")
                 .sub(level)
                 .caret(),
-        ],
-    );
+        );
+    }
+    group(&mut out, alerts);
     if facts.can_manage {
         group(&mut out, vec![Row::new(Act::MoveTo, "Move to...").caret()]);
         group(
@@ -1043,6 +1048,8 @@ pub(super) struct Open {
     pub items: Vec<Entry>,
     /// The open submenu: the row it hangs off, and where that row is.
     pub sub: Option<(Act, gpui::Bounds<Pixels>)>,
+    /// The nested list open from a submenu row (a channel's Move to > Category): the row's index and where it is.
+    pub nested: Option<(usize, gpui::Bounds<Pixels>)>,
 }
 
 #[derive(Default)]
@@ -1068,6 +1075,94 @@ const MUTE_FOR: [(i64, &str); 6] = [
 /// `message_notifications` values, with the labels of the notification submenu.
 const LEVELS: [(u64, &str); 3] = [(0, "All Messages"), (1, "Only @mentions"), (2, "Nothing")];
 const INHERIT: u64 = 3;
+/// `UserGuildSettingsChannelFlags.FAVORITED`: the channel is pinned to the top of the list.
+const PINNED: u64 = 2048;
+/// The store the official client keeps Hide Names in (`CollapsedVoiceChannelStore`, persisted as `collapsedChannels`).
+const HIDDEN_NAMES: &str = "collapsedChannels";
+
+/// Which list a channel is ordered in: categories, voice and stage channels, or the text kinds (`a` of module 44757).
+fn order_group(kind: ChannelKind) -> u8 {
+    match kind {
+        ChannelKind::Category => 0,
+        ChannelKind::Voice | ChannelKind::Other(13) => 1,
+        _ => 2,
+    }
+}
+
+/// The ids ordered with this channel: those in its category (or the categories themselves) of its kind, in order.
+fn move_siblings(channels: &[Channel], me: &Channel) -> Vec<Id> {
+    ordered_group(channels, me.kind, me.parent_id)
+        .into_iter()
+        .map(|known| known.id)
+        .collect()
+}
+
+fn ordered_group(channels: &[Channel], kind: ChannelKind, parent: Option<Id>) -> Vec<&Channel> {
+    let group = order_group(kind);
+    let mut list: Vec<&Channel> = channels
+        .iter()
+        .filter(|known| {
+            order_group(known.kind) == group && (group == 0 || known.parent_id == parent)
+        })
+        .collect();
+    list.sort_by_key(|known| (known.position, known.id));
+    list
+}
+
+/// Where a channel can go: No Category (id 0) and every category, the one it is in disabled.
+fn move_destinations(channels: &[Channel], me: &Channel) -> Vec<(Id, String, bool)> {
+    let mut list = vec![("No Category".to_owned(), 0, me.parent_id.is_none())];
+    list.extend(
+        ordered_group(channels, ChannelKind::Category, None)
+            .into_iter()
+            .map(|known| (known.name.clone(), known.id, me.parent_id == Some(known.id))),
+    );
+    list.into_iter()
+        .map(|(label, id, disabled)| (id, label, disabled))
+        .collect()
+}
+
+/// The updates a Move to sends (`vX` of module 44757): the channel goes first or last among the channels of its
+/// kind in its (new) category, and every channel whose position changes is listed with its new one. The mover also
+/// carries its new category when that changed.
+fn plan_channel_move(
+    channels: &[Channel],
+    id: Id,
+    parent: Option<Option<Id>>,
+    first: bool,
+) -> Vec<(Id, Option<Option<Id>>, i64)> {
+    let Some(me) = channels.iter().find(|known| known.id == id) else {
+        return Vec::new();
+    };
+    let target = if me.kind == ChannelKind::Category {
+        None
+    } else {
+        parent.unwrap_or(me.parent_id)
+    };
+    let mut order: Vec<&Channel> = ordered_group(channels, me.kind, target)
+        .into_iter()
+        .filter(|known| known.id != id)
+        .collect();
+    if first {
+        order.insert(0, me);
+    } else {
+        order.push(me);
+    }
+    let moved = target != me.parent_id && me.kind != ChannelKind::Category;
+    order
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, known)| {
+            let position = index as i64;
+            let own = known.id == id;
+            (known.position != position || (own && moved)).then_some((
+                known.id,
+                (own && moved).then_some(target),
+                position,
+            ))
+        })
+        .collect()
+}
 
 fn level_label(level: u64) -> &'static str {
     match level {
@@ -1179,6 +1274,7 @@ impl Root {
                     plain: !manage,
                     dot: Some(info.color),
                     id,
+                    ..SubRow::default()
                 })
             })
             .collect()
@@ -1362,6 +1458,76 @@ impl Root {
             ),
             None => "no sub open".to_owned(),
         }
+    }
+
+    /// Whether the target is muted now (a mute that has run out no longer counts), and until when.
+    fn mute_state(&self, target: Target) -> (bool, Option<chrono::DateTime<chrono::Utc>>) {
+        let (muted, end) = match target {
+            Target::Guild(guild) => self
+                .stores
+                .guild_settings
+                .guilds
+                .get(&guild)
+                .map_or((false, None), |settings| {
+                    (settings.muted, settings.mute_end)
+                }),
+            Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
+                match self.guild_of_channel(id) {
+                    Some(guild) => {
+                        let entry = self.stores.guild_settings.channel(guild, id);
+                        (entry.muted, entry.mute_end)
+                    }
+                    None => (false, None),
+                }
+            }
+            _ => (false, None),
+        };
+        let expired = end.is_some_and(|end| end <= chrono::Utc::now());
+        (muted && !expired, end)
+    }
+
+    fn names_hidden(&self, channel: Id) -> bool {
+        crate::storage::get(HIDDEN_NAMES)
+            .is_some_and(|stored| stored[channel.to_string()].as_bool() == Some(true))
+    }
+
+    /// The rows that depend on what is stored: Unmute for a muted target, Unpin for a pinned channel, the Hide Names
+    /// tick, and no Move to when there is nowhere to move a server.
+    fn adjust_menu_rows(&self, target: Target, items: Vec<Entry>) -> Vec<Entry> {
+        let (muted, end) = self.mute_state(target);
+        let pinned = matches!(target, Target::Channel(id)
+        if self.guild_of_channel(id).is_some_and(|guild| {
+            self.stores.guild_settings.channel(guild, id).flags & PINNED != 0
+        }));
+        let mut out = Vec::with_capacity(items.len());
+        for entry in items {
+            let Entry::Row(mut row) = entry else {
+                out.push(entry);
+                continue;
+            };
+            match row.act {
+                Act::Mute if muted => {
+                    row.label = row.label.replacen("Mute", "Unmute", 1);
+                    row.caret = false;
+                    row.sub = end.map(|end| {
+                        format!(
+                            "Muted until {}",
+                            end.with_timezone(&chrono::Local).format("%-I:%M %p")
+                        )
+                    });
+                }
+                Act::PinChannel if pinned => row.label = "Unpin Channel".to_owned(),
+                Act::HideNames => {
+                    if let Target::Channel(id) = target {
+                        row.check = Some(self.names_hidden(id));
+                    }
+                }
+                Act::MoveTo if self.move_rows(target).is_empty() => continue,
+                _ => {}
+            }
+            out.push(Entry::Row(row));
+        }
+        tidy(out)
     }
 
     pub(super) fn open_context_menu(
@@ -1574,12 +1740,15 @@ impl Root {
                 user_items(&facts)
             }
         };
+        let items = self.adjust_menu_rows(target, items);
         self.menu = None;
+        self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.context.open = Some(Open {
             target,
             at,
             items,
             sub: None,
+            nested: None,
         });
         cx.notify();
     }
@@ -2131,6 +2300,47 @@ impl Root {
             (Act::Paste, Target::Composer) => self
                 .composer
                 .update(cx, |composer, cx| composer.paste_clipboard(cx)),
+            // The caret of a muted target's row is gone: the row itself turns the mute off.
+            (
+                Act::Mute,
+                Target::Guild(_) | Target::Channel(_) | Target::Category(_) | Target::Thread(_),
+            ) => match target {
+                Target::Guild(guild) => {
+                    self.patch_guild_setting(guild, "muted", json!(false));
+                    self.patch_guild_setting(
+                        guild,
+                        "mute_config",
+                        json!({"selected_time_window": null, "end_time": null}),
+                    );
+                }
+                Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
+                    if let Some(guild) = self.guild_of_channel(id) {
+                        self.patch_channel_override(
+                            guild,
+                            id,
+                            json!({"muted": false, "mute_config": null}),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            (Act::PinChannel, Target::Channel(id)) => {
+                if let Some(guild) = self.guild_of_channel(id) {
+                    let flags = self.stores.guild_settings.channel(guild, id).flags ^ PINNED;
+                    self.patch_channel_override(guild, id, json!({"flags": flags}));
+                }
+            }
+            (Act::HideNames, Target::Channel(id)) => {
+                let mut stored = crate::storage::get(HIDDEN_NAMES).unwrap_or_else(|| json!({}));
+                if self.names_hidden(id) {
+                    if let Some(map) = stored.as_object_mut() {
+                        map.remove(&id.to_string());
+                    }
+                } else {
+                    stored[id.to_string()] = json!(true);
+                }
+                crate::storage::set(HIDDEN_NAMES, stored);
+            }
             // Rows of a missing feature are drawn disabled (`Row::new`) and never reach here; any other pair is a row
             // built for a target it has no handler for, which the debug assertion below reports.
             (act, target) => {
@@ -2256,17 +2466,159 @@ impl Root {
                 };
                 let mut rows = Vec::new();
                 if channel {
-                    rows.push(plain("Use Category Default", current == INHERIT));
+                    // What "Use Category Default" would give: the category's level, else the server's.
+                    let inherited = match target {
+                        Target::Channel(id) | Target::Thread(id) => self.inherited_level_label(id),
+                        _ => "All Messages",
+                    };
+                    rows.push(SubRow {
+                        sub: Some(inherited.to_owned()),
+                        ..plain("Use Category Default", current == INHERIT)
+                    });
                 }
                 rows.extend(
                     LEVELS
                         .iter()
                         .map(|(value, label)| plain(label, current == *value)),
                 );
+                for row in &mut rows {
+                    row.radio = true;
+                }
+                rows
+            }
+            Act::MoveTo => self.move_rows(target),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The level a channel gets from "Use Category Default": its category's own, else the server's.
+    fn inherited_level_label(&self, channel: Id) -> &'static str {
+        let Some(guild) = self.guild_of_channel(channel) else {
+            return "All Messages";
+        };
+        let parent = self
+            .stores
+            .guild(guild)
+            .and_then(|guild| guild.channels.iter().find(|known| known.id == channel))
+            .and_then(|known| known.parent_id);
+        match parent.map(|parent| self.channel_level(guild, parent)) {
+            Some(own) if own != INHERIT => level_label(own),
+            _ => self.guild_level_label(guild),
+        }
+    }
+
+    /// Move to (module 906964): a server's First and Last in List; a channel's Category list and its First and Last in
+    /// Category (First and Last in List for a category, or a channel outside any category).
+    fn move_rows(&self, target: Target) -> Vec<SubRow> {
+        let row = |label: &str, disabled: bool, caret: bool| SubRow {
+            label: label.to_owned(),
+            disabled,
+            caret,
+            ..SubRow::default()
+        };
+        match target {
+            Target::Guild(guild) => match self.stores.folders.placement_disabled(guild) {
+                Some((first, last)) => vec![
+                    row("First in List", first, false),
+                    row("Last in List", last, false),
+                ],
+                None => Vec::new(),
+            },
+            Target::Channel(id) | Target::Category(id) => {
+                let Some(channels) = self
+                    .guild_of_channel(id)
+                    .and_then(|guild| self.stores.guild(guild))
+                    .map(|guild| guild.channels.as_slice())
+                else {
+                    return Vec::new();
+                };
+                let Some(me) = channels.iter().find(|known| known.id == id) else {
+                    return Vec::new();
+                };
+                let siblings = move_siblings(channels, me);
+                let mut rows = Vec::new();
+                if me.kind != ChannelKind::Category {
+                    let list = move_destinations(channels, me);
+                    if list.iter().any(|(_, _, disabled)| !disabled) && list.len() > 1 {
+                        rows.push(row("Category", false, true));
+                    }
+                }
+                if siblings.len() > 1 {
+                    let noun = if me.kind == ChannelKind::Category || me.parent_id.is_none() {
+                        "List"
+                    } else {
+                        "Category"
+                    };
+                    rows.push(row(
+                        &format!("First in {noun}"),
+                        siblings.first() == Some(&id),
+                        false,
+                    ));
+                    rows.push(row(
+                        &format!("Last in {noun}"),
+                        siblings.last() == Some(&id),
+                        false,
+                    ));
+                }
                 rows
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The list a channel's "Category" row opens: No Category, then every category; the one it is in is disabled.
+    fn category_rows(&self, target: Target) -> Vec<SubRow> {
+        let Target::Channel(id) = target else {
+            return Vec::new();
+        };
+        let Some(channels) = self
+            .guild_of_channel(id)
+            .and_then(|guild| self.stores.guild(guild))
+            .map(|guild| guild.channels.as_slice())
+        else {
+            return Vec::new();
+        };
+        let Some(me) = channels.iter().find(|known| known.id == id) else {
+            return Vec::new();
+        };
+        move_destinations(channels, me)
+            .into_iter()
+            .map(|(id, label, disabled)| SubRow {
+                label,
+                disabled,
+                id,
+                ..SubRow::default()
+            })
+            .collect()
+    }
+
+    /// Sends a channel's reorder: the changed positions (and the new category) to the server.
+    fn send_channel_move(&mut self, channel: Id, parent: Option<Option<Id>>, first: bool) {
+        let Some(guild) = self.guild_of_channel(channel) else {
+            return;
+        };
+        let Some(channels) = self.stores.guild(guild).map(|guild| guild.channels.clone()) else {
+            return;
+        };
+        let updates = plan_channel_move(&channels, channel, parent, first);
+        if updates.is_empty() {
+            return;
+        }
+        let body: Vec<serde_json::Value> = updates
+            .into_iter()
+            .map(|(id, parent, position)| match parent {
+                Some(parent) => json!({"id": id.to_string(), "position": position,
+                    "parent_id": parent.map(|parent| parent.to_string())}),
+                None => json!({"id": id.to_string(), "position": position}),
+            })
+            .collect();
+        super::actions::log_effect("Move to", "PATCH /guilds/{id}/channels", body.len());
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: format!("/guilds/{guild}/channels"),
+            body: Some(json!(body)),
+        });
     }
 
     /// Servers we may create an invite in, with the channel to invite to (module 777933's invite list): a text
@@ -2292,6 +2644,21 @@ impl Root {
                 Some((guild.id, guild.name.clone(), channel.id))
             })
             .collect()
+    }
+
+    /// A destination of a channel's Move to > Category: the channel goes last in that category.
+    fn run_category_move(&mut self, target: Target, index: usize) {
+        let Target::Channel(id) = target else {
+            return;
+        };
+        let Some(row) = self.category_rows(target).into_iter().nth(index) else {
+            return;
+        };
+        if row.disabled {
+            return;
+        }
+        let parent = (row.id != 0).then_some(row.id);
+        self.send_channel_move(id, Some(parent), false);
     }
 
     fn run_context_sub(&mut self, act: Act, target: Target, index: usize, cx: &mut Context<Self>) {
@@ -2347,6 +2714,31 @@ impl Root {
                         "channel_id",
                         json!(row.id.to_string()),
                     ));
+                }
+                return;
+            }
+            Act::MoveTo => {
+                let Some(row) = row else {
+                    return;
+                };
+                if row.disabled || row.caret {
+                    return;
+                }
+                let first = row.label.starts_with("First");
+                match target {
+                    Target::Guild(guild) => self.move_guild(
+                        guild,
+                        if first {
+                            dc_state::folders::Placement::First
+                        } else {
+                            dc_state::folders::Placement::Last
+                        },
+                        cx,
+                    ),
+                    Target::Channel(id) | Target::Category(id) => {
+                        self.send_channel_move(id, None, first)
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -2471,11 +2863,12 @@ impl Root {
                         }])
                         .on_mouse_down_out(cx.listener(
                             |this, event: &gpui::MouseDownEvent, _, cx| {
-                                let in_sub = this
-                                    .tip_anchors
-                                    .borrow()
-                                    .get("submenu")
-                                    .is_some_and(|bounds| bounds.contains(&event.position));
+                                let in_sub = ["submenu", "submenu2"].iter().any(|key| {
+                                    this.tip_anchors
+                                        .borrow()
+                                        .get(*key)
+                                        .is_some_and(|bounds| bounds.contains(&event.position))
+                                });
                                 if !in_sub
                                     && this.press_outside(super::keyboard::Layer::ContextMenu, cx)
                                 {
@@ -2498,7 +2891,7 @@ impl Root {
                                 .flex_col()
                                 .children(rows.into_iter().map(|row| div().flex_none().child(row))),
                         )
-                        .child(super::discover::gutter_scrollbar(self.menu_scroll.clone())),
+                        .child(super::menu::menu_scrollbar(self.menu_scroll.clone())),
                 ),
         )
         .with_priority(2)
@@ -2523,9 +2916,109 @@ impl Root {
                         disabled,
                         plain,
                         dot,
+                        sub: second,
+                        radio,
+                        caret,
                         ..
                     } = sub;
                     let role = dot.is_some();
+                    if radio || caret {
+                        let height = if second.is_some() { 52. } else { 36. };
+                        let mut item = div()
+                            .id(SharedString::from(format!("context-sub-{index}")))
+                            .relative()
+                            .h(px(height))
+                            .p(px(8.))
+                            .rounded(px(2.))
+                            .cursor_pointer()
+                            .hover(|style| {
+                                style
+                                    .bg(color("--interactive-background-hover"))
+                                    .rounded(px(4.))
+                            })
+                            .flex()
+                            .items_center()
+                            .opacity(if disabled { 0.5 } else { 1. })
+                            .child(self.anchor_probe(format!("context-sub-{index}")))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child(label),
+                                    )
+                                    .children(second.map(|text| {
+                                        div()
+                                            .mt(px(2.))
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-muted"))
+                                            .child(text)
+                                    })),
+                            );
+                        if radio {
+                            item = item.child(
+                                div()
+                                    .ml(px(16.))
+                                    .flex_none()
+                                    .size(px(22.))
+                                    .rounded_full()
+                                    .border_2()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .border_color(if on {
+                                        color("--control-brand-foreground")
+                                    } else {
+                                        color("--checkbox-border-default")
+                                    })
+                                    .bg(if on {
+                                        color("--control-brand-foreground")
+                                    } else {
+                                        color("--checkbox-background-default")
+                                    })
+                                    .when(on, |d| {
+                                        d.child(div().size(px(8.)).rounded_full().bg(gpui::white()))
+                                    }),
+                            );
+                        }
+                        if caret {
+                            item = item.child(div().ml(px(10.)).child(icon(
+                                "menu_caret",
+                                18.,
+                                "--interactive-text-default",
+                            )));
+                            let probe = format!("context-sub-{index}");
+                            item = item.on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                                if !*inside {
+                                    return;
+                                }
+                                let bounds = this.tip_anchors.borrow().get(probe.as_str()).copied();
+                                if let Some(open) = this.context.open.as_mut() {
+                                    open.nested = if disabled {
+                                        None
+                                    } else {
+                                        bounds.map(|bounds| (index, bounds))
+                                    };
+                                }
+                                cx.notify();
+                            }));
+                        }
+                        if !plain && !disabled && !caret {
+                            item = item.on_click(cx.listener(move |this, _, _, cx| {
+                                this.run_context_sub(act, target, index, cx);
+                                this.close_context_menu(cx);
+                            }));
+                        }
+                        return (item.into_any_element(), height);
+                    }
                     let height = if role { 36. } else { 34. };
                     let leading = match dot {
                         Some(rgb) => Some(
@@ -2576,6 +3069,16 @@ impl Root {
                                 .when(on, |d| d.child(icon("checkbox_check", 16., "--white"))),
                         );
                     }
+                    if act == Act::MoveTo {
+                        item = item.on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                            if *inside {
+                                if let Some(open) = this.context.open.as_mut() {
+                                    open.nested = None;
+                                }
+                                cx.notify();
+                            }
+                        }));
+                    }
                     if !plain && !disabled {
                         item = item.on_click(cx.listener(move |this, _, _, cx| {
                             this.run_context_sub(act, target, index, cx);
@@ -2589,6 +3092,81 @@ impl Root {
             let widest = widest_label.max(0.);
             Some(self.submenu_frame_wide(rows, row, window, (widest + 34.).max(188.)))
         });
+        let nested = open.nested.and_then(|(_, row)| {
+            if open.sub.map(|(act, _)| act) != Some(Act::MoveTo) {
+                return None;
+            }
+            let labels = self.category_rows(target);
+            if labels.is_empty() {
+                return None;
+            }
+            let widest = labels
+                .iter()
+                .map(|sub| label_width(window, &sub.label))
+                .fold(0., f32::max);
+            let width = (widest + 34.).max(188.);
+            let rows: Vec<AnyElement> = labels
+                .into_iter()
+                .enumerate()
+                .map(|(index, sub)| {
+                    let disabled = sub.disabled;
+                    let mut item = self
+                        .submenu_item(
+                            SharedString::from(format!("context-nested-{index}")),
+                            None,
+                            sub.label,
+                            34.,
+                        )
+                        .opacity(if disabled { 0.5 } else { 1. });
+                    if !disabled {
+                        item = item.on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_category_move(target, index);
+                            this.close_context_menu(cx);
+                        }));
+                    }
+                    item.into_any_element()
+                })
+                .collect();
+            let height = 2. + 16. + 34. * rows.len() as f32;
+            let viewport = window.viewport_size();
+            let left = if f32::from(row.right()) + 4. + width <= f32::from(viewport.width) - 8. {
+                f32::from(row.right()) + 4.
+            } else {
+                f32::from(row.left()) - 4. - width
+            };
+            let top = (f32::from(row.top()) - 9.)
+                .min(f32::from(viewport.height) - 8. - height)
+                .max(8.);
+            Some(
+                deferred(
+                    div()
+                        .id("submenu2")
+                        .child(self.anchor_probe("submenu2"))
+                        .occlude()
+                        .absolute()
+                        .left(px(left))
+                        .top(px(top))
+                        .w(px(width))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-higher"))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: gpui::hsla(0., 0., 0., 0.24),
+                            offset: gpui::point(px(0.), px(12.)),
+                            blur_radius: px(24.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .p(px(8.))
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            )
+        });
         Some(
             div()
                 .absolute()
@@ -2596,6 +3174,7 @@ impl Root {
                 .left(px(0.))
                 .child(menu)
                 .children(sub)
+                .children(nested)
                 .into_any_element(),
         )
     }
@@ -2735,11 +3314,15 @@ impl Root {
             }
             let bounds = this.tip_anchors.borrow().get(hover_key.as_str()).copied();
             if let Some(open) = this.context.open.as_mut() {
-                open.sub = if has_sub {
+                let next = if has_sub {
                     bounds.map(|bounds| (act, bounds))
                 } else {
                     None
                 };
+                if next.map(|(act, _)| act) != open.sub.map(|(act, _)| act) {
+                    open.nested = None;
+                }
+                open.sub = next;
             }
             cx.notify();
         }))
@@ -2923,6 +3506,91 @@ mod tests {
                 "Create Text Channel",
                 "Delete Channel",
             ]
+        );
+    }
+
+    #[test]
+    fn a_voice_channel_menu_has_no_notification_settings() {
+        let items = channel_items(
+            ChannelFacts {
+                voice: true,
+                can_manage: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        );
+        let shown = labels(&items);
+        assert!(!shown.contains(&"Notification Settings".to_owned()));
+        assert!(shown.contains(&"Hide Names".to_owned()));
+        assert!(shown.contains(&"Mute Channel".to_owned()));
+    }
+
+    fn place(
+        id: u64,
+        kind: dc_state::ChannelKind,
+        parent: Option<u64>,
+        position: i64,
+    ) -> dc_state::Channel {
+        dc_state::Channel {
+            id,
+            name: format!("c{id}"),
+            kind,
+            position,
+            parent_id: parent,
+            last_message_id: None,
+            overwrites: Vec::new(),
+            user_limit: 0,
+            topic: None,
+            rate_limit_per_user: 0,
+            flags: 0,
+            nsfw: false,
+            default_auto_archive_duration: None,
+            available_tags: Vec::new(),
+            default_sort_order: None,
+            default_forum_layout: 0,
+        }
+    }
+
+    #[test]
+    fn moving_a_channel_renumbers_its_siblings() {
+        use dc_state::ChannelKind::{Category, Text, Voice};
+        let channels = [
+            place(1, Category, None, 0),
+            place(2, Category, None, 1),
+            place(10, Text, Some(1), 0),
+            place(11, Text, Some(1), 1),
+            place(12, Text, Some(1), 2),
+            place(20, Voice, Some(1), 0),
+        ];
+        // Last in its category: the others keep their places, only it moves (voice channels are a list of their own).
+        assert_eq!(
+            super::plan_channel_move(&channels, 10, None, false),
+            [(11, None, 0), (12, None, 1), (10, None, 2)]
+        );
+        // First: nothing to do when it already is.
+        assert!(super::plan_channel_move(&channels, 10, None, true).is_empty());
+        // Into the other category: it goes last there and names its new parent.
+        assert_eq!(
+            super::plan_channel_move(&channels, 11, Some(Some(2)), false),
+            [(11, Some(Some(2)), 0)]
+        );
+        // Out of every category.
+        assert_eq!(
+            super::plan_channel_move(&channels, 12, Some(None), false),
+            [(12, Some(None), 0)]
+        );
+        // Categories move among themselves, never into one.
+        assert_eq!(
+            super::plan_channel_move(&channels, 2, None, true),
+            [(2, None, 0), (1, None, 1)]
+        );
+        let me = &channels[2];
+        let list = super::move_destinations(&channels, me);
+        assert_eq!(
+            list.iter()
+                .map(|(id, _, off)| (*id, *off))
+                .collect::<Vec<_>>(),
+            [(0, false), (1, true), (2, false)]
         );
     }
 
