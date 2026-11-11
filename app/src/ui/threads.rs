@@ -75,13 +75,146 @@ impl Root {
         list
     }
 
+    /// The threads listed under `parent` (`ActiveJoinedThreadsStore` and `eA.computeState`/`eT` in module 791513, ported
+    /// in `dc_state::thread_list`): joined, active and relevant, newest joined first, the open thread on top.
+    fn sidebar_threads(&self, parent: Id) -> Vec<Thread> {
+        let Some(guild) = self.current_guild() else {
+            return Vec::new();
+        };
+        let now = chrono::Utc::now();
+        let open = self.channel.and_then(|channel| {
+            guild
+                .threads
+                .iter()
+                .find(|thread| thread.id == channel && thread.parent_id == parent)
+                .map(|thread| thread.id)
+        });
+        let parent_row = guild.channels.iter().find(|channel| channel.id == parent);
+        let category_collapsed = parent_row
+            .and_then(|row| row.parent_id)
+            .is_some_and(|category| {
+                self.stores
+                    .guild_settings
+                    .channel(guild.id, category)
+                    .collapsed
+            });
+        let parent_muted = self
+            .stores
+            .guild_settings
+            .channel_muted(guild.id, parent, now);
+        let voice_here = self
+            .call
+            .as_ref()
+            .is_some_and(|call| call.channel == parent);
+        let parent_selected = self.channel == Some(parent) || voice_here;
+        // `o || d || (!category.isCollapsed && !isMuted) ? relevant : unread` (module 791513 `eA.computeState`).
+        let source = if parent_selected || open.is_some() || (!category_collapsed && !parent_muted)
+        {
+            dc_state::thread_list::Source::Relevant
+        } else {
+            dc_state::thread_list::Source::Unread
+        };
+        let ids = dc_state::thread_list::sidebar_threads(&dc_state::thread_list::Query {
+            threads: &guild.threads,
+            parent,
+            source,
+            selected_thread: open,
+            parent_selected,
+            hide_muted: self.hide_muted(guild.id),
+            standing: |thread: &Thread| dc_state::thread_list::Standing {
+                has_unread: self.stores.is_unread(thread.id),
+                mentions: self.stores.read_states.mentions(thread.id),
+                in_voice: self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.channel == thread.id),
+            },
+            now,
+        });
+        ids.into_iter()
+            .filter_map(|id| guild.threads.iter().find(|thread| thread.id == id).cloned())
+            .collect()
+    }
+
+    /// Capture only: `threads facts` names every thread of the open guild with the facts the sidebar rule reads.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_threads(&mut self, words: &[&str]) -> String {
+        // `threads join <name part>`: the account's thread member arrives as it does when it joins in this session.
+        if let ["join", name @ ..] = words {
+            let name = name.join(" ");
+            let Some(guild) = self.current_guild() else {
+                return "threads: no guild".to_owned();
+            };
+            let (guild_id, found) = (
+                guild.id,
+                guild
+                    .threads
+                    .iter()
+                    .find(|thread| thread.name.contains(&name))
+                    .map(|thread| thread.id),
+            );
+            let (Some(thread), Some(me)) =
+                (found, self.stores.current_user.as_ref().map(|user| user.id))
+            else {
+                return format!("threads: no thread named {name}");
+            };
+            self.stores.dispatch(
+                "THREAD_MEMBER_UPDATE",
+                &json!({
+                    "id": thread.to_string(), "guild_id": guild_id.to_string(), "user_id": me.to_string(),
+                    "flags": 1, "muted": false, "join_timestamp": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+            return format!("threads: joined {thread}");
+        }
+        let Some(guild) = self.current_guild() else {
+            return "threads: no guild".to_owned();
+        };
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let now = chrono::Utc::now();
+        let listed = self.sidebar_threads_all();
+        let mut out = format!(
+            "threads: {} known, listed {:?}",
+            guild.threads.len(),
+            listed
+        );
+        for thread in &guild.threads {
+            out.push_str(&format!(
+                "
+  {} {:?} owner_is_me={} parent={} joined={} archived={} auto_archive_min={} last_activity_age_min={} unread={} mentions={} muted={} pinned={}",
+                thread.id,
+                thread.name,
+                thread.owner_id.is_some() && thread.owner_id == me,
+                thread.parent_id,
+                thread.joined,
+                thread.archived,
+                thread.auto_archive_duration,
+                (now.timestamp_millis() - thread.last_activity_ms()) / 60_000,
+                self.stores.is_unread(thread.id),
+                self.stores.read_states.mentions(thread.id),
+                thread.is_muted(now),
+                thread.pinned(),
+            ));
+        }
+        out
+    }
+
+    #[cfg(feature = "capture")]
+    fn sidebar_threads_all(&self) -> Vec<Id> {
+        let Some(guild) = self.current_guild() else {
+            return Vec::new();
+        };
+        guild
+            .channels
+            .iter()
+            .flat_map(|channel| self.sidebar_threads(channel.id))
+            .map(|thread| thread.id)
+            .collect()
+    }
+
     /// `container_reDhww`: a joined, active thread under its channel: the 10x19 spine 24px in, the link 36px in, the row the sidebar's full 294px.
     pub(super) fn thread_rows(&self, parent: Id, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let threads: Vec<Thread> = self
-            .guild_threads(Some(parent))
-            .into_iter()
-            .filter(|thread| (!thread.archived && thread.joined) || self.channel == Some(thread.id))
-            .collect();
+        let threads = self.sidebar_threads(parent);
         let count = threads.len();
         threads
             .into_iter()

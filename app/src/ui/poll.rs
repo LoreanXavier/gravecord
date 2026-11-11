@@ -11,6 +11,7 @@
 //! The vote shows at once and is taken back when the server refuses it (`D` and `U` in module 180662).
 
 use super::motion::{self, Ease};
+use super::tooltip::{Body, Side, Tip};
 use super::{Root, avatar_source, color, modal};
 use crate::net::Request;
 use dc_state::message_kinds::{Poll, PollEmoji};
@@ -385,6 +386,8 @@ impl Root {
         Some(
             div()
                 .mt(px(8.))
+                // Golden `d-closed`: the row ends 4px under the result card.
+                .mb(px(2.))
                 .w_full()
                 .max_w(px(410.))
                 .flex()
@@ -414,6 +417,24 @@ impl Root {
                 }))
                 .into_any_element(),
         )
+    }
+
+    /// `$m` in module 969632: up to three voters' names (not blocked or ignored people), then "and N others".
+    fn poll_voters_text(&self, poll: &Poll, index: usize) -> String {
+        let Some(answer) = poll.answer_ids.get(index) else {
+            return String::new();
+        };
+        let names: Vec<String> = poll
+            .voters
+            .get(answer)
+            .into_iter()
+            .flatten()
+            .filter(|user| !self.is_blocked(**user) && !self.stores.is_ignored(**user))
+            .filter_map(|user| self.stores.users.get(user))
+            .take(3)
+            .map(|user| self.guild_display_name(user))
+            .collect();
+        Poll::voters_tooltip(&names, poll.counts.get(index).copied().unwrap_or(0))
     }
 
     fn poll_view(&self, message: &Message) -> View {
@@ -529,9 +550,10 @@ impl Root {
                 .w_full()
                 .min_w(px(302.))
                 .max_w(px(472.))
-                // The message item keeps 8px under the card (golden `d-closed`: item bottom 8px below the card).
+                // Golden `d-closed` and `c-multi-voted`: 16px between two poll cards of one author, 25px from the
+                // card to the next group's row.
                 .mt(px(4.))
-                .mb(px(6.))
+                .mb(px(4.))
                 .p(px(16.))
                 .overflow_hidden()
                 .rounded(px(8.))
@@ -667,15 +689,27 @@ impl Root {
         let votes_data = model.show_counts.then(|| {
             let label = votes_label(votes);
             let label = if model.can_tap {
-                text_button_small(
+                let button = text_button_small(
                     SharedString::from(format!("poll-answer-votes-{id}-{answer_id}")),
                     label,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.poll_open_voters(channel, id, answer_id, cx);
-                }))
-                .into_any_element()
+                }));
+                // The names of the first voters over the count, when this session knows them (`L`, module 119591).
+                let who = self.poll_voters_text(poll, index);
+                if who.is_empty() {
+                    button.into_any_element()
+                } else {
+                    self.with_tip(
+                        format!("poll-voters-tip-{id}-{answer_id}"),
+                        Tip::body(Body::Muted(who.into()), Side::Top),
+                        button,
+                        cx,
+                    )
+                    .into_any_element()
+                }
             } else {
                 div()
                     .text_size(px(12.))
@@ -749,7 +783,6 @@ impl Root {
             .flex_row()
             .items_center()
             .gap(px(8.))
-            .overflow_hidden()
             .rounded(px(8.))
             .bg(color("--background-mod-muted"))
             .text_color(color("--text-default"))
@@ -772,14 +805,16 @@ impl Root {
             )
             .children(votes_data)
             .children(marker.map(|marker| div().flex_none().child(marker)))
-            // `outline: 1px solid var(--custom-poll-style-border)`: it takes no room, so it is an overlay.
+            // `outline: 1px solid var(--custom-poll-style-border)`: it takes no room and is drawn outside the
+            // 50px box (golden `ab-rest`: the outline rows sit 1px outside the fill), so it is an overlay at -1px.
             .child(
                 div()
                     .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .rounded(px(8.))
+                    .top(px(-1.))
+                    .left(px(-1.))
+                    .right(px(-1.))
+                    .bottom(px(-1.))
+                    .rounded(px(9.))
                     .border_1()
                     .border_color(border)
                     .group_hover(group, move |style| style.border_color(hover_border)),
@@ -1126,6 +1161,25 @@ impl Root {
             .flatten()
             .filter_map(User::from_value)
             .collect();
+        // The list also feeds the names over an answer's vote count (`ReactionStore`'s VOTE reactions).
+        let target = key
+            .strip_prefix(VOTERS_PREFIX)
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(message, answer)| {
+                Some((message.parse::<Id>().ok()?, answer.parse::<u64>().ok()?))
+            });
+        let channel = self.polls.voters.as_ref().map(|voters| voters.channel);
+        if let (Some((message, answer)), Some(channel)) = (target, channel) {
+            let ids: Vec<Id> = users.iter().map(|user| user.id).collect();
+            self.stores
+                .poll_voters_loaded(channel, message, answer, &ids);
+        }
+        for user in &users {
+            self.stores
+                .users
+                .entry(user.id)
+                .or_insert_with(|| user.clone());
+        }
         for user in users {
             let (image, url) = avatar_source(&user);
             self.request_image(image, url);

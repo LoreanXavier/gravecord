@@ -89,6 +89,7 @@ impl Poll {
                 })
                 .collect(),
             layout: value["layout_type"].as_u64().unwrap_or(LAYOUT_DEFAULT),
+            voters: Default::default(),
         }
     }
 
@@ -195,6 +196,36 @@ impl Poll {
         }
     }
 
+    /// Remembers who picked an answer, or forgets them.
+    pub fn note_voter(&mut self, answer: u64, user: Id, add: bool) {
+        let list = self.voters.entry(answer).or_default();
+        if add {
+            if !list.contains(&user) {
+                list.push(user);
+            }
+        } else {
+            list.retain(|known| *known != user);
+        }
+    }
+
+    /// The vote-count tooltip text (`$m` in module 969632): up to three names, then how many more voted. `names`
+    /// are the first voters of the answer in the order they are known, already without blocked or ignored people.
+    pub fn voters_tooltip(names: &[String], votes: u64) -> String {
+        let shown = &names[..names.len().min(3)];
+        let others = votes.saturating_sub(shown.len() as u64);
+        let more = |n: u64| format!("{n} {}", if n == 1 { "other" } else { "others" });
+        match (shown, others) {
+            ([], _) => String::new(),
+            ([a], 0) => a.clone(),
+            ([a], n) => format!("{a} and {}", more(n)),
+            ([a, b], 0) => format!("{a} and {b}"),
+            ([a, b], n) => format!("{a}, {b}, and {}", more(n)),
+            ([a, b, c], 0) => format!("{a}, {b}, and {c}"),
+            ([a, b, c], n) => format!("{a}, {b}, {c}, and {}", more(n)),
+            _ => unreachable!("at most three names are shown"),
+        }
+    }
+
     /// The vote this account just submitted, applied at once (`D` in module 180662 dispatches an optimistic add
     /// for each new answer and an optimistic remove for each dropped one).
     pub fn set_my_votes(&mut self, answers: &[u64]) {
@@ -247,6 +278,7 @@ impl Stores {
         let mine = self.current_user.as_ref().map(|me| me.id) == Some(user);
         if let Some(poll) = self.poll_of(channel, message) {
             poll.apply_vote(answer, add, mine);
+            poll.note_voter(answer, user, add);
         }
     }
 
@@ -271,7 +303,15 @@ impl Stores {
                 .filter_map(id)
             {
                 poll.apply_vote(answer, true, Some(user) == me);
+                poll.note_voter(answer, user, true);
             }
+        }
+    }
+
+    /// A loaded voters list (`GET /channels/{c}/polls/{m}/answers/{a}`): who picked the answer, in server order.
+    pub fn poll_voters_loaded(&mut self, channel: Id, message: Id, answer: u64, users: &[Id]) {
+        if let Some(poll) = self.poll_of(channel, message) {
+            poll.voters.insert(answer, users.to_vec());
         }
     }
 
@@ -282,9 +322,15 @@ impl Stores {
         message: Id,
         answers: &[u64],
     ) -> Option<Vec<u64>> {
+        let me = self.current_user.as_ref().map(|me| me.id);
         let poll = self.poll_of(channel, message)?;
         let before = poll.my_votes();
         poll.set_my_votes(answers);
+        if let Some(me) = me {
+            for answer in poll.answer_ids.clone() {
+                poll.note_voter(answer, me, answers.contains(&answer));
+            }
+        }
         Some(before)
     }
 
@@ -308,7 +354,9 @@ impl Stores {
         // A gateway update is the same for every viewer, so its `me_voted` is never this account's: the votes it
         // had stay as they were (observed on the fixture: the update that ends a poll lists `me_voted: false`).
         let mine = known.me_voted.clone();
+        let voters = std::mem::take(&mut known.voters);
         *known = fresh;
+        known.voters = voters;
         if mine.len() == known.me_voted.len() {
             known.me_voted = mine;
         }
@@ -478,5 +526,54 @@ mod tests {
         assert_eq!(ended.counts, [2, 3, 2]);
         // The update's `me_voted` flags belong to nobody in particular: this account keeps what it had (answer 3).
         assert_eq!(ended.my_votes(), [3]);
+    }
+
+    #[test]
+    fn the_vote_count_tooltip_lists_three_names_and_the_rest() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        assert_eq!(Poll::voters_tooltip(&[], 4), "");
+        assert_eq!(Poll::voters_tooltip(&names(&["a"]), 1), "a");
+        assert_eq!(Poll::voters_tooltip(&names(&["a"]), 2), "a and 1 other");
+        assert_eq!(Poll::voters_tooltip(&names(&["a", "b"]), 2), "a and b");
+        assert_eq!(
+            Poll::voters_tooltip(&names(&["a", "b"]), 5),
+            "a, b, and 3 others"
+        );
+        assert_eq!(
+            Poll::voters_tooltip(&names(&["a", "b", "c"]), 3),
+            "a, b, and c"
+        );
+        assert_eq!(
+            Poll::voters_tooltip(&names(&["a", "b", "c", "d"]), 9),
+            "a, b, c, and 6 others"
+        );
+    }
+
+    #[test]
+    fn votes_remember_who_voted_and_a_loaded_list_replaces_them() {
+        let mut stores = Stores::default();
+        let message = Message::from_value(&json!({
+            "id": "20", "channel_id": "10", "content": "", "timestamp": "2026-11-10T10:00:00.000000+00:00",
+            "type": 0, "author": {"id": "1", "username": "a"}, "poll": sample()}))
+        .unwrap();
+        stores.messages.insert(10, vec![message]);
+        let event = |answer: u64, user: &str| json!({"channel_id": "10", "message_id": "20", "user_id": user, "answer_id": answer});
+        stores.dispatch("MESSAGE_POLL_VOTE_ADD", &event(2, "7"));
+        stores.dispatch("MESSAGE_POLL_VOTE_ADD", &event(2, "8"));
+        stores.dispatch("MESSAGE_POLL_VOTE_ADD", &event(2, "7"));
+        let voters = |stores: &Stores| {
+            stores.messages[&10][0].extra.poll.as_ref().unwrap().voters[&2].clone()
+        };
+        assert_eq!(voters(&stores), [7, 8]);
+        stores.dispatch("MESSAGE_POLL_VOTE_REMOVE", &event(2, "7"));
+        assert_eq!(voters(&stores), [8]);
+        stores.poll_voters_loaded(10, 20, 2, &[5, 6, 8]);
+        assert_eq!(voters(&stores), [5, 6, 8]);
+        // A message update keeps what is known about the voters.
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "20", "channel_id": "10", "poll": sample()}),
+        );
+        assert_eq!(voters(&stores), [5, 6, 8]);
     }
 }
