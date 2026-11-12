@@ -117,6 +117,8 @@ pub(super) struct State {
     pub focus: video_tiles::Focus,
     /// Full Screen: the call fills the window and the window fills the screen.
     pub fullscreen: bool,
+    /// "Hide Members" of the focus mode (`participantsOpen` is false).
+    pub members_hidden: bool,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
     pub(super) background: super::call_background::State,
@@ -136,6 +138,7 @@ impl Default for State {
             suggest: false,
             focus: Default::default(),
             fullscreen: false,
+            members_hidden: false,
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -604,15 +607,28 @@ impl Root {
             .filter(|(at, _)| *at != index)
             .map(|(_, person)| person)
             .collect();
+        // Module 699707. The strip shows while the members are open and the area is over 384px high (`Q`); with it
+        // the tile keeps 140px clear above and under it (72 + 68) and sits 60px up, without it the tile takes the
+        // whole area, as large as its 16:9 fits.
+        let strip_shown = !self.vv.members_hidden && height > 384. && !others.is_empty();
+        // The toggle exists outside the layouts that share the column with a chat (`et`).
+        let toggle_shown = height > 384. && !others.is_empty() && self.call_layout_is_full();
         let strip_top = height - 192.;
-        let main_bottom = if others.is_empty() {
-            height - 80.
+        let (main_top, main_bottom) = if strip_shown {
+            (80., strip_top - 8.)
         } else {
-            strip_top - 8.
+            (0., height)
         };
-        let main_height = (main_bottom - 80.).max(120.);
-        let main_width = (main_height * ASPECT).min(width - 16.);
-        let main_height = main_width / ASPECT;
+        let room = (main_bottom - main_top).max(120.);
+        let main_width = (room * ASPECT).min(width);
+        let main_height = (main_width / ASPECT).floor();
+        // `actionRow`: 16px under the tile with the strip, else inside it, 40px (and what the bar needs) from its end.
+        let tile_bottom = main_top + (room + main_height) / 2.;
+        let toggle_top = if strip_shown {
+            tile_bottom + 16.
+        } else {
+            tile_bottom - 40. - (72. - (height - main_height) / 2.).max(0.) - 32.
+        };
         let big = GridLayout {
             columns: 1,
             rows: 1,
@@ -626,10 +642,15 @@ impl Root {
             tile_height: 112.,
             ..big
         };
-        let strip: Vec<AnyElement> = others
-            .into_iter()
-            .map(|person| self.tile(person, small, cx))
-            .collect();
+        let strip: Vec<AnyElement> = if strip_shown {
+            others
+                .into_iter()
+                .map(|person| self.tile(person, small, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let members_open = !self.vv.members_hidden;
         div()
             .absolute()
             .inset_0()
@@ -638,13 +659,64 @@ impl Root {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(px(80.))
-                    .h(px(main_bottom - 80.))
+                    .top(px(main_top))
+                    .h(px(main_bottom - main_top))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(self.tile(&people[index], big, cx)),
             )
+            .when(toggle_shown && self.controls_shown(), |this| {
+                // Module 80051: the chevron and the group, "Hide Members" while they show.
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(toggle_top))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            self.with_tip(
+                                "call-members-toggle-tip",
+                                Tip::text(
+                                    if members_open {
+                                        "Hide Members"
+                                    } else {
+                                        "Show Members"
+                                    },
+                                    Side::Top,
+                                ),
+                                div()
+                                    .id("call-members-toggle")
+                                    .occlude()
+                                    .h(px(32.))
+                                    .px(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(gpui::hsla(0., 0., 0., 0.6))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .cursor_pointer()
+                                    .child(icon(
+                                        if members_open {
+                                            "clips_chevron_down"
+                                        } else {
+                                            "clips_chevron_up"
+                                        },
+                                        24.,
+                                        "--white",
+                                    ))
+                                    .child(icon("members", 24., "--white"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.vv.members_hidden = !this.vv.members_hidden;
+                                        cx.notify();
+                                    })),
+                                cx,
+                            ),
+                        ),
+                )
+            })
             .when(!strip.is_empty(), |this| {
                 this.child(
                     div()
@@ -660,6 +732,14 @@ impl Root {
                 )
             })
             .into_any_element()
+    }
+
+    /// Whether the call has its whole area to itself (`NO_CHAT`, `FULL_SCREEN`, a server's voice channel) and not
+    /// the upper part of a direct message's column (`MINIMUM`, `NORMAL`).
+    fn call_layout_is_full(&self) -> bool {
+        self.vv.fullscreen
+            || self.dmc.no_chat
+            || self.call.as_ref().is_some_and(|call| call.guild != 0)
     }
 
     /// Where the call view's top left corner is in the window: beside the sidebar under the title bar, or the
@@ -1810,6 +1890,36 @@ impl Root {
                     .flex_1()
                     .flex()
                     .items_center()
+                    // `eZ` of module 540462 in the left of the tray: "Hide chat" while a direct message's video
+                    // call shares the column with the chat (the chevron points down), "Show chat" once it has all of
+                    // it (it points up).
+                    .when(guild == 0 && self.dm_call_can_hide_chat(), |this| {
+                        let hidden = self.dm_call_chat_hidden();
+                        this.child(
+                            self.with_tip(
+                                "call-chat-tip",
+                                Tip::text(
+                                    if hidden { "Show chat" } else { "Hide chat" },
+                                    Side::Top,
+                                ),
+                                tray(
+                                    "call-chat",
+                                    if hidden {
+                                        "clips_chevron_up"
+                                    } else {
+                                        "clips_chevron_down"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.tip = None;
+                                        this.toggle_dm_call_chat(cx);
+                                    },
+                                )),
+                                cx,
+                            ),
+                        )
+                    })
                     .when(guild != 0, |this| {
                         this.child(
                             self.with_tip(

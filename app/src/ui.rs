@@ -5059,37 +5059,6 @@ impl Root {
                                 },
                             )),
                         )
-                        // `eZ` of module 540462: "Hide chat" while the video call shares the column with the chat
-                        // (the chevron points down), "Show chat" once the call has all of it (it points up).
-                        .when(in_call_area && self.dm_call_can_hide_chat(), |row| {
-                            let hidden = self.dm_call_chat_hidden();
-                            row.child(
-                                self.header_stop(
-                                    self.with_tip(
-                                        "dm-call-chat",
-                                        Tip::text(
-                                            if hidden { "Show chat" } else { "Hide chat" },
-                                            Side::Bottom,
-                                        ),
-                                        tool(if hidden {
-                                            "clips_chevron_up"
-                                        } else {
-                                            "clips_chevron_down"
-                                        }),
-                                        cx,
-                                    ),
-                                    "dm-call-chat",
-                                    cx,
-                                )
-                                .cursor_pointer()
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.tip = None;
-                                        this.toggle_dm_call_chat(cx);
-                                    },
-                                )),
-                            )
-                        })
                         .child(
                             self.header_stop(
                                 self.with_tip(
