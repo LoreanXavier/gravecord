@@ -226,6 +226,14 @@ fn tag_chip_width(label_width: f32) -> f32 {
     layout_unit(label_width) + 26.
 }
 
+/// The row key of "Open threads in split view" (`dc_proto::settings` `use_thread_sidebar`).
+const THREADS_SPLIT_VIEW: &str = "chat_threads_split_view";
+
+/// Whether an open post shows beside its forum's list: only with split view on and a docked sidebar.
+fn post_beside_list(split_view: bool, window_width: f32) -> bool {
+    split_view && post_sidebar_fits(window_width)
+}
+
 /// `divider_BkGrJJ` between the sort button and the tags: 0.797 px in the capture (51/64).
 const DIVIDER_WIDTH: f32 = 0.796875;
 
@@ -1560,7 +1568,17 @@ impl Root {
     /// stands in for it. The member list does not count: `getSection` (module 799704) answers `SIDEBAR_CHAT`
     /// whenever a sidebar is open, so the member list is hidden beside an open post.
     pub(super) fn forum_split_fits(&self, window: &Window) -> bool {
-        post_sidebar_fits(f32::from(window.viewport_size().width))
+        post_beside_list(
+            self.threads_split_view(),
+            f32::from(window.viewport_size().width),
+        )
+    }
+
+    /// "Open threads in split view" (`useThreadSidebar`, settings proto `text_and_images.use_thread_sidebar`, on by
+    /// default). Off, `openThreadSidebarForViewing` (module 747926 `JA`) closes the sidebar and opens the thread as
+    /// its own channel, so a post fills the chat view instead of opening beside its forum's list.
+    pub(super) fn threads_split_view(&self) -> bool {
+        self.pref_on(THREADS_SPLIT_VIEW, true)
     }
 
     fn forum_sidebar_width(window: &Window) -> f32 {
@@ -2793,6 +2811,15 @@ mod tests {
         assert_eq!(tag_chip_width(75.082), 101.09375);
         assert_eq!(tag_chip_width(99.386), 125.390625);
         assert_eq!(tag_chip_width(60.018), 86.03125);
+    }
+
+    #[test]
+    fn split_view_off_opens_a_post_as_its_own_channel() {
+        assert!(post_beside_list(true, 1280.));
+        assert!(!post_beside_list(false, 1280.));
+        assert!(!post_beside_list(true, 843.));
+        let pages = include_str!("settings/pages.rs");
+        assert!(pages.contains(&format!("key: \"{THREADS_SPLIT_VIEW}\"")));
     }
 
     #[test]

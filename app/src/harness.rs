@@ -779,6 +779,15 @@ pub async fn run(
                 let _ = writeln!(output, "clips: {line}");
             }
             // The calls the text-to-speech engine received (a capture build never speaks aloud).
+            // `search last` / `search answer <total>`: the open search's request, and an answer to it.
+            ["search", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_search(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "search: {line}");
+            }
             ["speech", "log"] => {
                 let _ = writeln!(output, "speech: {:?}", crate::speech::spoken_log());
             }

@@ -266,7 +266,7 @@ impl Root {
         });
     }
 
-    fn close_full_profile(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_full_profile(&mut self, cx: &mut Context<Self>) {
         if let Some(open) = self.full_profile.as_ref() {
             let text = open.note.read(cx).text().to_owned();
             self.save_note(text);

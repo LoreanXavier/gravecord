@@ -27,6 +27,7 @@ pub mod guild_member_counts;
 pub mod guild_settings;
 pub mod interactions;
 pub mod local_activity;
+pub mod location_metadata;
 pub mod member_list;
 pub mod members;
 pub mod message_kinds;
@@ -1528,6 +1529,8 @@ pub struct Stores {
     pub presences: HashMap<Id, String>,
     pub presence: presence::PresenceStore,
     pub member_counts: guild_member_counts::GuildMemberCountStore,
+    /// The connection's country (`LocationMetadataStore`).
+    pub location_metadata: location_metadata::LocationMetadataStore,
     pub scheduled_events: scheduled_events::GuildScheduledEventStore,
     /// Voice channel statuses and call start times (`ChannelStatusStore`, `VoiceChannelStartTimeStore`).
     pub channel_status: channel_status::ChannelStatusStore,
@@ -1613,6 +1616,7 @@ impl Stores {
         }
         self.presence.dispatch(name, data);
         self.member_counts.dispatch(name, data);
+        self.location_metadata.dispatch(name, data);
         self.scheduled_events.dispatch(name, data);
         self.channel_status.dispatch(name, data);
         self.stage_instances.dispatch(name, data);

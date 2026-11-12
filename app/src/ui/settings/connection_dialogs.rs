@@ -320,7 +320,11 @@ fn new_editor(
 
 impl Root {
     /// A connection button whose first step is a dialog of its own (module 80320).
-    pub(super) fn open_connection_dialog(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn open_connection_dialog(
+        &mut self,
+        kind: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         match kind {
             "bluesky" => {
                 let (editor, sub) = new_editor("example.bsky.social", 0, cx);
@@ -856,7 +860,13 @@ impl Root {
     fn info_dialog(&self, info: &Info, cx: &mut Context<Self>) -> AnyElement {
         let kind = info.kind;
         let data = landing(kind);
-        let pose = crate::ui::motion::modal_pose("settings-connect-info");
+        // Crunchyroll, PlayStation and Xbox are on the legacy modal root (`root__KoJTP` in
+        // design/dom/settings/connect-{crunchyroll,playstation,xbox}-dialog, `EO` in module 935462).
+        let pose = crate::ui::motion::legacy_modal_pose(
+            "settings-connect-info",
+            "settings-connect-info-layer",
+            false,
+        );
         // The links are built before the button closure below borrows `cx`.
         let mut inline_link = Some(if data.inline_link {
             self.connect_learn_more(data.body, data.article, cx)

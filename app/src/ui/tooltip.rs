@@ -6,8 +6,8 @@ use dc_state::{Badge, Guild, Id};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, Context, Display, Element, ElementId, FontWeight,
     GlobalElementId, Image, ImageFormat, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Position, Radians, Rgba, SharedString, Stateful, Style, Transformation, Window, canvas,
-    deferred, div, hsla, img, point, prelude::*, px, svg,
+    Position, Radians, Rgba, SharedString, Stateful, Style, Transformation, Window, WindowId,
+    canvas, deferred, div, hsla, img, point, prelude::*, px, svg,
 };
 use std::cell::RefCell;
 use std::f32::consts::{FRAC_PI_2, PI};
@@ -116,16 +116,50 @@ pub(super) struct Active {
     key: SharedString,
     tip: Tip,
     anchor: Bounds<Pixels>,
+    /// The window whose element it belongs to (`anchor` is in that window's coordinates); `None` is the main window.
+    window: Option<WindowId>,
 }
 
 impl Active {
-    /// A tooltip placed by its owner rather than by hover, like a slider's value bubble.
+    /// A tooltip placed by its owner rather than by hover, like a slider's value bubble, in the main window.
     pub fn new(key: SharedString, tip: Tip, anchor: Bounds<Pixels>) -> Self {
-        Self { key, tip, anchor }
+        Self {
+            key,
+            tip,
+            anchor,
+            window: None,
+        }
+    }
+
+    /// The same tooltip, in the window `window` (the one its element was drawn in).
+    pub fn in_window(mut self, window: WindowId) -> Self {
+        self.window = Some(window);
+        self
     }
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    pub fn anchor(&self) -> Bounds<Pixels> {
+        self.anchor
+    }
+}
+
+/// Whether a window's tooltip layer draws a tooltip that belongs to the window `tip`. `layer` is the window drawing
+/// (`None` for the main window) and `popout` the popped-out call window, if open: that window draws only its own
+/// tooltips, and the main window every other one, so a tooltip shows in the window that was hovered and nowhere else.
+/// (A tooltip of the popped-out window is dropped when the window closes.)
+pub(super) fn drawn_in(
+    tip: Option<WindowId>,
+    layer: Option<WindowId>,
+    popout: Option<WindowId>,
+) -> bool {
+    let popped = popout.is_some() && tip == popout;
+    if layer.is_some() && layer == popout {
+        popped
+    } else {
+        !popped
     }
 }
 
@@ -435,7 +469,8 @@ impl Root {
                 .left_0()
                 .size_full(),
             )
-            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+            .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                let window = window.window_handle().window_id();
                 if *inside && tip.delay > 0 {
                     // The tooltip opens once the pointer has stayed; leaving or pressing first cancels it.
                     this.tip_pending = Some(hovered.clone());
@@ -450,10 +485,8 @@ impl Root {
                             }
                             this.tip_pending = None;
                             let anchor = this.tip_anchors.borrow().get(&key).copied();
-                            this.tip = anchor.map(|anchor| Active {
-                                key: key.clone(),
-                                tip: tip.clone(),
-                                anchor,
+                            this.tip = anchor.map(|anchor| {
+                                Active::new(key.clone(), tip.clone(), anchor).in_window(window)
                             });
                             cx.notify();
                         });
@@ -461,10 +494,8 @@ impl Root {
                     .detach();
                 } else if *inside {
                     let anchor = this.tip_anchors.borrow().get(&hovered).copied();
-                    this.tip = anchor.map(|anchor| Active {
-                        key: hovered.clone(),
-                        tip: tip.clone(),
-                        anchor,
+                    this.tip = anchor.map(|anchor| {
+                        Active::new(hovered.clone(), tip.clone(), anchor).in_window(window)
                     });
                 } else {
                     if this.tip_pending.as_ref() == Some(&hovered) {
@@ -699,6 +730,31 @@ impl Root {
     /// reduced motion the
     /// official `from` and `leave` keep scale 1 and still fade, which is what this does.
     pub(super) fn tip_layer(&self) -> Vec<AnyElement> {
+        self.tip_layer_in(None)
+    }
+
+    /// The window the call is popped out to, if it is.
+    fn popout_window(&self) -> Option<WindowId> {
+        self.vv
+            .popout
+            .map(|handle| gpui::AnyWindowHandle::from(handle).window_id())
+    }
+
+    /// A window is closing: its tooltip goes with it.
+    pub(super) fn drop_tips_of(&mut self, window: WindowId) {
+        if self
+            .tip
+            .as_ref()
+            .is_some_and(|tip| tip.window == Some(window))
+        {
+            self.tip = None;
+            self.tip_pending = None;
+        }
+    }
+
+    /// The tooltips of the window `layer` (`None` for the main window): those whose element was hovered there.
+    pub(super) fn tip_layer_in(&self, layer: Option<WindowId>) -> Vec<AnyElement> {
+        let popout = self.popout_window();
         let frames: Vec<(Active, f32)> = TIPS.with(|tips| {
             let mut tips = tips.borrow_mut();
             let wanted = self.tip.as_ref();
@@ -732,6 +788,7 @@ impl Root {
         });
         frames
             .into_iter()
+            .filter(|(active, _)| drawn_in(active.window, layer, popout))
             .filter_map(|(active, progress)| {
                 let body = self.tip_body(&active.tip.body)?;
                 let opacity = progress.clamp(0., 1.);
@@ -769,8 +826,25 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use super::{Side, caret_origin, place};
-    use gpui::{Bounds, point, px, size};
+    use super::{Side, caret_origin, drawn_in, place};
+    use gpui::{Bounds, WindowId, point, px, size};
+
+    #[test]
+    fn a_tooltip_shows_in_the_window_that_was_hovered_and_nowhere_else() {
+        let main = Some(WindowId::from(1));
+        let popout = Some(WindowId::from(2));
+        // Hovered in the popped-out call window: only that window's layer draws it.
+        assert!(drawn_in(popout, popout, popout));
+        assert!(!drawn_in(popout, None, popout));
+        // Hovered in the main window, or placed by its owner there: only the main layer.
+        for tip in [main, None] {
+            assert!(drawn_in(tip, None, popout));
+            assert!(!drawn_in(tip, popout, popout));
+        }
+        // Without a popped-out window everything is the main window's.
+        assert!(drawn_in(main, None, None));
+        assert!(drawn_in(None, None, None));
+    }
 
     fn anchor() -> Bounds<gpui::Pixels> {
         Bounds::new(point(px(16.), px(137.)), size(px(40.), px(40.)))

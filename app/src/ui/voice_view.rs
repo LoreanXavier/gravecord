@@ -521,7 +521,11 @@ impl Root {
         if self.dmc.pin_controls {
             return true;
         }
-        self.vv.last_move.elapsed() < IDLE || self.vv.menu.is_some()
+        // The zoom controls hold the idle off while hovered or pressed (`onPreventIdle("interact")`, 117029).
+        self.vv.last_move.elapsed() < IDLE
+            || self.vv.menu.is_some()
+            || self.stream_zoom.box_hover
+            || self.stream_zoom.held()
     }
 
     /// Where the call started on this client, as `m:ss` (`h:mm:ss` from an hour), for the sidebar row.
@@ -1309,6 +1313,7 @@ impl Root {
         };
         // The focused stream's quality and LIVE sit in the header instead.
         let is_focus = self.vv.focus.tile == Some((user_id, kind));
+        let zoom_controls = stream_tile && is_focus && video;
         let indicators = stream.as_ref().filter(|_| !is_focus).map(|stream| {
             let pill = |text: String, fill: &'static str| {
                 div()
@@ -1367,11 +1372,8 @@ impl Root {
                         gpui::ScrollDelta::Pixels(delta) => -f32::from(delta.y),
                         gpui::ScrollDelta::Lines(delta) => -delta.y * 100.,
                     };
-                    this.stream_zoom
-                        .wheel(event.position.x, event.position.y, delta_y);
-                    this.voice_view_moved(cx);
+                    this.stream_zoom_wheel(event.position.x, event.position.y, delta_y, cx);
                     cx.stop_propagation();
-                    cx.notify();
                 }))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
@@ -1476,7 +1478,19 @@ impl Root {
                     .items_end()
                     .justify_between()
                     .child(pill)
-                    .when(!outside, |this| this.child(options)),
+                    // Module 175203 `eM`: a focused tile's action row has no Options; a focused stream's has its zoom
+                    // controls (`zoom-controls`, design/dom/popouts/stream-focused-darker-cozy.json).
+                    .when(!outside, |this| {
+                        if zoom_controls {
+                            let image = match &media {
+                                TileMedia::Video(key) => self.video.images.image(key).cloned(),
+                                _ => None,
+                            };
+                            this.child(self.stream_zoom_controls(image, cx))
+                        } else {
+                            this.child(options)
+                        }
+                    }),
             )
             .when(person.speaking && !stream_tile, |this| {
                 this.child(
@@ -1553,6 +1567,28 @@ impl Root {
                             // `--custom-zoom-scale` and the pan: the picture grows about the tile's centre and
                             // moves by the pan; the tile crops it.
                             let zoom = self.stream_zoom.of(key.0);
+                            // `--custom-zoom-transition`: a step eases 0.15s, but not under a drag, the wheel or the
+                            // slider (`.full-motion` rule).
+                            let ease = if self.stream_zoom.picture_eases(super::motion::now()) {
+                                super::motion::css(150., super::motion::Ease::EaseOut).full_motion()
+                            } else {
+                                super::motion::css(0., super::motion::Ease::EaseOut)
+                            };
+                            let [pan_x, pan_y, level, _] = super::motion::animate(
+                                super::motion::key(&("vstream-zoom", key.0)),
+                                [
+                                    f64::from(zoom.pan.0),
+                                    f64::from(zoom.pan.1),
+                                    f64::from(zoom.level),
+                                    0.,
+                                ],
+                                ease,
+                            )
+                            .map(|value| value as f32);
+                            let zoom = super::stream_zoom::Zoom {
+                                level,
+                                pan: (pan_x, pan_y),
+                            };
                             let (width, height) = (
                                 layout.tile_width * zoom.level,
                                 layout.tile_height * zoom.level,

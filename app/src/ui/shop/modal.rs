@@ -51,7 +51,7 @@ impl Root {
         cx.notify();
     }
 
-    pub(super) fn shop_close_modal(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn shop_close_modal(&mut self, cx: &mut Context<Self>) {
         if self.shop.checkout.is_some() {
             self.shop.checkout = None;
         } else {

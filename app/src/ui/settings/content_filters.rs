@@ -101,7 +101,8 @@ pub(super) fn age_notice(
 ) -> gpui::Div {
     let learn_more: super::LinkPress = Box::new(move |_, cx| {
         let _ = root.update(cx, |this, cx| {
-            this.settings_open_url(&super::age_gated_article(None), cx);
+            let url = this.age_gated_article_url();
+            this.settings_open_url(&url, cx);
         });
     });
     div()

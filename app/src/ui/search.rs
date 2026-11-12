@@ -25,6 +25,8 @@ pub(crate) struct Search {
     /// The query the panel shows results for.
     pub shown: Option<String>,
     pub oldest_first: bool,
+    /// The method and route of the last search request, for the harness.
+    pub last_route: Option<String>,
 }
 
 /// The words of the query outside operators, which the results highlight.
@@ -64,6 +66,93 @@ pub(crate) fn operators(query: &str) -> (Vec<(&'static str, String)>, String) {
     (found, content.join(" "))
 }
 
+/// "By default, searching in DMs..." (`isCrossDmSearchEnabled`, settings proto `text_and_images.is_cross_dm_search_enabled`,
+/// off by default): its second option searches across all DMs.
+const CROSS_DM_SEARCH: &str = "message_search_default_dm_search_behavior";
+/// `tc619d`.
+const ALL_DMS_SUBTITLE: &str = "in all Direct Messages";
+/// `SEARCH_TABS_DMS`.
+const DMS_TABS_ROUTE: &str = "/users/@me/messages/search/tabs";
+/// `getLimit` of the DM search (module 753806).
+const TABS_LIMIT: u64 = 25;
+
+/// `SearchFetchManager.createRequestPayload` (module 956467) for the messages tab: the query's fields under
+/// `tabs.messages` with the sort, the offset and the limit, `track_exact_total_hits` set. Parsed queries (module 822382
+/// `Zf`) hold `content` as one string, `pinned` as one boolean, `min_id`/`max_id` as ids, and every other field as a
+/// list.
+fn tabs_payload(params: &[String]) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+    let mut tab = Map::new();
+    let mut content = Vec::new();
+    for param in params {
+        let Some((key, value)) = param.split_once('=') else {
+            continue;
+        };
+        let value = decode(value);
+        match key {
+            "content" => content.push(value),
+            "sort_by" | "sort_order" | "min_id" | "max_id" => {
+                tab.insert(key.to_owned(), Value::String(value));
+            }
+            "offset" => {
+                tab.insert(key.to_owned(), json!(value.parse::<u64>().unwrap_or(0)));
+            }
+            "pinned" => {
+                tab.insert(key.to_owned(), Value::Bool(value == "true"));
+            }
+            _ => {
+                let list = tab
+                    .entry(key.to_owned())
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let Value::Array(list) = list {
+                    list.push(Value::String(value));
+                }
+            }
+        }
+    }
+    let content = content.join(" ").trim().to_owned();
+    if !content.is_empty() {
+        tab.insert("content".to_owned(), Value::String(content));
+    }
+    tab.insert("limit".to_owned(), json!(TABS_LIMIT));
+    json!({"tabs": {"messages": tab}, "track_exact_total_hits": true})
+}
+
+/// The reverse of `encode`.
+fn decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(byte) = text
+                .get(index + 1..index + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            out.push(byte);
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The results of either search: a GET's body, or the messages tab of the tabs search's answer (`body.tabs.messages`,
+/// which carries `total_results`, `messages`, `threads` as the GET's body does).
+fn results_body(fetched: &serde_json::Value) -> &serde_json::Value {
+    let body = if fetched.get("ok").is_some() && fetched.get("status").is_some() {
+        &fetched["body"]
+    } else {
+        fetched
+    };
+    match body.get("tabs") {
+        Some(tabs) => &tabs["messages"],
+        None => body,
+    }
+}
+
 pub(super) fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
@@ -76,6 +165,44 @@ pub(super) fn encode(text: &str) -> String {
 }
 
 impl Root {
+    /// The search context of module 775427 `J`: in a DM it is `{type: DMS}` (every DM) when the setting is on, else the
+    /// DM itself.
+    pub(super) fn search_all_dms(&self) -> bool {
+        self.guild.is_none()
+            && self.current_dm().is_some()
+            && self.pref_index(CROSS_DM_SEARCH, 0) == 1
+    }
+
+    /// Capture only: `search last` names the last request; `search answer <total>` answers it as the server would
+    /// (no messages), in the shape of the route it went to.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_search(&mut self, words: &[&str]) -> String {
+        match words {
+            ["last"] => self
+                .search
+                .as_ref()
+                .and_then(|search| search.last_route.clone())
+                .unwrap_or_else(|| "no search".to_owned()),
+            ["answer", total] => {
+                let total = total.parse::<u64>().unwrap_or(0);
+                let tabs = self
+                    .search
+                    .as_ref()
+                    .and_then(|search| search.last_route.as_deref())
+                    .is_some_and(|route| route.starts_with("POST"));
+                let body = serde_json::json!({"total_results": total, "messages": []});
+                let answer = if tabs {
+                    serde_json::json!({"ok": true, "status": 200, "body": {"tabs": {"messages": body}}})
+                } else {
+                    body
+                };
+                self.fetched.insert(RESULTS_KEY.to_owned(), answer);
+                format!("answered with {total}")
+            }
+            _ => "usage: search last | search answer <total>".to_owned(),
+        }
+    }
+
     fn ensure_search(&mut self, cx: &mut Context<Self>) -> Entity<Editor> {
         if let Some(search) = self.search.as_ref() {
             return search.field.clone();
@@ -107,6 +234,7 @@ impl Root {
             focused: false,
             shown: None,
             oldest_first: false,
+            last_route: None,
         });
         field
     }
@@ -207,18 +335,42 @@ impl Root {
             if oldest_first { "asc" } else { "desc" }
         ));
         params.push("offset=0".to_owned());
-        let route = match (self.guild, self.channel) {
-            (Some(guild), _) => format!("/guilds/{guild}/messages/search?{}", params.join("&")),
-            (None, Some(channel)) => {
-                format!("/channels/{channel}/messages/search?{}", params.join("&"))
-            }
-            _ => return,
-        };
         self.fetched.remove(RESULTS_KEY);
-        let _ = self.requests.send(Request::Fetch {
-            key: RESULTS_KEY.to_owned(),
-            route,
-        });
+        let all_dms = self.search_all_dms();
+        if let Some(search) = self.search.as_mut() {
+            search.last_route = Some(if all_dms {
+                format!("POST {DMS_TABS_ROUTE}")
+            } else {
+                match (self.guild, self.channel) {
+                    (Some(guild), _) => format!("GET /guilds/{guild}/messages/search"),
+                    (None, Some(channel)) => format!("GET /channels/{channel}/messages/search"),
+                    _ => String::new(),
+                }
+            });
+        }
+        if all_dms {
+            // `{type: DMS}` has no GET route: the tabs search (`SearchTabFetcher`, module 177068) posts the query.
+            let _ = self.requests.send(Request::Rest {
+                key: Some(RESULTS_KEY.to_owned()),
+                method: reqwest::Method::POST,
+                route: DMS_TABS_ROUTE.to_owned(),
+                body: Some(tabs_payload(&params)),
+            });
+        } else {
+            let route = match (self.guild, self.channel) {
+                (Some(guild), _) => {
+                    format!("/guilds/{guild}/messages/search?{}", params.join("&"))
+                }
+                (None, Some(channel)) => {
+                    format!("/channels/{channel}/messages/search?{}", params.join("&"))
+                }
+                _ => return,
+            };
+            let _ = self.requests.send(Request::Fetch {
+                key: RESULTS_KEY.to_owned(),
+                route,
+            });
+        }
         if let Some(search) = self.search.as_mut() {
             search.shown = Some(query);
             search.focused = false;
@@ -495,8 +647,11 @@ impl Root {
         let search = self.search.as_ref()?;
         let query = search.shown.clone()?;
         let words = plain_words(&query);
-        let body = self.fetched.get(RESULTS_KEY);
+        let body = self.fetched.get(RESULTS_KEY).map(results_body);
         let total = body.and_then(|body| body["total_results"].as_u64());
+        // `el` of module 252715: across all DMs the count gets "in all Direct Messages" under it (`tc619d`).
+        // While searching (`er`) there is no subtitle.
+        let subtitle = (self.search_all_dms() && total.is_some()).then_some(ALL_DMS_SUBTITLE);
         let threads: Vec<(Id, String, Id)> = body
             .and_then(|body| body["threads"].as_array())
             .into_iter()
@@ -641,7 +796,11 @@ impl Root {
                 .flex_col()
                 .child(
                     div()
-                        .h(px(49.))
+                        .map(|header| match subtitle {
+                            // `searchHeaderWithSubtitle_DAJqRF`: at least 58px.
+                            Some(_) => header.min_h(px(58.)),
+                            None => header.h(px(49.)),
+                        })
                         .px(px(16.))
                         .flex()
                         .items_center()
@@ -651,11 +810,24 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-strong"))
+                                // `totalResultsWithSubtitle_DAJqRF`: a column, 2px above and below.
+                                .when(subtitle.is_some(), |count| {
+                                    count.flex().flex_col().py(px(2.))
+                                })
                                 .child(match total {
                                     Some(1) => "1 Result".to_owned(),
                                     Some(count) => format!("{count} Results"),
                                     None => "Searching\u{2026}".to_owned(),
-                                }),
+                                })
+                                .children(subtitle.map(|subtitle| {
+                                    // `body-xs/medium` in `--text-subtle`.
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(subtitle)
+                                })),
                         )
                         .child(
                             div()
@@ -701,7 +873,43 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{operators, plain_words};
+    use super::{decode, encode, operators, plain_words, results_body, tabs_payload};
+    use serde_json::json;
+
+    #[test]
+    fn the_dm_wide_search_posts_the_query_under_the_messages_tab() {
+        let params = vec![
+            format!("content={}", encode("hello world")),
+            "author_id=42".to_owned(),
+            "has=link".to_owned(),
+            "has=image".to_owned(),
+            "pinned=true".to_owned(),
+            "min_id=100".to_owned(),
+            "sort_by=timestamp".to_owned(),
+            "sort_order=desc".to_owned(),
+            "offset=0".to_owned(),
+        ];
+        assert_eq!(
+            tabs_payload(&params),
+            json!({"tabs": {"messages": {
+                "content": "hello world", "author_id": ["42"], "has": ["link", "image"],
+                "pinned": true, "min_id": "100", "sort_by": "timestamp", "sort_order": "desc",
+                "offset": 0, "limit": 25
+            }}, "track_exact_total_hits": true})
+        );
+        assert_eq!(decode(&encode("a b%ç")), "a b%ç");
+    }
+
+    #[test]
+    fn both_answers_give_the_same_results() {
+        let get = json!({"total_results": 3, "messages": []});
+        assert_eq!(results_body(&get)["total_results"], 3);
+        let tabs = json!({"ok": true, "status": 200,
+            "body": {"tabs": {"messages": {"total_results": 5, "messages": []}}}});
+        assert_eq!(results_body(&tabs)["total_results"], 5);
+        let refused = json!({"ok": false, "status": 0, "body": null, "refused": true});
+        assert!(results_body(&refused)["total_results"].is_null());
+    }
 
     #[test]
     fn operators_leave_the_content() {

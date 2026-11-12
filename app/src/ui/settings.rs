@@ -293,6 +293,13 @@ fn age_gated_article(country: Option<&str>) -> String {
     format!("https://support.discord.com/hc/en-us/articles/{article}")
 }
 
+impl Root {
+    /// `_J`'s `LocationMetadataStore.getCountryCode()`: the article for the country READY reported.
+    pub(in crate::ui) fn age_gated_article_url(&self) -> String {
+        age_gated_article(self.stores.location_metadata.get_country_code())
+    }
+}
+
 /// The NEW badge after the Accessibility sidebar entry (`settings-appearance-67-top-darker-cozy` shows it beside
 /// the entry; `accessibility-darker-cozy`, with the page open, does not): it goes once the page has been opened.
 static ACCESSIBILITY_SEEN: AtomicBool = AtomicBool::new(false);
@@ -1891,7 +1898,8 @@ impl Root {
                                     move |index, cx| {
                                         if index == 0 {
                                             let _ = root.update(cx, |this, cx| {
-                                                this.settings_open_url(&age_gated_article(None), cx);
+                                                let url = this.age_gated_article_url();
+                                                this.settings_open_url(&url, cx);
                                             });
                                         }
                                     }
@@ -2484,6 +2492,13 @@ mod tests {
             age_gated_article(Some("GB")).ends_with("33362401287959-Age-Assurance-for-UK-Users")
         );
         assert_eq!(age_gated_article(Some("TR")), age_gated_article(None));
+        // The country READY reports picks the article (`LocationMetadataStore.getCountryCode`).
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch("READY", &serde_json::json!({"country_code": "BR"}));
+        assert!(
+            age_gated_article(stores.location_metadata.get_country_code())
+                .ends_with("38860612202775-Age-Assurance-for-Brazilian-Users")
+        );
         let (text, links) = run_ranges(&[("see ", false), ("blog", true), (".", false)]);
         assert_eq!(&text[links[0].clone()], "blog");
     }

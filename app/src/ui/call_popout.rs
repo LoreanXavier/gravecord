@@ -3,8 +3,10 @@
 //! as the main one, from the same state; closing it, pressing Pop Out in it again or leaving the call brings the
 //! call back.
 //!
-//! Not from the official client: the window's first size (960 by 540) and its title. Tooltips of the controls in
-//! the popped-out window are not drawn (they belong to the main window's layer).
+//! The tooltips of the controls in the window are drawn by its own tooltip layer, at its coordinates; the main
+//! window's layer leaves them out (`tooltip::drawn_in`).
+//!
+//! Not from the official client: the window's first size (960 by 540) and its title.
 
 use super::Root;
 use gpui::{
@@ -21,16 +23,24 @@ impl Render for Popout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let area = window.viewport_size();
         let (width, height) = (f32::from(area.width), f32::from(area.height));
-        let body = self
+        let id = window.window_handle().window_id();
+        let (body, tips) = self
             .root
             .upgrade()
-            .and_then(|root| root.update(cx, |root, cx| root.call_popout_body(width, height, cx)));
+            .map(|root| {
+                root.update(cx, |root, cx| {
+                    let body = root.call_popout_body(width, height, cx);
+                    (body, root.tip_layer_in(Some(id)))
+                })
+            })
+            .unwrap_or_default();
         div()
             .id("call-popout")
             .relative()
             .size_full()
             .bg(rgb(0x000000))
             .children(body)
+            .children(tips)
     }
 }
 
@@ -70,8 +80,10 @@ impl Root {
                 move |window, cx| {
                     crate::notifications::observe_window(window);
                     let closed = view.clone();
-                    window.on_window_should_close(cx, move |_, cx| {
+                    window.on_window_should_close(cx, move |window, cx| {
+                        let id = window.window_handle().window_id();
                         let _ = closed.update(cx, |root, cx| {
+                            root.drop_tips_of(id);
                             root.vv.popout_on_top = false;
                             root.vv.popout = None;
                             cx.notify();
@@ -114,6 +126,7 @@ impl Root {
     pub(super) fn close_call_popout(&mut self, cx: &mut Context<Self>) {
         self.vv.popout_on_top = false;
         if let Some(handle) = self.vv.popout.take() {
+            self.drop_tips_of(gpui::AnyWindowHandle::from(handle).window_id());
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
         cx.notify();

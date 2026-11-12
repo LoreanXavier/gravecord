@@ -2207,6 +2207,18 @@ pub(crate) async fn step(
             });
             "motion toast: hide".to_owned()
         }
+        // Opens one dialog straight away, for its entrance and leave frames. Nothing is confirmed or sent.
+        ["dialog", name] => cx
+            .update(|cx| {
+                window.update(cx, |_, window, cx| {
+                    root.update(cx, |root, cx| {
+                        let note = open_dialog(root, name, window, cx);
+                        cx.notify();
+                        note
+                    })
+                })
+            })
+            .unwrap_or_else(|_| "no window".to_owned()),
         ["state"] => format!(
             "motion state: last_ghost={} ghosts={} now={:.1} frozen={} active={} reduced={} frames_requested={}",
             LAST_GHOST.with(|last| last.borrow().clone()),
@@ -2218,6 +2230,152 @@ pub(crate) async fn step(
             frames_requested()
         ),
         other => format!("motion: unknown step {other:?}"),
+    }
+}
+
+/// The `motion dialog <name>` step: opens the dialog `name` as its button would, with the first other person known or
+/// the newest fitting message of the open channel. Returns what it did.
+#[cfg(feature = "capture")]
+fn open_dialog(
+    root: &mut super::Root,
+    name: &str,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<super::Root>,
+) -> String {
+    let me = root.stores.current_user.as_ref().map(|me| me.id);
+    let other = root
+        .stores
+        .users
+        .keys()
+        .copied()
+        .filter(|id| Some(*id) != me)
+        .min();
+    let messages = root
+        .channel
+        .and_then(|channel| root.stores.messages.get(&channel))
+        .cloned()
+        .unwrap_or_default();
+    match name {
+        "full-profile" | "report" | "ignore" | "block" => {
+            let Some(user) = other else {
+                return "dialog: no other person known".to_owned();
+            };
+            match name {
+                "full-profile" => root.open_full_profile(user, window, cx),
+                "report" => root.open_report_user(user, window, cx),
+                "ignore" => root.remediation = Some((user, super::remediation::Remedy::Ignore)),
+                _ => root.remediation = Some((user, super::remediation::Remedy::Block)),
+            }
+            format!("dialog: {name} for {user}")
+        }
+        "badge" => {
+            root.open_badge_modal(me, None, None, true, cx);
+            "dialog: badge".to_owned()
+        }
+        "follow" => match root.channel {
+            Some(channel) => {
+                root.open_follow(channel, cx);
+                "dialog: follow".to_owned()
+            }
+            None => "dialog: no channel".to_owned(),
+        },
+        "shelf" => {
+            root.open_activity_shelf(window, cx);
+            "dialog: activity shelf".to_owned()
+        }
+        "editor" => root.script_profile_editor(&["open"], cx),
+        "styles" => root.script_profile_editor(&["styles"], cx),
+        "decoration" => root.script_profile_editor(&["pick", "decoration"], cx),
+        "lightbox" => {
+            let found = messages.iter().rev().find_map(|message| {
+                message
+                    .attachments
+                    .iter()
+                    .find(|attachment| attachment.is_image())
+                    .map(|attachment| (message.clone(), attachment.id))
+            });
+            match found {
+                Some((message, id)) => {
+                    root.open_lightbox(&message, &format!("attachment:{id}"), cx);
+                    format!("dialog: lightbox on {id}")
+                }
+                None => "dialog: no picture in the channel".to_owned(),
+            }
+        }
+        "file" => {
+            let attachment = dc_state::Attachment {
+                id: 1,
+                filename: "notes.txt".to_owned(),
+                url: String::new(),
+                proxy_url: String::new(),
+                content_type: Some("text/plain".to_owned()),
+                width: None,
+                height: None,
+                size: 64,
+                flags: 0,
+                description: None,
+                duration_secs: None,
+                waveform: None,
+            };
+            root.texts.insert(
+                super::files::text_key(&attachment),
+                "first line of the file\nsecond line of the file".to_owned(),
+            );
+            root.file_expanded = Some(attachment);
+            "dialog: file expanded".to_owned()
+        }
+        "leaving" => {
+            root.follow_link("https://example.com/", "example", cx);
+            "dialog: leaving".to_owned()
+        }
+        "forward" => match messages.last().cloned() {
+            Some(message) => {
+                root.open_forward(message, window, cx);
+                "dialog: forward".to_owned()
+            }
+            None => "dialog: no message".to_owned(),
+        },
+        "golive" => {
+            root.open_go_live(cx);
+            format!("dialog: go live (call={})", root.call.is_some())
+        }
+        "nitro" => {
+            root.open_purchase(false, cx);
+            "dialog: nitro purchase".to_owned()
+        }
+        "events" => {
+            root.open_guild_events(cx);
+            "dialog: events".to_owned()
+        }
+        "perks" => {
+            root.open_perks(super::server_boost::Perks::Banner, cx);
+            format!(
+                "dialog: boost perks (server settings={})",
+                root.server_settings.is_some()
+            )
+        }
+        "risky" => match root.server_settings.as_mut() {
+            Some(open) => {
+                open.safety.risky_open = true;
+                "dialog: risky".to_owned()
+            }
+            None => "dialog: open server-settings safetysetup first".to_owned(),
+        },
+        "crunchyroll" | "playstation" | "xbox" | "bluesky" | "domain" => {
+            let kind = match name {
+                "crunchyroll" => "crunchyroll",
+                "playstation" => "playstation",
+                "xbox" => "xbox",
+                "bluesky" => "bluesky",
+                _ => "domain",
+            };
+            root.open_connection_dialog(kind, cx);
+            format!(
+                "dialog: connect {kind} (settings={})",
+                root.settings.is_some()
+            )
+        }
+        other => format!("dialog: unknown {other}"),
     }
 }
 

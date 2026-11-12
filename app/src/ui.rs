@@ -167,6 +167,7 @@ mod notifications;
 mod notify;
 mod oauth;
 mod oauth_spec;
+mod official_messages;
 mod paste;
 #[cfg(feature = "capture")]
 mod perf;
@@ -434,6 +435,10 @@ pub struct Root {
     send_ui: send_state::State,
     /// Set while a failed message's content is built: its text, links and inline code take the critical colour.
     failed_tint: std::cell::Cell<bool>,
+    /// Set while an official message's content is built (`official_messages`): its text colour.
+    official_text: std::cell::Cell<Option<Rgba>>,
+    /// Each server's official message colour and experiment.
+    official_messages: official_messages::OfficialMessages,
     notification_runtime: crate::notifications::Runtime,
     /// Game detection and the Registered Games page (`running_games`).
     detect: running_games::Games,
@@ -843,6 +848,8 @@ impl Root {
             slowmode_rejected: HashMap::new(),
             send_ui: send_state::State::default(),
             failed_tint: std::cell::Cell::new(false),
+            official_text: std::cell::Cell::new(None),
+            official_messages: official_messages::OfficialMessages::default(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
             detect: running_games::Games::new(updates.clone()),
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
@@ -1140,6 +1147,7 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
                 self.calls_after_dispatch(&name, cx);
@@ -5771,7 +5779,11 @@ impl Root {
             2 => (20., 27.5),
             _ => (16., 22.),
         };
-        let strong = hsla("--text-strong");
+        // An official message's headings take its content colour (`:is(h1, ..., h6)`).
+        let strong = self
+            .official_text
+            .get()
+            .map_or_else(|| hsla("--text-strong"), Hsla::from);
         let pieces = spans
             .iter()
             .map(|span| {
@@ -5784,7 +5796,11 @@ impl Root {
     }
 
     fn subtext(&self, spans: &[Span], key: (u64, u32)) -> Inline {
-        let muted = hsla("--interactive-text-default");
+        // And its `small` subtext.
+        let muted = self
+            .official_text
+            .get()
+            .map_or_else(|| hsla("--interactive-text-default"), Hsla::from);
         let pieces = spans
             .iter()
             .map(|span| self.piece(span, muted, 14., 400., 19.))
@@ -6337,6 +6353,11 @@ impl Root {
     }
 
     fn content(&self, message: &Message) -> impl IntoElement {
+        if !self.failed_tint.get()
+            && let Some(official) = self.official_text.get()
+        {
+            return self.content_colored(message, official.into());
+        }
         self.content_tinted(
             message,
             if self.failed_tint.get() {
@@ -6348,8 +6369,16 @@ impl Root {
     }
 
     /// `content` in another text colour token (a forum gallery card's read preview is muted).
-    fn content_tinted(&self, message: &Message, token: &str) -> impl IntoElement {
-        let text = hsla(token);
+    fn content_tinted(&self, message: &Message, token: &str) -> gpui::Div {
+        self.content_colored(message, hsla(token))
+    }
+
+    fn content_colored(&self, message: &Message, text: Hsla) -> gpui::Div {
+        // `.guildOfficialMessageContent` colours the list markers it holds as well (they inherit the content colour).
+        let marker_color = self
+            .official_text
+            .get()
+            .unwrap_or_else(|| color("--text-default"));
         let blocks = parse(&message.content);
         let gaps = block_gaps(&blocks);
         // The last item's bottom margin stays inside the message.
@@ -6398,7 +6427,7 @@ impl Root {
                                     .left(px(-18.))
                                     .top(px(0.))
                                     .line_height(px(22.))
-                                    .text_color(color("--text-default"))
+                                    .text_color(marker_color)
                                     .child(format!("{number}."))
                                     .into_any_element(),
                                 None => {
@@ -6409,10 +6438,10 @@ impl Root {
                                         .size(px(5.))
                                         .rounded_full();
                                     if depth == 0 {
-                                        disc.bg(color("--text-default")).into_any_element()
+                                        disc.bg(marker_color).into_any_element()
                                     } else {
                                         disc.border_1()
-                                            .border_color(color("--text-default"))
+                                            .border_color(marker_color)
                                             .into_any_element()
                                     }
                                 }
@@ -6560,6 +6589,8 @@ impl Root {
                 let mentioned = !replying && self.mentions_me(message);
                 let ephemeral =
                     !replying && message.flags & dc_state::components::FLAG_EPHEMERAL != 0;
+                // `.guildOfficialMessage_SY_P2T` (official_messages): its own hover tint, its text colour.
+                let official = self.official_look(message);
                 let (rest, over, bar) = if replying {
                     (
                         Some("--message-highlight-background-default"),
@@ -6576,6 +6607,8 @@ impl Root {
                         color("--message-mentioned-background-hover"),
                         Some("--icon-feedback-warning"),
                     )
+                } else if let Some(look) = official {
+                    (None, look.hover, ephemeral.then_some("--brand-500"))
                 } else if ephemeral {
                     // `.ephemeral`: `--brand-05a` with a 2px `--brand-500` bar; hover `--brand-10a` (SY_P2T).
                     (
@@ -6672,8 +6705,10 @@ impl Root {
                                 let state = self.send_state_of(id);
                                 self.failed_tint
                                     .set(state == Some(send_state::SendState::Failed));
+                                self.official_text.set(official.and_then(|look| look.text));
                                 let content = self.content(message);
                                 self.failed_tint.set(false);
+                                self.official_text.set(None);
                                 this.child(
                                     div()
                                         .when(
@@ -8671,6 +8706,24 @@ impl Render for Root {
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.emoji_popout.is_some() {
                     this.close_emoji_popout(cx);
+                    cx.stop_propagation();
+                // Dialogs over the page, top first, under the menus and popouts that open over them.
+                } else if event.keystroke.key == "escape" && this.file_expanded.is_some() {
+                    this.file_expanded = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.remediation.is_some() {
+                    this.remediation = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.full_profile.is_some() {
+                    this.close_full_profile(cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.go_live.is_some() {
+                    this.close_go_live(cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.shop.modal.is_some() {
+                    this.shop_close_modal(cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
                     && this.profile.is_none()
