@@ -547,7 +547,14 @@ impl Root {
         let name = &dialog.name;
         let (title, subtitle, confirm, tone) = match dialog.kind {
             Kind::Kick => (
-                format!("Kick {name} from Server"),
+                // Module 547166: the title carries the username, the question the display name.
+                format!(
+                    "Kick {} from Server",
+                    self.stores
+                        .users
+                        .get(&dialog.user)
+                        .map_or(name.as_str(), |known| known.username.as_str())
+                ),
                 format!(
                     "Are you sure you want to kick @{name} from the server? They will be able to rejoin again with a new invite."
                 ),
@@ -601,6 +608,8 @@ impl Root {
         let height = match dialog.kind {
             Kind::Nickname => 40.,
             Kind::Ban => 131.,
+            // `rows: 2` of module 547166 (frame member-menu/dialog-kick: a 68px box).
+            Kind::Kick => 68.,
             _ => 110.,
         };
         let field = div()
@@ -831,6 +840,8 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
+                    // The wrapper `T.Y` of module 547166 adds 16px under the field (body 112 high in the frame).
+                    .pb(px(16.))
                     .child(label("Reason for Kick"))
                     .child(field)
                     .into_any_element(),

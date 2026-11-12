@@ -72,6 +72,8 @@ pub(super) enum Act {
     CloseThread,
     LockThread,
     LeaveThread,
+    /// "Join Thread" (module 660273): `joinThread`, shown for a thread the account has not joined.
+    JoinThread,
     Profile,
     Mention,
     Message,
@@ -91,6 +93,7 @@ pub(super) enum Act {
     /// "Edit Group" and "Leave Group" of a group DM (module 4027).
     EditGroup,
     LeaveGroup,
+    Invites,
     PinDm,
     InviteToServer,
     ModView,
@@ -115,6 +118,8 @@ pub(super) enum Act {
     /// Voice: how loud a person is to us, and muting them (or their soundboard) here.
     Volume,
     VoiceMute,
+    /// Our own row's Deafen (module 198229 `toggleSelfDeaf`).
+    VoiceDeafen,
     SoundboardMute,
     /// Composer text menu: a spelling suggestion (by position), the dictionary rows, the switch, the help page, and
     /// the clipboard rows.
@@ -137,7 +142,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 75] = [
+    pub(super) const ALL: [Act; 78] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -167,6 +172,7 @@ impl Act {
         Act::CloseThread,
         Act::LockThread,
         Act::LeaveThread,
+        Act::JoinThread,
         Act::Profile,
         Act::Mention,
         Act::Message,
@@ -183,6 +189,7 @@ impl Act {
         Act::CloseDm,
         Act::EditGroup,
         Act::LeaveGroup,
+        Act::Invites,
         Act::PinDm,
         Act::InviteToServer,
         Act::ModView,
@@ -213,6 +220,7 @@ impl Act {
         Act::FavoritesNickname,
         Act::FavoritesSettings,
         Act::HideFavorites,
+        Act::VoiceDeafen,
     ];
 
     #[cfg(test)]
@@ -263,6 +271,7 @@ impl Act {
             Act::CloseDm => 40,
             Act::EditGroup => 69,
             Act::LeaveGroup => 70,
+            Act::Invites => 76,
             Act::PinDm => 41,
             Act::InviteToServer => 42,
             Act::ModView => 43,
@@ -293,6 +302,8 @@ impl Act {
             Act::FavoritesNickname => 72,
             Act::FavoritesSettings => 73,
             Act::HideFavorites => 74,
+            Act::VoiceDeafen => 75,
+            Act::JoinThread => 77,
         }
     }
 }
@@ -303,15 +314,14 @@ impl Act {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Status {
     Wired,
-    Missing(&'static str),
 }
 
 pub(super) fn status(act: Act) -> Status {
-    use Status::{Missing, Wired};
+    use Status::Wired;
     match act {
         Act::PinDm | Act::Favorite | Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
         Act::Apps => Wired,
-        Act::ModView => Missing("Mod View"),
+        Act::ModView => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ReportApp
@@ -337,6 +347,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::CloseThread
         | Act::LockThread
         | Act::LeaveThread
+        | Act::JoinThread
         | Act::Profile
         | Act::Mention
         | Act::Message
@@ -351,6 +362,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::Block
         | Act::CloseDm
         | Act::EditGroup
+        | Act::Invites
         | Act::LeaveGroup
         | Act::Timeout
         | Act::Kick
@@ -367,6 +379,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::LeaveGuild
         | Act::Volume
         | Act::VoiceMute
+        | Act::VoiceDeafen
         | Act::SoundboardMute
         | Act::Correction(_)
         | Act::AddToDictionary
@@ -427,7 +440,7 @@ impl Row {
             caret: false,
             check: None,
             danger: false,
-            disabled: matches!(status(act), Status::Missing(_)),
+            disabled: false,
             shortcut: None,
         }
     }
@@ -763,6 +776,9 @@ pub(super) fn thread_items(
         vec![Row::new(Act::Favorite, "Add to Favorites").icon("clips_star")],
     );
     let mut own = Vec::new();
+    if !joined {
+        own.push(Row::new(Act::JoinThread, "Join Thread"));
+    }
     if manage || owner {
         own.push(Row::new(Act::CloseThread, "Close Thread"));
     }
@@ -880,6 +896,8 @@ pub(super) struct UserFacts {
     pub ring: Option<bool>,
     /// In the call we are in (never true unless a call is open): adds the voice rows.
     pub in_call: bool,
+    /// Our own row with the media items (module 198229): `Some((muted, deafened))` offers Mute and Deafen.
+    pub self_voice: Option<(bool, bool)>,
     /// The person is in a voice channel of this server (module 291247 `Z`).
     pub server_voice: Option<ServerVoice>,
     /// The person is in timeout and we may lift it.
@@ -932,7 +950,7 @@ fn label_width(window: &Window, text: &str) -> f32 {
 
 /// The menu of a group DM (module 4027 `f`): mark as read, pin and favourite, Edit Group, mute, Leave Group, and the
 /// channel id for developers. Invites (owner only) and Apps are not offered yet.
-pub(super) fn group_items(unread: bool, developer: bool) -> Vec<Entry> {
+pub(super) fn group_items(unread: bool, owner: bool, developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
     )];
@@ -943,7 +961,13 @@ pub(super) fn group_items(unread: bool, developer: bool) -> Vec<Entry> {
             Row::new(Act::Favorite, "Add to Favorites").icon("clips_star"),
         ],
     );
-    group(&mut out, vec![Row::new(Act::EditGroup, "Edit Group")]);
+    let mut manage = Vec::new();
+    // The group's owner sees Invites above Edit Group (module 4027).
+    if owner {
+        manage.push(Row::new(Act::Invites, "Invites"));
+    }
+    manage.push(Row::new(Act::EditGroup, "Edit Group"));
+    group(&mut out, manage);
     group(
         &mut out,
         vec![Row::new(Act::Mute, "Mute Conversation").caret()],
@@ -1005,6 +1029,14 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         group(&mut out, first);
     } else if out.is_empty() {
         out.extend(first.into_iter().map(Entry::Row));
+    }
+    if let Some((muted, deafened)) = facts.self_voice {
+        // Module 198229: our own row has the two self switches, their checks following the media engine.
+        out.push(Entry::Separator);
+        out.push(Entry::Row(Row::new(Act::VoiceMute, "Mute").check(muted)));
+        out.push(Entry::Row(
+            Row::new(Act::VoiceDeafen, "Deafen").check(deafened),
+        ));
     }
     if facts.in_call && !facts.me {
         let mut rows = vec![
@@ -1079,18 +1111,21 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     }
     if facts.dm.is_none() && facts.in_guild {
         let mut moderation = vec![Row::new(Act::ModView, "Open in Mod View")];
-        if !facts.me {
-            if let Some(verified) = facts.verify {
-                moderation.push(Row::new(
-                    Act::Verify,
-                    if verified {
-                        "Unverify Member"
-                    } else {
-                        "Verify Member"
-                    },
-                ));
-            }
-            // Module 291247 lists the voice rows between Verify and Timeout, in the same group.
+        if !facts.me
+            && let Some(verified) = facts.verify
+        {
+            moderation.push(Row::new(
+                Act::Verify,
+                if verified {
+                    "Unverify Member"
+                } else {
+                    "Verify Member"
+                },
+            ));
+        }
+        // Module 291247 lists the voice rows between Verify and Timeout, in the same group; Server Mute and Server
+        // Deafen are offered on our own row too (the voice-user capture), Disconnect never.
+        {
             if let Some(voice) = facts.server_voice {
                 if voice.can_mute {
                     moderation.push(
@@ -1110,6 +1145,8 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
                     moderation.push(Row::new(Act::Disconnect, "Disconnect").danger());
                 }
             }
+        }
+        if !facts.me {
             if facts.can_moderate {
                 moderation.push(if facts.in_timeout {
                     Row::new(
@@ -1161,6 +1198,9 @@ pub(super) struct State {
     pub soundboard_muted: std::collections::HashSet<Id>,
     /// Each person's volume (a factor) and local mute in the call.
     pub mix: std::collections::HashMap<Id, (f32, bool)>,
+    /// The next menu opens from a person's row in a voice channel's list: it shows the media items (module 340851
+    /// `showMediaItems: true`), whether or not we are in that call.
+    pub voice_row: bool,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -1183,7 +1223,7 @@ const OPT_IN_ENABLED: u64 = 4096;
 const HIDDEN_NAMES: &str = "collapsedChannels";
 
 /// The channel type number the API uses (`channel_type` of a favourite).
-fn channel_type_number(kind: ChannelKind) -> u64 {
+pub(super) fn channel_type_number(kind: ChannelKind) -> u64 {
     match kind {
         ChannelKind::Text => 0,
         ChannelKind::Voice => 2,
@@ -1440,12 +1480,21 @@ impl Root {
             .channels
             .iter()
             .find(|channel| channel.id == state.channel_id)?;
+        // Module 291247: no voice rows without View Channel on the voice channel, and a suppressed person on a Stage
+        // (channel type 13) cannot be server muted or deafened.
+        let visible = self.my_permission(guild, Some(channel), permissions::VIEW_CHANNEL);
+        let held_back = channel.kind == ChannelKind::Other(13) && state.suppress;
         Some(ServerVoice {
             mute: state.mute,
             deaf: state.deaf,
-            can_mute: self.my_permission(guild, Some(channel), permissions::MUTE_MEMBERS),
-            can_deafen: self.my_permission(guild, Some(channel), permissions::DEAFEN_MEMBERS),
-            can_disconnect: !me
+            can_mute: visible
+                && !held_back
+                && self.my_permission(guild, Some(channel), permissions::MUTE_MEMBERS),
+            can_deafen: visible
+                && !held_back
+                && self.my_permission(guild, Some(channel), permissions::DEAFEN_MEMBERS),
+            can_disconnect: visible
+                && !me
                 && self.my_permission(guild, Some(channel), permissions::MOVE_MEMBERS),
             can_move: !me
                 && self.my_permission(guild, Some(channel), permissions::MOVE_MEMBERS)
@@ -1453,7 +1502,7 @@ impl Root {
         })
     }
 
-    fn my_permission(&self, guild: Id, channel: Option<&Channel>, bit: u64) -> bool {
+    pub(super) fn my_permission(&self, guild: Id, channel: Option<&Channel>, bit: u64) -> bool {
         let Some(me) = self.stores.me() else {
             return false;
         };
@@ -1657,6 +1706,11 @@ impl Root {
         tidy(out)
     }
 
+    /// Marks the next `open_context_menu` as opened from a person's row in a voice channel's list.
+    pub(super) fn context_voice_row(&mut self) {
+        self.context.voice_row = true;
+    }
+
     pub(super) fn open_context_menu(
         &mut self,
         target: Target,
@@ -1664,6 +1718,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let developer = self.developer_mode();
+        let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let items = match target {
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, "Profile"))];
@@ -1771,7 +1826,7 @@ impl Root {
                     self.stores.is_unread(id),
                     manage,
                     owner,
-                    thread.joined || owner,
+                    thread.joined,
                     developer,
                     self.channel_level_label(guild, id),
                 )
@@ -1786,7 +1841,12 @@ impl Root {
                     return;
                 };
                 if dm.kind == 3 {
-                    group_items(self.stores.is_unread(channel), developer)
+                    group_items(
+                        self.stores.is_unread(channel),
+                        dm.owner_id.is_some()
+                            && dm.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
+                        developer,
+                    )
                 } else {
                     let Some(user) = self.stores.dm_recipient(dm).cloned() else {
                         return;
@@ -1860,9 +1920,12 @@ impl Root {
                         }),
                     roles: guild.is_some_and(|guild| !self.role_sub_rows(guild, user).is_empty()),
                     verify: guild.and_then(|guild| self.verify_state(guild, user, me)),
-                    in_call: self
-                        .others_in_call()
-                        .is_some_and(|others| others.contains(&user)),
+                    in_call: from_voice_row
+                        || self
+                            .others_in_call()
+                            .is_some_and(|others| others.contains(&user)),
+                    self_voice: (me && from_voice_row)
+                        .then_some((self.self_mute || self.self_deaf, self.self_deaf)),
                     voice_muted: self.context.mix.get(&user).is_some_and(|mix| mix.1),
                     soundboard_muted: self.context.soundboard_muted.contains(&user),
                     volume: self
@@ -2194,6 +2257,16 @@ impl Root {
                     body: Some(json!({ field: true })),
                 });
             }
+            // `joinThread` (module 7909): `POST /channels/:id/thread-members/@me?location=Context Menu`; the gateway's
+            // THREAD_MEMBER_UPDATE puts the account into the joined-threads store.
+            (Act::JoinThread, Target::Thread(thread)) => {
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::POST,
+                    route: format!("/channels/{thread}/thread-members/@me?location=Context%20Menu"),
+                    body: None,
+                });
+            }
             (Act::LeaveThread, Target::Thread(thread)) => {
                 let _ = self.requests.send(Request::Rest {
                     key: None,
@@ -2255,6 +2328,14 @@ impl Root {
                     self.open_full_profile(user, window, cx);
                 }
             }
+            // Module 121127: the sidebar opens on the member's info (`modViewPanel: INFO`).
+            (
+                Act::ModView,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => self.open_mod_view(guild, user, cx),
             (
                 Act::Verify,
                 Target::User {
@@ -2397,7 +2478,25 @@ impl Root {
             }
             (Act::CloseDm, Target::Dm(channel)) => self.close_dm(channel, cx),
             (Act::EditGroup, Target::Dm(channel)) => self.open_group_edit(channel, window, cx),
+            // The group's invite list is not built; the nearest thing is the picker that adds people.
+            (Act::Invites, Target::Dm(channel)) => {
+                self.select_home(Some(channel));
+                self.open_add_to_dm(window, cx);
+            }
             (Act::LeaveGroup, Target::Dm(channel)) => self.open_group_leave(channel, false, cx),
+            (Act::VoiceMute | Act::VoiceDeafen, Target::User { user, .. })
+                if self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user) =>
+            {
+                if act == Act::VoiceDeafen {
+                    self.toggle_self_deaf(cx);
+                } else {
+                    self.toggle_self_mute(cx);
+                }
+            }
             (Act::VoiceMute, Target::User { user, .. }) => {
                 let (volume, muted) = self.context.mix.get(&user).copied().unwrap_or((1., false));
                 self.set_user_mix(user, volume, !muted);
@@ -2577,11 +2676,11 @@ impl Root {
                 }
                 crate::storage::set(HIDDEN_NAMES, stored);
             }
-            // Rows of a missing feature are drawn disabled (`Row::new`) and never reach here; any other pair is a row
-            // built for a target it has no handler for, which the debug assertion below reports.
+            // A pair that reaches here is a row built for a target it has no handler for; the debug assertion below
+            // reports it.
             (act, target) => {
                 debug_assert!(
-                    matches!(status(act), Status::Missing(_)),
+                    status(act) != Status::Wired,
                     "context row {act:?} has no handler for {target:?}"
                 );
             }
@@ -3607,15 +3706,15 @@ impl Root {
         .children(row.icon.map(|name| {
             div().mr(px(8.)).child(icon(
                 name,
-                if matches!(
-                    target,
-                    Target::InventoryFeed | Target::InventoryFeedAtPointer
-                ) {
-                    20.
+                // `iconContainerLeft_M3qk4j`: 20px in every captured menu (menus2/dm-row, channel-row,
+                // favorites-rail-menu, guild-header-dropdown), then an 8px gap to the label.
+                20.,
+                // A danger row's icon takes the row's critical colour (frame menus2/favorites-rail-menu).
+                if danger {
+                    "--text-feedback-critical"
                 } else {
-                    18.
+                    "--interactive-text-default"
                 },
-                "--interactive-text-default",
             ))
         }))
         .child(
@@ -3693,7 +3792,7 @@ impl Root {
 #[cfg(test)]
 mod tests {
 
-    use super::{Act, Status, status};
+    use super::Act;
 
     #[test]
     fn act_list_is_complete() {
@@ -3706,17 +3805,6 @@ mod tests {
         assert!(seen.iter().all(|seen| *seen));
     }
 
-    #[test]
-    fn missing_rows_are_disabled() {
-        for act in Act::ALL {
-            if let Status::Missing(_) = status(act) {
-                assert!(
-                    super::Row::new(act, "x").disabled,
-                    "{act:?} would look alive"
-                );
-            }
-        }
-    }
     use super::*;
 
     fn labels(entries: &[Entry]) -> Vec<String> {
@@ -3904,6 +3992,16 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_offers_join_or_leave_by_the_joined_store() {
+        let joined = labels(&thread_items(false, false, false, true, false, "x"));
+        assert!(joined.contains(&"Leave Thread".to_owned()));
+        assert!(!joined.contains(&"Join Thread".to_owned()));
+        let apart = labels(&thread_items(false, false, false, false, false, "x"));
+        assert!(apart.contains(&"Join Thread".to_owned()));
+        assert!(!apart.contains(&"Leave Thread".to_owned()));
+    }
+
+    #[test]
     fn a_thread_owner_without_manage_threads_can_still_close_and_edit_it() {
         let items = thread_items(false, false, true, true, false, "x");
         let shown = labels(&items);
@@ -3978,6 +4076,52 @@ mod tests {
             ..other
         };
         assert!(!labels(&user_items(&friend)).contains(&"Add Friend".to_owned()));
+    }
+
+    #[test]
+    fn the_server_voice_rows_follow_the_permissions_and_sit_in_the_moderation_group() {
+        let voice = ServerVoice {
+            mute: true,
+            can_mute: true,
+            can_deafen: true,
+            can_disconnect: true,
+            ..ServerVoice::default()
+        };
+        let other = UserFacts {
+            name: "ann".to_owned(),
+            in_guild: true,
+            server_voice: Some(voice),
+            ..UserFacts::default()
+        };
+        let items = user_items(&other);
+        let shown = labels(&items);
+        let at = |label: &str| shown.iter().position(|shown| shown == label).unwrap();
+        assert!(at("Open in Mod View") < at("Server Mute"));
+        assert!(at("Server Mute") < at("Server Deafen"));
+        assert!(at("Server Deafen") < at("Disconnect"));
+        assert!(items.iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::ServerMute && row.check == Some(true))));
+        assert!(items.iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::ServerDeafen && row.check == Some(false))));
+        // Our own row has no Disconnect (the facts already say so), and without the permission nothing shows.
+        let own = UserFacts {
+            me: true,
+            server_voice: Some(ServerVoice {
+                can_disconnect: false,
+                ..voice
+            }),
+            ..other.clone()
+        };
+        let shown = labels(&user_items(&own));
+        assert!(
+            shown.contains(&"Server Mute".to_owned()) && !shown.contains(&"Disconnect".to_owned())
+        );
+        let denied = UserFacts {
+            server_voice: Some(ServerVoice::default()),
+            ..other
+        };
+        let shown = labels(&user_items(&denied));
+        for gone in ["Server Mute", "Server Deafen", "Disconnect"] {
+            assert!(!shown.contains(&gone.to_owned()), "{gone}");
+        }
     }
 
     #[test]

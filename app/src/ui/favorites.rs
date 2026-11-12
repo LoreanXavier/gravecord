@@ -6,12 +6,12 @@
 //! favorites-rail-menu, favorites-channel-menu, dm-pinned (the star in the rail).
 
 use super::tooltip::{Body, Tip};
-use super::{Root, channel_icon, color, context_menu, icon, motion};
+use super::{Root, avatar_source, channel_icon, color, context_menu, icon, motion, status_dot};
 use crate::parity::Parity;
 use dc_state::{Channel, ChannelKind, Id};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, div,
-    prelude::*, px, svg,
+    img, prelude::*, px, svg,
 };
 
 /// `FavoriteChannelType.REFERENCE`: a channel the list points at (categories made by the account are not built).
@@ -103,6 +103,61 @@ impl Root {
         cx.notify();
     }
 
+    /// Capture only: `favorites on <channel ids...>` hands the root the settings update another session would send
+    /// (the favourites, the server on); `favorites off` turns the server off; `favorites open` opens its view.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_favorites(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        let note = match words {
+            ["on", ids @ ..] => {
+                let mut favorites = self.stores.favorites();
+                for id in ids.iter().filter_map(|id| id.parse::<u64>().ok()) {
+                    let kind = self
+                        .favorite_channel(id)
+                        .map(|(_, channel)| context_menu::channel_type_number(channel.kind));
+                    favorites.add_channel(id, kind);
+                }
+                favorites.guild_visible = Some(true);
+                let (patch, _) = dc_proto::settings::set_favorites(&[], &favorites);
+                self.stores.dispatch(
+                    "USER_SETTINGS_PROTO_UPDATE",
+                    &serde_json::json!({"settings": {"type": 1, "proto": patch}, "partial": true}),
+                );
+                format!("favorites: on, {} channels", favorites.channels.len())
+            }
+            ["off"] => {
+                let mut favorites = self.stores.favorites();
+                favorites.guild_visible = Some(false);
+                let (patch, _) = dc_proto::settings::set_favorites(&[], &favorites);
+                self.stores.dispatch(
+                    "USER_SETTINGS_PROTO_UPDATE",
+                    &serde_json::json!({"settings": {"type": 1, "proto": patch}, "partial": true}),
+                );
+                "favorites: off".to_owned()
+            }
+            ["open"] => {
+                self.open_favorites(cx);
+                "favorites: opened".to_owned()
+            }
+            ["state"] => {
+                let favorites = self.stores.favorites();
+                format!(
+                    "favorites: visible {:?}, channels {:?}, view {}, in_favorites {}",
+                    favorites.guild_visible,
+                    favorites
+                        .channels
+                        .iter()
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>(),
+                    self.favorites_view,
+                    self.in_favorites()
+                )
+            }
+            _ => "usage: favorites on <ids>|off|open|state".to_owned(),
+        };
+        cx.notify();
+        note
+    }
+
     /// "Thread Settings" of the Favorites server: its modal is not built yet (no capture of it).
     pub(super) fn open_favorites_settings(&mut self, _cx: &mut Context<Self>) {}
 
@@ -183,7 +238,8 @@ impl Root {
                         .child(
                             svg()
                                 .path("icons/clips_star.svg")
-                                .size(px(24.))
+                                // `favoriteIcon_850pDF`: 20px.
+                                .size(px(20.))
                                 .flex_none()
                                 .text_color(motion::rail::tile_foreground(row_key, selected)),
                         ),
@@ -312,11 +368,12 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon("dm_plus", 16., "--text-strong")),
+                                    .child(icon("dm_plus", 20., "--text-strong")),
                             ),
                     ),
             )
-            .child(div().flex_none().h(px(8.)))
+            .children(self.favorites_suggestions(cx))
+            .child(div().flex_none().h(px(12.)))
             .child(
                 div()
                     .id("favorites-rows")
@@ -343,6 +400,358 @@ impl Root {
                     .h(px(8.))
                     .bg(color("--background-base-lowest")),
             )
+    }
+
+    /// The server breadcrumb of the channel header in the Favorites view (`guildBreadcrumbContainer_z_gUBg`, frame
+    /// menus2/favorites-view): the server's 24px icon (its acronym without one) and a 10 by 24 caret, 45px wide
+    /// so the channel's icon lands 436px from the window's left edge.
+    pub(super) fn favorites_breadcrumb(&self) -> Option<AnyElement> {
+        if !self.in_favorites() {
+            return None;
+        }
+        let guild = self.current_guild()?;
+        let image = self.images.get(&format!("guild:{}", guild.id)).cloned();
+        Some(
+            div()
+                .id("favorites-breadcrumb")
+                .ml(px(1.))
+                .flex_none()
+                .w(px(45.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .child(match image {
+                    Some(image) => img(image).size(px(24.)).rounded(px(8.)).into_any_element(),
+                    None => div()
+                        .size(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.))
+                        .line_height(px(14.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(guild.acronym())
+                        .into_any_element(),
+                })
+                .child(
+                    div()
+                        .ml(px(4.))
+                        .w(px(10.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("menu_caret_right", 12., "--text-muted")),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The "Jump" button after the title (`followButton_z_gUBg`: a 60 by 32 secondary button inside 8px of padding):
+    /// the channel in its own server, as "Go to Server" does.
+    pub(super) fn favorites_jump_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.in_favorites() {
+            return None;
+        }
+        let channel = self.channel?;
+        Some(
+            div()
+                .flex_none()
+                .ml(px(8.))
+                .px(px(8.))
+                .py(px(4.))
+                .child(
+                    div()
+                        .id("favorites-jump")
+                        .min_w(px(60.))
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some((guild, _)) = this.favorite_channel(channel) {
+                                this.favorites_view = false;
+                                this.select(guild, Some(channel));
+                                this.request_images();
+                                cx.notify();
+                            }
+                        }))
+                        .child("Jump"),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The suggestions (module 132598 `I`): up to four, channels and people alternating, none already a favourite.
+    /// The official list ranks by the account's affinity data, which is not kept here: the order is the lists'.
+    fn favorite_suggestion_ids(&self) -> Vec<Id> {
+        let favorites = self.stores.favorites();
+        let mut channels = self
+            .stores
+            .guilds
+            .iter()
+            .flat_map(|guild| guild.channels.iter())
+            .filter(|channel| channel.kind == ChannelKind::Text)
+            .map(|channel| channel.id)
+            .filter(|id| !favorites.is_favorite(*id));
+        let mut people = self
+            .stores
+            .private_channels
+            .iter()
+            .filter(|dm| dm.kind == 1 && self.stores.dm_recipient(dm).is_some())
+            .map(|dm| dm.id)
+            .filter(|id| !favorites.is_favorite(*id));
+        let mut out = Vec::new();
+        while out.len() < 4 {
+            let next = if out.len() % 2 == 0 {
+                channels.next().or_else(|| people.next())
+            } else {
+                people.next().or_else(|| channels.next())
+            };
+            match next {
+                Some(id) => out.push(id),
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// "Add" of a suggestion, "Add to Favorites" of a channel menu (`nR` of module 146092, source "suggestions").
+    pub(super) fn add_favorite(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let kind = match self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
+        {
+            Some(dm) => dm.kind,
+            None => self.favorite_channel(channel).map_or(0, |(_, known)| {
+                context_menu::channel_type_number(known.kind)
+            }),
+        };
+        let mut favorites = self.stores.favorites();
+        if favorites.add_channel(channel, Some(kind)) {
+            self.send_favorites(&favorites, "Add to Favorites");
+        }
+        cx.notify();
+    }
+
+    /// The "Suggested Channels" block above the list (`aboveScroller_EXeLI-`, frame favorites-view): the heading with
+    /// the dismiss button, four 48px rows, and the divider.
+    fn favorites_suggestions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.favorites_suggest_dismissed {
+            return None;
+        }
+        let ids = self.favorite_suggestion_ids();
+        if ids.is_empty() {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for id in ids {
+            let (icon_part, name, sub) = if let Some(dm) = self
+                .stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == id)
+            {
+                let user = self.stores.dm_recipient(dm).cloned();
+                let Some(user) = user else { continue };
+                let avatar = self.images.get(&avatar_source(&user).0).cloned();
+                let status = self.stores.status(user.id).to_owned();
+                (
+                    div()
+                        .relative()
+                        .size(px(32.))
+                        .children(avatar.map(|image| {
+                            img(image).size(px(32.)).rounded_full().into_any_element()
+                        }))
+                        .child(status_dot(&status, "--background-base-lowest"))
+                        .into_any_element(),
+                    self.private_channel_name(dm),
+                    user.username.clone(),
+                )
+            } else {
+                let Some((guild, channel)) = self.favorite_channel(id) else {
+                    continue;
+                };
+                let (guild_name, image) = self
+                    .stores
+                    .guild(guild)
+                    .map(|known| {
+                        (
+                            known.name.clone(),
+                            self.images.get(&format!("guild:{guild}")).cloned(),
+                        )
+                    })
+                    .unwrap_or_default();
+                let facts = channel_icon::Facts {
+                    kind: channel.kind,
+                    rules: false,
+                    nsfw: channel.nsfw,
+                    private: false,
+                    pending: false,
+                    locked: false,
+                    active_threads: false,
+                };
+                (
+                    // `iconWithGuildIcon_NKPsbl`: the server's icon (24px) with the channel's 20px badge at (12, 12).
+                    div()
+                        .relative()
+                        .size(px(32.))
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .rounded_full()
+                                .bg(color("--background-mod-strong"))
+                                .children(
+                                    image.map(|image| img(image).size(px(24.)).rounded_full()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(12.))
+                                .top(px(12.))
+                                .size(px(20.))
+                                .rounded_full()
+                                .bg(color("--background-mod-strong"))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(channel_icon::name(&facts), 10., "--icon-default")),
+                        )
+                        .into_any_element(),
+                    channel.name.clone(),
+                    guild_name,
+                )
+            };
+            rows.push(
+                div()
+                    .flex_none()
+                    .h(px(48.))
+                    .w(px(286.))
+                    .ml(px(8.))
+                    .pl(px(8.))
+                    .pr(px(8.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(icon_part)
+                            .child(
+                                // `labels_dhbHaH`: 150px wide, the line below the name ellipsised.
+                                div()
+                                    .w(px(150.))
+                                    .flex_none()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-muted"))
+                                            .child(sub),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        // `button_F7qvhY sm secondary`: 60 by 32, "Add" at 14px / 18px medium.
+                        div()
+                            .id(SharedString::from(format!("favorites-suggest-{id}")))
+                            .flex_none()
+                            .w(px(60.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .on_click(cx.listener(move |this, _, _, cx| this.add_favorite(id, cx)))
+                            .child("Add"),
+                    )
+                    .into_any_element(),
+            );
+        }
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(24.))
+                        .mt(px(8.))
+                        .mb(px(8.))
+                        .px(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child("Suggested Channels"),
+                        )
+                        .child(
+                            div()
+                                .id("favorites-suggest-dismiss")
+                                .size(px(16.))
+                                .mr(px(1.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.favorites_suggest_dismissed = true;
+                                    cx.notify();
+                                }))
+                                .child(icon("sb_close", 16., "--interactive-icon-default")),
+                        ),
+                )
+                .children(rows)
+                .child(div().flex_none().h(px(19.)))
+                .child(
+                    div()
+                        .flex_none()
+                        .mx(px(16.))
+                        .h(px(1.))
+                        .bg(color("--background-mod-subtle")),
+                )
+                .into_any_element(),
+        )
     }
 
     /// A favourite of another server (or one with a nickname): the channel row's look with the channel's own server.
