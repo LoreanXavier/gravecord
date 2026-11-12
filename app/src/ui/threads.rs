@@ -29,7 +29,17 @@ pub(crate) struct ThreadBrowser {
     pub search: Entity<Editor>,
     _events: Subscription,
     pub query: String,
+    /// The channel whose threads are listed, and the archived ones loaded for it so far (`Fr`, module 424798).
+    parent: Option<Id>,
+    archived: Vec<Id>,
+    loading: bool,
+    has_more: bool,
+    failed: bool,
+    scroll: gpui::ScrollHandle,
 }
+
+/// The key of a page of archived threads asked for by the browser, followed by the channel id.
+const BROWSER_PAGE_KEY: &str = "thread-browser:";
 
 /// The New Thread form: name, private, and the first message.
 pub(crate) struct NewThread {
@@ -42,6 +52,51 @@ pub(crate) struct NewThread {
     _events: [Subscription; 2],
 }
 
+/// The width a run of text takes at a size and weight, as the text system shapes it.
+fn measure_text(window: &mut Window, text: &str, size: f32, weight: f32) -> f32 {
+    if text.is_empty() {
+        return 0.;
+    }
+    let mut font = gpui::font(super::SANS);
+    font.weight = FontWeight(weight);
+    font.features = super::kerning();
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None)
+            .width,
+    )
+}
+
+/// `-webkit-line-clamp: 1` of a thread row's message: the text itself when it fits `free` px, else its first line
+/// of whole words followed by an ellipsis, and `true` for "the box takes the whole free width".
+fn clamp_words(window: &mut Window, text: &str, size: f32, free: f32) -> (String, bool) {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if measure_text(window, &one_line, size, 400.) <= free {
+        return (one_line, false);
+    }
+    let mut fitted = String::new();
+    for word in one_line.split(' ') {
+        let next = if fitted.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{fitted} {word}")
+        };
+        if measure_text(window, &next, size, 400.) > free {
+            break;
+        }
+        fitted = next;
+    }
+    (format!("{fitted} \u{2026}"), true)
+}
 /// `aK` (module 469881) with its default strings: "1m ago" under a minute, then minutes, hours and days ("m ago",
 /// "h ago", "d ago"; string ids N9M4N1, p0KedC, gjK5av), ">30d ago" under a "year" of 12 thirty-day months and the
 /// date after that (`format("LL")`, such as "November 12, 2026").
@@ -356,12 +411,122 @@ impl Root {
             cx.notify();
         });
         window.focus(&gpui::Focusable::focus_handle(search.read(cx), cx), cx);
+        let parent = self.channel.and_then(|channel| {
+            let guild = self.current_guild()?;
+            match guild.threads.iter().find(|thread| thread.id == channel) {
+                Some(thread) => Some(thread.parent_id),
+                None => Some(channel),
+            }
+        });
         self.thread_browser = Some(ThreadBrowser {
             search,
             _events: events,
             query: String::new(),
+            parent,
+            archived: Vec::new(),
+            loading: false,
+            has_more: true,
+            failed: false,
+            scroll: gpui::ScrollHandle::new(),
         });
+        // `Fr` loads the first page of archived threads when the browser mounts (module 424798).
+        self.thread_browser_load();
         cx.notify();
+    }
+
+    /// `loadArchivedThreads` (module 7909): the next 25 archived threads of the channel, newest activity first.
+    /// Nothing is asked while a page is loading, after the last page, or after a failure.
+    fn thread_browser_load(&mut self) {
+        let Some(browser) = self.thread_browser.as_mut() else {
+            return;
+        };
+        let Some(parent) = browser.parent else {
+            return;
+        };
+        if browser.loading || !browser.has_more || browser.failed {
+            return;
+        }
+        browser.loading = true;
+        let route = format!(
+            "/channels/{parent}/threads/search?archived=true&sort_by=last_message_time&sort_order=desc&limit=25&tag_setting=match_some&offset={}",
+            browser.archived.len()
+        );
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{BROWSER_PAGE_KEY}{parent}")),
+            method: reqwest::Method::GET,
+            route,
+            body: None,
+        });
+    }
+
+    /// The answer of `thread_browser_load` (`LOAD_ARCHIVED_THREADS_SUCCESS` / `_FAIL`): the threads join the guild's
+    /// list as archived ones, their members the joined-threads store and the facepiles.
+    pub(super) fn thread_browser_fetched(
+        &mut self,
+        key: &str,
+        report: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(parent) = key
+            .strip_prefix(BROWSER_PAGE_KEY)
+            .and_then(|parent| parent.parse::<Id>().ok())
+        else {
+            return false;
+        };
+        let guild_id = self.guild;
+        let Some(browser) = self.thread_browser.as_mut() else {
+            return true;
+        };
+        if browser.parent != Some(parent) {
+            return true;
+        }
+        browser.loading = false;
+        if report["ok"].as_bool() != Some(true) {
+            browser.failed = true;
+            cx.notify();
+            return true;
+        }
+        let body = &report["body"];
+        let threads: Vec<Thread> = body["threads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Thread::from_value)
+            .filter(|thread| thread.parent_id == parent)
+            .collect();
+        browser.has_more = body["has_more"].as_bool().unwrap_or(false) && !threads.is_empty();
+        for thread in &threads {
+            if !browser.archived.contains(&thread.id) {
+                browser.archived.push(thread.id);
+            }
+        }
+        if let Some(guild) = guild_id {
+            for entry in body["threads"].as_array().into_iter().flatten() {
+                if let Some(member) = dc_state::members::Member::from_value(&entry["owner"], None) {
+                    self.stores.members.upsert(guild, member);
+                }
+            }
+        }
+        self.stores.thread_members_from_response(guild_id, body);
+        self.stores.thread_previews.add_response(guild_id, body);
+        if let Some(guild) = self
+            .stores
+            .guilds
+            .iter_mut()
+            .find(|guild| Some(guild.id) == guild_id)
+        {
+            for mut thread in threads {
+                match guild.threads.iter_mut().find(|old| old.id == thread.id) {
+                    Some(old) => {
+                        thread.joined |= old.joined;
+                        *old = thread;
+                    }
+                    None => guild.threads.push(thread),
+                }
+            }
+        }
+        cx.notify();
+        true
     }
 
     /// The message menu's Create Thread: the panel with the message under the name, its text as the name.
@@ -525,16 +690,30 @@ impl Root {
         &self,
         thread: &Thread,
         show_channel_name: bool,
+        row_width: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = thread.id;
         let guild = self.guild;
+        let has_faces = self
+            .stores
+            .thread_previews
+            .member_ids_preview(id)
+            .is_some_and(|ids| !ids.is_empty());
+        // `L`: ThreadMessageStore's most recent message, else the message store's (`getMessage` of the same id).
         let last = self
             .stores
-            .messages
-            .get(&id)
-            .and_then(|list| list.last())
-            .cloned();
+            .thread_messages
+            .most_recent_message(id)
+            .cloned()
+            .or_else(|| {
+                self.stores
+                    .messages
+                    .get(&id)
+                    .and_then(|list| list.last())
+                    .cloned()
+            });
         let now = chrono::Utc::now().timestamp_millis();
         let ago = |snowflake: Id| short_ago(now - ((snowflake >> 22) + 1_420_070_400_000) as i64);
         let parent_name = show_channel_name
@@ -591,6 +770,19 @@ impl Root {
                 .get(&message.author.id)
                 .cloned()
                 .unwrap_or_else(|| message.author.clone());
+            let time = ago(message.id);
+            // `messageContent` clamps to one line: when the text does not fit the line it wraps at a word and the
+            // first line ends in an ellipsis ("gravecord app thread ..."), the box taking the whole free width. The
+            // free width is the text column (the row less its 16 px padding and the facepile) less the 24 px avatar,
+            // the name, ": ", " * " and the time.
+            let faces_width = if has_faces { 40. } else { 0. };
+            let fixed = 24.
+                + measure_text(window, author.display_name(), 14., 600.)
+                + measure_text(window, ":\u{a0}", 14., 400.)
+                + measure_text(window, "\u{a0} \u{2022} \u{a0}", 14., 400.)
+                + measure_text(window, &time, 14., 400.);
+            let free = row_width - 32. - faces_width - fixed;
+            let (shown, boxed) = clamp_words(window, &message.content, 16., free);
             line()
                 .child(self.thread_avatar(&author, 16., cx).mr(px(8.)))
                 .child(
@@ -603,17 +795,17 @@ impl Root {
                 .child(div().flex_none().child(":\u{a0}"))
                 .child(
                     div()
-                        .flex_shrink(1.)
-                        .min_w(px(0.))
+                        .flex_none()
+                        .h(px(22.))
+                        .when(boxed, |content| content.w(px(free)))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_ellipsis()
                         .text_size(px(16.))
                         .line_height(px(22.))
-                        .child(message.content.clone()),
+                        .child(shown),
                 )
                 .child(div().flex_none().child("\u{a0} \u{2022} \u{a0}"))
-                .child(div().flex_none().child(ago(message.id)))
+                .child(div().flex_none().child(time))
                 .into_any_element()
         } else {
             // `B`: "No recent messages  •  <time>".
@@ -765,11 +957,28 @@ impl Root {
         let threads: Vec<Thread> = self
             .guild_threads(self.channel)
             .into_iter()
+            .filter(|thread| !thread.archived)
             .filter(|thread| query.is_empty() || thread.name.to_lowercase().contains(&query))
             .collect();
         let joined: Vec<&Thread> = threads.iter().filter(|thread| thread.joined).collect();
         let others: Vec<&Thread> = threads.iter().filter(|thread| !thread.joined).collect();
-        let empty = threads.is_empty();
+        // The third section: the archived threads loaded so far, as the store returned them (newest activity first).
+        let archived: Vec<Thread> = self
+            .current_guild()
+            .map(|guild| {
+                browser
+                    .archived
+                    .iter()
+                    .filter_map(|id| guild.threads.iter().find(|thread| thread.id == *id))
+                    .filter(|thread| {
+                        query.is_empty() || thread.name.to_lowercase().contains(&query)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let loading_first = threads.is_empty() && archived.is_empty() && browser.loading;
+        let empty = threads.is_empty() && archived.is_empty() && !loading_first;
         let picture = self.images.get("threads:empty").cloned();
         let mut list: Vec<AnyElement> = Vec::new();
         let heading = |text: String| {
@@ -792,7 +1001,7 @@ impl Root {
             list.extend(
                 joined
                     .iter()
-                    .map(|thread| self.thread_card(thread, false, cx)),
+                    .map(|thread| self.thread_card(thread, false, 440., window, cx)),
             );
         }
         if !others.is_empty() {
@@ -800,10 +1009,22 @@ impl Root {
             list.extend(
                 others
                     .iter()
-                    .map(|thread| self.thread_card(thread, false, cx)),
+                    .map(|thread| self.thread_card(thread, false, 440., window, cx)),
             );
         }
-        let body: AnyElement = if empty {
+        if !archived.is_empty() {
+            // Module 628707 `wUNQ+w`.
+            list.push(heading("older threads".to_owned()));
+            list.extend(
+                archived
+                    .iter()
+                    .map(|thread| self.thread_card(thread, false, 440., window, cx)),
+            );
+        }
+        let scroll = browser.scroll.clone();
+        let body: AnyElement = if loading_first {
+            div().h(px(351.)).into_any_element()
+        } else if empty {
             div()
                 .p(px(32.))
                 .h(px(400.))
@@ -861,6 +1082,18 @@ impl Root {
                 .id("threads-list")
                 .h(px(351.))
                 .overflow_y_scroll()
+                .track_scroll(&scroll)
+                // `j`: the next page is asked for when less than 200 px of the list remain below the view.
+                .on_scroll(cx.listener(|this, _: &gpui::ScrollEvent, _, cx| {
+                    let near = this.thread_browser.as_ref().is_some_and(|browser| {
+                        let max = browser.scroll.max_offset().y;
+                        max + browser.scroll.offset().y < px(200.)
+                    });
+                    if near {
+                        this.thread_browser_load();
+                        cx.notify();
+                    }
+                }))
                 // Rows are x432..872 of the 416..896 panel: 16 left, 24 right (the scrollbar's 8 px gutter).
                 .pl(px(16.))
                 .pr(px(24.))
@@ -987,7 +1220,11 @@ impl Root {
     /// "All Active Threads" (module 400954): every active thread of the guild, newest message first, as 80 px rows with
     /// the parent channel's name, in a 480 by 608 list modal (a 72 px header, the list, a footer with the full-width
     /// Close). Measured in `design/golden/windows/threads/active-threads-modal-darker-cozy@1.png`.
-    pub(super) fn active_threads_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn active_threads_modal(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.thread_modal {
             return None;
         }
@@ -1002,7 +1239,7 @@ impl Root {
             .sort_by_key(|thread| std::cmp::Reverse(thread.last_message_id.unwrap_or(thread.id)));
         let rows: Vec<AnyElement> = threads
             .iter()
-            .map(|thread| self.thread_card(thread, true, cx))
+            .map(|thread| self.thread_card(thread, true, 430., window, cx))
             .collect();
         // The divider colour is read from the golden's pixels (50, 50, 55 on the modal's 36, 36, 41).
         let divider = gpui::rgba(0x323237ff);
@@ -1032,7 +1269,27 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child("All Active Threads"),
+                    .child("All Active Threads")
+                    // The X is a 14 px glyph centred at (850.5, 84.5) of the golden: a 40 px button 8 px from the
+                    // right edge and 7.5 px from the top of the modal.
+                    .child(
+                        div()
+                            .id("active-threads-x")
+                            .absolute()
+                            .top(px(8.5))
+                            .right(px(8.))
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.thread_modal = false;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(
                 div()
