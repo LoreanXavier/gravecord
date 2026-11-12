@@ -328,25 +328,43 @@ impl Root {
                     .children((count > 0).then(|| {
                         unread_badges::rail_number(count, false, probe.then_some("dm-rail-badge"))
                     }))
-                    // `upperBadge_hqZPsU` (top 0, end 0) holding `iconBadge_rwEpIL.isCurrentUserConnected_rwEpIL`:
-                    // 16px, `--status-positive`, the speaker glyph, white.
+                    // The upper badge of module 771640 (`oi`), the same one a server's tile carries: the screen while
+                    // anyone in the call streams (`getAllApplicationStreamsForChannel`), the camera in a video call,
+                    // the speaker otherwise; green while this account is in the call.
                     .when(
                         self.call
                             .as_ref()
                             .is_some_and(|call| call.guild == 0 && call.channel == id),
                         |tile| {
+                            let streams = self
+                                .streamers_in_call()
+                                .is_some_and(|streamers| !streamers.is_empty());
+                            let glyph = if streams {
+                                "rail_stream_badge"
+                            } else if self.dmc.video {
+                                "rail_camera_badge"
+                            } else {
+                                "voice_channel"
+                            };
                             tile.child(
                                 div()
                                     .absolute()
-                                    .top_0()
-                                    .left(px(40.))
-                                    .size(px(16.))
+                                    .left(px(41.))
+                                    .top(px(1.))
+                                    .size(px(14.))
                                     .rounded_full()
                                     .bg(color("--status-positive"))
+                                    .shadow(vec![gpui::BoxShadow {
+                                        color: color("--background-base-lowest").into(),
+                                        offset: gpui::point(px(0.), px(0.)),
+                                        blur_radius: px(0.),
+                                        spread_radius: px(2.),
+                                        inset: false,
+                                    }])
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(super::icon("rail_speaker", 16., "--white")),
+                                    .child(super::icon(glyph, 10., "--white")),
                             )
                         },
                     )

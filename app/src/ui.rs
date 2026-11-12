@@ -3527,7 +3527,9 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(if self.own_stream().is_some() {
+                            // `getCurrentUserActiveStream` (module 396655): the stream this client sends or
+                            // the one it watches puts the screen on the badge.
+                            .child(if self.in_a_stream() {
                                 icon("rail_stream_badge", 10., "--white").into_any_element()
                             } else if self.call.as_ref().is_some_and(|call| call.camera) {
                                 icon("rail_camera_badge", 10., "--white").into_any_element()
@@ -5057,6 +5059,37 @@ impl Root {
                                 },
                             )),
                         )
+                        // `eZ` of module 540462: "Hide chat" while the video call shares the column with the chat
+                        // (the chevron points down), "Show chat" once the call has all of it (it points up).
+                        .when(in_call_area && self.dm_call_can_hide_chat(), |row| {
+                            let hidden = self.dm_call_chat_hidden();
+                            row.child(
+                                self.header_stop(
+                                    self.with_tip(
+                                        "dm-call-chat",
+                                        Tip::text(
+                                            if hidden { "Show chat" } else { "Hide chat" },
+                                            Side::Bottom,
+                                        ),
+                                        tool(if hidden {
+                                            "clips_chevron_up"
+                                        } else {
+                                            "clips_chevron_down"
+                                        }),
+                                        cx,
+                                    ),
+                                    "dm-call-chat",
+                                    cx,
+                                )
+                                .cursor_pointer()
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.tip = None;
+                                        this.toggle_dm_call_chat(cx);
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             self.header_stop(
                                 self.with_tip(
@@ -8868,6 +8901,10 @@ impl Render for Root {
                                         .min_h(px(0.))
                                         .bg(color("--background-base-lower"))
                                         .flex_row()
+                                        // "Hide chat": the call has the whole column (`.wrapper.noChat`).
+                                        .when(self.dm_call_chat_hidden(), |chat| {
+                                            chat.flex_none().h(px(0.)).overflow_hidden()
+                                        })
                                         .child(
                                             div()
                                                 .flex()

@@ -1096,11 +1096,23 @@ impl Root {
             .overflow_hidden()
             .bg(background)
             .when(!waiting, |this| {
-                this.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.vv.focus.click(user_id, kind);
+                this.cursor_pointer().on_click(cx.listener(
+                    move |this, event: &gpui::ClickEvent, window, cx| {
+                        if event.click_count() >= 2 {
+                            // `handleFullscreenParticipant` (module 540462): the tile is the selected one in Full
+                            // Screen, and the same tile again leaves both. The first press of the pair has already
+                            // run `handleSelectParticipant`, as a browser sends click before dblclick.
+                            let selected = this.vv.focus.tile == Some((user_id, kind));
+                            if this.vv.fullscreen == selected {
+                                this.vv.focus.click(user_id, kind);
+                            }
+                            this.toggle_call_fullscreen(window, cx);
+                        } else {
+                            this.vv.focus.click(user_id, kind);
+                        }
                         cx.notify();
-                    }))
+                    },
+                ))
             })
             .child(self.tile_media(media, person))
             .when(loading, |this| this.child(spinner()))

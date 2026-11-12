@@ -119,6 +119,19 @@ index 75da2eb..9b0c895 100644
 +    }
 +    true
 +}
+diff --git a/crates/gpui/src/assets.rs b/crates/gpui/src/assets.rs
+index cb8b47e..b276b6e 100644
+--- a/crates/gpui/src/assets.rs
++++ b/crates/gpui/src/assets.rs
+@@ -37,6 +37,8 @@ pub struct ImageId(pub usize);
+ pub struct RenderImageParams {
+     pub image_id: ImageId,
+     pub frame_index: usize,
++    /// The size in device pixels of a copy scaled down for the place it is drawn in, or `None` for the image as it is.
++    pub fit: Option<(u32, u32)>,
+ }
+ 
+ /// A cached and processed image, in BGRA format
 diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
 index 8f980bd..f6040e9 100644
 --- a/crates/gpui/src/element.rs
@@ -419,6 +432,18 @@ index 176072f..caf1731 100644
                      window
                          .paint_svg(bounds, path.clone(), None, transformation, color, cx)
                          .log_err();
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index b84bcc5..7626033 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -3703,6 +3703,7 @@ mod atlas_tests {
+         AtlasKey::Image(RenderImageParams {
+             image_id: crate::ImageId(image_id),
+             frame_index: 0,
++            fit: None,
+         })
+     }
+ 
 diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
 index a4116aa..0b3bb0b 100644
 --- a/crates/gpui/src/scene.rs
@@ -878,7 +903,7 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..f82e57c 100644
+index 4e2e1a7..b1d662f 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
@@ -1010,7 +1035,16 @@ index 4e2e1a7..f82e57c 100644
  /// Holds the state for a specific window.
  pub struct Window {
      pub(crate) handle: AnyWindowHandle,
-@@ -1242,6 +1336,7 @@ pub struct Window {
+@@ -1227,6 +1321,8 @@ pub struct Window {
+     is_resizable: bool,
+     is_minimizable: bool,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
++    /// The sizes of the scaled-down copies the atlas holds of each picture (`image_fit`).
++    image_fits: FxHashMap<crate::ImageId, Vec<(u32, u32)>>,
+     text_system: Rc<WindowTextSystem>,
+     text_rendering_mode: Rc<Cell<TextRenderingMode>>,
+     rem_size: Pixels,
+@@ -1242,6 +1338,7 @@ pub struct Window {
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -1018,7 +1052,7 @@ index 4e2e1a7..f82e57c 100644
      pub(crate) element_opacity: f32,
      pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
      pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
-@@ -1267,6 +1362,9 @@ pub struct Window {
+@@ -1267,6 +1364,9 @@ pub struct Window {
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
@@ -1028,7 +1062,7 @@ index 4e2e1a7..f82e57c 100644
      pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
      appearance: WindowAppearance,
      pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
-@@ -1288,6 +1386,7 @@ pub struct Window {
+@@ -1288,6 +1388,7 @@ pub struct Window {
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
@@ -1036,7 +1070,7 @@ index 4e2e1a7..f82e57c 100644
      pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
      pub(crate) focus: Option<FocusId>,
      focus_enabled: bool,
-@@ -1926,6 +2025,7 @@ impl Window {
+@@ -1926,6 +2027,7 @@ impl Window {
                  // Take the deferred flag first: `||` short-circuits, and leaving
                  // the flag set when this request already forces a render would
                  // force a second, redundant render on the next frame.
@@ -1044,7 +1078,7 @@ index 4e2e1a7..f82e57c 100644
                  let force_render =
                      mem::take(&mut deferred_force_render) || request_frame_options.force_render;
  
-@@ -2007,6 +2107,7 @@ impl Window {
+@@ -2007,6 +2109,7 @@ impl Window {
  
                  let pending_next_frame_callbacks = next_frame_callbacks.take();
                  if !pending_next_frame_callbacks.is_empty() {
@@ -1052,7 +1086,7 @@ index 4e2e1a7..f82e57c 100644
                      handle
                          .update(&mut cx, |_, window, cx| {
                              for callback in pending_next_frame_callbacks {
-@@ -2039,9 +2140,12 @@ impl Window {
+@@ -2039,9 +2142,12 @@ impl Window {
                                      // atlas tile references after a GPU device recovery.
                                      window.refresh();
                                  }
@@ -1065,7 +1099,15 @@ index 4e2e1a7..f82e57c 100644
                              })
                              .with_context(|| {
                                  format!(
-@@ -2369,6 +2473,7 @@ impl Window {
+@@ -2358,6 +2464,7 @@ impl Window {
+             is_resizable,
+             is_minimizable,
+             sprite_atlas,
++            image_fits: FxHashMap::default(),
+             text_system,
+             text_rendering_mode: cx.text_rendering_mode.clone(),
+             rem_size: px(16.),
+@@ -2369,6 +2476,7 @@ impl Window {
              text_style_stack: Vec::new(),
              rendered_entity_stack: Vec::new(),
              element_offset_stack: Vec::new(),
@@ -1073,7 +1115,7 @@ index 4e2e1a7..f82e57c 100644
              content_mask_stack: Vec::new(),
              element_opacity: 1.0,
              requested_autoscroll: None,
-@@ -2390,6 +2495,7 @@ impl Window {
+@@ -2390,6 +2498,7 @@ impl Window {
              modifiers,
              capslock,
              scale_factor,
@@ -1081,7 +1123,7 @@ index 4e2e1a7..f82e57c 100644
              bounds_observers: SingleSubscriberSet::new(),
              appearance,
              appearance_observers: SingleSubscriberSet::new(),
-@@ -2412,6 +2518,7 @@ impl Window {
+@@ -2412,6 +2521,7 @@ impl Window {
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
@@ -1089,7 +1131,7 @@ index 4e2e1a7..f82e57c 100644
              activation_observers: SingleSubscriberSet::new(),
              focus: None,
              focus_enabled: true,
-@@ -2475,6 +2582,110 @@ impl ContentMask<Pixels> {
+@@ -2475,6 +2585,110 @@ impl ContentMask<Pixels> {
      }
  }
  
@@ -1200,7 +1242,7 @@ index 4e2e1a7..f82e57c 100644
  impl Window {
      fn mark_view_dirty(&mut self, view_id: EntityId) {
          // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-@@ -2595,8 +2806,132 @@ impl Window {
+@@ -2595,8 +2809,132 @@ impl Window {
          }
      }
  
@@ -1333,7 +1375,7 @@ index 4e2e1a7..f82e57c 100644
          self.removed = true;
      }
  
-@@ -3001,9 +3336,12 @@ impl Window {
+@@ -3001,9 +3339,12 @@ impl Window {
      /// the platform window, then notifies observers. Normally called automatically
      /// by the platform's resize callback, but exposed publicly for test infrastructure.
      pub fn bounds_changed(&mut self, cx: &mut App) {
@@ -1349,7 +1391,7 @@ index 4e2e1a7..f82e57c 100644
  
          self.refresh();
  
-@@ -3222,6 +3560,9 @@ impl Window {
+@@ -3222,6 +3563,9 @@ impl Window {
  
      /// Toggle zoom on the window.
      pub fn zoom_window(&self) {
@@ -1359,7 +1401,7 @@ index 4e2e1a7..f82e57c 100644
          self.platform_window.zoom();
      }
  
-@@ -3321,6 +3662,70 @@ impl Window {
+@@ -3321,6 +3665,70 @@ impl Window {
          self.platform_window.show_character_palette();
      }
  
@@ -1430,7 +1472,7 @@ index 4e2e1a7..f82e57c 100644
      /// The scale factor of the display associated with the window. For example, it could
      /// return 2.0 for a "retina" display, indicating that each logical pixel should actually
      /// be rendered as two pixels on screen.
-@@ -3507,6 +3912,12 @@ impl Window {
+@@ -3507,6 +3915,12 @@ impl Window {
      }
  
      fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
@@ -1443,7 +1485,7 @@ index 4e2e1a7..f82e57c 100644
          Underline {
              order: 0,
              pad: 0,
-@@ -3934,8 +4345,10 @@ impl Window {
+@@ -3934,8 +4348,10 @@ impl Window {
          let scale_factor = self.scale_factor();
          #[cfg(feature = "profiler")]
          let request_layout_start = Instant::now();
@@ -1454,7 +1496,7 @@ index 4e2e1a7..f82e57c 100644
          #[cfg(feature = "profiler")]
          let prepaint_start = Instant::now();
          self.layout_engine
-@@ -3974,6 +4387,7 @@ impl Window {
+@@ -3974,6 +4390,7 @@ impl Window {
  
          self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
  
@@ -1462,7 +1504,7 @@ index 4e2e1a7..f82e57c 100644
          // Now actually paint the elements.
          #[cfg(feature = "profiler")]
          let paint_start = Instant::now();
-@@ -3996,6 +4410,13 @@ impl Window {
+@@ -3996,6 +4413,13 @@ impl Window {
          #[cfg(any(feature = "inspector", debug_assertions))]
          self.paint_inspector_hitbox(cx);
  
@@ -1476,7 +1518,7 @@ index 4e2e1a7..f82e57c 100644
          #[cfg(feature = "profiler")]
          self.window_profiler
              .record_draw_phases(profiler::DrawPhases {
-@@ -4202,6 +4623,10 @@ impl Window {
+@@ -4202,6 +4626,10 @@ impl Window {
  
              let paint_start = self.paint_index();
              let content_mask = deferred_draw.content_mask;
@@ -1487,7 +1529,7 @@ index 4e2e1a7..f82e57c 100644
              if let Some(element) = deferred_draw.element.as_mut() {
                  let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
                      self.with_rendered_view(deferred_draw.current_view, |window| {
-@@ -4217,6 +4642,19 @@ impl Window {
+@@ -4217,6 +4645,19 @@ impl Window {
                  self.reuse_paint(deferred_draw.paint_range.clone());
              }
              let paint_end = self.paint_index();
@@ -1507,7 +1549,7 @@ index 4e2e1a7..f82e57c 100644
              deferred_draw.paint_range = paint_start..paint_end;
          }
          self.next_frame.deferred_draws = deferred_draws;
-@@ -4289,6 +4727,7 @@ impl Window {
+@@ -4289,6 +4730,7 @@ impl Window {
                      prepaint_range: deferred_draw.prepaint_range.clone(),
                      paint_range: deferred_draw.paint_range.clone(),
                      accessed_entities: deferred_draw.accessed_entities.clone(),
@@ -1515,7 +1557,7 @@ index 4e2e1a7..f82e57c 100644
                  }),
          );
      }
-@@ -4416,6 +4855,9 @@ impl Window {
+@@ -4416,6 +4858,9 @@ impl Window {
      ) -> R {
          self.invalidator.debug_assert_paint_or_prepaint();
          if let Some(mask) = mask {
@@ -1525,7 +1567,7 @@ index 4e2e1a7..f82e57c 100644
              let mask = mask.intersect(&self.content_mask());
              self.content_mask_stack.push(mask);
              let result = f(self);
-@@ -4458,7 +4900,9 @@ impl Window {
+@@ -4458,7 +4903,9 @@ impl Window {
          result
      }
  
@@ -1536,7 +1578,7 @@ index 4e2e1a7..f82e57c 100644
          &mut self,
          opacity: Option<f32>,
          f: impl FnOnce(&mut Self) -> R,
-@@ -4772,6 +5216,7 @@ impl Window {
+@@ -4772,6 +5219,7 @@ impl Window {
              prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
              paint_range: PaintIndex::default()..PaintIndex::default(),
              accessed_entities: FxHashSet::default(),
@@ -1544,7 +1586,7 @@ index 4e2e1a7..f82e57c 100644
          });
      }
  
-@@ -4780,10 +5225,183 @@ impl Window {
+@@ -4780,10 +5228,183 @@ impl Window {
      /// for performance reasons.
      ///
      /// This method should only be called as part of the paint phase of element drawing.
@@ -1728,7 +1770,7 @@ index 4e2e1a7..f82e57c 100644
          let clipped_bounds = bounds.intersect(&content_mask.bounds);
          if !clipped_bounds.is_empty() {
              self.next_frame
-@@ -4816,9 +5434,12 @@ impl Window {
+@@ -4816,9 +5437,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1741,7 +1783,7 @@ index 4e2e1a7..f82e57c 100644
              if shadow.inset {
                  continue;
              }
-@@ -4852,9 +5473,12 @@ impl Window {
+@@ -4852,9 +5476,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1754,7 +1796,7 @@ index 4e2e1a7..f82e57c 100644
              if !shadow.inset {
                  continue;
              }
-@@ -4935,6 +5559,12 @@ impl Window {
+@@ -4935,6 +5562,12 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let opacity = self.element_opacity();
@@ -1767,7 +1809,7 @@ index 4e2e1a7..f82e57c 100644
          let snapped_bounds = self.snap_bounds(quad.bounds);
          let snapped_border_widths = self.snap_border_widths(quad.border_widths);
          let quad = Quad {
-@@ -5009,6 +5639,11 @@ impl Window {
+@@ -5009,6 +5642,11 @@ impl Window {
          let content_mask = self.content_mask();
          let opacity = self.element_opacity();
          path.content_mask = content_mask;
@@ -1779,7 +1821,7 @@ index 4e2e1a7..f82e57c 100644
          let color: Background = color.into();
          path.color = color.opacity(opacity);
          self.next_frame
-@@ -5042,7 +5677,10 @@ impl Window {
+@@ -5042,7 +5680,10 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1791,7 +1833,7 @@ index 4e2e1a7..f82e57c 100644
          let bounds = Bounds {
              origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
              size: size(self.snap_stroke(width), self.snap_stroke(height)),
-@@ -5054,7 +5692,7 @@ impl Window {
+@@ -5054,7 +5695,7 @@ impl Window {
              pad: 0,
              bounds,
              content_mask: self.snapped_content_mask(),
@@ -1800,7 +1842,7 @@ index 4e2e1a7..f82e57c 100644
              color: style.color.unwrap_or_default().opacity(opacity),
              wavy: false.into(),
          });
-@@ -5080,6 +5718,9 @@ impl Window {
+@@ -5080,6 +5721,9 @@ impl Window {
  
          let element_opacity = self.element_opacity();
          let scale_factor = self.scale_factor();
@@ -1810,7 +1852,7 @@ index 4e2e1a7..f82e57c 100644
          let glyph_origin = origin.scale(scale_factor);
  
          let quantized_origin = Point::new(
-@@ -5100,7 +5741,7 @@ impl Window {
+@@ -5100,7 +5744,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant,
@@ -1819,7 +1861,7 @@ index 4e2e1a7..f82e57c 100644
              is_emoji: false,
              subpixel_rendering,
              dilation,
-@@ -5183,6 +5824,8 @@ impl Window {
+@@ -5183,6 +5827,8 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1828,7 +1870,7 @@ index 4e2e1a7..f82e57c 100644
          let glyph_origin = origin.scale(scale_factor);
          let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
          let params = RenderGlyphParams {
-@@ -5190,7 +5833,7 @@ impl Window {
+@@ -5190,7 +5836,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant: Default::default(),
@@ -1837,7 +1879,7 @@ index 4e2e1a7..f82e57c 100644
              is_emoji: true,
              subpixel_rendering: false,
              dilation: 0,
-@@ -5242,7 +5885,7 @@ impl Window {
+@@ -5242,7 +5888,7 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let element_opacity = self.element_opacity();
@@ -1846,7 +1888,7 @@ index 4e2e1a7..f82e57c 100644
  
          let params = RenderSvgParams {
              path,
-@@ -5311,6 +5954,9 @@ impl Window {
+@@ -5311,6 +5957,9 @@ impl Window {
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
@@ -1856,23 +1898,63 @@ index 4e2e1a7..f82e57c 100644
          let visible_bounds = bounds.intersect(&image_bounds);
          if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
              return Ok(());
-@@ -5324,6 +5970,7 @@ impl Window {
+@@ -5319,23 +5968,48 @@ impl Window {
+             return Ok(());
+         }
+ 
++        // A still picture drawn much smaller than it is gets a copy scaled down once with an area filter. The
++        // sampler has no mip levels, so a picture shown at less than about three quarters of its size skips source
++        // pixels and looks jagged and oversharp (an 80px avatar in a 32px circle).
++        let fit = self.image_fit(&data, frame_index, image_bounds.size);
+         let params = RenderImageParams {
+             image_id: data.id,
              frame_index,
++            fit,
          };
  
 +        let atlas_timer = TickTimer::new(11);
          let tile = self
              .sprite_atlas
              .get_or_insert_with(params.into(), &mut || {
-@@ -5336,6 +5983,7 @@ impl Window {
-                 )))
+-                Ok(Some((
+-                    data.size(frame_index),
+-                    Cow::Borrowed(
+-                        data.as_bytes(frame_index)
+-                            .expect("It's the caller's job to pass a valid frame index"),
+-                    ),
+-                )))
++                let bytes = data
++                    .as_bytes(frame_index)
++                    .expect("It's the caller's job to pass a valid frame index");
++                let source = data.size(frame_index);
++                if let Some((width, height)) = fit
++                    && let Some(buffer) = image::RgbaImage::from_raw(
++                        source.width.0 as u32,
++                        source.height.0 as u32,
++                        bytes.to_vec(),
++                    )
++                {
++                    // The bytes are premultiplied, which is the form a filter must work on; the channel order does
++                    // not matter to it.
++                    let scaled = image::imageops::resize(
++                        &buffer,
++                        width,
++                        height,
++                        image::imageops::FilterType::Triangle,
++                    );
++                    return Ok(Some((
++                        size(DevicePixels(width as i32), DevicePixels(height as i32)),
++                        Cow::Owned(scaled.into_raw()),
++                    )));
++                }
++                Ok(Some((source, Cow::Borrowed(bytes))))
              })?
              .expect("Callback above only returns Some");
 +        drop(atlas_timer);
  
          let visible_bounds_snapped = self.snap_bounds(visible_bounds);
  
-@@ -5411,7 +6059,7 @@ impl Window {
+@@ -5411,7 +6085,7 @@ impl Window {
  
          self.invalidator.debug_assert_paint();
  
@@ -1881,7 +1963,72 @@ index 4e2e1a7..f82e57c 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5525,6 +6173,7 @@ impl Window {
+@@ -5421,15 +6095,56 @@ impl Window {
+         });
+     }
+ 
++    /// The size of the scaled-down copy `paint_image` draws for a picture shown in `shown` (already in device
++    /// pixels), or `None` when the picture is drawn as it is: an animation, a picture shown at three quarters of its
++    /// size or more, or one that already has four copies (a picture whose size is being animated).
++    fn image_fit(
++        &mut self,
++        data: &RenderImage,
++        frame_index: usize,
++        shown: Size<Pixels>,
++    ) -> Option<(u32, u32)> {
++        if data.frame_count() != 1 {
++            return None;
++        }
++        let source = data.size(frame_index);
++        let (source_width, source_height) = (source.width.0 as f32, source.height.0 as f32);
++        let width = shown.width.0.round();
++        let height = shown.height.0.round();
++        if width < 1. || height < 1. || width > source_width * 0.75 || height > source_height * 0.75
++        {
++            return None;
++        }
++        let fit = (width as u32, height as u32);
++        let known = self.image_fits.entry(data.id).or_default();
++        if !known.contains(&fit) {
++            if known.len() >= 4 {
++                return None;
++            }
++            known.push(fit);
++        }
++        Some(fit)
++    }
++
+     /// Removes an image from the sprite atlas.
+     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
++        let fits = self.image_fits.remove(&data.id).unwrap_or_default();
+         for frame_index in 0..data.frame_count() {
+             let params = RenderImageParams {
+                 image_id: data.id,
+                 frame_index,
++                fit: None,
+             };
+ 
+             self.sprite_atlas.remove(&params.clone().into());
++            for fit in &fits {
++                let params = RenderImageParams {
++                    image_id: data.id,
++                    frame_index,
++                    fit: Some(*fit),
++                };
++                self.sprite_atlas.remove(&params.into());
++            }
+         }
+ 
+         Ok(())
+@@ -5444,6 +6159,7 @@ impl Window {
+                     &RenderImageParams {
+                         image_id: data.id,
+                         frame_index,
++                        fit: None,
+                     }
+                     .into(),
+                 )
+@@ -5525,6 +6241,7 @@ impl Window {
      pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
          self.invalidator.debug_assert_prepaint();
  
@@ -1889,7 +2036,7 @@ index 4e2e1a7..f82e57c 100644
          let scale_factor = self.scale_factor();
          let mut bounds = self
              .layout_engine
-@@ -5864,6 +6513,7 @@ impl Window {
+@@ -5864,6 +6581,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -1897,7 +2044,7 @@ index 4e2e1a7..f82e57c 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,11 +7575,17 @@ impl Window {
+@@ -6925,11 +7643,17 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -1915,7 +2062,7 @@ index 4e2e1a7..f82e57c 100644
          self.platform_window.toggle_fullscreen();
      }
  
-@@ -10677,4 +11333,121 @@ mod inspector_tests {
+@@ -10677,4 +11401,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }
@@ -2037,6 +2184,70 @@ index 4e2e1a7..f82e57c 100644
 +        }
 +    }
  }
+diff --git a/crates/gpui_apple/src/metal_atlas.rs b/crates/gpui_apple/src/metal_atlas.rs
+index 8bb14d6..5e98288 100644
+--- a/crates/gpui_apple/src/metal_atlas.rs
++++ b/crates/gpui_apple/src/metal_atlas.rs
+@@ -557,6 +557,7 @@ mod tests {
+         AtlasKey::Image(gpui::RenderImageParams {
+             image_id: gpui::ImageId(image_id),
+             frame_index,
++            fit: None,
+         })
+     }
+ 
+diff --git a/crates/gpui_platform/benches/atlas_upload.rs b/crates/gpui_platform/benches/atlas_upload.rs
+index 8ede1a5..44b256d 100644
+--- a/crates/gpui_platform/benches/atlas_upload.rs
++++ b/crates/gpui_platform/benches/atlas_upload.rs
+@@ -189,6 +189,7 @@ fn make_entry(kind: AtlasTextureKind, dimensions: Size<DevicePixels>, index: usi
+         AtlasTextureKind::Polychrome => AtlasKey::Image(RenderImageParams {
+             image_id: ImageId(index),
+             frame_index: 0,
++            fit: None,
+         }),
+         AtlasTextureKind::Subpixel => unreachable!(),
+     };
+diff --git a/crates/gpui_wgpu/src/wgpu_atlas.rs b/crates/gpui_wgpu/src/wgpu_atlas.rs
+index b2a7bfe..7c81842 100644
+--- a/crates/gpui_wgpu/src/wgpu_atlas.rs
++++ b/crates/gpui_wgpu/src/wgpu_atlas.rs
+@@ -442,6 +442,7 @@ mod tests {
+         let key = AtlasKey::Image(RenderImageParams {
+             image_id: ImageId(1),
+             frame_index: 0,
++            fit: None,
+         });
+         let size = Size {
+             width: DevicePixels(1),
+@@ -476,6 +477,7 @@ mod tests {
+             AtlasKey::Image(RenderImageParams {
+                 image_id: ImageId(image_id),
+                 frame_index: 0,
++                fit: None,
+             })
+         };
+         let insert = |key: AtlasKey, size: Size<DevicePixels>| {
+@@ -514,6 +516,7 @@ mod tests {
+             AtlasKey::Image(RenderImageParams {
+                 image_id: ImageId(image_id),
+                 frame_index: 0,
++                fit: None,
+             })
+         };
+         let insert = |key: AtlasKey| {
+diff --git a/crates/gpui_windows/src/directx_atlas.rs b/crates/gpui_windows/src/directx_atlas.rs
+index 622c1cb..8ae6180 100644
+--- a/crates/gpui_windows/src/directx_atlas.rs
++++ b/crates/gpui_windows/src/directx_atlas.rs
+@@ -376,6 +376,7 @@ mod tests {
+         AtlasKey::Image(RenderImageParams {
+             image_id: ImageId(image_id),
+             frame_index: 0,
++            fit: None,
+         })
+     }
+ 
 diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
 index 4cce3e0..f6ee7c1 100644
 --- a/crates/gpui_windows/src/directx_renderer.rs

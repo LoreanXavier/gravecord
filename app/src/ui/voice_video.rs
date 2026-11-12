@@ -672,6 +672,11 @@ impl Root {
     }
 
     /// The stream we send, if any.
+    /// Whether this client sends a stream or watches one.
+    pub(in crate::ui) fn in_a_stream(&self) -> bool {
+        !self.video.streams.is_empty()
+    }
+
     pub(super) fn own_stream(&self) -> Option<StreamInfo> {
         let me = self.stores.current_user.as_ref()?.id;
         self.video_stream_of(me)

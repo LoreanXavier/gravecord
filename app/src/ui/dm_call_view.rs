@@ -113,8 +113,23 @@ pub struct Person {
     pub video: bool,
 }
 
+/// Where the dragged height of the call area is kept (`callHeaderHeight` of the unsynced settings).
+const CALL_HEIGHT_KEY: &str = "call_header_height";
+
+/// A dragged height held to the official limits: at least 230px, at most the column less 200px.
+pub(super) fn clamp_call_height(wanted: f32, column: f32) -> f32 {
+    wanted.min(column - 200.).max(230.)
+}
+
 #[derive(Default)]
 pub struct State {
+    /// The call takes the whole column and the chat is hidden (`NO_CHAT`, "Hide chat" of the header).
+    pub no_chat: bool,
+    /// The height the call area was dragged to (`callHeaderHeight`), read from storage once.
+    resized: Option<f32>,
+    resized_read: bool,
+    /// A drag of the bottom edge: where the pointer was and how high the area was when it began.
+    resize_drag: Option<(f32, f32)>,
     /// A task redraws about thirty times a second while a ring pulses.
     pub ticking: bool,
     /// Something pulsed in the last frame.
@@ -232,12 +247,39 @@ impl Root {
         if self.dmc.pulsing {
             self.start_dm_call_tick(cx);
         }
-        // `.minimum` is 240px high, `.normal` half the column (module 156652).
-        let height = if video {
-            (f32::from(size.height) - 32.) * 0.5
+        // `.minimum` is 240px high, `.normal` half the column and `.noChat` all of it (stylesheet of module 880162).
+        // A height the bottom edge was dragged to replaces the first two, between 230px and the column less 200px
+        // (module 540462: `minHeight: 230`, `maxHeight: height - 200`).
+        let column = f32::from(size.height) - 32.;
+        if !self.dmc.resized_read {
+            self.dmc.resized_read = true;
+            self.dmc.resized = crate::storage::get(CALL_HEIGHT_KEY)
+                .and_then(|value| value.as_f64())
+                .map(|height| height as f32);
+        }
+        let no_chat = video && in_call && self.dmc.no_chat;
+        let target = if no_chat {
+            column
         } else {
-            240.
+            match self.dmc.resized {
+                Some(resized) => clamp_call_height(resized, column),
+                None if video => column * 0.5,
+                None => 240.,
+            }
         };
+        // `.wrapper.animated`: `transition: height .35s ease`. A drag follows the pointer at once.
+        let height = super::motion::value(
+            super::motion::key(&"dm-call-height"),
+            target,
+            super::motion::css(
+                if self.dmc.resize_drag.is_some() {
+                    0.
+                } else {
+                    350.
+                },
+                super::motion::Ease::Ease,
+            ),
+        );
         let body: AnyElement = if video && in_call && self.vv.fullscreen {
             // Full Screen draws the call in its own layer.
             div().into_any_element()
@@ -275,8 +317,96 @@ impl Root {
                     this.child(self.call_bar(0, channel, shown, cx))
                         .children(self.voice_menus(channel, width, height, cx))
                 })
+                .when(!no_chat, |this| {
+                    this.child(self.dm_call_resize_handle(height, cx))
+                })
                 .into_any_element(),
         )
+    }
+
+    /// `resizeHandle_poo5Jt` (module 587837): 4px across the bottom edge of the area with the `ns-resize` cursor. A
+    /// press starts a drag; the pointer then sets the height until the button is let go, and the height is kept.
+    fn dm_call_resize_handle(&self, height: f32, cx: &mut Context<Self>) -> AnyElement {
+        let weak = cx.entity().downgrade();
+        let dragging = self.dmc.resize_drag.is_some();
+        div()
+            .id("dm-call-resize")
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(4.))
+            .cursor(gpui::CursorStyle::ResizeUpDown)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.dmc.resize_drag = Some((f32::from(event.position.y), height));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .when(dragging, |handle| {
+                handle.child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |_, (), window, _| {
+                            let moved = weak.clone();
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, window, cx| {
+                                    if phase != gpui::DispatchPhase::Capture {
+                                        return;
+                                    }
+                                    let column = f32::from(window.viewport_size().height) - 32.;
+                                    let _ = moved.update(cx, |this, cx| {
+                                        if let Some((from, start)) = this.dmc.resize_drag {
+                                            let wanted = start + f32::from(event.position.y) - from;
+                                            this.dmc.resized =
+                                                Some(clamp_call_height(wanted, column));
+                                            cx.notify();
+                                        }
+                                    });
+                                },
+                            );
+                            let released = weak.clone();
+                            window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                                if phase != gpui::DispatchPhase::Capture {
+                                    return;
+                                }
+                                let _ = released.update(cx, |this, cx| {
+                                    if this.dmc.resize_drag.take().is_some() {
+                                        if let Some(height) = this.dmc.resized {
+                                            crate::storage::set(
+                                                CALL_HEIGHT_KEY,
+                                                serde_json::json!(height),
+                                            );
+                                        }
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// "Hide chat" and "Show chat" of a direct message video call (`handleToggleLayout`: `NORMAL` and `NO_CHAT`).
+    pub(super) fn toggle_dm_call_chat(&mut self, cx: &mut Context<Self>) {
+        self.dmc.no_chat = !self.dmc.no_chat;
+        cx.notify();
+    }
+
+    /// Whether the header of the open direct message offers "Hide chat" (`canChangeLayout`: a private channel, in
+    /// the call, and the call has video or a stream).
+    pub(super) fn dm_call_can_hide_chat(&self) -> bool {
+        self.dmc.video && self.dm_call_in(self.channel)
+    }
+
+    pub(super) fn dm_call_chat_hidden(&self) -> bool {
+        self.dmc.no_chat && self.dm_call_can_hide_chat()
     }
 
     /// The tray of a call this account has not joined (`eb` in module 105225): join with video, Join Call and, while
@@ -621,5 +751,19 @@ mod tests {
                 "icon {name} has a full-size filled rect and draws as a square"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::clamp_call_height;
+
+    #[test]
+    fn a_dragged_call_height_stays_between_230_and_the_column_less_200() {
+        assert_eq!(clamp_call_height(100., 688.), 230.);
+        assert_eq!(clamp_call_height(400., 688.), 400.);
+        assert_eq!(clamp_call_height(900., 688.), 488.);
+        // A column too short for both limits keeps the lower one.
+        assert_eq!(clamp_call_height(300., 400.), 230.);
     }
 }
