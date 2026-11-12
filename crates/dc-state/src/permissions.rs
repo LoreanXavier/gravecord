@@ -18,6 +18,8 @@ pub const SEND_MESSAGES: u64 = 1 << 11;
 /// `ATTACH_FILES` (module constants `xBc`, 32768).
 pub const ATTACH_FILES: u64 = 1 << 15;
 pub const MANAGE_MESSAGES: u64 = 1 << 13;
+/// `ADD_REACTIONS` (module constants `xBc`, 64).
+pub const ADD_REACTIONS: u64 = 1 << 6;
 pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
 pub const CHANGE_NICKNAME: u64 = 1 << 26;
 pub const MANAGE_NICKNAMES: u64 = 1 << 27;

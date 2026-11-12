@@ -37,6 +37,9 @@ pub(super) struct Forum {
     retry_at: Option<Instant>,
     scroll: ScrollHandle,
     new_post: Option<NewPost>,
+    /// The forum's ack when it was first shown: `ackMessageIdAtChannelSelect` (module 218461), the line past which
+    /// a post counts as new.
+    ack_at_select: Id,
 }
 
 struct NewPost {
@@ -53,6 +56,30 @@ fn post_body(name: &str, content: &str, archive: Option<u64>, tags: &BTreeSet<Id
     json!({"name":name, "auto_archive_duration":archive.unwrap_or(4320),
         "applied_tags":tags.iter().map(Id::to_string).collect::<Vec<_>>(),
         "message":{"content":content,"sticker_ids":[]}})
+}
+
+/// The chevron of the Sort & View and tags buttons: it points up while their popout is open.
+fn chevron(open: bool) -> gpui::Svg {
+    // Chevron, icon and label of both buttons are the captured pixels (171,172,178) = `--interactive-icon-default`.
+    let chevron = icon("chevron_down", 20., "--interactive-icon-default");
+    if open {
+        chevron.with_transformation(gpui::Transformation::rotate(gpui::percentage(0.5)))
+    } else {
+        chevron
+    }
+}
+
+/// The byte ranges of `name` that match `query`, ignoring case (the list's search highlight).
+fn title_matches(name: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let (haystack, needle) = (name.to_lowercase(), query.trim().to_lowercase());
+    // Lower-casing can change byte lengths; offsets are only trusted when it did not.
+    if needle.is_empty() || haystack.len() != name.len() {
+        return Vec::new();
+    }
+    haystack
+        .match_indices(&needle)
+        .map(|(start, found)| start..start + found.len())
+        .collect()
 }
 
 fn search_route(channel: Id, query: &str, tags: &BTreeSet<Id>, all: bool, offset: usize) -> String {
@@ -190,7 +217,8 @@ fn first_tag_row(widths: &[f32], limit: f32) -> (usize, f32) {
     let (mut shown, mut end) = (0, 0.);
     for width in widths {
         let next = if shown == 0 {
-            *width
+            // A first chip wider than the list is clipped to it (`Low Prio…` in `pt-forum-post-open`).
+            width.min(limit.max(0.))
         } else {
             end + 8. + *width
         };
@@ -201,6 +229,28 @@ fn first_tag_row(widths: &[f32], limit: f32) -> (usize, f32) {
         shown += 1;
     }
     (shown, end)
+}
+
+/// The count inside "(N New)" (`unreadCount` of `k6`, module 435470): "1+" while it is unknown or zero, else the
+/// count capped by the post's messages, and "25+" from 25.
+fn unread_count_text(count: Option<u64>, messages: u64) -> String {
+    match count {
+        Some(n) if n > 0 => {
+            let n = n.min(messages);
+            if n >= 25 {
+                "25+".to_owned()
+            } else {
+                n.to_string()
+            }
+        }
+        _ => "1+".to_owned(),
+    }
+}
+
+/// `isNewForumThread` (module 218461): the post was never acked, is past the forum's ack at selection, and was
+/// created after the account joined the server. No ack at selection, or an unknown join, means nothing is new.
+fn is_new_post(post: Id, acked: Id, ack_at_select: Id, joined: Id) -> bool {
+    acked == 0 && ack_at_select != 0 && post > ack_at_select && joined != 0 && post > joined
 }
 
 /// The width a label takes at a size and weight, as the text system shapes it.
@@ -247,7 +297,7 @@ impl Root {
             .then_some(parent)
     }
 
-    fn forum_channel(&self, id: Id) -> Option<&Channel> {
+    pub(super) fn forum_channel(&self, id: Id) -> Option<&Channel> {
         self.current_guild()?.channels.iter().find(|c| c.id == id)
     }
 
@@ -511,6 +561,11 @@ impl Root {
 
     fn ensure_forum(&mut self, channel: &Channel, cx: &mut Context<Self>) {
         let id = channel.id;
+        let ack_at_select = self.stores.read_states.acked(id, 0);
+        // `forum-fixture-empty` shows "Search or create a post..." to a member who may post, `pt-forum-bugs` plain
+        // "Search" to one who may not.
+        let can_post = !self.screening_pending()
+            && self.can_in_channel(channel, dc_state::permissions::SEND_MESSAGES);
         if let std::collections::hash_map::Entry::Vacant(entry) = self.forums.entry(id) {
             let field = cx.new(|cx| {
                 let mut style = editor_style();
@@ -519,7 +574,14 @@ impl Root {
                 style.font.weight = FontWeight(600.);
                 let mut editor = Editor::new(style, cx);
                 editor.set_reports_all_edits(true);
-                editor.set_placeholder("Search".to_owned());
+                editor.set_placeholder(
+                    if can_post {
+                        "Search or create a post..."
+                    } else {
+                        "Search"
+                    }
+                    .to_owned(),
+                );
                 editor
             });
             let events = cx.subscribe(&field, move |this, editor, event: &EditorEvent, cx| {
@@ -579,6 +641,7 @@ impl Root {
                 retry_at: None,
                 scroll: ScrollHandle::new(),
                 new_post: None,
+                ack_at_select,
             });
             self.load_forum_page(id);
         }
@@ -602,6 +665,36 @@ impl Root {
                 body: Some(
                     json!({"thread_ids":batch.iter().map(Id::to_string).collect::<Vec<_>>()}),
                 ),
+            });
+        }
+        // `REQUEST_FORUM_UNREADS` (module 435470, up to 180 posts): the unread posts whose count is not known yet,
+        // each with the message its read state is acked to.
+        let unknown: Vec<(Id, Id)> = self
+            .current_guild()
+            .into_iter()
+            .flat_map(|g| &g.threads)
+            .filter(|t| t.parent_id == id && !t.archived)
+            .map(|t| t.id)
+            .filter(|post| {
+                self.stores.is_unread(*post)
+                    && self
+                        .stores
+                        .account_events
+                        .forum_unread_count(*post)
+                        .is_none()
+            })
+            .map(|post| (post, self.stores.read_states.acked(post, 0)))
+            .collect();
+        let mut unknown = unknown;
+        unknown.retain(|(post, _)| self.requested.insert(format!("forum-unreads:{post}")));
+        unknown.truncate(180);
+        if let Some(guild) = self.guild
+            && !unknown.is_empty()
+        {
+            let _ = self.requests.send(Request::ForumUnreads {
+                guild,
+                channel: id,
+                threads: unknown,
             });
         }
     }
@@ -876,6 +969,18 @@ impl Root {
         let view = &self.forums[&channel.id];
         let message = view.posts.get(&thread.id);
         let unread = self.stores.is_unread(thread.id);
+        // `isNewForumThread` (module 218461): never acked, created after the forum's ack at selection and after the
+        // account joined the server.
+        let joined = self
+            .current_guild()
+            .map_or(0, dc_state::Guild::joined_snowflake);
+        let is_new = !thread.archived
+            && is_new_post(
+                thread.id,
+                self.stores.read_states.acked(thread.id, 0),
+                view.ack_at_select,
+                joined,
+            );
         let open = self.channel == Some(thread.id);
         let id = thread.id;
         let guild = self.guild;
@@ -978,13 +1083,29 @@ impl Root {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .when(thread.pinned() || !tags.is_empty(), |row| {
+                    .when(is_new || thread.pinned() || !tags.is_empty(), |row| {
                         row.child(
                             div()
                                 .h(px(24.))
                                 .mb(px(8.))
                                 .flex()
                                 .gap(px(8.))
+                                .items_center()
+                                // The NEW badge leads the tags row (`Ay` in module 52933).
+                                .when(is_new, |row| {
+                                    row.child(
+                                        div()
+                                            .h(px(16.))
+                                            .px(px(8.))
+                                            .rounded(px(8.))
+                                            .bg(color("--brand-500"))
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child("NEW"),
+                                    )
+                                })
                                 .when(thread.pinned(), |row| {
                                     row.child(
                                         div()
@@ -1033,7 +1154,24 @@ impl Root {
                             .max_h(px(48.))
                             .overflow_hidden()
                             .line_clamp(2)
-                            .child(thread.name.clone()),
+                            .child(
+                                gpui::StyledText::new(thread.name.clone()).with_highlights(
+                                    title_matches(&thread.name, &view.query).into_iter().map(
+                                        |range| {
+                                            (
+                                                range,
+                                                gpui::HighlightStyle {
+                                                    // `.highlight_*`: search matches, rgba(253, 184, 51, 0.3).
+                                                    background_color: Some(
+                                                        gpui::rgba(0xfdb8334d).into(),
+                                                    ),
+                                                    ..Default::default()
+                                                },
+                                            )
+                                        },
+                                    ),
+                                ),
+                            ),
                     )
                     // `.message_SOY5H6`: the author (`body-sm/semibold`, the role colour over the muted link
                     // colour, strong once the post has unread messages), ":", then the content at 4px,
@@ -1131,14 +1269,21 @@ impl Root {
                                             .font_weight(FontWeight(500.))
                                             .child(thread.message_count.to_string()),
                                     )
-                                    // `unreadCount`: "1+" while the number of new messages is unknown.
+                                    // `unreadCount` (`k6`, module 435470): "1+" while the number of new messages is
+                                    // unknown, else the count capped by the post's messages, "25+" from 25.
                                     .when(unread, |row| {
+                                        let count = unread_count_text(
+                                            self.stores
+                                                .account_events
+                                                .forum_unread_count(thread.id),
+                                            thread.message_count,
+                                        );
                                         row.child(
                                             div()
                                                 .ml(px(4.))
                                                 .font_weight(FontWeight(600.))
                                                 .text_color(color("--text-brand"))
-                                                .child("(1+ New)"),
+                                                .child(format!("({count} New)")),
                                         )
                                     }),
                             )
@@ -1219,9 +1364,11 @@ impl Root {
                             .line_height(px(18.))
                             .text_color(color("--text-default"))
                             .children(message.map(|m| {
+                                // `.author_nwIAlp` body-sm/semibold; `.postCreationTimestamp_x1LvFB` is text-strong.
                                 div()
+                                    .font_weight(FontWeight(600.))
                                     .text_color(
-                                        self.guild_author_color(m.author.id, "--text-default"),
+                                        self.guild_author_color(m.author.id, "--text-strong"),
                                     )
                                     .child(super::name_styles::name(
                                         format!("post-author-{}", m.id),
@@ -1230,7 +1377,13 @@ impl Root {
                                         super::name_styles::Display::Font,
                                     ))
                             }))
-                            .child(div().text_size(px(12.)).child(ago)),
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(400.))
+                                    .text_color(color("--text-strong"))
+                                    .child(ago),
+                            ),
                     )
                     .child(
                         div()
@@ -1265,7 +1418,17 @@ impl Root {
                         div()
                             .p(px(12.))
                             .text_color(color("--text-muted"))
-                            .children(message.map(|m| self.content(m)))
+                            // `.textContentRead_x1LvFB`: a read post's preview text is muted.
+                            .children(message.map(|m| {
+                                self.content_tinted(
+                                    m,
+                                    if self.stores.is_unread(id) {
+                                        "--text-default"
+                                    } else {
+                                        "--text-muted"
+                                    },
+                                )
+                            }))
                             .into_any_element()
                     })
                     .when(thread.pinned(), |row| {
@@ -1290,9 +1453,10 @@ impl Root {
                     .pt(px(12.))
                     .h(px(48.))
                     .flex()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .text_size(px(14.))
                     .line_height(px(24.))
+                    .font_weight(FontWeight(500.))
                     .text_color(color("--text-muted"))
                     .child(icon("forum_reply_count", 14., "--text-muted"))
                     .child(thread.message_count.to_string()),
@@ -1309,6 +1473,14 @@ impl Root {
             return div().into_any_element();
         };
         self.forum_column(channel, None, window, cx)
+    }
+
+    /// Whether the list and the post panel fit side by side: 385px + 8px + 512px beside the sidebar and, when it is
+    /// open, the member list. Narrower, the post opens as the whole chat view (`pt-forum-post-open` against
+    /// `forum-fixture-posted`).
+    pub(super) fn forum_split_fits(&self, window: &Window) -> bool {
+        let members = if self.show_members { 265. } else { 0. };
+        f32::from(window.viewport_size().width) - 375. - members >= 905.
     }
 
     /// A forum's list beside its open post (`threadSidebarOpen_z_gUBg`): the 385px list column and the 512px post
@@ -1328,7 +1500,15 @@ impl Root {
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
-                .child(div().flex().w(px(385.)).flex_none().h_full().child(list))
+                // The list is 384px wide inside its 385px column (the layout tree of `pt-forum-post-open`).
+                .child(div().flex().w(px(384.)).flex_none().h_full().child(list))
+                .child(
+                    div()
+                        .w(px(1.))
+                        .flex_none()
+                        .h_full()
+                        .bg(color("--background-base-lowest")),
+                )
                 .child(
                     div()
                         .w(px(8.))
@@ -1337,6 +1517,16 @@ impl Root {
                         .bg(color("--background-base-lowest")),
                 )
                 .child(panel)
+                .when(self.show_members, |row| {
+                    row.child(
+                        div()
+                            .w(px(1.))
+                            .flex_none()
+                            .h_full()
+                            .bg(color("--background-mod-subtle")),
+                    )
+                    .child(self.member_panel(cx))
+                })
                 .into_any_element(),
         )
     }
@@ -1400,7 +1590,7 @@ impl Root {
                     },
                 )),
             )
-            .child(button("forum-post-close", "close").on_click(cx.listener(
+            .child(button("forum-post-close", "x_small").on_click(cx.listener(
                 move |this, _, _, cx| {
                     if let Some(guild) = guild {
                         this.select(guild, Some(forum));
@@ -1440,7 +1630,8 @@ impl Root {
         div()
             .px(px(16.))
             .pt(px(16.))
-            .pb(px(16.))
+            // `container_Wp3SYH` is 136px: 16 + 64 icon + 8 + 40 title + 8 (`pt-forum-post-open`).
+            .pb(px(8.))
             .flex()
             .flex_col()
             .child(
@@ -1449,7 +1640,8 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("forum_reply_count", 34., "--text-default")),
+                    // `icon_Wp3SYH`: 40px in the 64px circle, drawn in the grey of the captured pixels (171,172,178).
+                    .child(icon("forum_reply_count", 40., "--interactive-icon-default")),
             )
             .child(
                 div()
@@ -1470,6 +1662,27 @@ impl Root {
         let id = thread.as_ref().map_or(0, |t| t.id);
         let following = thread.as_ref().is_some_and(|t| t.joined);
         let guild = self.guild.unwrap_or_default();
+        // The control is hidden while a member is still screened or cannot react (`pt-forum-post-open` has none).
+        let can_react = !self.screening_pending()
+            && thread.as_ref().is_some_and(|t| {
+                self.forum_channel(t.parent_id).is_some_and(|forum| {
+                    self.can_in_channel(forum, dc_state::permissions::ADD_REACTIONS)
+                })
+            });
+        // The first message's reactions lead the strip, `floor((width - 280) / 58)` of them (`rC` in module 891522);
+        // the add button then follows them without its label. The panel is 512px wide, so four fit.
+        let first = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .and_then(|messages| messages.iter().find(|m| m.id == id))
+            .map(|message| {
+                let mut message = message.clone();
+                message.reactions.truncate(4);
+                message
+            })
+            .filter(|message| !message.reactions.is_empty());
+        let has_chips = first.is_some();
+        let chips = first.and_then(|message| self.reactions(&message, cx));
         let secondary = |name: &'static str| {
             div()
                 .id(name)
@@ -1492,12 +1705,50 @@ impl Root {
                 div()
                     .w_full()
                     .h(px(45.))
-                    .pr(px(12.))
+                    .pl(px(14.))
+                    // 12px inside the strip, which ends 16px short of the list's edge (`container_HeWz1C` 494px in a
+                    // 510px panel, the scroller's gutter).
+                    .pr(px(28.))
                     .flex()
-                    .justify_end()
+                    .justify_between()
                     .items_end()
-                    .gap(px(4.))
-                    .child(
+                    .child(div().children(chips).when(can_react && !has_chips, |left| {
+                        // `.addReactButton_HeWz1C` on `.reactionBtn_UNkajC`: 30px pill, 18px icon, 8px gap.
+                        left.child(
+                            div()
+                                .id("forum-add-reaction")
+                                .h(px(30.))
+                                .pl(px(9.))
+                                .pr(px(10.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .rounded(px(8.))
+                                .bg(color("--background-mod-subtle"))
+                                .hover(|s| s.bg(color("--background-mod-normal")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(icon("menu_add_reaction", 18., "--text-strong"))
+                                .child("React to Post")
+                                .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.open_picker(
+                                        super::picker::Target::Reaction {
+                                            channel: id,
+                                            message: id,
+                                        },
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    }))
+                    .child(div().flex().gap(px(4.)).child(
                         secondary("forum-follow")
                             .px(px(11.))
                             .gap(px(4.))
@@ -1505,20 +1756,27 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--control-secondary-text-default"))
-                            .child(icon("bell", 16., "--control-secondary-text-default"))
+                            .child(icon(
+                                if following { "checkmark_large" } else { "bell" },
+                                16.,
+                                "--control-secondary-text-default",
+                            ))
                             .child(if following { "Following" } else { "Follow" })
                             .on_click(cx.listener(move |this, _, _, _| {
-                                // `joinThread` / `leaveThread`: the gateway's THREAD_MEMBER_UPDATE follows.
+                                // `joinThread` / `leaveThread` (module 7909) with the "Forum Toolbar" location of the
+                                // Follow button (module 891522): the gateway's THREAD_MEMBER_UPDATE follows.
                                 let (method, route) = if following {
                                     (
                                         reqwest::Method::DELETE,
-                                        format!("/channels/{id}/thread-members/@me"),
+                                        format!(
+                                            "/channels/{id}/thread-members/@me?location=Forum%20Toolbar"
+                                        ),
                                     )
                                 } else {
                                     (
                                         reqwest::Method::POST,
                                         format!(
-                                            "/channels/{id}/thread-members/@me?location=Context%20Menu"
+                                            "/channels/{id}/thread-members/@me?location=Forum%20Toolbar"
                                         ),
                                     )
                                 };
@@ -1539,7 +1797,7 @@ impl Root {
                                     "https://discord.com/channels/{guild}/{id}"
                                 )));
                             })),
-                    ),
+                    )),
             )
             .child(div().h(px(8.)).bg(color("--background-base-lowest")))
             .into_any_element()
@@ -1599,18 +1857,26 @@ impl Root {
                     .child(glyph("members"))
                     .child(
                         div()
+                            // `searchBar_i16Ad0` in `pt-forum-post-open`: 64px at x 687, 12px after the member button,
+                            // 8px radius, 1px border.
+                            .ml(px(4.))
                             .w(px(64.))
+                            .flex_none()
                             .h(px(32.))
-                            .rounded(px(4.))
-                            .bg(color("--background-base-lowest"))
-                            .pl(px(9.))
+                            .rounded(px(8.))
+                            .bg(color("--input-background-default"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .pl(px(8.))
                             .flex()
                             .items_center()
                             .overflow_hidden()
                             .child(
                                 div()
-                                    .w(px(38.))
+                                    // `.searchBar_jDHkVJ` in a 64px collapsed box: the placeholder ellipsizes to "S…".
+                                    .w(px(24.))
                                     .overflow_hidden()
+                                    .text_ellipsis()
                                     .whitespace_nowrap()
                                     .text_size(px(14.))
                                     .font_weight(FontWeight(500.))
@@ -1750,7 +2016,7 @@ impl Root {
                     .gap(px(8.))
                     .when(composing, |row| row.hidden())
                     .child(icon("forum_search", 26., "--text-muted"))
-                    .child(div().flex_1().min_w(px(0.)).child(field))
+                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(field))
                     .child(
                         div()
                             .id("forum-guidelines")
@@ -1863,6 +2129,8 @@ impl Root {
                             .id("forum-sort")
                             .relative()
                             .child(self.anchor_probe("forum-sort-anchor"))
+                            // `sortDropdown_BkGrJJ` sits at y 168.5 beside the tag list at y 168 (`pt-forum-bugs-current`).
+                            .mt(px(0.5))
                             .h(px(32.))
                             .pl(px(12.))
                             .pr(px(8.))
@@ -1875,10 +2143,10 @@ impl Root {
                             .items_center()
                             .gap(px(0.))
                             .text_size(px(14.))
-                            .text_color(color("--text-default"))
-                            .child(icon("forum_sort", 16., "--text-muted"))
+                            .text_color(color("--interactive-icon-default"))
+                            .child(icon("forum_sort", 16., "--interactive-icon-default"))
                             .child(div().ml(px(8.)).mr(px(4.)).child("Sort & View"))
-                            .child(icon("chevron_down", 20., "--text-muted"))
+                            .child(chevron(view.menu == Some("sort")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(v) = this.forums.get_mut(&id) {
                                     v.menu = if v.menu == Some("sort") {
@@ -1977,7 +2245,7 @@ impl Root {
                                 .bg(color("--control-secondary-background-default"))
                                 .cursor_pointer()
                                 .text_size(px(14.))
-                                .text_color(color("--text-default"))
+                                .text_color(color("--interactive-icon-default"))
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
@@ -1986,7 +2254,7 @@ impl Root {
                                 } else {
                                     tags.len().to_string()
                                 })
-                                .child(icon("chevron_down", 20., "--text-muted"))
+                                .child(chevron(view.menu == Some("tags")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(v) = this.forums.get_mut(&id) {
                                         v.menu = if v.menu == Some("tags") {
@@ -2058,7 +2326,7 @@ impl Root {
             })
             .copied()?;
         // The sort probe is inside its 1px border; popouts align to the button's outer box.
-        let top = f32::from(anchor.bottom()) + if menu == "sort" { 9. } else { 8. };
+        let top = f32::from(anchor.bottom()) + if menu == "sort" { 9.5 } else { 9. };
         let left = if menu == "sort" {
             f32::from(anchor.left()) - 1.
         } else {
@@ -2100,7 +2368,9 @@ impl Root {
                         .left(px(left))
                         .top(px(top))
                         .w(px(180.))
-                        .p(px(8.))
+                        .px(px(8.))
+                        .pt(px(9.))
+                        .pb(px(7.))
                         .occlude()
                         .rounded(px(8.))
                         .border_1()
@@ -2193,13 +2463,36 @@ impl Root {
                     .bg(color("--background-surface-high"))
                     .occlude()
                     .child(
+                        // `.header_r0937z`: `.headerText` heading-sm/semibold, then `.countContainer` (20px brand disc,
+                        // `body-xs/medium` count in white) 8px after it.
                         div()
                             .h(px(28.))
                             .pl(px(8.))
-                            .text_size(px(16.))
-                            .line_height(px(28.))
-                            .text_color(color("--text-muted"))
-                            .child(format!("Select Tags  {}", view.tags.len())),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-default"))
+                                    .child("Select Tags"),
+                            )
+                            .child(
+                                div()
+                                    .size(px(20.))
+                                    .rounded_full()
+                                    .bg(color("--brand-500"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(gpui::white())
+                                    .child(view.tags.len().to_string()),
+                            ),
                     )
                     .child(
                         div()
@@ -2225,8 +2518,11 @@ impl Root {
                                             .id(SharedString::from(format!(
                                                 "forum-popout-tag-{tag_id}"
                                             )))
+                                            // `.tag_r0937z` on `.pill_snX-u4`: 1px border, `body-sm/semibold`.
                                             .h(px(32.))
                                             .px(px(12.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
                                             .rounded_full()
                                             .cursor_pointer()
                                             .bg(color(if view.tags.contains(&tag_id) {
@@ -2235,7 +2531,8 @@ impl Root {
                                                 "--background-mod-subtle"
                                             }))
                                             .text_size(px(14.))
-                                            .line_height(px(32.))
+                                            .line_height(px(30.))
+                                            .font_weight(FontWeight(600.))
                                             .text_color(color("--text-default"))
                                             .child(tag.name.clone())
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2251,15 +2548,23 @@ impl Root {
                             ),
                     )
                     .child(
+                        // `.separator_r0937z`: 1px rule inset 4px, then the `textButton` "Clear all" 8px under it.
                         div()
                             .id("forum-clear-tags")
-                            .pt(px(8.))
+                            .mx(px(4.))
                             .border_t_1()
                             .border_color(color("--border-subtle"))
                             .cursor_pointer()
-                            .text_size(px(16.))
-                            .text_color(color("--text-link"))
-                            .child("Clear all")
+                            .child(
+                                div()
+                                    .mt(px(8.))
+                                    .mx(px(-4.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-link"))
+                                    .child("Clear all"),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(v) = this.forums.get_mut(&id) {
                                     v.tags.clear();
@@ -2287,6 +2592,16 @@ mod tests {
         assert_eq!(gallery_height(592., true), 439.);
     }
     #[test]
+    fn a_search_highlights_every_case_insensitive_match_in_a_title() {
+        assert_eq!(
+            title_matches("Missing baby Physics", "physics"),
+            vec![13..20]
+        );
+        assert_eq!(title_matches("aa aa", "aa"), vec![0..2, 3..5]);
+        assert!(title_matches("anything", "  ").is_empty());
+    }
+
+    #[test]
     fn the_tag_list_keeps_the_chips_of_its_first_row() {
         // The measured row of pt-forum-bugs-current: three chips fit 348.9px, the All button follows the third.
         let widths = [101.1, 125.4, 86.0, 84.9, 122.5];
@@ -2294,8 +2609,25 @@ mod tests {
         assert_eq!(shown, 3);
         assert!((end - 328.5).abs() < 0.01);
         assert_eq!(first_tag_row(&widths, 1000.).0, 5);
-        assert_eq!(first_tag_row(&[400.], 100.), (1, 400.));
+        assert_eq!(first_tag_row(&[400.], 100.), (1, 100.));
         assert_eq!(tag_chip_width(75.1), 101.1);
+    }
+    #[test]
+    fn unread_counts_follow_the_official_text() {
+        assert_eq!(unread_count_text(None, 9), "1+");
+        assert_eq!(unread_count_text(Some(0), 9), "1+");
+        assert_eq!(unread_count_text(Some(3), 9), "3");
+        assert_eq!(unread_count_text(Some(30), 90), "25+");
+        assert_eq!(unread_count_text(Some(30), 4), "4");
+    }
+    #[test]
+    fn a_post_is_new_past_the_forum_ack_and_the_join() {
+        assert!(is_new_post(300, 0, 200, 100));
+        assert!(!is_new_post(300, 250, 200, 100), "already acked");
+        assert!(!is_new_post(150, 0, 200, 100), "older than the forum's ack");
+        assert!(!is_new_post(300, 0, 0, 100), "no ack at selection");
+        assert!(!is_new_post(300, 0, 200, 400), "created before joining");
+        assert!(!is_new_post(300, 0, 200, 0), "join unknown");
     }
     #[test]
     fn a_post_shows_its_most_reacted_emoji() {

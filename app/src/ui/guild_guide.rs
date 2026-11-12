@@ -98,34 +98,65 @@ impl Root {
         id: Id,
         viewport: gpui::Size<gpui::Pixels>,
     ) -> Option<gpui::Point<gpui::Pixels>> {
-        let guild = self.current_guild()?;
-        let channel = guild.channels.iter().find(|channel| channel.id == id)?;
+        self.capture_channel_row(id, viewport).ok()
+    }
+
+    /// How far (positive = down) the sidebar has to scroll to bring an eligible channel row into view, when it
+    /// is painted but outside the list's visible band; `None` when the row is excluded or not painted at all.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_channel_scroll(
+        &self,
+        id: Id,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Option<f32> {
+        self.capture_channel_row(id, viewport).err().flatten()
+    }
+
+    #[cfg(feature = "capture")]
+    fn capture_channel_row(
+        &self,
+        id: Id,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Result<gpui::Point<gpui::Pixels>, Option<f32>> {
+        let guild = self.current_guild().ok_or(None)?;
+        let channel = guild
+            .channels
+            .iter()
+            .find(|channel| channel.id == id)
+            .ok_or(None)?;
         if !matches!(
             channel.kind,
             dc_state::ChannelKind::Text | dc_state::ChannelKind::Other(15 | 16)
         ) || guild.rules_channel_id == Some(id)
             || self.settings.is_some()
         {
-            return None;
+            return Err(None);
         }
         if self.has_guild_guide() {
-            let home = self.guide_home()?;
+            let home = self.guide_home().ok_or(None)?;
             if home.tasks.as_ref().is_some_and(|tasks| {
                 tasks
                     .iter()
                     .any(|task| task.channel_id.parse::<Id>() == Ok(id))
             }) {
-                return None;
+                return Err(None);
             }
         }
         let anchors = self.tip_anchors.borrow();
-        let bounds = anchors.get(format!("capture-channel-{id}").as_str())?;
+        let bounds = anchors
+            .get(format!("capture-channel-{id}").as_str())
+            .ok_or(None)?;
         let panel_top = viewport.height - self.user_panel_height.unwrap_or(px(58.)) - px(8.);
-        (bounds.top() >= px(82.)
-            && bounds.bottom() <= panel_top
-            && bounds.left() >= px(72.)
-            && bounds.right() <= px(375.))
-        .then(|| bounds.center())
+        if bounds.left() < px(72.) || bounds.right() > px(375.) {
+            return Err(None);
+        }
+        if bounds.top() < px(82.) {
+            return Err(Some(f32::from(bounds.top() - px(82.)) - 120.));
+        }
+        if bounds.bottom() > panel_top {
+            return Err(Some(f32::from(bounds.bottom() - panel_top) + 120.));
+        }
+        Ok(bounds.center())
     }
 
     #[cfg(feature = "capture")]
