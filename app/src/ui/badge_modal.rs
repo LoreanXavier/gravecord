@@ -274,6 +274,32 @@ impl Root {
         for url in urls {
             self.request_image(art_key(&url), url);
         }
+        if key == catalog_key("me") {
+            self.request_gifting_art();
+        }
+    }
+
+    /// The Send a Gift banner's data (module 806677 `z`, 492275): gifts left to the next Gifting badge tier
+    /// (`getRemainingToNextTier`: threshold minus current of the first progress entry), that tier's name and its
+    /// picture (`Se`: complex static icon, else simple). None without a catalog or a next tier.
+    pub(super) fn gifting_banner(&self) -> Option<(u64, String, Option<Arc<Image>>)> {
+        let catalog = catalog_key("me");
+        let badge = self.catalog_badge(&catalog, 17)?;
+        let next = tier(badge, badge["next_tier"].as_str())?;
+        let progress = badge["progress"].as_array()?.first()?;
+        let remaining = match (progress["threshold"].as_u64(), progress["current"].as_u64()) {
+            (Some(threshold), current) => threshold.saturating_sub(current.unwrap_or(0)),
+            _ => 0,
+        };
+        let name = text(next, "name")?.to_owned();
+        let picture = self
+            .art(text(next, "complex_icon_static_url").or_else(|| text(next, "simple_icon_url")));
+        Some((remaining, name, picture))
+    }
+
+    /// Asks for the pictures of every Gifting badge tier (the banner draws the next one).
+    pub(super) fn request_gifting_art(&mut self) {
+        self.request_badge_tiers(&catalog_key("me"), 17);
     }
 
     /// Every tier picture of one badge, asked for when the modal shows it.

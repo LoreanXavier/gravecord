@@ -6,23 +6,59 @@
 //! page in the browser (module 36167: `POST /auth/handoff`, then the standalone checkout URL); the payment itself is
 //! entered there. "Pay Here" is inert in capture builds, and `SubscribeRequest` is only ever a unit-tested body.
 //!
-//! Not built: the gift banner ("1 gift away from the Patron Badge!"): its text is not in the strings dump and its
-//! source is not in the recorded traffic. The gift flow after choosing a plan is not captured either.
+//! The gift banner ("1 gift away from the Patron Badge!") reads the Gifting badge of the badge catalog
+//! (modules 806677, 492275).
+//!
+//! Choosing a card in Send a Gift (module 806677 `f`, which calls module 778705 with `isGift` and the
+//! `giftRecipient`) opens "Gift Nitro" (`GiftSelect`, captured in `design/dom/dm/gift-step2-nitro*-darker-cozy.json`).
+//! Its body is module 814576: with a recipient (a one-to-one DM) it shows the gift box, the recipient (`948388`), the
+//! message (`968060`, default text `ZkOo1U`, 190 characters) and the Select gift rows (`813267`). Opened from a server
+//! channel or the Nitro page there is no recipient, which the captures do not cover: the cards stay inert there.
 
 use super::nitro::{BASIC_FEATURES, NITRO_FEATURES, oklab, rgb};
 use super::{Root, color, icon};
+use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
 use dc_state::premium::{self, Price, sku};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ScrollHandle, Window, deferred, div,
+    AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, Window, deferred, div,
     linear_color_stop, linear_gradient, prelude::*, px, rgba,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
     Plans,
+    /// "Gift Nitro": the recipient, the message and the period of a gift.
+    GiftSelect,
     Checkout,
     Payment,
+}
+
+/// `ZkOo1U`: the message a gift to a person starts with (module 418200 `$` state, set when the recipient can get a
+/// custom message).
+const DEFAULT_GIFT_MESSAGE: &str = "You\u{2019}re awesome, just like this gift. Enjoy!";
+/// `maxCharacterCount: 190` of the message field (module 968060).
+const GIFT_MESSAGE_LIMIT: usize = 190;
+/// The Standard Box gift animation's loop file (module 446263 `STANDARD_BOX`, `LOOP`), drawn at its resting pose.
+pub(super) const GIFT_BOX_ART: &str = "https://cdn.discordapp.com/assets/content/13050a4f904230e1617429a7f6f42ab959e81a99c099d4542eb43af9beb612d2.lottiejson";
+
+/// The percentage the yearly gift saves over twelve monthly ones (module 722178 `tr`:
+/// `floor(100 * (1 - year / (month * 12)))`), `None` when it saves nothing.
+fn savings_percent(month: i64, year: i64) -> Option<i64> {
+    let twelve = month.checked_mul(12).filter(|twelve| *twelve > 0)?;
+    let percent = (100 * (twelve - year)).div_euclid(twelve);
+    (percent > 0).then_some(percent)
+}
+
+/// The characters left of the message (`N = maxLength - text.length`, module 246049; `length` counts UTF-16 units).
+fn characters_left(text: &str) -> i64 {
+    GIFT_MESSAGE_LIMIT as i64 - text.encode_utf16().count() as i64
+}
+
+/// The Send a Gift banner's line (en-US string `0+xfd9` of module 213427: a cardinal plural, then the tier name).
+fn gifts_away(remaining: u64, tier: &str) -> String {
+    let gifts = if remaining == 1 { "gift" } else { "gifts" };
+    format!("{remaining} {gifts} away from the {tier} Badge!")
 }
 
 /// The open purchase dialog.
@@ -32,6 +68,14 @@ pub(crate) struct Purchase {
     pub sku: u64,
     pub yearly: bool,
     pub scroll: ScrollHandle,
+    /// Send a Gift opened from a one-to-one DM: the recipient is that person (module 806677 `is`, `giftRecipient`),
+    /// and the modal adds their wishlist section above the plan cards.
+    pub recipient: bool,
+    /// The DM's other person, the gift's recipient (module 806677 `giftRecipient`).
+    pub recipient_user: Option<dc_state::Id>,
+    /// The gift message field of "Gift Nitro", created when a card is chosen and kept while the dialog is open.
+    pub message: Option<Entity<Editor>>,
+    pub message_subscription: Option<gpui::Subscription>,
 }
 
 #[cfg(not(feature = "capture"))]
@@ -41,13 +85,82 @@ impl Root {
     /// "Subscribe" and "Gift Nitro": Select Plan, or Send a Gift.
     pub(super) fn open_purchase(&mut self, gift: bool, cx: &mut Context<Self>) {
         self.request_nitro();
+        let recipient = gift && self.current_dm().is_some_and(|dm| dm.kind == 1);
+        let recipient_user = self
+            .current_dm()
+            .filter(|dm| gift && dm.kind == 1)
+            .and_then(|dm| dm.recipients.first().copied());
+        if recipient_user.is_some() {
+            self.request_image(super::nitro::art_key("gift-box"), GIFT_BOX_ART.to_owned());
+        }
+        if gift {
+            // The Gifting badge progress banner reads the signed-in user's badge catalog (module 806677 `z`).
+            if let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) {
+                self.request_badge_catalog(me);
+            }
+            self.request_gifting_art();
+        }
         self.nitro.purchase = Some(Purchase {
             gift,
             step: Step::Plans,
             sku: sku::TIER_2,
             yearly: true,
             scroll: ScrollHandle::new(),
+            recipient,
+            recipient_user,
+            message: None,
+            message_subscription: None,
         });
+        cx.notify();
+    }
+
+    /// A card of Send a Gift with a recipient: on to "Gift Nitro" with the 1 year option selected (module 814576
+    /// `eI` selects the first plan option of a gift), the message field holding the default text and focused.
+    fn choose_gift(&mut self, plan_sku: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(purchase) = self.nitro.purchase.as_mut() else {
+            return;
+        };
+        if purchase.recipient_user.is_none() {
+            return;
+        }
+        purchase.sku = plan_sku;
+        purchase.yearly = true;
+        purchase.step = Step::GiftSelect;
+        purchase.scroll = ScrollHandle::new();
+        if purchase.message.is_none() {
+            let editor = cx.new(|cx| {
+                let mut style = super::editor_style();
+                // The slate editor's text is pure white (computed colour of the span in the capture).
+                style.text = super::hsla("--white");
+                let mut editor = Editor::new(style, cx);
+                editor.set_max_utf16(GIFT_MESSAGE_LIMIT);
+                editor.set_reports_all_edits(true);
+                editor.set_text(DEFAULT_GIFT_MESSAGE);
+                editor
+            });
+            let subscription = cx.subscribe(&editor, |this, _, event: &EditorEvent, cx| {
+                match event {
+                    EditorEvent::Edited => cx.notify(),
+                    EditorEvent::Cancel => {
+                        this.escape_purchase(cx);
+                    }
+                    // Enter does nothing: the field's `onSubmit` resolves `shouldClear: false` (module 968060).
+                    EditorEvent::Submit(_) => {}
+                }
+            });
+            if let Some(purchase) = self.nitro.purchase.as_mut() {
+                purchase.message = Some(editor);
+                purchase.message_subscription = Some(subscription);
+            }
+        }
+        if let Some(editor) = self
+            .nitro
+            .purchase
+            .as_ref()
+            .and_then(|purchase| purchase.message.as_ref())
+        {
+            window.focus(&gpui::Focusable::focus_handle(editor.read(cx), cx), cx);
+        }
         cx.notify();
     }
 
@@ -60,12 +173,26 @@ impl Root {
             sku: plan_sku,
             yearly,
             scroll: ScrollHandle::new(),
+            recipient: false,
+            recipient_user: None,
+            message: None,
+            message_subscription: None,
         });
         cx.notify();
     }
 
     fn close_purchase(&mut self) {
         self.nitro.purchase = None;
+    }
+
+    /// Escape closes the open purchase dialog, whichever step it is on (the modal's `onClose`). True when it did.
+    pub(super) fn escape_purchase(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.nitro.purchase.is_none() {
+            return false;
+        }
+        self.close_purchase();
+        cx.notify();
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -89,7 +216,13 @@ impl Root {
             cx.notify();
         });
         // The dialog never outgrows the window: 57px above and below in the 720 capture.
-        let limit = window.viewport_size().height.to_f64() as f32 - 114.;
+        // Gift Nitro is 608 high in the 720 capture (56px above and below, gift-step2-nitro-darker-cozy).
+        let limit = window.viewport_size().height.to_f64() as f32
+            - if id == "nitro-gift-select" {
+                112.
+            } else {
+                114.
+            };
         let header =
             div()
                 .relative()
@@ -187,6 +320,7 @@ impl Root {
         Some(match (purchase.step, purchase.gift) {
             (Step::Plans, false) => self.select_plan_modal(purchase.scroll.clone(), window, cx),
             (Step::Plans, true) => self.gift_modal(window, cx),
+            (Step::GiftSelect, _) => self.gift_select_modal(window, cx),
             (Step::Checkout, _) => self.checkout_modal(window, cx),
             (Step::Payment, _) => self.payment_modal(window, cx),
         })
@@ -195,6 +329,11 @@ impl Root {
     /// One plan card of Select Plan and Send a Gift: title, month and year prices, the divider and the feature list.
     fn modal_plan_card(&self, nitro: bool, gift: bool, cx: &mut Context<Self>) -> AnyElement {
         let plan_sku = if nitro { sku::TIER_2 } else { sku::TIER_0 };
+        let has_recipient = self
+            .nitro
+            .purchase
+            .as_ref()
+            .is_some_and(|purchase| purchase.recipient_user.is_some());
         let monthly = self.plan_price_for(plan_sku, false, gift);
         let yearly = self.plan_price_for(plan_sku, true, gift);
         let features: &[(&str, &str)] = if nitro {
@@ -207,14 +346,16 @@ impl Root {
                 div()
                     .flex()
                     .items_end()
-                    .gap(px(2.))
+                    // The unit sits flush against the amount (captures: 156.39 + 450 = 606.39, no gap).
+                    .gap(px(0.))
                     .children(
                         price
                             .map(|price| Self::nitro_text(price.display(), size, line, 600., tint)),
                     )
                     .child(
+                        // Unit boxes end 5px above the 40px line and 1px above the 20px one.
                         Self::nitro_text(unit, 12., 16., 500., "--text-muted")
-                            .pb(px(if size > 20. { 4. } else { 2. })),
+                            .pb(px(if size > 20. { 5. } else { 1. })),
                     )
             };
         let card = div()
@@ -226,7 +367,7 @@ impl Root {
             .relative()
             .w_full()
             .flex_1()
-            .rounded(px(12.))
+            .rounded(px(8.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-higher"))
@@ -235,25 +376,64 @@ impl Root {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_checkout(plan_sku, true, cx);
                     }))
+            })
+            .when(gift && has_recipient, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_gift(plan_sku, window, cx);
+                    }))
             });
         card.children(nitro.then(|| {
+            // `.container_pmhtZL:before` (css 384209): the pink-to-blue gradient under
+            // `radial-gradient(100% 100% at 50% 100%, transparent 60%, #000 100%)`, so it fades out towards the
+            // bottom centre. gpui has no radial masks: the card is cut into rows and quarter-width segments, each
+            // a linear gradient whose end alphas are the mask at that spot.
+            const ROWS: usize = 48;
+            const COLS: usize = 4;
+            let radius = 8.;
+            let pink = (0.449387_f32, 0.167872_f32, -0.086863_f32);
+            let blue = (0.395045_f32, -0.0154365_f32, -0.253271_f32);
+            let at = move |f: f32, dy: f32| {
+                let dx = (f - 0.5).abs();
+                let mask = (((dx * dx + dy * dy).sqrt() - 0.6) / 0.4).clamp(0., 1.);
+                oklab(
+                    pink.0 + (blue.0 - pink.0) * f,
+                    pink.1 + (blue.1 - pink.1) * f,
+                    pink.2 + (blue.2 - pink.2) * f,
+                    0.4 * mask,
+                )
+            };
             div()
                 .absolute()
                 .inset_0()
-                .rounded(px(12.))
-                .bg(linear_gradient(
-                    270.,
-                    linear_color_stop(oklab(0.395045, -0.0154365, -0.253271, 0.4), 0.),
-                    linear_color_stop(oklab(0.449387, 0.167872, -0.086863, 0.4), 1.),
-                ))
+                .flex()
+                .flex_col()
+                .children((0..ROWS).map(move |row| {
+                    let dy = 1. - (row as f32 + 0.5) / ROWS as f32;
+                    div().flex_1().flex().children((0..COLS).map(move |col| {
+                        let (from, to) = (col as f32 / COLS as f32, (col + 1) as f32 / COLS as f32);
+                        let mut segment = div().flex_1().bg(linear_gradient(
+                            90.,
+                            linear_color_stop(at(from, dy), 0.),
+                            linear_color_stop(at(to, dy), 1.),
+                        ));
+                        if row < 2 && col == 0 {
+                            segment = segment.rounded_tl(px(radius));
+                        }
+                        if row < 2 && col == COLS - 1 {
+                            segment = segment.rounded_tr(px(radius));
+                        }
+                        segment
+                    }))
+                }))
         }))
         .children(nitro.then(|| {
             // Positions and sizes from the capture, inside the card: (left, top, width, height).
             let (big, small, wumpus) = if gift {
                 (
-                    (237., 19., 67., 20.),
-                    (161., 35., 37., 14.),
-                    (190., 39., 106., 121.),
+                    (236., 20., 67., 20.),
+                    (160., 35., 37., 14.),
+                    (189., 40., 106., 121.),
                 )
             } else {
                 (
@@ -263,10 +443,17 @@ impl Root {
                 )
             };
             let place = |name: &str, (left, top, width, height): (f32, f32, f32, f32)| {
+                // `.bigCloud_nkh6Dx` opacity .62, `.smallCloud_nkh6Dx` .42 (css 547510).
+                let opacity = match name {
+                    "cloud-big" => 0.62,
+                    "cloud-small" => 0.42,
+                    _ => 1.,
+                };
                 div()
                     .absolute()
                     .left(px(left))
                     .top(px(top))
+                    .opacity(opacity)
                     .child(self.nitro_art(name, width, height))
             };
             div()
@@ -279,19 +466,26 @@ impl Root {
         .children(nitro.then(|| {
             div()
                 .absolute()
-                .top(px(-13.))
+                // `.pill_nkh6Dx`: top 1px, translated up half its 28.75 height.
+                .top(px(-12.4))
                 .left_0()
                 .right_0()
                 .flex()
                 .justify_center()
                 .child(
                     div()
-                        .w(px(71.))
-                        .h(px(29.))
-                        .rounded(px(15.))
-                        .bg(rgb(89, 31, 114))
+                        .w(px(71.31))
+                        .h(px(28.75))
+                        .rounded(px(16.))
+                        // `.pillGradient_-PybZ8` (css 894292): rgba(155,29,165,.35) to rgba(30,35,83,.35) at 120%
+                        // over --background-base-lower, flattened here to the two end colours.
+                        .bg(linear_gradient(
+                            90.,
+                            linear_color_stop(rgb(74, 27, 79), 0.),
+                            linear_color_stop(rgb(37, 29, 55), 1.),
+                        ))
                         .border_1()
-                        .border_color(rgb(122, 69, 168))
+                        .border_color(color("--border-normal"))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -311,7 +505,7 @@ impl Root {
                 .child(Self::nitro_heading(
                     if nitro { "Nitro" } else { "Nitro Basic" },
                     if gift { 30. } else { 32. },
-                    27.,
+                    if gift { 25. } else { 27. },
                     true,
                 ))
                 .child(
@@ -336,10 +530,11 @@ impl Root {
                             div()
                                 .flex()
                                 .gap(px(10.))
-                                .items_start()
+                                // The icon centres on a wrapped line pair too (capture: 40px row, icon at +11).
+                                .items_center()
                                 .min_h(px(20.))
-                                .child(div().pt(px(1.)).child(icon(glyph, 18., "--text-default")))
-                                .child(div().flex_1().child(Self::nitro_text(
+                                .child(div().child(icon(glyph, 18., "--text-default")))
+                                .child(div().flex_1().min_w(px(0.)).child(Self::nitro_text(
                                     *line,
                                     16.,
                                     20.,
@@ -359,17 +554,19 @@ impl Root {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The dialog stops 57px from the window's top and bottom; the scroller takes what is left under the
+        // 1px borders, the 8px top padding, the 48px header, the 16px gap and its own 1px top line.
+        let room = window.viewport_size().height.to_f64() as f32 - 114. - 75.;
         let body = div()
             .relative()
-            .flex_1()
-            .min_h(px(0.))
+            .flex_none()
             .mt(px(16.))
             .border_t_1()
             .border_color(color("--border-subtle"))
             .child(
                 div()
                     .id("purchase-plans-scroll")
-                    .size_full()
+                    .max_h(px(room))
                     .overflow_y_scroll()
                     .track_scroll(&scroll)
                     .child(
@@ -398,25 +595,42 @@ impl Root {
 
     /// "Send a Gift": both plans side by side, with the gift prices.
     fn gift_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let recipient = self
+            .nitro
+            .purchase
+            .as_ref()
+            .is_some_and(|purchase| purchase.recipient);
+        // Content padding 16 (32 with the recipient's wishlist section, empty here: its 16px gap remains), 18 left,
+        // 8 scrollbar gutter + 18 right, 24 below, 16 between sections (capture gift-modal-darker-cozy: cards at
+        // y 183.5, the banner 16 under them).
         let body = div()
             .pl(px(18.))
             .pr(px(26.))
-            .pt(px(16.))
-            .pb(px(25.))
+            .pt(px(if recipient { 32. } else { 16. }))
+            .pb(px(24.))
             .flex()
+            .flex_col()
             .gap(px(16.))
             .child(
                 div()
-                    .flex_1()
                     .flex()
-                    .child(self.modal_plan_card(true, true, cx)),
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .child(self.modal_plan_card(true, true, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .child(self.modal_plan_card(false, true, cx)),
+                    ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .child(self.modal_plan_card(false, true, cx)),
-            );
+            .children(self.gifting_banner_row());
         self.purchase_shell(
             "nitro-gift",
             680.,
@@ -427,6 +641,454 @@ impl Root {
             window,
             cx,
         )
+    }
+
+    /// "N gifts away from the Patron Badge!" (module 492275): 634x64, 40px tier picture, shown when the Gifting
+    /// badge has a next tier.
+    fn gifting_banner_row(&self) -> Option<AnyElement> {
+        let (remaining, tier, picture) = self.gifting_banner()?;
+        Some(
+            div()
+                .id("gift-badge-banner")
+                .flex_none()
+                .h(px(64.))
+                .px(px(16.))
+                .py(px(12.))
+                .gap(px(12.))
+                .rounded(px(12.))
+                .bg(rgba(0x97979f14))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(40.))
+                        .flex_none()
+                        .rounded(px(8.))
+                        .overflow_hidden()
+                        .children(picture.map(|picture| gpui::img(picture).size(px(40.)))),
+                )
+                .child(Self::nitro_text(
+                    gifts_away(remaining, &tier),
+                    16.,
+                    20.,
+                    500.,
+                    "--text-default",
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// "Gift Nitro" (module 814576 `eA` for a gift with a recipient). Geometry from
+    /// `design/dom/dm/gift-step2-nitro-darker-cozy.json` (960x608 at (160, 56)): the body scrolls between two 1px
+    /// lines, the Gifting badge banner and the Select button sit under it.
+    fn gift_select_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(purchase) = self.nitro.purchase.as_ref() else {
+            return div().into_any_element();
+        };
+        let plan_sku = purchase.sku;
+        let nitro = plan_sku != sku::TIER_0;
+        let yearly = purchase.yearly;
+        let scroll = purchase.scroll.clone();
+        let message = purchase.message.clone();
+        let recipient = purchase
+            .recipient_user
+            .and_then(|id| self.stores.users.get(&id));
+        let remaining = message
+            .as_ref()
+            .map_or(GIFT_MESSAGE_LIMIT as i64, |editor| {
+                characters_left(editor.read(cx).text())
+            });
+        // `g.D8` with a recipient: "1 year of Nitro" / "1 month of Nitro" (`poEovT`, `NPKsLz` for Nitro Basic).
+        let plan_name = if nitro { "Nitro" } else { "Nitro Basic" };
+        let year_price = self.plan_price_for(plan_sku, true, true);
+        let month_price = self.plan_price_for(plan_sku, false, true);
+        let badge = year_price
+            .as_ref()
+            .zip(month_price.as_ref())
+            .and_then(|(year, month)| savings_percent(month.amount, year.amount))
+            // `IAybsG` "save {discount}", drawn upper case by the badge's `text-transform`.
+            .map(|percent| format!("SAVE {percent}%"));
+
+        // The left column: the gift box 102px down, the two effect buttons 12px under its 312px box.
+        let effect_button = |id: &'static str, glyph: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .flex_none()
+                .w(px(172.))
+                .h(px(32.))
+                .rounded(px(8.))
+                .bg(rgba(0x97979f1f))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .child(icon(glyph, 14., "--icon-strong"))
+                .child(Self::nitro_text(label, 14., 18., 600., "--text-strong"))
+        };
+        let left = div()
+            .flex_none()
+            .w(px(435.))
+            .h(px(516.))
+            .pt(px(102.))
+            .flex()
+            .flex_col()
+            .child(
+                div().relative().flex_none().h(px(312.)).child(
+                    // The 435x338.3 picture ends 3px above its box's bottom (module 446263 renders it 900x700).
+                    div()
+                        .absolute()
+                        .top(px(-29.3))
+                        .left_0()
+                        .child(self.nitro_art("gift-box", 435., 338.3)),
+                ),
+            )
+            .child(
+                div()
+                    .mt(px(12.))
+                    .flex()
+                    .justify_center()
+                    .gap(px(12.))
+                    .child(effect_button(
+                        "gift-sound-effect",
+                        "gift_sound_effect",
+                        "Add sound effect",
+                    ))
+                    .child(effect_button(
+                        "gift-emoji-confetti",
+                        "msg_react",
+                        "Add emoji confetti",
+                    )),
+            );
+
+        // "Send to": the DM's person, 44px avatar, name and user tag (module 948388).
+        let person = recipient.map(|user| {
+            let (key, url) = super::avatar_source(user);
+            let face = match self.images.get(&key).cloned() {
+                Some(image) => div()
+                    .flex_none()
+                    .size(px(44.))
+                    .child(gpui::img(image).size(px(44.)).rounded_full()),
+                None => {
+                    self.want_image(key, url, cx);
+                    div()
+                        .flex_none()
+                        .size(px(44.))
+                        .rounded_full()
+                        .bg(color("--background-mod-strong"))
+                }
+            };
+            div()
+                .h(px(44.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(face)
+                .child(Self::nitro_text(
+                    user.display_name().to_owned(),
+                    16.,
+                    20.,
+                    400.,
+                    "--text-default",
+                ))
+                // `getUserTag`: the username, in the muted grey the capture computes (rgb 109 109 109).
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(rgb(109, 109, 109))
+                        .child(user.username.clone()),
+                )
+        });
+        let label = |text: &'static str| Self::nitro_text(text, 16., 20., 500., "--text-strong");
+
+        // The message: a 437x138 box, text 15px in and 17px down, the count 10px above and 14px left of its corner.
+        let message_box = div()
+            .id("gift-message")
+            .relative()
+            .flex_none()
+            .w(px(437.))
+            .h(px(138.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-lowest"))
+            .overflow_hidden()
+            .cursor_text()
+            .when_some(message, |this, editor| {
+                let target = editor.clone();
+                this.on_click(cx.listener(move |_, _, window, cx| {
+                    window.focus(&gpui::Focusable::focus_handle(target.read(cx), cx), cx);
+                }))
+                .child(div().pl(px(15.)).pt(px(17.)).w(px(413.)).child(editor))
+            })
+            .child(
+                div()
+                    .absolute()
+                    .bottom(px(10.))
+                    .right(px(14.))
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color(if remaining >= 0 {
+                                "--text-default"
+                            } else {
+                                "--text-feedback-critical"
+                            }))
+                            .child(remaining.to_string()),
+                    ),
+            );
+
+        let options = div()
+            .flex()
+            .flex_col()
+            .child(self.gift_option(
+                "gift-option-year",
+                format!("1 year of {plan_name}"),
+                badge,
+                year_price.as_ref().map(Price::display),
+                yearly,
+                true,
+                cx,
+            ))
+            .child(self.gift_option(
+                "gift-option-month",
+                format!("1 month of {plan_name}"),
+                None,
+                month_price.as_ref().map(Price::display),
+                !yearly,
+                false,
+                cx,
+            ));
+        let right = div()
+            .flex_none()
+            .w(px(435.))
+            .pt(px(24.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(label("Send to"))
+                    .children(person),
+            )
+            .child(
+                div()
+                    .mt(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(label("Add message (optional)"))
+                    .child(message_box),
+            )
+            .child(
+                div()
+                    .mt(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(Self::nitro_text(
+                        "Select gift",
+                        16.,
+                        20.,
+                        600.,
+                        "--text-strong",
+                    ))
+                    .child(options),
+            );
+        let content = div()
+            .w(px(958.))
+            .px(px(24.))
+            .py(px(12.))
+            .flex()
+            .gap(px(30.))
+            .child(left)
+            .child(right);
+
+        let banner = self.gifting_banner_row();
+        // Everything but the body: borders 2, top padding 8, header 48, the two spacers 17 and 9, the banner with its
+        // 4px margin, the 64px action bar and the 16px bottom padding.
+        let around = 2. + 8. + 48. + 17. + 9. + 64. + 16. + if banner.is_some() { 68. } else { 0. };
+        let room = window.viewport_size().height.to_f64() as f32 - 112. - around;
+        let body = div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(17.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle")),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(
+                        div()
+                            .id("gift-select-scroll")
+                            .max_h(px(room))
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .child(content),
+                    )
+                    .child(super::settings::auto_scrollbar(scroll)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(9.))
+                    .border_t_1()
+                    .border_color(color("--border-subtle")),
+            );
+        let select = div()
+            .id("gift-select")
+            .w(px(100.))
+            .h(px(40.))
+            .rounded(px(8.))
+            .bg(color("--control-primary-background-default"))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--white"))
+            .child("Select")
+            .on_click(cx.listener(|this, _, _, cx| {
+                // On to the payment step (module 778705's flow); nothing is bought here.
+                if let Some(purchase) = this.nitro.purchase.as_mut() {
+                    purchase.step = Step::Payment;
+                }
+                cx.notify();
+            }));
+        let footer = div()
+            .flex_none()
+            .pb(px(16.))
+            .children(banner.map(|banner| div().px(px(24.)).pt(px(4.)).child(banner)))
+            .child(
+                div()
+                    .h(px(64.))
+                    .px(px(24.))
+                    .pt(px(16.))
+                    .pb(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(select),
+            )
+            .into_any_element();
+        self.purchase_shell(
+            "nitro-gift-select",
+            960.,
+            if nitro {
+                "Gift Nitro"
+            } else {
+                "Gift Nitro Basic"
+            },
+            false,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// One "Select gift" row (module 813267 with a recipient): the period, its price and the one-time charge line.
+    /// The chosen row has a 2px brand ring outside its box, the others a 1px ring.
+    #[allow(clippy::too_many_arguments)]
+    fn gift_option(
+        &self,
+        id: &'static str,
+        label: String,
+        badge: Option<String>,
+        price: Option<String>,
+        selected: bool,
+        yearly: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let sub = price
+            .as_ref()
+            .map(|price| format!("Pay a one time charge of {price}"));
+        let ring = div()
+            .absolute()
+            .top(px(if selected { -2. } else { -1. }))
+            .bottom(px(if selected { -2. } else { -1. }))
+            .left(px(if selected { -2. } else { -1. }))
+            .right(px(if selected { -2. } else { -1. }))
+            .rounded(px(if selected { 18. } else { 17. }))
+            .when(selected, |this| {
+                this.border_2().border_color(color("--background-brand"))
+            })
+            .when(!selected, |this| {
+                this.border_1().border_color(color("--border-normal"))
+            });
+        div()
+            .id(id)
+            .relative()
+            .flex_none()
+            .w(px(435.))
+            .mb(px(12.))
+            .px(px(12.))
+            .py(px(20.))
+            .rounded(px(16.))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(ring)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(if badge.is_some() { 18. } else { 16. }))
+                            .flex()
+                            .items_center()
+                            .child(Self::nitro_text(label, 16., 16., 500., "--text-strong"))
+                            .children(badge.map(|badge| {
+                                div()
+                                    .ml(px(8.))
+                                    .flex_none()
+                                    .h(px(22.))
+                                    .px(px(8.))
+                                    .rounded(px(16.))
+                                    .bg(color("--status-positive"))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(badge)
+                            })),
+                    )
+                    .children(sub.map(|sub| {
+                        div().mt(px(8.)).child(Self::nitro_text(
+                            sub,
+                            16.,
+                            16.,
+                            400.,
+                            "--text-subtle",
+                        ))
+                    })),
+            )
+            .children(price.map(|price| Self::nitro_text(price, 16., 16., 500., "--text-strong")))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(purchase) = this.nitro.purchase.as_mut() {
+                    purchase.yearly = yearly;
+                }
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     fn back_link(&self, cx: &mut Context<Self>, to: Step) -> AnyElement {
@@ -746,7 +1408,22 @@ impl Root {
             .flex()
             .items_center()
             .justify_between()
-            .child(self.back_link(cx, Step::Checkout))
+            .child(
+                self.back_link(
+                    cx,
+                    // A gift to a person came from Gift Nitro, a subscription from Checkout.
+                    if self
+                        .nitro
+                        .purchase
+                        .as_ref()
+                        .is_some_and(|purchase| purchase.recipient_user.is_some())
+                    {
+                        Step::GiftSelect
+                    } else {
+                        Step::Checkout
+                    },
+                ),
+            )
             .child(pay)
             .into_any_element();
         self.purchase_shell(
@@ -800,5 +1477,42 @@ impl Root {
                 &token,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_GIFT_MESSAGE, characters_left, gifts_away, savings_percent};
+
+    #[test]
+    fn the_yearly_gift_saves_the_captured_percentage() {
+        // $9.99 a month, $99.99 a year: the capture's "SAVE 16%".
+        assert_eq!(savings_percent(999, 9999), Some(16));
+        assert_eq!(savings_percent(999, 11988), None);
+        assert_eq!(savings_percent(0, 100), None);
+    }
+
+    #[test]
+    fn the_default_message_leaves_the_captured_count() {
+        // design/dom/dm/gift-step2-nitro-darker-cozy.json shows 147 characters remaining.
+        assert_eq!(characters_left(DEFAULT_GIFT_MESSAGE), 147);
+        assert_eq!(characters_left(""), 190);
+        assert_eq!(characters_left("\u{1F600}"), 188);
+    }
+
+    #[test]
+    fn the_banner_line_pluralises_like_the_catalog_string() {
+        assert_eq!(
+            gifts_away(1, "Patron"),
+            "1 gift away from the Patron Badge!"
+        );
+        assert_eq!(
+            gifts_away(3, "Patron"),
+            "3 gifts away from the Patron Badge!"
+        );
+        assert_eq!(
+            gifts_away(0, "Patron"),
+            "0 gifts away from the Patron Badge!"
+        );
     }
 }
