@@ -69,6 +69,8 @@ pub(super) enum Act {
     Favorite,
     OpenChat,
     HideNames,
+    /// "Clear Channel Status" (module 671483 `clear-status`): `updateVoiceChannelStatus(id, "")`.
+    ClearStatus,
     CloseThread,
     LockThread,
     LeaveThread,
@@ -142,7 +144,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 78] = [
+    pub(super) const ALL: [Act; 79] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -169,6 +171,7 @@ impl Act {
         Act::Favorite,
         Act::OpenChat,
         Act::HideNames,
+        Act::ClearStatus,
         Act::CloseThread,
         Act::LockThread,
         Act::LeaveThread,
@@ -304,6 +307,7 @@ impl Act {
             Act::HideFavorites => 74,
             Act::VoiceDeafen => 75,
             Act::JoinThread => 77,
+            Act::ClearStatus => 78,
         }
     }
 }
@@ -370,6 +374,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::ServerMute
         | Act::ServerDeafen
         | Act::Disconnect
+        | Act::ClearStatus
         | Act::Verify
         | Act::Roles
         | Act::MoveMember
@@ -604,6 +609,8 @@ pub(super) struct ChannelFacts {
     pub can_invite: bool,
     pub developer: bool,
     pub hide_names: bool,
+    /// A voice channel with a status that the manager, outside the channel, may clear (module 671483).
+    pub clear_status: bool,
 }
 
 pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
@@ -629,13 +636,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     share.push(Row::new(Act::CopyLink, "Copy Link"));
     group(&mut out, share);
     if facts.voice {
-        group(
-            &mut out,
-            vec![
-                Row::new(Act::OpenChat, "Open Chat"),
-                Row::new(Act::HideNames, "Hide Names").check(facts.hide_names),
-            ],
-        );
+        // The status row sits between Open Chat and Hide Names (`voice-actions` of module 428631).
+        let mut voice = vec![Row::new(Act::OpenChat, "Open Chat")];
+        if facts.clear_status {
+            voice.push(Row::new(Act::ClearStatus, "Clear Channel Status"));
+        }
+        voice.push(Row::new(Act::HideNames, "Hide Names").check(facts.hide_names));
+        group(&mut out, voice);
     }
     // A voice channel's menu has no Notification Settings (its capture, `voice-row`).
     let mut alerts = vec![Row::new(Act::Mute, "Mute Channel").caret()];
@@ -793,7 +800,12 @@ pub(super) fn thread_items(
     group(
         &mut out,
         vec![
-            Row::new(Act::Mute, "Mute Thread").caret(),
+            // `mute-disabled` (module 57907) until the account has joined the thread.
+            if joined {
+                Row::new(Act::Mute, "Mute Thread").caret()
+            } else {
+                Row::new(Act::Mute, "Mute Thread").disabled(true)
+            },
             Row::new(Act::Notifications, "Notification Settings")
                 .sub(level)
                 .caret(),
@@ -1091,8 +1103,11 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if facts.dm.is_some() {
         group(&mut out, mid);
     } else if facts.me {
-        // The own menu has no separator before the nickname row only when nothing precedes it.
-        out.push(Entry::Separator);
+        // The own menu has no separator before the nickname row only when nothing precedes it; the two self switches
+        // of a voice row sit in the same group as the profile row (golden voice-user-menu/self-menu).
+        if facts.self_voice.is_none() {
+            out.push(Entry::Separator);
+        }
         out.extend(mid.into_iter().map(Entry::Row));
     } else {
         out.push(Entry::Separator);
@@ -1215,6 +1230,12 @@ const MUTE_FOR: [(i64, &str); 6] = [
 /// `message_notifications` values, with the labels of the notification submenu.
 const LEVELS: [(u64, &str); 3] = [(0, "All Messages"), (1, "Only @mentions"), (2, "Nothing")];
 const INHERIT: u64 = 3;
+/// `EU` (module 37411): a thread's levels as thread member flags.
+const THREAD_LEVELS: [(u64, &str); 3] = [
+    (dc_state::THREAD_ALL_MESSAGES, "All Messages"),
+    (dc_state::THREAD_ONLY_MENTIONS, "Only @mentions"),
+    (dc_state::THREAD_NO_MESSAGES, "Nothing"),
+];
 /// `UserGuildSettingsChannelFlags.FAVORITED`: the channel is pinned to the top of the list.
 const PINNED: u64 = 2048;
 /// `OPT_IN_ENABLED`: set along with a pin.
@@ -1532,6 +1553,23 @@ impl Root {
         }
     }
 
+    /// 607508 `l` of a thread: `THREAD_*` flag the account's member settings (or the parent's level) give it.
+    fn thread_level_of(&self, thread: Id) -> u64 {
+        self.stores
+            .guilds
+            .iter()
+            .find_map(|guild| {
+                let known = guild.threads.iter().find(|known| known.id == thread)?;
+                Some(dc_state::notifications::thread_level(
+                    &self.stores,
+                    guild,
+                    known,
+                    chrono::Utc::now(),
+                ))
+            })
+            .unwrap_or(dc_state::THREAD_NO_MESSAGES)
+    }
+
     fn channel_level(&self, guild: Id, channel: Id) -> u64 {
         self.stores
             .guild_settings
@@ -1632,15 +1670,23 @@ impl Root {
                 .map_or((false, None), |settings| {
                     (settings.muted, settings.mute_end)
                 }),
-            Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
-                match self.guild_of_channel(id) {
-                    Some(guild) => {
-                        let entry = self.stores.guild_settings.channel(guild, id);
-                        (entry.muted, entry.mute_end)
-                    }
-                    None => (false, None),
+            // `isMuted` of the joined-threads store (module 152007): the account's own member of the thread.
+            Target::Thread(id) => self
+                .stores
+                .guilds
+                .iter()
+                .flat_map(|guild| guild.threads.iter())
+                .find(|thread| thread.id == id)
+                .map_or((false, None), |thread| {
+                    (thread.joined && thread.muted, thread.mute_end)
+                }),
+            Target::Channel(id) | Target::Category(id) => match self.guild_of_channel(id) {
+                Some(guild) => {
+                    let entry = self.stores.guild_settings.channel(guild, id);
+                    (entry.muted, entry.mute_end)
                 }
-            }
+                None => (false, None),
+            },
             Target::Dm(id) => {
                 let entry = self.stores.guild_settings.channel(0, id);
                 (entry.muted, entry.mute_end)
@@ -1784,7 +1830,17 @@ impl Root {
                 } else if self.in_favorites() {
                     favorite_channel_items(self.stores.is_unread(id), level)
                 } else {
+                    let in_channel = self.call.as_ref().is_some_and(|call| call.channel == id);
+                    let has_status = self
+                        .stores
+                        .channel_status
+                        .get_channel_status(guild, id)
+                        .is_some_and(|status| !status.is_empty());
                     let facts = ChannelFacts {
+                        clear_status: known.kind == ChannelKind::Voice
+                            && can_manage
+                            && !in_channel
+                            && has_status,
                         voice: matches!(known.kind, ChannelKind::Voice | ChannelKind::Other(13)),
                         unread: self.stores.is_unread(id),
                         can_manage,
@@ -1828,7 +1884,12 @@ impl Root {
                     owner,
                     thread.joined,
                     developer,
-                    self.channel_level_label(guild, id),
+                    level_label(
+                        THREAD_LEVELS
+                            .iter()
+                            .position(|(flag, _)| *flag == self.thread_level_of(id))
+                            .map_or(0, |index| index as u64),
+                    ),
                 )
             }
             Target::Dm(channel) => {
@@ -1924,8 +1985,18 @@ impl Root {
                         || self
                             .others_in_call()
                             .is_some_and(|others| others.contains(&user)),
-                    self_voice: (me && from_voice_row)
-                        .then_some((self.self_mute || self.self_deaf, self.self_deaf)),
+                    // Our own switches follow the engine; the session's voice state (what the server holds for us)
+                    // counts too, so a state fed without a call shows the same ticks as the golden.
+                    self_voice: (me && from_voice_row).then(|| {
+                        let held = guild
+                            .and_then(|guild| self.stores.voice_states.get(&guild))
+                            .and_then(|states| states.iter().find(|state| state.user_id == user));
+                        let deaf = self.self_deaf || held.is_some_and(|state| state.self_deaf);
+                        (
+                            self.self_mute || deaf || held.is_some_and(|state| state.self_mute),
+                            deaf,
+                        )
+                    }),
                     voice_muted: self.context.mix.get(&user).is_some_and(|mix| mix.1),
                     soundboard_muted: self.context.soundboard_muted.contains(&user),
                     volume: self
@@ -2074,15 +2145,10 @@ impl Root {
             (Act::InventoryHide, Target::InventoryFeed | Target::InventoryFeedAtPointer) => {
                 self.toggle_inventory_hidden()
             }
+            // Module 871638: the server's Mark As Read is `BULK_ACK` of its channels and threads (module 567035).
             (Act::MarkRead, Target::Guild(guild)) => {
-                let channels: Vec<Id> = self
-                    .stores
-                    .guild(guild)
-                    .map(|guild| guild.channels.iter().map(|channel| channel.id).collect())
-                    .unwrap_or_default();
-                for channel in channels {
-                    self.mark_channel_read(channel);
-                }
+                let reads = self.guild_unread_reads(guild);
+                self.mark_read_bulk(&reads, cx);
             }
             (Act::MarkRead, Target::Category(category)) => {
                 let children: Vec<Id> = self
@@ -2172,13 +2238,19 @@ impl Root {
                     open.confirm_delete = true;
                 }
             }
+            // Module 307623 opens the "Delete Thread" confirmation (894533); the request goes only from its button.
             (Act::DeleteChannel, Target::Thread(thread)) => {
-                let _ = self.requests.send(Request::Rest {
-                    key: None,
-                    method: reqwest::Method::DELETE,
-                    route: format!("/channels/{thread}"),
-                    body: None,
-                });
+                let name = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .find_map(|guild| guild.threads.iter().find(|known| known.id == thread))
+                    .map(|known| known.name.clone())
+                    .unwrap_or_default();
+                self.ask_destructive(
+                    super::destructive::Pending::delete_thread(thread, &name),
+                    cx,
+                );
             }
             (Act::Duplicate, Target::Channel(channel)) => {
                 if let Some(guild) = self.guild_of_channel(channel)
@@ -2454,20 +2526,11 @@ impl Root {
                     self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
                 }
             }
-            (Act::Ignore, Target::User { user, .. }) => {
-                if self.stores.is_ignored(user) {
-                    self.unignore_user(user, cx);
-                } else {
-                    self.ignore_user(user, cx);
-                }
-            }
+            // Modules 399476 and 239211: Ignore and Block open their confirmation first; Unignore and Unblock are at once.
+            (Act::Ignore, Target::User { user, .. }) => self.toggle_ignore(user, cx),
             (Act::Ignore, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
-                    if self.stores.is_ignored(user) {
-                        self.unignore_user(user, cx);
-                    } else {
-                        self.ignore_user(user, cx);
-                    }
+                    self.toggle_ignore(user, cx);
                 }
             }
             (Act::Block, Target::User { user, .. }) => self.toggle_block(user, cx),
@@ -2586,7 +2649,9 @@ impl Root {
                         json!({"selected_time_window": null, "end_time": null}),
                     );
                 }
-                Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
+                // Unmute Thread (module 57907): the account's thread member setting, not a channel override.
+                Target::Thread(id) => self.patch_thread_settings(id, json!({"muted": false})),
+                Target::Channel(id) | Target::Category(id) => {
                     if let Some(guild) = self.guild_of_channel(id) {
                         self.patch_channel_override(
                             guild,
@@ -2665,6 +2730,9 @@ impl Root {
                 let flags = self.stores.guild_settings.channel(0, id).flags ^ PINNED;
                 self.patch_channel_override(0, id, json!({"flags": flags}));
             }
+            (Act::ClearStatus, Target::Channel(id)) => {
+                self.clear_channel_status(id);
+            }
             (Act::HideNames, Target::Channel(id)) => {
                 let mut stored = crate::storage::get(HIDDEN_NAMES).unwrap_or_else(|| json!({}));
                 if self.names_hidden(id) {
@@ -2718,7 +2786,17 @@ impl Root {
         if self.stores.relationships.get(&user) == Some(&2) {
             self.unblock_user(user, cx);
         } else {
-            self.block_user(user, cx);
+            self.remediation = Some((user, super::remediation::Remedy::Block));
+            cx.notify();
+        }
+    }
+
+    fn toggle_ignore(&mut self, user: Id, cx: &mut Context<Self>) {
+        if self.stores.is_ignored(user) {
+            self.unignore_user(user, cx);
+        } else {
+            self.remediation = Some((user, super::remediation::Remedy::Ignore));
+            cx.notify();
         }
     }
 
@@ -2785,6 +2863,20 @@ impl Root {
                 .iter()
                 .map(|(_, label)| plain(label, false))
                 .collect(),
+            // `EU` (module 37411) with the ticked one of 607508's `l`: a thread has three levels, no inherited one.
+            Act::Notifications if matches!(target, Target::Thread(_)) => {
+                let Target::Thread(id) = target else {
+                    return Vec::new();
+                };
+                let current = self.thread_level_of(id);
+                THREAD_LEVELS
+                    .iter()
+                    .map(|(flag, label)| SubRow {
+                        radio: true,
+                        ..plain(label, current == *flag)
+                    })
+                    .collect()
+            }
             Act::Notifications => {
                 let channel = matches!(target, Target::Channel(_) | Target::Thread(_));
                 let current = match target {
@@ -3105,7 +3197,10 @@ impl Root {
                         self.patch_guild_setting(guild, "muted", json!(true));
                         self.patch_guild_setting(guild, "mute_config", config);
                     }
-                    Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
+                    Target::Thread(id) => {
+                        self.patch_thread_settings(id, Self::thread_mute_body(seconds));
+                    }
+                    Target::Channel(id) | Target::Category(id) => {
                         if let Some(guild) = self.guild_of_channel(id) {
                             self.patch_channel_override(
                                 guild,
@@ -3125,12 +3220,17 @@ impl Root {
                 }
             }
             Act::Notifications => match target {
+                Target::Thread(id) => {
+                    if let Some((flag, _)) = THREAD_LEVELS.get(index) {
+                        self.patch_thread_settings(id, json!({"flags": flag}));
+                    }
+                }
                 Target::Guild(guild) => {
                     let value = LEVELS[index].0;
                     self.patch_guild_setting(guild, "message_notifications", json!(value));
                 }
-                Target::Channel(id) | Target::Category(id) | Target::Thread(id) => {
-                    let channel = matches!(target, Target::Channel(_) | Target::Thread(_));
+                Target::Channel(id) | Target::Category(id) => {
+                    let channel = matches!(target, Target::Channel(_));
                     let value = if channel && index == 0 {
                         INHERIT
                     } else {
@@ -3752,30 +3852,30 @@ impl Root {
                 .child(keys)
         }))
         .children(row.check.map(|on| {
+            // An 8px gap between the label and the box in every captured menu (menus2/guild-icon: "Hide Muted
+            // Channels" ends 8px before the box, the menu is 192 wide).
             div()
-                .ml(px(
-                    if matches!(
-                        target,
-                        Target::InventoryFeed | Target::InventoryFeedAtPointer
-                    ) {
-                        8.
-                    } else {
-                        16.
-                    },
-                ))
+                .ml(px(8.))
                 .size(px(20.))
                 .rounded(px(4.))
                 .border_1()
-                .border_color(color("--interactive-text-default"))
+                // The same tokens as the role check box above; the golden's ticked box is rgb(88, 101, 242) and
+                // its empty box rgb(37, 37, 41) inside (voice-user-menu/self-menu).
+                .border_color(if on {
+                    color("--checkbox-border-selected-default")
+                } else {
+                    color("--checkbox-border-default")
+                })
+                .bg(if on {
+                    color("--checkbox-background-selected-default")
+                } else {
+                    color("--checkbox-background-default")
+                })
                 .flex()
                 .items_center()
                 .justify_center()
                 .when(on, |this| {
-                    this.bg(color("--control-brand-foreground")).child(icon(
-                        "checkbox_check",
-                        14.,
-                        "--white",
-                    ))
+                    this.child(icon("checkbox_check", 16., "--white"))
                 })
         }))
         .when(row.caret, |this| {
@@ -3815,6 +3915,29 @@ mod tests {
                 Entry::Separator => "-".to_owned(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_voice_channel_with_a_status_offers_to_clear_it_between_open_chat_and_hide_names() {
+        let with = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                clear_status: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        let open = with.iter().position(|label| label == "Open Chat").unwrap();
+        assert_eq!(with[open + 1], "Clear Channel Status");
+        assert_eq!(with[open + 2], "Hide Names");
+        let without = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        assert!(!without.iter().any(|label| label == "Clear Channel Status"));
     }
 
     #[test]
@@ -3999,6 +4122,24 @@ mod tests {
         let apart = labels(&thread_items(false, false, false, false, false, "x"));
         assert!(apart.contains(&"Join Thread".to_owned()));
         assert!(!apart.contains(&"Leave Thread".to_owned()));
+    }
+
+    #[test]
+    fn mute_thread_waits_for_the_account_to_join() {
+        // `mute-disabled` of module 57907: no durations until the thread is joined.
+        let mute_row = |joined: bool| {
+            thread_items(false, false, false, joined, false, "x")
+                .into_iter()
+                .find_map(|entry| match entry {
+                    Entry::Row(row) if row.act == Act::Mute => Some(row),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let apart = mute_row(false);
+        assert!(apart.disabled && !apart.caret);
+        let joined = mute_row(true);
+        assert!(!joined.disabled && joined.caret);
     }
 
     #[test]

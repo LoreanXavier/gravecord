@@ -255,7 +255,12 @@ impl Root {
     }
 
     /// `709066 _`: `.botTagCozy` (4px before it), `.rem` sizes (15px tall, 4.4px padding, 12.8px semibold text).
-    fn app_tag_chip(&self, kind: AppTag, message: Id, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn app_tag_chip(
+        &self,
+        kind: AppTag,
+        message: Id,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let op = kind == AppTag::OriginalPoster;
         let verified = matches!(kind, AppTag::App { verified: true });
         let tag = div()

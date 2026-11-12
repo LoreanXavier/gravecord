@@ -5,13 +5,13 @@
 //! answer moves to the success node or shows the error line. Measured in `design/dom/modals/report-user-*.json`;
 //! the menu itself is recorded in `design/snapshot/TRAFFIC/report-menu-user.json`.
 
-use super::{Root, avatar_source, color, icon};
+use super::{Root, avatar_source, color, header_time, icon};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, SharedString, Window, deferred, div, img,
-    prelude::*, px, rgba,
+    AnyElement, Context, FontWeight, IntoElement, ScrollHandle, SharedString, Window, deferred,
+    div, img, prelude::*, px, rgba,
 };
 use serde_json::{Value, json};
 
@@ -45,6 +45,9 @@ pub(super) struct Report {
     checked: Vec<(String, String, String)>,
     submitting: bool,
     error: Option<String>,
+    /// The content scroller and the message preview's own scroller (thin scrollbars).
+    scroll: ScrollHandle,
+    preview_scroll: ScrollHandle,
 }
 
 /// What `h` in module 369053 builds a body for besides users and messages.
@@ -77,8 +80,8 @@ struct ReportedMessage {
     name: &'static str,
     channel: Id,
     id: Id,
-    author: String,
-    text: String,
+    /// What the `message_preview` element shows (`messagePreviewContainer_QOd4rY`).
+    message: Option<Box<dc_state::Message>>,
 }
 
 fn node(menu: &Value, id: u64) -> &Value {
@@ -146,6 +149,8 @@ impl Root {
             checked: Vec::new(),
             submitting: false,
             error: None,
+            scroll: ScrollHandle::new(),
+            preview_scroll: ScrollHandle::new(),
         });
         let _ = self.requests.send(Request::Rest {
             key: Some(MENU_KEY.to_owned()),
@@ -176,8 +181,7 @@ impl Root {
                 name: if first_dm { "first_dm" } else { "message" },
                 channel: message.channel_id,
                 id: message.id,
-                author: message.author.display_name().to_owned(),
-                text: message.content.clone(),
+                message: Some(Box::new(message.clone())),
             }),
             None,
             cx,
@@ -377,8 +381,72 @@ impl Root {
             .child(text.into())
     }
 
-    /// The message under "Selected Message": who wrote it and what it says.
-    fn report_message_preview(message: &ReportedMessage) -> AnyElement {
+    /// The message under "Selected Message" (`messagePreviewContainer_QOd4rY`, `design/dom/report/step1`): a cozy
+    /// message (avatar 16px in, name, app tag, inline time, text) in a 100px scroller with 16px of padding above,
+    /// right and below, an 8px radius and a thin scrollbar. The wrapper keeps 72px on the left and 16px on the
+    /// right, and the scrollbar gutter takes 8px more.
+    fn report_message_preview(
+        &self,
+        message: &ReportedMessage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(shown) = message.message.as_deref() else {
+            return div().into_any_element();
+        };
+        let handle = self
+            .report
+            .as_ref()
+            .map(|open| open.preview_scroll.clone())
+            .unwrap_or_default();
+        let avatar = self.images.get(&avatar_source(&shown.author).0).cloned();
+        let tag = super::message_header::app_tag(
+            shown.author.bot,
+            shown.author.flags | shown.author.public_flags,
+            false,
+        )
+        .map(|kind| self.app_tag_chip(kind, shown.id, cx));
+        let wrapper = div()
+            .relative()
+            .pl(px(72.))
+            .pr(px(16.))
+            .py(px(2.))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(16.))
+                    .top(px(4.))
+                    .size(px(40.))
+                    .rounded_full()
+                    .children(avatar.map(|picture| img(picture).size(px(40.)).rounded_full())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .child(
+                        div()
+                            .h(px(22.))
+                            .text_size(px(16.))
+                            .line_height(px(22.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(shown.author.display_name().to_owned()),
+                    )
+                    .children(tag)
+                    .child(
+                        div()
+                            .ml(px(4.))
+                            .h(px(22.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(header_time(shown.local_time(), chrono::Local::now())),
+                    ),
+            )
+            .child(self.content(shown));
         div()
             .mb(px(8.))
             .flex()
@@ -387,27 +455,24 @@ impl Root {
             .child(Self::report_heading("Selected Message", 500.))
             .child(
                 div()
-                    .p(px(16.))
+                    .relative()
+                    .max_h(px(100.))
+                    .flex()
+                    .flex_col()
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
-                    .flex()
-                    .flex_col()
                     .child(
                         div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child(message.author.clone()),
+                            .id("report-preview")
+                            .track_scroll(&handle)
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .py(px(16.))
+                            .pr(px(24.))
+                            .child(wrapper),
                     )
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-default"))
-                            .child(message.text.clone()),
-                    ),
+                    .child(super::menu::menu_scrollbar(handle.clone())),
             )
             .into_any_element()
     }
@@ -627,9 +692,12 @@ impl Root {
                     .pr(px(16.))
                     .flex()
                     .items_center()
+                    // `childContent_anhLH-` is 328 wide: 8px before the 24px chevron (design/dom/report/step1).
+                    .gap(px(8.))
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.))
                             .my(px(8.))
                             .py(px(12.))
                             .text_size(px(16.))
@@ -918,6 +986,7 @@ impl Root {
         let menu = open.menu.as_ref()?;
         let current = node(menu, open.node).clone();
         let user = open.user;
+        let scroll = open.scroll.clone();
         let header = current["header"].as_str().unwrap_or_default().to_owned();
         let subheader = current["subheader"].as_str().map(str::to_owned);
         let button = current["button"].clone();
@@ -949,7 +1018,7 @@ impl Root {
         if element(&current, "message_preview").is_some()
             && let Some(message) = open.message.as_ref()
         {
-            body.push(Self::report_message_preview(message));
+            body.push(self.report_message_preview(message, cx));
         }
         if let Some(checkbox) = checkbox.as_ref() {
             body.push(self.report_checkboxes(checkbox, cx));
@@ -996,6 +1065,8 @@ impl Root {
         };
         let footer = (back || forward).then(|| {
             div()
+                .flex_none()
+                .w(px(440.))
                 .p(px(24.))
                 .bg(color("--background-surface-high"))
                 .rounded_b(px(12.))
@@ -1042,6 +1113,8 @@ impl Root {
             .id("report-modal")
             .occlude()
             .w(px(444.))
+            // The container's `max-height: 504px` plus the 1px ring (design/dom/report/step1: 107 to 613).
+            .max_h(px(506.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-normal"))
@@ -1052,6 +1125,7 @@ impl Root {
             .child(
                 div()
                     .relative()
+                    .flex_none()
                     .pt(px(24.))
                     .px(px(24.))
                     .child(
@@ -1068,7 +1142,7 @@ impl Root {
                             .id("report-close")
                             .absolute()
                             .top(px(8.))
-                            .right(px(8.))
+                            .right(px(9.))
                             .size(px(40.))
                             .rounded(px(8.))
                             .cursor_pointer()
@@ -1084,6 +1158,7 @@ impl Root {
             )
             .child(
                 div()
+                    .flex_none()
                     .px(px(24.))
                     .children(subheader.map(|subheader| {
                         div()
@@ -1110,20 +1185,34 @@ impl Root {
                     }),
             )
             .child(
+                // `content__KoJTP`: 24px above and left, 16px right plus the 8px scrollbar gutter, 16px between.
+                // The 440px column sits in the 442px ring, so the thumb is 6px left of its edge at 859.
                 div()
-                    .id("report-content")
-                    .max_h(px(480.))
-                    .overflow_y_scroll()
-                    .pt(px(24.))
-                    .pl(px(24.))
-                    .pr(px(24.))
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w(px(440.))
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .children(body),
+                    .child(
+                        div()
+                            .id("report-content")
+                            .track_scroll(&scroll)
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .pt(px(24.))
+                            .pl(px(24.))
+                            .pr(px(24.))
+                            .when(!back && !forward, |this| this.pb(px(24.)))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .children(body),
+                    )
+                    .child(super::menu::menu_scrollbar(scroll.clone())),
             )
-            .children(footer)
-            .when(!back && !forward, |this| this.child(div().h(px(24.))));
+            .children(footer);
         Some(
             deferred(
                 div()
@@ -1188,6 +1277,8 @@ mod tests {
             checked: Vec::new(),
             submitting: false,
             error: None,
+            scroll: ScrollHandle::new(),
+            preview_scroll: ScrollHandle::new(),
         };
         let body = Root::report_body(&open, &menu(), 69);
         assert_eq!(body["breadcrumbs"], json!([63, 22, 19, 25]));
@@ -1207,8 +1298,7 @@ mod tests {
                 name: "first_dm",
                 channel: 11,
                 id: 12,
-                author: "a".into(),
-                text: "b".into(),
+                message: None,
             }),
             subject: None,
             menu: Some(menu()),
@@ -1217,6 +1307,8 @@ mod tests {
             checked: Vec::new(),
             submitting: false,
             error: None,
+            scroll: ScrollHandle::new(),
+            preview_scroll: ScrollHandle::new(),
         };
         let body = Root::report_body(&open, &menu(), 69);
         assert_eq!(body["name"], "first_dm");
@@ -1238,6 +1330,8 @@ mod tests {
             checked: Vec::new(),
             submitting: false,
             error: None,
+            scroll: ScrollHandle::new(),
+            preview_scroll: ScrollHandle::new(),
         }
     }
 

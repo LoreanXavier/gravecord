@@ -244,6 +244,12 @@ impl Root {
         true
     }
 
+    /// "Clear Channel Status" of the channel menu: the status request with an empty status
+    /// (`updateVoiceChannelStatus(id, "")`, module 671483).
+    pub(super) fn clear_channel_status(&mut self, channel: Id) -> bool {
+        self.set_voice_status(channel, "")
+    }
+
     /// The status of a voice channel of the guild in view.
     pub(super) fn voice_channel_status(&self, channel: Id) -> Option<&str> {
         self.stores

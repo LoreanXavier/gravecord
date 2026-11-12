@@ -25,6 +25,8 @@ pub(super) const KEY_PREFIX: &str = "modview:";
 pub(super) struct ModView {
     pub guild: Id,
     pub user: Id,
+    /// The section scroller (`innerContainer_4sPjw-`) and its thin scrollbar.
+    pub scroll: gpui::ScrollHandle,
 }
 
 /// The permissions the panel lists (`tT`: `tg.dR`, `Q.nfo` and the rest the module adds). The module orders them by
@@ -123,15 +125,71 @@ const CARD: (u8, u8, u8) = (21, 25, 45);
 const ACTIONS: (u8, u8, u8) = (30, 33, 52);
 const HEADER: (u8, u8, u8) = (15, 20, 34);
 const ITEM: (u8, u8, u8) = (13, 17, 30);
+/// The scroller behind the section cards, and the 1px line between the rows of a card.
+const SCROLLER: (u8, u8, u8) = (26, 31, 50);
+const LINE: (u8, u8, u8) = (19, 21, 35);
 
 fn tone((r, g, b): (u8, u8, u8)) -> Rgba {
     gpui::rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
 }
 
+/// The status of the member card's 48px avatar (`memberAvatar_ebzPvR`, the 57px mask): a 12px dot at its corner in a
+/// 16px hole of the card's colour; the dnd bar, the offline hole and the idle bite are cut in the same colour.
+fn card_status_dot(status: &str) -> impl IntoElement {
+    let tint = match status {
+        "dnd" => "--icon-status-dnd",
+        "idle" => "--icon-status-idle",
+        "invisible" | "offline" => "--icon-status-offline",
+        _ => "--icon-status-online",
+    };
+    let cut = tone(CARD);
+    div()
+        .absolute()
+        .right(px(-2.))
+        .bottom(px(-2.))
+        .size(px(16.))
+        .rounded_full()
+        .bg(cut)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .relative()
+                .size(px(12.))
+                .rounded_full()
+                .bg(color(tint))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(status == "dnd", |dot| {
+                    dot.child(div().w(px(7.2)).h(px(2.4)).rounded(px(1.2)).bg(cut))
+                })
+                .when(matches!(status, "offline" | "invisible"), |dot| {
+                    dot.child(div().size(px(6.)).rounded_full().bg(cut))
+                })
+                .when(status == "idle", |dot| {
+                    dot.child(
+                        div()
+                            .absolute()
+                            .left(px(-1.5))
+                            .top(px(-1.5))
+                            .size(px(9.))
+                            .rounded_full()
+                            .bg(cut),
+                    )
+                }),
+        )
+}
+
 impl Root {
     /// `Open in Mod View`: the panel replaces the member list and starts its fetches.
     pub(super) fn open_mod_view(&mut self, guild: Id, user: Id, cx: &mut Context<Self>) {
-        self.mod_view = Some(ModView { guild, user });
+        self.mod_view = Some(ModView {
+            guild,
+            user,
+            scroll: gpui::ScrollHandle::new(),
+        });
         self.request_mod_view(guild, user);
         cx.notify();
     }
@@ -188,13 +246,16 @@ impl Root {
     /// One `modInfoItem` row: a 16px icon, the name and the value or a chevron.
     fn mod_view_item(
         &self,
-        icon_name: &'static str,
+        icon_view: AnyElement,
         name: &str,
         value: AnyElement,
         weight: f32,
         chevron: bool,
-        last: bool,
+        edge: u8,
     ) -> AnyElement {
+        // `edge` bit 1: first row of its group, bit 2: last. The group's 8px corners are drawn by its end rows, because
+        // an overflow clip here is a plain rectangle.
+        let (first, last) = (edge & 1 != 0, edge & 2 != 0);
         div()
             .flex()
             .flex_none()
@@ -203,8 +264,10 @@ impl Root {
             .px(px(12.))
             .py(px(12.))
             .bg(tone(ITEM))
+            .when(first, |row| row.rounded_t(px(8.)))
+            .when(last, |row| row.rounded_b(px(8.)))
             .when(!last, |row| row.mb(px(1.)))
-            .child(icon(icon_name, 16., "--interactive-icon-default"))
+            .child(icon_view)
             .child(
                 div()
                     .flex_1()
@@ -229,22 +292,23 @@ impl Root {
             .flex_none()
             .gap(px(8.))
             .child(
+                // `label_VhFsFg`, `body-md/medium`: 16px in a 20px line (117.75px for "Mod Permissions").
                 div()
                     .h(px(20.))
-                    .text_size(px(14.))
+                    .text_size(px(16.))
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
                     .child(label.to_owned()),
             )
             .child(
+                // `modInfoItemContainer_M3Y1qv`: 8px radius, the rows 1px apart.
                 div()
                     .flex()
                     .flex_col()
                     .rounded(px(8.))
                     .overflow_hidden()
-                    .border_1()
-                    .border_color(gpui::black().opacity(0.16))
+                    .bg(tone(LINE))
                     .child(body),
             )
             .into_any_element()
@@ -279,6 +343,41 @@ impl Root {
             total.count_ones() as usize
         };
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        let presence = if self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.id == user_id)
+        {
+            self.stores.status.clone()
+        } else {
+            self.stores
+                .presences
+                .get(&user_id)
+                .cloned()
+                .unwrap_or_else(|| "offline".to_owned())
+        };
+        // `modInfoItemIcon_M3Y1qv`: 16px; the Server Join Date row shows the server's icon (`guildIcon_4sPjw-`,
+        // `iconSizeSmol`: 16px, its acronym at 8px when it has no picture).
+        let glyph =
+            |name: &'static str| icon(name, 16., "--interactive-icon-default").into_any_element();
+        let guild_glyph = match self.images.get(&format!("guild:{guild_id}")).cloned() {
+            Some(picture) => img(picture).size(px(16.)).rounded_full().into_any_element(),
+            None => div()
+                .size(px(16.))
+                .flex_none()
+                .rounded_full()
+                .bg(tone(ITEM))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(8.))
+                .line_height(px(10.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .child(guild.acronym())
+                .into_any_element(),
+        };
 
         // The member card: names on the left, the close button on the right.
         let top = div()
@@ -296,13 +395,18 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     .child(
+                        // `memberAvatar_ebzPvR`: 48px, the status in a 12px dot at its corner (the 57px mask).
                         div()
+                            .relative()
                             .size(px(48.))
                             .flex_none()
-                            .children(avatar.map(|image| img(image).size(px(48.)).rounded_full())),
+                            .children(avatar.map(|image| img(image).size(px(48.)).rounded_full()))
+                            .child(card_status_dot(&presence)),
                     )
                     .child(
+                        // `memberNameAndTagContainer_ebzPvR`: its top is the avatar's (names at y 52 and 76).
                         div()
+                            .self_start()
                             .flex()
                             .flex_col()
                             .child(
@@ -330,7 +434,7 @@ impl Root {
                     .id("mod-view-close")
                     .p(px(4.))
                     .cursor_pointer()
-                    .child(icon("close", 24., "--interactive-icon-default"))
+                    .child(icon("mod_close", 24., "--text-strong"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.mod_view = None;
                         cx.notify();
@@ -347,21 +451,30 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(tone(ACTIONS))
-                .when(!enabled, |tab| tab.opacity(0.5))
+                // The disabled ones sit on the grey wash of `innerBottomRowAction` with a half-faded icon; Copy ID is
+                // plain on the card's colour with the white icon (menus2/mod-view-self: 112/115/127 and 246).
+                .bg(tone(if enabled { CARD } else { ACTIONS }))
                 .when(enabled, |tab| tab.cursor_pointer())
-                .child(icon(glyph, 24., "--interactive-icon-default"))
+                .child(div().when(!enabled, |glyph| glyph.opacity(0.6)).child(icon(
+                    glyph,
+                    24.,
+                    if enabled {
+                        "--text-strong"
+                    } else {
+                        "--interactive-icon-default"
+                    },
+                )))
         };
         let actions = div()
             .flex()
             .gap(px(1.))
             .mt(px(1.))
-            .child(tab("mod-view-message", "chat_bubble", false))
-            .child(tab("mod-view-kick", "oauth_entry_hammer", false))
-            .child(tab("mod-view-ban", "oauth_entry_hammer", false))
-            .child(tab("mod-view-timeout", "automod_timeout", false))
+            .child(tab("mod-view-message", "mod_tab_message", false))
+            .child(tab("mod-view-kick", "mod_tab_kick", false))
+            .child(tab("mod-view-ban", "mod_tab_ban", false))
+            .child(tab("mod-view-timeout", "mod_tab_timeout", false))
             .child(
-                tab("mod-view-copy-id", "menu_id", true).on_click(cx.listener(
+                tab("mod-view-copy-id", "mod_tab_copy_id", true).on_click(cx.listener(
                     move |_, _, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(user_id.to_string()));
                     },
@@ -397,36 +510,36 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(self.mod_view_item(
-                    "voice_view_chat",
+                    glyph("mod_info_messages"),
                     "Messages",
                     number(self.mod_view_count(open, "messages")),
                     600.,
                     false,
-                    false,
+                    1,
                 ))
                 .child(self.mod_view_item(
-                    "clips_link",
+                    glyph("mod_info_links"),
                     "Links",
                     number(self.mod_view_count(open, "links")),
                     600.,
                     false,
-                    false,
+                    0,
                 ))
                 .child(self.mod_view_item(
-                    "clips_image",
+                    glyph("mod_info_media"),
                     "Media",
                     number(self.mod_view_count(open, "media")),
                     600.,
                     false,
-                    false,
+                    0,
                 ))
                 .child(self.mod_view_item(
-                    "role_shield",
+                    glyph("role_shield"),
                     "Audit Log",
                     number(audit),
                     600.,
                     audit > 0,
-                    true,
+                    2,
                 ))
                 .into_any_element(),
         );
@@ -449,9 +562,10 @@ impl Root {
                         .flex()
                         .items_center()
                         .rounded(px(4.))
-                        .bg(gpui::rgba(0x97979f33))
+                        // `elevatedPermission_whSvVg`: 0.2 of the grey with the shield, 0.12 without.
+                        .bg(gpui::rgba(if elevated { 0x97979f33 } else { 0x97979f1f }))
                         .when(elevated, |chip| {
-                            chip.child(icon("role_shield", 16., "--text-brand"))
+                            chip.child(icon("mod_chip_shield", 16., "--text-brand"))
                         })
                         .child(
                             div()
@@ -478,7 +592,7 @@ impl Root {
                     .h(px(20.))
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(px(16.))
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
@@ -488,7 +602,8 @@ impl Root {
                         div()
                             .flex()
                             .items_center()
-                            .text_size(px(12.))
+                            // `viewAllPermissions_whSvVg`: `body-sm/medium`, 14px.
+                            .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--interactive-text-default"))
@@ -499,15 +614,19 @@ impl Root {
             .child(
                 div()
                     .rounded(px(8.))
-                    .border_1()
-                    .border_color(gpui::black().opacity(0.16))
                     .bg(tone(ITEM))
                     .p(px(12.))
                     .child(chip_list),
             );
 
         // Roles: the highest role's chip first, the rest after it (`ta`).
-        let mut role_row = div().flex().flex_wrap().items_center().gap(px(4.));
+        // 26px tall: the golden card is 50px with 12px padding.
+        let mut role_row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .min_h(px(26.))
+            .gap(px(4.));
         let mut held: Vec<Id> = roles
             .iter()
             .copied()
@@ -549,7 +668,7 @@ impl Root {
         }
         if self.my_permission(guild_id, None, permissions::MANAGE_ROLES) {
             role_row = role_row.child(div().id("mod-view-add-role").cursor_pointer().child(icon(
-                "plus_small",
+                "mod_add_role",
                 20.,
                 "--interactive-icon-default",
             )));
@@ -558,6 +677,7 @@ impl Root {
             "Roles",
             div()
                 .p(px(12.))
+                .rounded(px(8.))
                 .bg(tone(ITEM))
                 .child(role_row)
                 .into_any_element(),
@@ -589,36 +709,36 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(self.mod_view_item(
-                    "user_check",
+                    glyph("mod_info_verified"),
                     "Passed Verification Level",
                     mark,
                     500.,
                     false,
-                    false,
+                    1,
                 ))
                 .child(self.mod_view_item(
-                    "sb_discord",
+                    glyph("sb_discord"),
                     "Discord Join Date",
                     text(short_date(created)),
                     500.,
                     false,
-                    false,
+                    0,
                 ))
                 .child(self.mod_view_item(
-                    "member_invite_link",
+                    guild_glyph,
                     "Server Join Date",
                     text(joined),
                     500.,
                     false,
-                    false,
+                    0,
                 ))
                 .child(self.mod_view_item(
-                    "user_plus",
+                    glyph("mod_info_join_method"),
                     "Join Method",
                     text("Unknown".to_owned()),
                     500.,
                     false,
-                    true,
+                    2,
                 ))
                 .into_any_element(),
         );
@@ -641,7 +761,11 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(icon("member_mod_view", 16., "--interactive-icon-default"))
+                    .child(icon(
+                        "mod_header_mod_view",
+                        16.,
+                        "--interactive-icon-default",
+                    ))
                     .child(
                         div()
                             .text_size(px(14.))
@@ -660,7 +784,7 @@ impl Root {
                         div()
                             .id("mod-view-refresh")
                             .cursor_pointer()
-                            .child(icon("system_refresh", 16., "--interactive-icon-default"))
+                            .child(icon("mod_refresh", 16., "--interactive-icon-default"))
                             .on_click(cx.listener(move |this, _, _, cx| refresh(this, cx))),
                     )
                     .child(
@@ -683,18 +807,22 @@ impl Root {
                             })),
                     ),
             );
+        let scroll = open.scroll.clone();
         let body = div()
             .id("mod-view-scroll")
+            .track_scroll(&scroll)
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(20.))
-            .px(px(16.))
+            // `innerContainer_4sPjw-`: 16px left, 16px right plus the 8px scrollbar gutter, 12px above.
+            .pl(px(16.))
+            .pr(px(24.))
             .pt(px(12.))
-            .pb(px(16.))
-            .bg(tone(ITEM))
+            .pb(px(12.))
+            .bg(tone(SCROLLER))
             .child(activity)
             .child(permissions_section)
             .child(roles_section)
@@ -707,7 +835,16 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .child(header)
-            .child(body);
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(body)
+                    .child(super::menu::menu_scrollbar(scroll.clone())),
+            );
 
         Some(
             div()
