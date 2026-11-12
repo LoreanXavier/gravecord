@@ -4,7 +4,9 @@
 //! Adapted from Serein `crates/discord-voice/src/video_receive.rs` (`Receivers`, `decode_loop` in outline) and
 //! `transport.rs` (`decrypt_video`, `receive_video`), MIT OR Apache-2.0. Differences: H.264 only, one decoder thread per
 //! source whose results go straight to the app's sink, and no playout buffer (a camera is shown as it arrives).
-use super::{RemoteFrame, VideoHub, VideoSource, depacketize::Assembler, reorder::Window};
+use super::{
+    RemoteFrame, VideoHub, VideoSource, depacketize::Assembler, playout::Playout, reorder::Window,
+};
 use crate::rtp::{self, H264_PAYLOAD_TYPE, H264_RTX_PAYLOAD_TYPE, Rtp};
 use dc_media::decode::{DecodeError, Decoder};
 use std::{
@@ -25,6 +27,10 @@ pub(crate) const MAX_SOURCES: usize = 16;
 const MAX_DECODERS: usize = 8;
 /// Access units waiting for one decoder.
 const DECODER_QUEUE: usize = 8;
+/// Access units a decoder thread holds for their playout time; past this the oldest is decoded at once.
+const MAX_HELD: usize = 32;
+/// The longest a decoder thread sleeps before it looks for new access units again.
+const HOLD_STEP: Duration = Duration::from_millis(10);
 /// A source that wants a keyframe is asked at most this often (Serein: two a second).
 const PLI_INTERVAL: Duration = Duration::from_millis(500);
 /// A decoder that failed to start is not tried again for this long.
@@ -265,14 +271,58 @@ impl Receivers {
     }
 }
 
-enum Job {
-    Frame(Vec<u8>),
+/// Opens every access unit that is complete and gives it to its decoder; the units a decoder cannot take, and the
+/// sources whose decoder lost its reference, wait for a keyframe. Returns how many went to a decoder.
+///
+/// The call and the stream loops run this as soon as a packet arrives, not only on their 20 ms tick: on the tick a
+/// 60 fps stream was handed over at 50 Hz, one picture in six landed on the same tick as the one before and was never
+/// seen (`lossy::a_clean_stream_is_handed_over_evenly_only_when_drained_on_arrival`).
+pub(crate) fn hand_over(
+    receivers: &mut Receivers,
+    decoders: &mut Decoders,
+    dave: &mut crate::dave::Dave,
+    now: Instant,
+) -> u32 {
+    let mut ready = Vec::new();
+    receivers.drain(now, &mut ready);
+    let mut offered = 0;
+    for unit in ready {
+        if !dave.contains(unit.user) {
+            continue;
+        }
+        let Ok(plain) = dave
+            .session
+            .decrypt(unit.user, davey::MediaType::VIDEO, &unit.data)
+        else {
+            receivers.require_keyframe(unit.user);
+            continue;
+        };
+        let keyframe = dc_media::h264::is_keyframe(&plain);
+        if !receivers.accept(unit.user, keyframe) {
+            continue;
+        }
+        offered += 1;
+        if decoders.offer(unit.user, plain, unit.timestamp, now) == Offer::Dropped {
+            receivers.require_keyframe(unit.user);
+        }
+    }
+    for user in decoders.take_lost() {
+        receivers.require_keyframe(user);
+    }
+    offered
+}
+
+/// An access unit and when its picture is due on screen.
+struct Job {
+    data: Vec<u8>,
+    due: std::time::Instant,
 }
 
 struct Slot {
     send: mpsc::SyncSender<Job>,
     /// The decoder refused something and wants a keyframe.
     lost: Arc<AtomicBool>,
+    playout: Playout,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -310,7 +360,9 @@ impl Decoders {
         }
     }
 
-    pub fn offer(&mut self, user: u64, data: Vec<u8>, now: Instant) -> Offer {
+    /// Queues an access unit with RTP `timestamp`, complete at `now`, for its source's decoder, which shows the
+    /// picture at its playout time (`playout.rs`).
+    pub fn offer(&mut self, user: u64, data: Vec<u8>, timestamp: u32, now: Instant) -> Offer {
         if !self.hub.has_sink() {
             return Offer::Dropped;
         }
@@ -333,8 +385,11 @@ impl Decoders {
                 }
             }
         }
-        let slot = &self.slots[&user];
-        match slot.send.try_send(Job::Frame(data)) {
+        let Some(slot) = self.slots.get_mut(&user) else {
+            return Offer::Dropped;
+        };
+        let due = slot.playout.due(timestamp, now).into_std();
+        match slot.send.try_send(Job { data, due }) {
             Ok(()) => Offer::Queued,
             Err(mpsc::TrySendError::Full(_)) => Offer::Dropped,
             Err(mpsc::TrySendError::Disconnected(_)) => {
@@ -381,8 +436,38 @@ impl Decoders {
                     }
                 };
                 tracing::debug!(backend = ?decoder.backend(), "video decoder started");
-                while let Ok(Job::Frame(data)) = receive.recv() {
-                    match decoder.decode(&data) {
+                // Access units wait here for their playout time, less what a decode takes. The wait is a sleep
+                // (a high-resolution timer); a timed channel wait would round to Windows' 15.6 ms tick.
+                let mut held: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
+                let mut cost = Duration::from_millis(5);
+                loop {
+                    loop {
+                        match receive.try_recv() {
+                            Ok(job) => held.push_back(job),
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => return,
+                        }
+                    }
+                    let Some(front) = held.front() else {
+                        match receive.recv() {
+                            Ok(job) => {
+                                held.push_back(job);
+                                continue;
+                            }
+                            Err(_) => return,
+                        }
+                    };
+                    let start = front.due.checked_sub(cost).unwrap_or(front.due);
+                    let now = std::time::Instant::now();
+                    if start > now && held.len() <= MAX_HELD {
+                        std::thread::sleep((start - now).min(HOLD_STEP));
+                        continue;
+                    }
+                    let Some(job) = held.pop_front() else {
+                        continue;
+                    };
+                    let decoding = std::time::Instant::now();
+                    match decoder.decode(&job.data) {
                         Ok(Some(picture)) => hub.deliver(RemoteFrame {
                             user,
                             source,
@@ -394,6 +479,7 @@ impl Decoders {
                         }
                         Err(DecodeError::Invalid) => {}
                     }
+                    cost = (cost * 7 + decoding.elapsed()) / 8;
                     if decoder.needs_keyframe() {
                         flag.store(true, Ordering::Release);
                     }
@@ -407,6 +493,7 @@ impl Decoders {
         Some(Slot {
             send,
             lost,
+            playout: Playout::default(),
             thread: Some(thread),
         })
     }
@@ -529,13 +616,16 @@ mod tests {
         let mut generator = Generator::new(160, 120, 15, 300_000).unwrap();
         let frame = generator.next(false).unwrap().unwrap();
         let now = Instant::now();
-        assert_eq!(decoders.offer(1, frame.data.clone(), now), Offer::Dropped);
+        assert_eq!(
+            decoders.offer(1, frame.data.clone(), 0, now),
+            Offer::Dropped
+        );
 
         let (send, receive) = mpsc::channel();
         hub.set_sink(Some(Arc::new(move |f| {
             let _ = send.send(f);
         })));
-        assert_eq!(decoders.offer(1, frame.data, now), Offer::Queued);
+        assert_eq!(decoders.offer(1, frame.data, 0, now), Offer::Queued);
         let decoded = receive.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!((decoded.user, decoded.source), (1, VideoSource::Camera));
         assert_eq!((decoded.picture.width, decoded.picture.height), (160, 120));
@@ -544,7 +634,7 @@ mod tests {
         let mut fresh = Decoders::new(hub, |_| VideoSource::Camera);
         let delta = generator.next(false).unwrap().unwrap();
         assert!(!delta.keyframe);
-        assert_eq!(fresh.offer(2, delta.data, now), Offer::Queued);
+        assert_eq!(fresh.offer(2, delta.data, 0, now), Offer::Queued);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if fresh.take_lost() == [2] {

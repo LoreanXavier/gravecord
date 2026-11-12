@@ -14,6 +14,8 @@ pub mod h264;
 pub mod screen;
 pub mod synthetic;
 
+#[cfg(all(test, windows))]
+mod bench;
 mod convert;
 mod encode;
 #[cfg(windows)]

@@ -96,6 +96,27 @@ use zeroize::Zeroizing;
 /// One 20 ms mono frame at 48 kHz.
 pub(crate) type Frame = [f32; 960];
 
+/// One 20 ms stereo frame at 48 kHz, left and right interleaved: what the call plays.
+pub(crate) type Stereo = [f32; 1920];
+
+/// A mono frame on both channels.
+pub(crate) fn to_stereo(frame: &Frame) -> Stereo {
+    let mut stereo = [0.0; 1920];
+    for (pair, sample) in stereo.as_chunks_mut::<2>().0.iter_mut().zip(frame) {
+        *pair = [*sample, *sample];
+    }
+    stereo
+}
+
+/// The mean of both channels.
+pub(crate) fn to_mono(stereo: &Stereo) -> Frame {
+    let mut frame = [0.0; 960];
+    for (sample, pair) in frame.iter_mut().zip(stereo.as_chunks::<2>().0) {
+        *sample = (pair[0] + pair[1]) * 0.5;
+    }
+    frame
+}
+
 /// What the main gateway hands over for a voice join: `endpoint` and `token` from
 /// VOICE_SERVER_UPDATE, `session_id` from our own VOICE_STATE_UPDATE. For a DM or group call
 /// `server_id` is the channel id.

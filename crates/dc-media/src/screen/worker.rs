@@ -42,10 +42,12 @@ struct State {
     preview: Mutex<Option<Picture>>,
     /// Microseconds since `origin` of the last `take_preview`.
     preview_taken: AtomicU64,
-    /// Microseconds since `origin` of the last frame the gate accepted; 0 before the first.
-    last_accept: AtomicU64,
+    /// When the pacing gate takes the next frame.
+    cadence: Cadence,
     /// A frame is waiting for the encoder.
     pending: AtomicBool,
+    /// The network side is behind: frames are skipped before they are encoded, never after.
+    held: AtomicBool,
     origin: Instant,
 }
 
@@ -77,8 +79,9 @@ impl Worker {
             error: Mutex::new(None),
             preview: Mutex::new(None),
             preview_taken: AtomicU64::new(0),
-            last_accept: AtomicU64::new(0),
+            cadence: Cadence::new(settings.fps),
             pending: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             origin: Instant::now(),
         });
         let (started_send, started) = mpsc::sync_channel::<Result<()>>(1);
@@ -125,6 +128,13 @@ impl Worker {
     /// Moves the target rate, held to the share's bounds. Applied before the next picture.
     pub fn set_bitrate(&self, bitrate: u32) {
         self.state.bitrate.store(bitrate, Ordering::Release);
+    }
+
+    /// While held the capture skips frames before encoding them. The sender holds it while encoded pictures queue up
+    /// behind its pacer: a picture dropped after encoding would break the viewers' reference chain until the next
+    /// keyframe, one never encoded costs nothing but a lower rate for a moment.
+    pub fn hold(&self, held: bool) {
+        self.state.held.store(held, Ordering::Release);
     }
 
     /// Makes the next picture a keyframe: a viewer asked for one, or joined.
@@ -199,6 +209,45 @@ fn micros(origin: Instant) -> u64 {
     origin.elapsed().as_micros() as u64
 }
 
+/// The pacing gate's clock: frames are taken on a fixed grid of `1 / fps`, not "an interval after the last one".
+///
+/// A monitor refreshes faster than the share (144 or 165 Hz against 60 fps) and Windows Graphics Capture hands over
+/// a frame per refresh. Measuring from the last accepted frame took every third frame of a 144 Hz display, 48 fps
+/// with every interval 20.8 ms, and 55 fps from a 165 Hz one. On a grid the gate takes the first frame at or after each
+/// due time, so the share runs at its rate (`cadence_keeps_the_rate_of_faster_sources`). A source that falls behind,
+/// or a still desktop, restarts the grid instead of bursting to catch up.
+struct Cadence {
+    interval: u64,
+    /// Microseconds since the worker's origin when the next frame is due; 0 before the first.
+    due: AtomicU64,
+}
+
+impl Cadence {
+    fn new(fps: u32) -> Self {
+        Self {
+            interval: 1_000_000 / u64::from(fps.max(1)),
+            due: AtomicU64::new(0),
+        }
+    }
+
+    /// Whether a frame that arrived at `now` (microseconds, never 0) is taken.
+    fn admit(&self, now: u64) -> bool {
+        let due = self.due.load(Ordering::Acquire);
+        // A frame up to an eighth of an interval early still counts: a source at exactly the share's rate jitters
+        // around the grid and must not lose every other frame.
+        if due != 0 && now + self.interval / 8 < due {
+            return false;
+        }
+        let next = if due == 0 || now >= due + self.interval {
+            now + self.interval
+        } else {
+            due + self.interval
+        };
+        self.due.store(next, Ordering::Release);
+        true
+    }
+}
+
 fn run(
     state: &Arc<State>,
     settings: Settings,
@@ -206,20 +255,15 @@ fn run(
     started: &mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
     let (frames_send, frames) = mpsc::sync_channel::<Frame>(1);
-    let interval = Duration::from_micros(1_000_000 / u64::from(settings.fps));
     let gate = state.clone();
     let want = move || {
-        if gate.stop.load(Ordering::Acquire) || gate.pending.load(Ordering::Acquire) {
+        if gate.stop.load(Ordering::Acquire)
+            || gate.pending.load(Ordering::Acquire)
+            || gate.held.load(Ordering::Acquire)
+        {
             return false;
         }
-        let now = micros(gate.origin).max(1);
-        let last = gate.last_accept.load(Ordering::Acquire);
-        // Accept a frame a little early so a source running at exactly the target rate is not halved by jitter.
-        if last != 0 && now.saturating_sub(last) < interval.as_micros() as u64 * 9 / 10 {
-            return false;
-        }
-        gate.last_accept.store(now, Ordering::Release);
-        true
+        gate.cadence.admit(micros(gate.origin).max(1))
     };
     let delivered = state.clone();
     let deliver = move |frame: Frame| {
@@ -273,6 +317,8 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // A new picture is stamped with its capture time; a repeat of the last one with now.
+        let captured_at = fresh.as_ref().map_or_else(Instant::now, |frame| frame.at);
         let frame = match fresh {
             Some(frame) => {
                 keyframe_wait = None;
@@ -313,11 +359,9 @@ fn run(
         let active = taken == 0 && state.origin.elapsed() < PREVIEW_ACTIVE
             || taken != 0
                 && micros(state.origin).saturating_sub(taken) < PREVIEW_ACTIVE.as_micros() as u64;
-        if active && last_preview.elapsed() >= PREVIEW_INTERVAL {
+        let preview_due = active && last_preview.elapsed() >= PREVIEW_INTERVAL;
+        if preview_due {
             last_preview = Instant::now();
-            if let Ok(preview) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_WIDTH) {
-                *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(preview);
-            }
         }
 
         if encoder.is_none() {
@@ -335,8 +379,22 @@ fn run(
             chroma,
             &mut yuv,
         )?;
+        // The picture is converted: the capture side may read back the next one while this one encodes. Waiting for
+        // the encoder too made every picture cost read-back, conversion and encoding in a row (about 20 ms at
+        // 2560x1440 here), more than a 60 Hz display's 16.7 ms, so the share took every other refresh: 30 fps.
+        state.pending.store(false, Ordering::Release);
         let force = state.keyframe.swap(false, Ordering::AcqRel);
-        let output = encoder.encode(&yuv, chroma, force)?;
+        // The owner's preview (8 ms at 2560x1440) is cut on another core while the hardware encodes.
+        let output = std::thread::scope(|scope| {
+            if preview_due {
+                scope.spawn(|| {
+                    if let Ok(preview) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_WIDTH) {
+                        *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(preview);
+                    }
+                });
+            }
+            encoder.encode(&yuv, chroma, force)
+        })?;
         state.backend.store(
             match encoder.backend() {
                 Backend::Hardware => 1,
@@ -347,8 +405,6 @@ fn run(
         state
             .fell_back
             .store(encoder.fell_back(), Ordering::Release);
-        // The frame is encoded; the capture side may hand over the next one.
-        state.pending.store(false, Ordering::Release);
         last_encoded = Instant::now();
         match output {
             Some(output) => {
@@ -360,7 +416,7 @@ fn run(
                 video(EncodedFrame {
                     data: output.data,
                     keyframe: output.keyframe,
-                    timestamp: rtp_ticks(state.origin.elapsed()),
+                    timestamp: rtp_ticks(captured_at.saturating_duration_since(state.origin)),
                 });
             }
             None => {
@@ -409,4 +465,75 @@ pub(super) fn thumbnail(
         max_width,
         max_height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frames of a `hz` display for one second, through the gate of a `fps` share: how many are taken and the longest
+    /// gap between two taken ones, in microseconds.
+    fn through(hz: u64, fps: u32) -> (usize, u64) {
+        let cadence = Cadence::new(fps);
+        let taken: Vec<u64> = (1..=hz)
+            .map(|frame| frame * 1_000_000 / hz)
+            .filter(|&at| cadence.admit(at))
+            .collect();
+        let gap = taken.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        (taken.len(), gap)
+    }
+
+    /// The gate as it was: an interval (less a tenth) after the last taken frame.
+    fn through_old(hz: u64, fps: u64) -> usize {
+        let interval = 1_000_000 / fps;
+        let mut last = 0u64;
+        (1..=hz)
+            .map(|frame| frame * 1_000_000 / hz)
+            .filter(|&at| {
+                let take = last == 0 || at - last >= interval * 9 / 10;
+                if take {
+                    last = at;
+                }
+                take
+            })
+            .count()
+    }
+
+    #[test]
+    fn cadence_keeps_the_rate_of_faster_sources() {
+        for hz in [60, 144, 165] {
+            println!(
+                "{hz} Hz display at 60 fps: {} fps before, {} fps now",
+                through_old(hz, 60),
+                through(hz, 60).0
+            );
+        }
+        assert_eq!(through_old(144, 60), 48);
+        // A faster monitor shared at 60 fps gives 60 pictures a second, never further apart than one interval plus
+        // one refresh (21 ms from 144 Hz).
+        for hz in [60, 75, 120, 144, 165, 240] {
+            let (count, gap) = through(hz, 60);
+            assert!((59..=61).contains(&count), "{hz} Hz gave {count} fps");
+            assert!(
+                gap <= 16_667 + 1_000_000 / hz + 1,
+                "{hz} Hz: gap of {gap} us"
+            );
+        }
+        assert!((29..=31).contains(&through(144, 30).0));
+        // A slower source gives what it has, one picture per refresh.
+        assert_eq!(through(30, 60).0, 30);
+        // A source on the grid but jittering a little early keeps every frame.
+        let cadence = Cadence::new(60);
+        let taken = (1..=60u64)
+            .map(|frame| frame * 16_667 - if frame % 2 == 0 { 1_000 } else { 0 })
+            .filter(|&at| cadence.admit(at))
+            .count();
+        assert_eq!(taken, 60);
+        // After a still desktop the grid restarts instead of bursting.
+        let cadence = Cadence::new(60);
+        assert!(cadence.admit(1));
+        assert!(cadence.admit(5_000_000));
+        assert!(!cadence.admit(5_006_944));
+        assert!(cadence.admit(5_016_667));
+    }
 }

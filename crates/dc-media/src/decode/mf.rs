@@ -1,25 +1,19 @@
-//! Media Foundation H.264 decoder transform with an optional DXGI device manager for DXVA. Output samples are read back
-//! through Media Foundation, so hardware and software paths both give NV12, cropped here. Adapted from Serein's
-//! `crates/platform/src/video/live_windows.rs` and `media_foundation.rs` (`dxgi_manager`), MIT OR Apache-2.0.
+//! Media Foundation H.264 decoder transform on its own multi-threaded CPU path, giving NV12 that is cropped here straight
+//! out of the locked output buffer. Adapted from Serein's `crates/platform/src/video/live_windows.rs` (MIT OR
+//! Apache-2.0).
+//!
+//! Serein hands the transform a DXGI device manager for DXVA. Every picture then has to come back from the GPU through
+//! `ConvertToContiguousBuffer`, and on a 2560x1440 Go Live stream that read-back cost 42 ms a picture (worst 65 ms,
+//! `bench::bench_go_live_1440p60_picture_path`, RTX 3090): the decoder could not keep up with 30 fps, let alone 60. The
+//! CPU path of the same transform takes 7 ms a picture, so the call view gets every picture of a 60 fps stream.
 #![allow(unsafe_code)]
 
 use crate::mfrt::Runtime;
 use crate::picture::pack_plane;
 use crate::{Error, Layout, Picture, Result};
-use windows::{
-    Win32::{
-        Foundation::HMODULE,
-        Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
-            Direct3D11::{
-                D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
-                ID3D11Device, ID3D11Multithread,
-            },
-        },
-        Media::MediaFoundation::*,
-        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
-    },
-    core::Interface,
+use windows::Win32::{
+    Media::MediaFoundation::*,
+    System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
 };
 
 const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -37,8 +31,6 @@ fn failed(what: &str, error: impl std::fmt::Display) -> Error {
 // Field order: COM objects release before the runtime shuts down.
 pub(super) struct Decoder {
     transform: IMFTransform,
-    _manager: Option<IMFDXGIDeviceManager>,
-    _device: Option<ID3D11Device>,
     _runtime: Runtime,
     pictures: i64,
     output: Option<OutputFormat>,
@@ -65,7 +57,6 @@ impl Decoder {
             if let Ok(attributes) = transform.GetAttributes() {
                 let _ = attributes.SetUINT32(&CODECAPI_AVLowLatencyMode, 1);
             }
-            let (device, manager) = hardware(&transform);
             let input = MFCreateMediaType().map_err(|e| unavailable("media type", e))?;
             input
                 .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
@@ -78,8 +69,6 @@ impl Decoder {
                 .map_err(|e| unavailable("input type", e))?;
             let mut decoder = Self {
                 transform,
-                _manager: manager,
-                _device: device,
                 _runtime: runtime,
                 pictures: 0,
                 output: None,
@@ -289,7 +278,7 @@ impl Decoder {
             let format = self.output.ok_or_else(|| {
                 Error::failed("Media Foundation H.264 decoder: picture before its format")
             })?;
-            newest = Some(crop_nv12(&sample_bytes(&sample)?, format)?);
+            newest = Some(read_picture(&sample, format)?);
         }
     }
 }
@@ -306,66 +295,10 @@ impl Drop for Decoder {
     }
 }
 
-/// Tries to enable DXVA: a D3D11 video device shared with the transform. Any failure leaves the decoder in software mode.
-unsafe fn hardware(
-    transform: &IMFTransform,
-) -> (Option<ID3D11Device>, Option<IMFDXGIDeviceManager>) {
-    // SAFETY: out-pointers refer to initialized locals; the manager and device are kept alive by the decoder.
-    unsafe {
-        let aware = transform
-            .GetAttributes()
-            .and_then(|attributes| attributes.GetUINT32(&MF_SA_D3D11_AWARE))
-            .unwrap_or(0);
-        if aware == 0 {
-            return (None, None);
-        }
-        let mut device: Option<ID3D11Device> = None;
-        if D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            None,
-        )
-        .is_err()
-        {
-            return (None, None);
-        }
-        let Some(device) = device else {
-            return (None, None);
-        };
-        if let Ok(multithread) = device.cast::<ID3D11Multithread>() {
-            let _ = multithread.SetMultithreadProtected(true);
-        }
-        let mut token = 0;
-        let mut manager: Option<IMFDXGIDeviceManager> = None;
-        if MFCreateDXGIDeviceManager(&mut token, &mut manager).is_err() {
-            return (None, None);
-        }
-        let Some(manager) = manager else {
-            return (None, None);
-        };
-        if manager.ResetDevice(&device, token).is_err() {
-            return (None, None);
-        }
-        if transform
-            .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
-            .is_err()
-        {
-            return (None, None);
-        }
-        (Some(device), Some(manager))
-    }
-}
-
-fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>> {
-    // SAFETY: the native length is checked before allocating; Lock's pointer is borrowed only until Unlock and the copy
-    // length is validated against the reported capacity. For DXGI buffers Media Foundation does the GPU read-back inside
-    // Lock.
+/// Locks the sample's buffer and crops the picture straight out of it, so the decoder's output is copied once.
+fn read_picture(sample: &IMFSample, format: OutputFormat) -> Result<Picture> {
+    // SAFETY: the native length is checked first; Lock's pointer is borrowed only until Unlock and the slice length is
+    // validated against the reported capacity.
     unsafe {
         if sample.GetTotalLength().map_err(|e| failed("length", e))? as usize > MAX_OUTPUT_BYTES {
             return Err(Error::failed(
@@ -383,19 +316,19 @@ fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>> {
             .map_err(|e| failed("lock", e))?;
         let result = if length > capacity
             || length as usize > MAX_OUTPUT_BYTES
-            || (length != 0 && data.is_null())
+            || length == 0
+            || data.is_null()
         {
             Err(Error::failed(
                 "Media Foundation H.264 decoder: output buffer is invalid",
             ))
         } else {
-            Ok(std::slice::from_raw_parts(data, length as usize).to_vec())
+            crop_nv12(std::slice::from_raw_parts(data, length as usize), format)
         };
         buffer.Unlock().map_err(|e| failed("unlock", e))?;
         result
     }
 }
-
 /// Crops one strided NV12 picture to its display aperture as tightly packed NV12. An odd origin cannot start between
 /// chroma pairs, so that rare case converts the enclosing even aperture to RGBA and trims it.
 fn crop_nv12(bytes: &[u8], format: OutputFormat) -> Result<Picture> {

@@ -45,6 +45,9 @@ pub(crate) struct Frame {
     pub width: u32,
     pub height: u32,
     pub data: Vec<u8>,
+    /// When the system handed the picture over, before the read-back: its RTP timestamp, so the encode time does not
+    /// jitter the viewers' playout.
+    pub at: Instant,
 }
 
 /// `E_ACCESSDENIED`; Windows 11's "Screenshots and screen recording" privacy setting returns it.
@@ -157,9 +160,10 @@ impl Capture {
                 if !want() {
                     return Ok(());
                 }
+                let at = Instant::now();
                 let mut guard = reader.lock().unwrap_or_else(|e| e.into_inner());
                 let Locked((reader, deliver)) = &mut *guard;
-                if let Ok(captured) = read_frame(reader, pool, &frame) {
+                if let Ok(captured) = read_frame(reader, pool, &frame, at) {
                     deliver(captured);
                 }
                 Ok(())
@@ -257,6 +261,7 @@ fn read_frame(
     reader: &mut Reader,
     pool: &Direct3D11CaptureFramePool,
     frame: &windows::Graphics::Capture::Direct3D11CaptureFrame,
+    at: Instant,
 ) -> windows::core::Result<Frame> {
     let content = frame.ContentSize()?;
     if content.Width != reader.last_size.Width || content.Height != reader.last_size.Height {
@@ -339,6 +344,7 @@ fn read_frame(
             width,
             height,
             data,
+            at,
         })
     }
 }

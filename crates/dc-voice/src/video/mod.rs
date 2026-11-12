@@ -6,13 +6,16 @@
 pub(crate) mod depacketize;
 #[cfg(test)]
 mod loopback;
+#[cfg(test)]
+mod lossy;
+pub(crate) mod playout;
 pub(crate) mod receive;
 pub(crate) mod reorder;
 pub(crate) mod send;
 pub(crate) mod sender;
 pub(crate) mod sps;
 
-use crate::Frame;
+use crate::{Frame, Stereo};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, atomic::AtomicU32},
@@ -55,7 +58,8 @@ pub struct VideoHub {
     sink: Arc<Mutex<Option<VideoSink>>>,
     /// Level of watched stream audio in the mixer, 0.0 to 2.0, as `f32` bits (the app's per-stream volume).
     stream_volume: Arc<AtomicU32>,
-    stream_audio: Arc<Mutex<VecDeque<Frame>>>,
+    /// Watched stream audio in stereo, as the sender captured it.
+    stream_audio: Arc<Mutex<VecDeque<Stereo>>>,
     /// Stream attenuation (`setSidechainCompression`): the strength, 1 to 100, or 0 while it is off.
     sidechain: Arc<AtomicU32>,
 }
@@ -95,7 +99,7 @@ impl VideoHub {
         }
     }
 
-    pub(crate) fn push_stream_audio(&self, frame: Frame) {
+    pub(crate) fn push_stream_audio(&self, frame: Stereo) {
         let mut queue = self.stream_audio.lock().unwrap_or_else(|e| e.into_inner());
         if queue.len() >= STREAM_AUDIO_FRAMES {
             queue.pop_front();
@@ -106,7 +110,7 @@ impl VideoHub {
     /// The next frame of watched stream audio, scaled by the stream level and, while stream attenuation is on and
     /// `voices` (what people say in the same step) is audible, by `(100 - strength) / 100` as the global attenuation
     /// maps its percent (module 31595).
-    pub(crate) fn pop_stream_audio(&self, voices: Option<&Frame>) -> Option<Frame> {
+    pub(crate) fn pop_stream_audio(&self, voices: Option<&Frame>) -> Option<Stereo> {
         let mut frame = self
             .stream_audio
             .lock()
@@ -203,7 +207,7 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
         assert_eq!(hub.stream_volume(), 1.0);
         for i in 0..8 {
-            hub.push_stream_audio([i as f32; 960]);
+            hub.push_stream_audio([i as f32; 1920]);
         }
         hub.set_stream_volume(0.5);
         assert_eq!(
@@ -223,15 +227,15 @@ mod tests {
         let hub = VideoHub::new();
         let loud: Frame = [0.1; 960];
         let quiet: Frame = [0.0; 960];
-        hub.push_stream_audio([0.5; 960]);
+        hub.push_stream_audio([0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(Some(&loud)).unwrap()[0], 0.5, "off");
         hub.set_sidechain_strength(40);
         assert_eq!(hub.sidechain_strength(), 40);
-        hub.push_stream_audio([0.5; 960]);
+        hub.push_stream_audio([0.5; 1920]);
         assert!((hub.pop_stream_audio(Some(&loud)).unwrap()[0] - 0.3).abs() < 1e-6);
-        hub.push_stream_audio([0.5; 960]);
+        hub.push_stream_audio([0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(Some(&quiet)).unwrap()[0], 0.5);
-        hub.push_stream_audio([0.5; 960]);
+        hub.push_stream_audio([0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(None).unwrap()[0], 0.5);
     }
 }

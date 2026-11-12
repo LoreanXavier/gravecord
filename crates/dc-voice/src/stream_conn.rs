@@ -18,7 +18,7 @@ use crate::{
     streams::{Role, StreamJoin},
     video::{
         RemoteFrame, VideoHub, VideoSource,
-        receive::{Decoders, Offer, Receivers},
+        receive::{self, Decoders, Receivers},
         sender::VideoSender,
     },
 };
@@ -30,7 +30,15 @@ use dc_media::{
 use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::StreamExt;
 use opus2::{Application, Bitrate, Channels, Encoder};
-use std::{collections::VecDeque, net::SocketAddr, time::Duration};
+use std::{
+    collections::VecDeque,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     net::UdpSocket,
     sync::{mpsc, watch},
@@ -121,6 +129,11 @@ impl Capture {
             worker.set_bitrate(bitrate);
         }
     }
+    fn hold(&self, held: bool) {
+        if let Self::Screen(worker) = self {
+            worker.hold(held);
+        }
+    }
     fn preview(&self) -> Option<dc_media::Picture> {
         match self {
             Self::Screen(worker) => worker.take_preview(),
@@ -149,19 +162,23 @@ impl Capture {
 }
 
 /// Starts the capture on a blocking thread. Frames and system audio go to the loop through bounded channels and are
-/// dropped when it is behind.
+/// dropped when it is behind; a dropped picture sets `dropped`, so the loop asks for a keyframe (the pictures after it
+/// predict from one the viewers never got).
 fn start_capture(
     source: StreamSource,
     frames: mpsc::Sender<EncodedFrame>,
     audio: mpsc::Sender<AudioChunk>,
     clips: dc_clips::Tap,
+    dropped: Arc<AtomicBool>,
 ) -> Result<Capture, &'static str> {
     // The clip buffer sees every picture and every chunk of audio the capture makes, before the loop does: it is a
     // second consumer of the stream's own encode (plan section 1.2). It does nothing while clipping is off.
     let video_tap = clips.clone();
     let video = move |frame: EncodedFrame| {
         video_tap.push_video(&frame);
-        let _ = frames.try_send(frame);
+        if frames.try_send(frame).is_err() {
+            dropped.store(true, Ordering::Release);
+        }
     };
     let audio_tap = clips.clone();
     let sound = move |chunk: AudioChunk| {
@@ -242,6 +259,10 @@ const PREVIEW_PAUSED_INTERVAL: Duration = Duration::from_secs(60);
 const LOCAL_PREVIEW_INTERVAL: Duration = Duration::from_millis(200);
 /// A watcher refreshes its sink wants while video stalls or before the server forgets them (Serein: five seconds).
 const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
+/// Encoded pictures the sender keeps while its pacer is busy (a keyframe at a reduced rate takes several frame times).
+const FRAME_QUEUE: usize = 8;
+/// Waiting pictures from which the capture is held.
+const HOLD_AT: usize = 2;
 /// Longest stream audio backlog before the oldest frame goes.
 const AUDIO_BACKLOG: usize = 1920 * 6;
 
@@ -308,7 +329,10 @@ pub(crate) async fn run(
     let mut clients = std::collections::BTreeSet::new();
 
     // Sender state.
-    let (frame_send, mut frames) = mpsc::channel::<EncodedFrame>(4);
+    // Encoded pictures waiting for the pacer. From `HOLD_AT` waiting the capture skips pictures before encoding them;
+    // only a full queue drops an encoded one, and that costs a keyframe.
+    let (frame_send, mut frames) = mpsc::channel::<EncodedFrame>(FRAME_QUEUE);
+    let dropped = Arc::new(AtomicBool::new(false));
     let (audio_send, mut sound) = mpsc::channel::<AudioChunk>(32);
     let mut capture: Option<Capture> = None;
     let mut capture_task: Option<tokio::task::JoinHandle<Result<Capture, &'static str>>> = None;
@@ -322,10 +346,15 @@ pub(crate) async fn run(
     let mut pending_audio: VecDeque<f32> = VecDeque::new();
     let mut audio_encoder = match sending {
         true => {
+            // Soundshare: at least 128 kb/s (`handleSoundshare`, module 31595) with in-band FEC (`fec: true` in the
+            // same module's transport options), full complexity, stereo music.
             let fail = |_| "Stream audio encoder configuration failed";
             let mut encoder =
                 Encoder::new(48_000, Channels::Stereo, Application::Audio).map_err(fail)?;
             encoder.set_bitrate(Bitrate::Bits(128_000)).map_err(fail)?;
+            encoder.set_complexity(10).map_err(fail)?;
+            encoder.set_inband_fec(true).map_err(fail)?;
+            encoder.set_packet_loss_perc(10).map_err(fail)?;
             Some(encoder)
         }
         false => None,
@@ -344,7 +373,8 @@ pub(crate) async fn run(
     // Watcher state.
     let mut receivers = Receivers::default();
     let mut decoders = Decoders::new(hub.clone(), VideoSource::Stream);
-    let mut mixer = Mixer::default();
+    // The owner's soundshare is stereo; a mono decoder folded it down.
+    let mut mixer = Mixer::stereo();
     let mut sink_wants_at = Instant::now();
     let mut tally = [0u32; 4];
     let mut tally_at = Instant::now() + Duration::from_secs(5);
@@ -486,10 +516,10 @@ pub(crate) async fn run(
                 if sending {
                     // Capture starts once the connection is secured or waiting; the blocking start runs off the loop.
                     if (enabled || waiting) && capture.is_none() && capture_task.is_none() && let Some(source) = source {
-                        let (frames, audio) = (frame_send.clone(), audio_send.clone());
+                        let (frames, audio, dropped) = (frame_send.clone(), audio_send.clone(), dropped.clone());
                         let tap = dc_clips::recorder().attach();
                         _clip_guard = Some(dc_clips::TapGuard(tap.clone()));
-                        capture_task = Some(tokio::task::spawn_blocking(move || start_capture(source, frames, audio, tap)));
+                        capture_task = Some(tokio::task::spawn_blocking(move || start_capture(source, frames, audio, tap, dropped)));
                     }
                     if capture_task.as_ref().is_some_and(|task| task.is_finished()) {
                         let task = capture_task.take().ok_or("Capture task missing")?;
@@ -524,6 +554,14 @@ pub(crate) async fn run(
                             capture.force_keyframe();
                         }
                     }
+                    if let Some(capture) = &capture {
+                        // Backpressure before the encoder; a picture lost after it restarts the chain.
+                        capture.hold(frames.len() >= HOLD_AT);
+                        if dropped.swap(false, Ordering::AcqRel) {
+                            debug!("stream picture queue full; asking for a keyframe");
+                            capture.force_keyframe();
+                        }
+                    }
                     if let (Some(sender), Some(capture)) = (sender.as_mut(), &capture)
                         && let Some(bitrate) = sender.tick_rate(now)
                     {
@@ -537,7 +575,10 @@ pub(crate) async fn run(
                     while pending_audio.len() > AUDIO_BACKLOG {
                         pending_audio.drain(..1920);
                     }
-                    if secure && !controls.borrow().paused && sent_keyframe && pending_audio.len() >= 1920 {
+                    // Every whole frame the capture has delivered goes now. One frame per tick let the backlog grow with
+                    // each late tick and with the device clock running ahead of ours, until the oldest 20 ms was cut.
+                    let audio_open = secure && !controls.borrow().paused && sent_keyframe;
+                    while audio_open && pending_audio.len() >= 1920 {
                         let stereo: Vec<f32> = pending_audio.drain(..1920).collect();
                         if !audio_speaking {
                             text(&mut ws, signal::speaking_flags(2, ssrc)).await?;
@@ -552,7 +593,8 @@ pub(crate) async fn run(
                         }
                         audio_sequence = audio_sequence.wrapping_add(1);
                         audio_timestamp = audio_timestamp.wrapping_add(rtp::FRAME_SAMPLES);
-                    } else if !secure {
+                    }
+                    if !secure {
                         pending_audio.clear();
                     }
                     if now >= local_preview_at && let Some(capture) = &capture {
@@ -582,31 +624,11 @@ pub(crate) async fn run(
                 } else {
                     // Watching: audio from the mixer into the call's bus; keep the sink wants alive; feedback upstream.
                     if secure {
-                        if let Some(frame) = mixer.pop() {
+                        if let Some(frame) = mixer.pop_stereo() {
                             hub.push_stream_audio(frame);
                         }
-                        let mut ready = Vec::new();
-                        receivers.drain(now, &mut ready);
-                        for unit in ready {
-                            if !dave.contains(unit.user) {
-                                continue;
-                            }
-                            let Ok(plain) = dave.session.decrypt(unit.user, davey::MediaType::VIDEO, &unit.data) else {
-                                receivers.require_keyframe(unit.user);
-                                continue;
-                            };
-                            tally[3] += 1;
-                            let keyframe = dc_media::h264::is_keyframe(&plain);
-                            if !receivers.accept(unit.user, keyframe) {
-                                continue;
-                            }
-                            if decoders.offer(unit.user, plain, now) == Offer::Dropped {
-                                receivers.require_keyframe(unit.user);
-                            }
-                        }
-                        for user in decoders.take_lost() {
-                            receivers.require_keyframe(user);
-                        }
+                        // Repairs that expired since the last packet; arrivals are handed over as they come.
+                        tally[3] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
                         if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                             for (header, body) in receivers.feedback(ssrc, now) {
                                 udp_failures.send(socket, &crypto.seal_rtcp(&header, &body)?, "Stream feedback send failed")?;
@@ -685,7 +707,11 @@ pub(crate) async fn run(
                     }
                     rtp::H264_PAYLOAD_TYPE | rtp::H264_RTX_PAYLOAD_TYPE => {
                         tally[2] += 1;
-                        receivers.push(rtp, Instant::now());
+                        let now = Instant::now();
+                        receivers.push(rtp, now);
+                        if dave.session.is_ready() && !dave.transitioning() {
+                            tally[3] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
+                        }
                     }
                     _ => {}
                 }

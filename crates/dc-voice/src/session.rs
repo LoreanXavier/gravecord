@@ -20,7 +20,7 @@ use crate::{
     signal::{self, CLOSE_DISCONNECTED, Context, Ids, MAX_SIGNAL},
     video::{
         RemoteFrame, VideoHub, VideoSource,
-        receive::{Decoders, Offer, Receivers},
+        receive::{self, Decoders, Receivers},
         sender::VideoSender,
     },
 };
@@ -314,7 +314,7 @@ pub(crate) async fn run(
 
     // Devices open only once the call is secured (or waiting alone), never before.
     let (capture_send, capture) = std_mpsc::sync_channel::<Frame>(8);
-    let (playback, playback_receive) = std_mpsc::sync_channel::<Frame>(8);
+    let (playback, playback_receive) = std_mpsc::sync_channel::<crate::Stereo>(8);
     let mut device_ends = Some((capture_send, playback_receive));
     let mut audio: Option<Audio> = None;
     let mut capture_pacer = CapturePacer::default();
@@ -579,9 +579,10 @@ pub(crate) async fn run(
                         hub.clear_stream_audio();
                     }
                     mixer.set_table(&shared.user_mix.lock().unwrap_or_else(|e| e.into_inner()));
-                    let mut frame = mixer.pop();
-                    // Watched stream audio joins the mix at its own level.
-                    if let Some(extra) = hub.pop_stream_audio(frame.as_ref()) {
+                    let voices = mixer.pop();
+                    // Voices play on both channels; watched stream audio joins in stereo at its own level.
+                    let mut frame = voices.as_ref().map(crate::to_stereo);
+                    if let Some(extra) = hub.pop_stream_audio(voices.as_ref()) {
                         match frame.as_mut() {
                             Some(frame) => {
                                 for (sample, extra) in frame.iter_mut().zip(extra) {
@@ -614,28 +615,8 @@ pub(crate) async fn run(
                     text(&mut ws, signal::media_sink_wants(if wants { 100 } else { 0 })).await?;
                 }
                 if secure {
-                    let mut ready = Vec::new();
-                    receivers.drain(now, &mut ready);
-                    for unit in ready {
-                        if !dave.contains(unit.user) {
-                            continue;
-                        }
-                        let Ok(plain) = dave.session.decrypt(unit.user, davey::MediaType::VIDEO, &unit.data) else {
-                            receivers.require_keyframe(unit.user);
-                            continue;
-                        };
-                        let keyframe = dc_media::h264::is_keyframe(&plain);
-                        if !receivers.accept(unit.user, keyframe) {
-                            continue;
-                        }
-                        video_tally[2] += 1;
-                        if decoders.offer(unit.user, plain, now) == Offer::Dropped {
-                            receivers.require_keyframe(unit.user);
-                        }
-                    }
-                    for user in decoders.take_lost() {
-                        receivers.require_keyframe(user);
-                    }
+                    // Repairs that expired since the last packet; arrivals are handed over as they come.
+                    video_tally[2] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
                     if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                         for (header, body) in receivers.feedback(ssrc, now) {
                             // Feedback is best effort: a failed send is only a lost datagram.
@@ -803,7 +784,11 @@ pub(crate) async fn run(
                     // Video and its retransmissions; ignored while nobody wants pictures.
                     if dave.ready && hub.has_sink() {
                         video_tally[0] += 1;
-                        receivers.push(rtp, Instant::now());
+                        let now = Instant::now();
+                        receivers.push(rtp, now);
+                        if secure {
+                            video_tally[2] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
+                        }
                     }
                     continue;
                 }

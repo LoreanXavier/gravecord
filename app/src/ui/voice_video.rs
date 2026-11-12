@@ -1,8 +1,9 @@
 //! Video of the call and Go Live streams: the camera button, the pictures `dc-voice` decodes, and the life of a stream
 //! (gateway ops 18 to 22 and the four `STREAM_*` dispatches, then the stream's own voice connection).
 //!
-//! Pictures are kept as the latest one per (user, source). The sink runs on decoder threads and only stores; a task
-//! on the UI side repaints at most thirty times a second when something new arrived.
+//! Pictures are kept as the latest one per (user, source). The sink runs on decoder threads, stores and wakes a task on
+//! the UI side, which converts the new picture on a worker and repaints when it is ready: every picture of a 60 fps
+//! stream can be shown, as soon as it is decoded.
 
 use super::Root;
 use super::video_tiles::{Key, Slots, render_image};
@@ -35,8 +36,11 @@ fn camera_failure_text(reason: &str) -> String {
     }
 }
 
-/// The most repaints per second the pictures cause.
-const REPAINTS_PER_SECOND: u64 = 30;
+/// How often the picture task looks whether the call is still there when no picture wakes it.
+///
+/// It used to poll for pictures every 33 ms instead. gpui's timers on Windows run on thread-pool timers at the 15.6 ms
+/// system tick, so that poll came every 47 ms: about 21 repaints a second, unevenly spaced, whatever the stream sent.
+const IDLE_CHECK: Duration = Duration::from_millis(250);
 /// A capture-only stream (the harness's `stream start`) ends by itself after this long.
 #[cfg(feature = "capture")]
 const HARNESS_STREAM_LIMIT: Duration = Duration::from_secs(10);
@@ -50,6 +54,8 @@ pub(super) struct Frames {
     latest: Mutex<HashMap<Key, (u64, Arc<dc_media::Picture>)>>,
     dirty: AtomicBool,
     seen: AtomicU64,
+    /// Wakes the picture task. A wake with nobody waiting is kept for the next wait, so none is lost.
+    wake: tokio::sync::Notify,
 }
 
 impl Frames {
@@ -59,7 +65,23 @@ impl Frames {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert((frame.user, frame.source), (seq, Arc::new(frame.picture)));
-        self.dirty.store(true, Ordering::Release);
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wake.notify_one();
+        }
+    }
+
+    /// Until a picture arrives or `idle` ends, whichever is first.
+    async fn arrival(&self, idle: impl std::future::Future<Output = ()>) {
+        let mut woken = std::pin::pin!(self.wake.notified());
+        let mut idle = std::pin::pin!(idle);
+        std::future::poll_fn(|cx| {
+            if woken.as_mut().poll(cx).is_ready() || idle.as_mut().poll(cx).is_ready() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
     }
 
     /// A picture arrived since the last call.
@@ -72,7 +94,9 @@ impl Frames {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        self.dirty.store(true, Ordering::Release);
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wake.notify_one();
+        }
     }
 
     /// The pictures `slots` has no image of yet, newest only; each is marked as converting.
@@ -206,10 +230,12 @@ impl Root {
             return;
         }
         self.video.pumping = true;
-        let gap = Duration::from_millis(1000 / REPAINTS_PER_SECOND);
+        let frames = self.video.frames.clone();
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(gap).await;
+                frames
+                    .arrival(cx.background_executor().timer(IDLE_CHECK))
+                    .await;
                 let alive = this.update(cx, |root, cx| {
                     if root.call.is_none() {
                         root.video.pumping = false;
@@ -290,6 +316,8 @@ impl Root {
                     if let Some(old) = root.video.images.finish(key, seq, image) {
                         cx.drop_image(old, None);
                     }
+                    // A newer picture that came during the conversion goes next, without waiting for another one.
+                    root.video_convert(cx);
                     cx.notify();
                 });
             })
@@ -1019,6 +1047,42 @@ mod tests {
         assert_eq!(frames.seen.load(Ordering::Relaxed), 3);
         frames.clear();
         assert!(frames.latest(1, VideoSource::Stream(1)).is_none());
+    }
+
+    #[test]
+    fn a_picture_wakes_the_task_at_once_and_none_is_lost() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let frames = Frames::default();
+        // Nothing arrived: the idle check ends the wait.
+        let started = std::time::Instant::now();
+        // The timer is made inside the runtime.
+        runtime.block_on(async {
+            frames
+                .arrival(tokio::time::sleep(Duration::from_millis(30)))
+                .await
+        });
+        assert!(started.elapsed() >= Duration::from_millis(25));
+        // A picture stored before the task waits is not lost, and the wait ends without the idle check.
+        frames.store(frame(1, VideoSource::Stream(1)));
+        let started = std::time::Instant::now();
+        runtime.block_on(frames.arrival(std::future::pending()));
+        assert!(started.elapsed() < Duration::from_millis(25));
+        assert!(frames.take_dirty());
+        // Pictures until the task took the last one wake it once.
+        frames.store(frame(1, VideoSource::Stream(1)));
+        frames.store(frame(1, VideoSource::Stream(1)));
+        runtime.block_on(frames.arrival(std::future::pending()));
+        assert!(frames.take_dirty());
+        // The timer is made inside the runtime.
+        runtime.block_on(async {
+            frames
+                .arrival(tokio::time::sleep(Duration::from_millis(5)))
+                .await
+        });
+        assert!(!frames.take_dirty());
     }
 }
 

@@ -449,11 +449,17 @@ impl Root {
         let (Some(me), Some(other)) = (me, other) else {
             return "the test DM is not loaded".to_owned();
         };
+        // This account's own state carries this connection's session, as a real one does; the others a made-up one.
+        let own_session = self
+            .stores
+            .session_id
+            .clone()
+            .unwrap_or_else(|| "harness".to_owned());
         let state = |user: Id, video: bool| {
             json!({
                 "channel_id": channel.to_string(),
                 "user_id": user.to_string(),
-                "session_id": "harness",
+                "session_id": if user == me { own_session.as_str() } else { "harness" },
                 "self_mute": false,
                 "self_deaf": false,
                 "self_video": video,

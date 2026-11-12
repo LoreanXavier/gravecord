@@ -1,5 +1,5 @@
-//! H.264 decoding of Annex B access units: the Windows Media Foundation decoder (`CLSID_MSH264DecoderMFT`, DXVA when a
-//! GPU offers it) first, openh264 when that is missing or fails to start.
+//! H.264 decoding of Annex B access units: the Windows Media Foundation decoder (`CLSID_MSH264DecoderMFT`, on its
+//! multi-threaded CPU path: see `mf.rs` for why not DXVA) first, openh264 when that is missing or fails to start.
 //!
 //! No threads live in here and nothing is shared: one [`Decoder`] per remote source, driven by whichever thread the
 //! caller picks. The hardware path keeps COM state on the thread that made it, so a `Decoder` is not `Send`; make it on

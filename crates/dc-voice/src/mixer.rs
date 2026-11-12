@@ -11,7 +11,8 @@ struct Speaker {
     ssrc: u32,
     decoder: Decoder,
     jitter: Jitter,
-    pcm: Box<[f32; 5760]>,
+    /// Decoded samples, interleaved when the mixer is stereo: up to 120 ms.
+    pcm: Box<[f32; 5760 * 2]>,
     offset: usize,
     length: usize,
     activity: u8,
@@ -21,8 +22,21 @@ pub(crate) struct Mixer {
     speakers: Vec<Speaker>,
     /// User to (volume as a factor, muted here): what the person chose in that user's menu.
     mix: std::collections::HashMap<u64, (f32, bool)>,
+    /// Decodes and mixes in stereo (a watched stream's soundshare), else mono (the call's voices).
+    stereo: bool,
 }
 impl Mixer {
+    /// A mixer whose frames are interleaved stereo, for stream audio: the sender encodes its system audio in stereo
+    /// and a mono decoder folded it down.
+    pub fn stereo() -> Self {
+        Self {
+            stereo: true,
+            ..Self::default()
+        }
+    }
+    fn channels(&self) -> usize {
+        if self.stereo { 2 } else { 1 }
+    }
     /// Replaces the per-user table; users without an entry play at unity.
     pub fn set_table(&mut self, table: &std::collections::HashMap<u64, (f32, bool)>) {
         if self.mix != *table {
@@ -58,10 +72,17 @@ impl Mixer {
         self.speakers.push(Speaker {
             user,
             ssrc,
-            decoder: Decoder::new(48_000, Channels::Mono)
-                .map_err(|_| "Opus decoder initialization failed")?,
+            decoder: Decoder::new(
+                48_000,
+                if self.stereo {
+                    Channels::Stereo
+                } else {
+                    Channels::Mono
+                },
+            )
+            .map_err(|_| "Opus decoder initialization failed")?,
             jitter: Jitter::default(),
-            pcm: Box::new([0.0; 5760]),
+            pcm: Box::new([0.0; 5760 * 2]),
             offset: 0,
             length: 0,
             activity: 0,
@@ -98,9 +119,21 @@ impl Mixer {
             .filter(|s| s.activity > 0)
             .map(|s| s.user)
     }
-    /// Mix one 20 ms frame, preserving up to 120 ms packets without bursting playback queues.
+    /// Mix one 20 ms mono frame, preserving up to 120 ms packets without bursting playback queues.
     pub fn pop(&mut self) -> Option<Frame> {
+        debug_assert!(!self.stereo);
         let mut output = [0.0; 960];
+        self.mix_into(&mut output).then_some(output)
+    }
+    /// Mix one 20 ms frame of a stereo mixer, interleaved.
+    pub fn pop_stereo(&mut self) -> Option<crate::Stereo> {
+        debug_assert!(self.stereo);
+        let mut output = [0.0; 1920];
+        self.mix_into(&mut output).then_some(output)
+    }
+    /// Mixes 20 ms into `output` (960 samples per channel). False when nobody had anything.
+    fn mix_into(&mut self, output: &mut [f32]) -> bool {
+        let channels = self.channels();
         let mut active = false;
         let gains: Vec<f32> = self.speakers.iter().map(|s| self.gain(s.user)).collect();
         for (speaker, gain) in self.speakers.iter_mut().zip(gains) {
@@ -124,8 +157,9 @@ impl Mixer {
                             .get_last_packet_duration()
                             .unwrap_or(960)
                             .clamp(120, 5760) as usize
+                            * channels
                     } else {
-                        speaker.pcm.len()
+                        speaker.pcm.len() / 2 * channels
                     };
                     let Ok(length) =
                         speaker
@@ -135,7 +169,7 @@ impl Mixer {
                         continue;
                     };
                     speaker.offset = 0;
-                    speaker.length = length;
+                    speaker.length = length * channels;
                 }
                 let count = (output.len() - filled).min(speaker.length - speaker.offset);
                 for (mixed, sample) in output[filled..filled + count]
@@ -158,7 +192,7 @@ impl Mixer {
         output
             .iter_mut()
             .for_each(|sample| *sample = sample.clamp(-1.0, 1.0));
-        active.then_some(output)
+        active
     }
 }
 

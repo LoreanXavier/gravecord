@@ -212,7 +212,7 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
     let keyframe = dc_media::h264::is_keyframe(&plain);
     assert!(keyframe && receivers.accept(1, keyframe));
     assert_eq!(
-        decoders.offer(1, plain.clone(), Instant::now()),
+        decoders.offer(1, plain.clone(), unit.timestamp, Instant::now()),
         Offer::Queued
     );
     let shown = pictures.recv_timeout(Duration::from_secs(10)).unwrap();

@@ -1,13 +1,14 @@
 //! The chosen (or default) microphone and speaker through cpal, at the user panel's volumes. Device callbacks only touch preallocated
-//! lock-free rings; a worker thread moves 20 ms mono 48 kHz frames between those rings and
-//! the voice loop's bounded channels, and reopens devices that fail.
+//! lock-free rings; a worker thread moves 20 ms 48 kHz frames (mono from the microphone, stereo to the speaker, so a
+//! watched stream keeps its two channels) between those rings and the voice loop's bounded channels, and reopens
+//! devices that fail.
 //!
 //! Adapted from Serein `crates/discord-voice/src/audio.rs` (`Gate`, `Streams::open`,
 //! `input_config`, `input_stream`, `output_stream`, `Capture`, `Playback`) and
 //! `crates/platform/src/audio.rs` (`output_config`), MIT OR Apache-2.0. Dropped: echo
 //! cancellation, noise suppression, input gate, the
 //! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
-use crate::Frame;
+use crate::{Frame, Stereo};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::path::PathBuf;
 use std::sync::{
@@ -271,17 +272,17 @@ pub(crate) struct Audio {
     thread: std::thread::Thread,
 }
 impl Audio {
-    /// `capture` receives microphone frames; `playback` supplies mixed frames to play.
+    /// `capture` receives microphone frames; `playback` supplies mixed stereo frames to play.
     pub fn start(
         capture: mpsc::SyncSender<Frame>,
-        playback: mpsc::Receiver<Frame>,
+        playback: mpsc::Receiver<Stereo>,
     ) -> Result<Self, &'static str> {
         Self::start_as(capture, playback, true)
     }
     /// `call` is false for the settings page's microphone preview: it records nothing and reports no input state.
     pub(crate) fn start_as(
         capture: mpsc::SyncSender<Frame>,
-        playback: mpsc::Receiver<Frame>,
+        playback: mpsc::Receiver<Stereo>,
         call: bool,
     ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
@@ -327,7 +328,7 @@ impl Drop for Audio {
 fn run(
     gate: &Arc<Gate>,
     capture: &mpsc::SyncSender<Frame>,
-    playback: &mpsc::Receiver<Frame>,
+    playback: &mpsc::Receiver<Stereo>,
     call: bool,
 ) {
     let mut streams: Option<Streams> = None;
@@ -451,9 +452,10 @@ fn run(
             };
             if gate.playback() {
                 // What the speakers play is the echo canceller's reference.
-                processor.render(&frame, &prefs().processing);
+                let mono = crate::to_mono(&frame);
+                processor.render(&mono, &prefs().processing);
                 if let Some(recorder) = &mut recorder {
-                    recorder.record(crate::recorder::Track::Speaker, &frame);
+                    recorder.record(crate::recorder::Track::Speaker, &mono);
                 }
                 played += 1;
                 let _ = active.output.push(frame);
@@ -499,7 +501,7 @@ struct Streams {
     input_stream: Option<cpal::Stream>,
     _output_stream: cpal::Stream,
     input: rtrb::Consumer<Frame>,
-    output: rtrb::Producer<Frame>,
+    output: rtrb::Producer<Stereo>,
 }
 impl Streams {
     fn open(gate: &Arc<Gate>) -> Result<Self, &'static str> {
@@ -765,26 +767,28 @@ impl Capture {
     }
 }
 
-/// Resample 48 kHz mono frames linearly to the device rate, duplicated to every channel.
+/// Resample 48 kHz stereo frames linearly to the device rate. A mono device gets the mean of both channels; on more
+/// than two the front pair carries left and right and every other channel their mean.
 struct Playback {
     generation: u64,
-    input: rtrb::Consumer<Frame>,
-    frame: Frame,
+    input: rtrb::Consumer<Stereo>,
+    frame: Stereo,
+    /// The next sample pair of `frame`; 960 when it is used up.
     index: usize,
-    previous: f32,
-    next: f32,
+    previous: [f32; 2],
+    next: [f32; 2],
     phase: f64,
     step: f64,
 }
 impl Playback {
-    fn new(rate: u32, input: rtrb::Consumer<Frame>) -> Self {
+    fn new(rate: u32, input: rtrb::Consumer<Stereo>) -> Self {
         Self {
             generation: 0,
             input,
-            frame: [0.0; 960],
+            frame: [0.0; 1920],
             index: 960,
-            previous: 0.0,
-            next: 0.0,
+            previous: [0.0; 2],
+            next: [0.0; 2],
             phase: 1.0,
             step: 48_000.0 / f64::from(rate),
         }
@@ -807,7 +811,18 @@ impl Playback {
         }
         let gain = prefs().output_gain();
         for frame in data.chunks_mut(channels) {
-            frame.fill(T::from_sample((self.sample() * gain).clamp(-1.0, 1.0)));
+            let [left, right] = self.sample().map(|value| (value * gain).clamp(-1.0, 1.0));
+            if let [only] = frame {
+                *only = T::from_sample((left + right) * 0.5);
+                continue;
+            }
+            for (channel, out) in frame.iter_mut().enumerate() {
+                *out = T::from_sample(match channel {
+                    0 => left,
+                    1 => right,
+                    _ => (left + right) * 0.5,
+                });
+            }
         }
     }
     fn reset(&mut self) {
@@ -818,27 +833,28 @@ impl Playback {
         }
         self.frame.fill(0.0);
         self.index = 960;
-        self.previous = 0.0;
-        self.next = 0.0;
+        self.previous = [0.0; 2];
+        self.next = [0.0; 2];
         self.phase = 1.0;
     }
-    fn pull(&mut self) -> f32 {
+    fn pull(&mut self) -> [f32; 2] {
         if self.index == 960 {
             // An underrun plays one frame of silence.
-            self.frame = self.input.pop().unwrap_or([0.0; 960]);
+            self.frame = self.input.pop().unwrap_or([0.0; 1920]);
             self.index = 0;
         }
-        let value = self.frame[self.index];
+        let pair = [self.frame[self.index * 2], self.frame[self.index * 2 + 1]];
         self.index += 1;
-        sanitize(value)
+        pair.map(sanitize)
     }
-    fn sample(&mut self) -> f32 {
+    fn sample(&mut self) -> [f32; 2] {
         while self.phase >= 1.0 {
             self.previous = self.next;
             self.next = self.pull();
             self.phase -= 1.0;
         }
-        let value = self.previous + (self.next - self.previous) * self.phase as f32;
+        let t = self.phase as f32;
+        let value = [0, 1].map(|c| self.previous[c] + (self.next[c] - self.previous[c]) * t);
         self.phase += self.step;
         value
     }
@@ -855,7 +871,7 @@ pub struct Preview {
 /// Opens the microphone (and the speaker, for `loopback`).
 pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
     let (capture_send, capture) = mpsc::sync_channel::<Frame>(8);
-    let (playback, playback_receive) = mpsc::sync_channel::<Frame>(8);
+    let (playback, playback_receive) = mpsc::sync_channel::<Stereo>(8);
     let audio = Audio::start_as(capture_send, playback_receive, false)?;
     audio.set_ready(true);
     audio.set_controls(false, false);
@@ -868,7 +884,7 @@ pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
             while !forward_stop.load(Ordering::Acquire) {
                 match capture.recv_timeout(Duration::from_millis(100)) {
                     Ok(frame) if forward_loopback.load(Ordering::Acquire) => {
-                        let _ = playback.try_send(frame);
+                        let _ = playback.try_send(crate::to_stereo(&frame));
                     }
                     Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -935,16 +951,29 @@ mod tests {
         let (mut ring, read) = rtrb::RingBuffer::new(RING);
         let mut playback = Playback::new(96_000, read);
         let gate = open_gate();
-        ring.push([0.25; 960]).unwrap();
-        ring.push([0.25; 960]).unwrap();
+        // Left 0.25, right -0.5.
+        let frame: Stereo = std::array::from_fn(|i| if i % 2 == 0 { 0.25 } else { -0.5 });
+        ring.push(frame).unwrap();
+        ring.push(frame).unwrap();
         let mut data = vec![0.0f32; 2 * 1920];
         playback.render(&mut data, 2, &gate);
-        // The first sample ramps from silence; the rest hold the frame's value.
-        assert!(data[4..].iter().all(|s| (s - 0.25).abs() < 1e-6));
-        assert_eq!(data[2], data[3], "every channel gets the same sample");
+        // The first sample ramps from silence; the rest hold the frame's values, each on its own channel.
+        for pair in data[4..].as_chunks::<2>().0 {
+            assert!((pair[0] - 0.25).abs() < 1e-6 && (pair[1] + 0.5).abs() < 1e-6);
+        }
+        // A mono device hears the mean, a 5.1 one left and right in front and the mean elsewhere.
+        let mut mono = vec![0.0f32; 100];
+        playback.render(&mut mono, 1, &gate);
+        assert!(mono.iter().all(|s| (s + 0.125).abs() < 1e-6));
+        let mut surround = vec![0.0f32; 60];
+        playback.render(&mut surround, 6, &gate);
+        assert_eq!(
+            &surround[..6],
+            &[0.25, -0.5, -0.125, -0.125, -0.125, -0.125]
+        );
 
         gate.deafened.store(true, Ordering::Release);
-        ring.push([0.25; 960]).unwrap();
+        ring.push([0.25; 1920]).unwrap();
         playback.render(&mut data, 2, &gate);
         assert!(data.iter().all(|s| *s == 0.0));
         assert!(playback.input.pop().is_err(), "queued audio was flushed");

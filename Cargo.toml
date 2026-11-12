@@ -138,6 +138,9 @@ opt-level = 3
 # The clip editor converts and scales decoded pictures in real time, even in debug builds.
 [profile.dev.package.dc-clips]
 opt-level = 3
+# Screen share and camera convert 2560x1440 pictures 60 times a second, even in debug builds (203 ms a picture at 0).
+[profile.dev.package.dc-media]
+opt-level = 3
 # RSA-2048 key generation for the QR login, in debug builds.
 [profile.dev.package.num-bigint-dig]
 opt-level = 3

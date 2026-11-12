@@ -153,6 +153,170 @@ impl Picture {
     }
 }
 
+/// [`COEFFICIENTS`] in 14-bit fixed point for the integer path of [`Picture::write_bgra`]: luma scale, Cr into red, Cb
+/// into blue, Cb and Cr out of green.
+const FIXED_LUMA: i32 = 19_077;
+const FIXED_CR_R: i32 = 26_149;
+const FIXED_CB_B: i32 = 33_050;
+const FIXED_CB_G: i32 = 6_419;
+const FIXED_CR_G: i32 = 13_320;
+
+impl Picture {
+    /// Packed BGRA pixels (what gpui's atlas takes), or `None` for an invalid picture. Same colours as
+    /// [`Picture::to_rgba`] within one level, at a fraction of its cost: see [`Picture::write_bgra`].
+    pub fn to_bgra(&self) -> Option<Vec<u8>> {
+        let mut out = vec![0; Layout::Rgba.len(self.width, self.height)?];
+        self.write_bgra(&mut out)?;
+        Some(out)
+    }
+
+    /// Writes the picture as packed BGRA into `out` (exactly `width * height * 4` bytes). `None` for an invalid picture
+    /// or a wrong `out` length.
+    ///
+    /// Even-sized NV12 and I420 pictures (every picture a decoder hands over) take an integer path split into row bands
+    /// across a few threads; the chroma taps are the bilinear ones of `to_rgba` (weights 1/4 and 3/4 at a 2:1 ratio),
+    /// so the result is the same up to the rounding of the fixed-point matrix. A 2560x1440 picture costs about a
+    /// tenth of `to_rgba` plus the byte swap the call view used to do. Odd sizes go through `to_rgba`.
+    pub fn write_bgra(&self, out: &mut [u8]) -> Option<()> {
+        if !self.is_valid() {
+            return None;
+        }
+        let (width, height) = (self.width as usize, self.height as usize);
+        if out.len() != width * height * 4 {
+            return None;
+        }
+        if self.layout == Layout::Rgba {
+            for (to, from) in out
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(self.data.as_chunks::<4>().0)
+            {
+                *to = [from[2], from[1], from[0], from[3]];
+            }
+            return Some(());
+        }
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            let rgba = self.to_rgba()?;
+            for (to, from) in out
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(rgba.as_chunks::<4>().0)
+            {
+                *to = [from[2], from[1], from[0], from[3]];
+            }
+            return Some(());
+        }
+        let planes = Planes {
+            luma: &self.data[..width * height],
+            chroma: &self.data[width * height..],
+            width,
+            height,
+            interleaved: self.layout == Layout::Nv12,
+        };
+        let bands = std::thread::available_parallelism()
+            .map_or(1, |count| count.get())
+            .clamp(1, 8)
+            .min(height / 64)
+            .max(1);
+        let band_rows = height.div_ceil(bands);
+        std::thread::scope(|scope| {
+            let mut rest = out;
+            let mut first = 0;
+            while first < height {
+                let count = band_rows.min(height - first);
+                let (band, tail) = std::mem::take(&mut rest).split_at_mut(count * width * 4);
+                rest = tail;
+                let planes = &planes;
+                if first + count >= height {
+                    planes.rows(first, band);
+                } else {
+                    scope.spawn(move || planes.rows(first, band));
+                }
+                first += count;
+            }
+        });
+        Some(())
+    }
+}
+
+/// The planes of an even-sized 4:2:0 picture, for the banded BGRA conversion.
+struct Planes<'a> {
+    luma: &'a [u8],
+    chroma: &'a [u8],
+    width: usize,
+    height: usize,
+    interleaved: bool,
+}
+
+impl Planes<'_> {
+    /// Cb and Cr of chroma column `x` on chroma row `y`.
+    fn sample(&self, x: usize, y: usize) -> (i32, i32) {
+        let chroma_width = self.width / 2;
+        if self.interleaved {
+            let at = (y * chroma_width + x) * 2;
+            (i32::from(self.chroma[at]), i32::from(self.chroma[at + 1]))
+        } else {
+            let plane = chroma_width * (self.height / 2);
+            let at = y * chroma_width + x;
+            (
+                i32::from(self.chroma[at]),
+                i32::from(self.chroma[plane + at]),
+            )
+        }
+    }
+
+    /// Converts the `out.len() / (width * 4)` rows from `first` on.
+    fn rows(&self, first: usize, out: &mut [u8]) {
+        let (width, chroma_width, chroma_height) = (self.width, self.width / 2, self.height / 2);
+        // The vertically blended chroma row, times 4.
+        let mut line = vec![(0i32, 0i32); chroma_width];
+        for (row, pixels) in out.chunks_exact_mut(width * 4).enumerate() {
+            let y = first + row;
+            let k = y / 2;
+            // Pixel centre y maps to chroma position y / 2 - 1/4: rows (k - 1, k) at 1:3 for even y, (k, k + 1) at
+            // 3:1 for odd y, clamped at the edges.
+            let (near, far) = if y.is_multiple_of(2) {
+                (k, k.saturating_sub(1))
+            } else {
+                (k, (k + 1).min(chroma_height - 1))
+            };
+            for (x, blended) in line.iter_mut().enumerate() {
+                let (a, b) = self.sample(x, near);
+                let (c, d) = self.sample(x, far);
+                *blended = (3 * a + c, 3 * b + d);
+            }
+            let luma = &self.luma[y * width..][..width];
+            for (x, (pixel, &value)) in pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(luma)
+                .enumerate()
+            {
+                let j = x / 2;
+                let other = if x.is_multiple_of(2) {
+                    j.saturating_sub(1)
+                } else {
+                    (j + 1).min(chroma_width - 1)
+                };
+                // Chroma times 16, centred.
+                let cb = 3 * line[j].0 + line[other].0 - 128 * 16;
+                let cr = 3 * line[j].1 + line[other].1 - 128 * 16;
+                let luma = (i32::from(value) - 16) * FIXED_LUMA + (1 << 13);
+                let channel = |sum: i32| (sum >> 14).clamp(0, 255) as u8;
+                *pixel = [
+                    channel(luma + ((cb * FIXED_CB_B) >> 4)),
+                    channel(luma - ((cb * FIXED_CB_G + cr * FIXED_CR_G) >> 4)),
+                    channel(luma + ((cr * FIXED_CR_R) >> 4)),
+                    255,
+                ];
+            }
+        }
+    }
+}
+
 /// Bilinear taps (low, high, weight of high) mapping each of `output` pixel centres onto a `source`-texel plane,
 /// clamped to its edges like a GPU sampler.
 fn chroma_taps(output: usize, source: usize) -> Vec<(usize, usize, f32)> {
@@ -311,6 +475,56 @@ mod tests {
             blue[0] < blue[1] && blue[1] < blue[2] && blue[2] < blue[3],
             "{blue:?}"
         );
+    }
+
+    /// The fast BGRA path agrees with `to_rgba` (channels swapped) within one level on busy pictures of both 4:2:0
+    /// layouts, at the edges too, and handles RGBA and odd sizes through the exact path.
+    #[test]
+    fn bgra_matches_rgba_within_one_level() {
+        let mut state = 0x1234_5678u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        };
+        for (width, height) in [(2u32, 2u32), (8, 6), (130, 66), (320, 180)] {
+            let len = Layout::I420.len(width, height).unwrap();
+            let data: Vec<u8> = (0..len).map(|_| next()).collect();
+            for layout in [Layout::Nv12, Layout::I420] {
+                let picture = Picture {
+                    width,
+                    height,
+                    layout,
+                    data: data.clone(),
+                };
+                let rgba = picture.to_rgba().unwrap();
+                let bgra = picture.to_bgra().unwrap();
+                for (index, (a, b)) in rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(bgra.as_chunks::<4>().0)
+                    .enumerate()
+                {
+                    for (channel, swapped) in [(0, 2), (1, 1), (2, 0), (3, 3)] {
+                        assert!(
+                            a[channel].abs_diff(b[swapped]) <= 1,
+                            "{width}x{height} {layout:?} pixel {index}: rgba {a:?} bgra {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let odd = flat(3, 3, Layout::I420, 82, 90, 240);
+        assert_eq!(&odd.to_bgra().unwrap()[..4], &{
+            let p = first_pixel(&odd);
+            [p[2], p[1], p[0], p[3]]
+        });
+        let rgba = Picture::rgba(1, 1, vec![1, 2, 3, 255]).unwrap();
+        assert_eq!(rgba.to_bgra().unwrap(), [3, 2, 1, 255]);
+        let mut short = vec![0; 3];
+        assert!(rgba.write_bgra(&mut short).is_none());
     }
 
     #[test]
