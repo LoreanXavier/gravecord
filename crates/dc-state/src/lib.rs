@@ -518,17 +518,42 @@ pub struct RoleInfo {
     pub guild_connection: bool,
     /// An integration's or bot's role (`managed`): never given or taken from a person by hand (module 180798).
     pub managed: bool,
+    /// `colors.secondary_color` of the enhanced role styles (module 176201 `K3`): with `color` the gradient pair.
+    pub secondary_color: Option<u32>,
+    /// `colors.tertiary_color`: the third stop of the holographic style.
+    pub tertiary_color: Option<u32>,
+}
+
+/// A role's colours as module 176201 `K3` reads them: the primary, then the optional second and third.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoleColors {
+    pub primary: u32,
+    pub secondary: Option<u32>,
+    pub tertiary: Option<u32>,
 }
 
 impl RoleInfo {
     fn from_value(role: &Value) -> Self {
+        let colors = &role["colors"];
         Self {
             position: role["position"].as_i64().unwrap_or(0),
             color: role["color"].as_u64().unwrap_or(0) as u32,
             mentionable: role["mentionable"].as_bool().unwrap_or(false),
             guild_connection: role["tags"].get("guild_connections").is_some(),
             managed: role["managed"].as_bool().unwrap_or(false),
+            secondary_color: colors["secondary_color"].as_u64().map(|c| c as u32),
+            tertiary_color: colors["tertiary_color"].as_u64().map(|c| c as u32),
         }
+    }
+
+    /// The colours of the gradient name, when the role has a second colour (the `primaryColor`/`secondaryColor`
+    /// test of module 967144).
+    pub fn gradient(&self) -> Option<RoleColors> {
+        Some(RoleColors {
+            primary: self.color,
+            secondary: Some(self.secondary_color?),
+            tertiary: self.tertiary_color,
+        })
     }
 
     fn list(roles: &Value) -> HashMap<Id, Self> {
@@ -556,12 +581,40 @@ pub enum Badge {
 impl Guild {
     /// GuildMemberStore's color role (696451, `Y`), ranked by 7864's role comparator.
     pub fn role_color(&self, roles: &[Id]) -> Option<u32> {
+        self.color_role(roles).map(|(_, role)| role.color)
+    }
+
+    /// One role's gradient pair under the same rule (`X_` of module 967144: the server feature and a second colour).
+    pub fn role_colors_of(&self, role: Id) -> Option<RoleColors> {
+        if !self
+            .features
+            .iter()
+            .any(|feature| feature == "ENHANCED_ROLE_COLORS")
+        {
+            return None;
+        }
+        self.role_info.get(&role)?.gradient()
+    }
+
+    fn color_role(&self, roles: &[Id]) -> Option<(Id, &RoleInfo)> {
         roles
             .iter()
             .filter_map(|id| self.role_info.get(id).map(|role| (*id, role)))
             .filter(|(_, role)| role.color != 0)
             .min_by_key(|(id, role)| (*id == self.id, std::cmp::Reverse(role.position), *id))
-            .map(|(_, role)| role.color)
+    }
+
+    /// The colour role's gradient pair for a name: only in a server with `ENHANCED_ROLE_COLORS` and a role that
+    /// has a second colour (modules 676608 and 967144 `gn`/`X_`).
+    pub fn role_gradient(&self, roles: &[Id]) -> Option<RoleColors> {
+        if !self
+            .features
+            .iter()
+            .any(|feature| feature == "ENHANCED_ROLE_COLORS")
+        {
+            return None;
+        }
+        self.color_role(roles)?.1.gradient()
     }
 
     /// READY nests name and icon under `properties`; GUILD_CREATE may not.
@@ -3208,6 +3261,35 @@ mod tests {
             {"op":"UPDATE", "index":0, "item":{"member":{"user":{"id":"200","username":"renamed"}}}}
         ]}));
         assert_eq!(stores.users[&200].username, "renamed");
+    }
+
+    #[test]
+    fn a_gradient_needs_the_server_feature_and_a_second_colour_on_the_colour_role() {
+        let value = |features: serde_json::Value| {
+            super::Guild::from_value(&serde_json::json!({
+                "id":"100", "name":"fixture", "channels":[], "features": features, "roles":[
+                    {"id":"101", "name":"pair", "position":3, "color":1,
+                     "colors":{"primary_color":1,"secondary_color":2,"tertiary_color":null}},
+                    {"id":"102", "name":"holo", "position":2, "color":4,
+                     "colors":{"primary_color":4,"secondary_color":5,"tertiary_color":6}},
+                    {"id":"103", "name":"solid", "position":9, "color":7,
+                     "colors":{"primary_color":7,"secondary_color":null,"tertiary_color":null}}
+                ]
+            }))
+            .unwrap()
+        };
+        let with = value(serde_json::json!(["ENHANCED_ROLE_COLORS"]));
+        let colors = with.role_gradient(&[101]).unwrap();
+        assert_eq!(
+            (colors.primary, colors.secondary, colors.tertiary),
+            (1, Some(2), None)
+        );
+        let holo = with.role_gradient(&[102]).unwrap();
+        assert_eq!(holo.tertiary, Some(6));
+        // The colour role is the highest coloured one; a solid role above hides a gradient one below.
+        assert!(with.role_gradient(&[101, 103]).is_none());
+        assert!(with.role_colors_of(103).is_none());
+        assert!(value(serde_json::json!([])).role_gradient(&[101]).is_none());
     }
 
     #[test]

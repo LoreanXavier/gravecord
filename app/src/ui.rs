@@ -108,6 +108,7 @@ mod message_requests;
 mod message_tips;
 mod presence;
 mod role_dot;
+pub(crate) mod role_gradient;
 mod role_popout;
 mod schedule_message;
 mod sent_attachment;
@@ -2155,7 +2156,12 @@ impl Root {
 
     /// A message author's name with their display name style (315934): in a server the font alone; in a DM or group
     /// DM the effect too when the pointer is on the name.
-    fn author_name(&self, key: String, user: &User) -> impl IntoElement {
+    fn author_name(&self, key: String, user: &User) -> AnyElement {
+        if let Some(colors) = self.role_gradient_of(user)
+            && self.name_styles(user, self.guild).is_none()
+        {
+            return role_gradient::name(self.guild_display_name(user), colors).into_any_element();
+        }
         let in_dm = self.current_guild().is_none() && self.current_dm().is_some();
         name_styles::name(
             key,
@@ -2167,6 +2173,39 @@ impl Root {
                 name_styles::Display::Font
             },
         )
+        .into_any_element()
+    }
+
+    /// The gradient pair of the user's colour role in the open server, when names show role colours in the name
+    /// ("Role Colors" default) and the server has the enhanced styles (modules 967144, 463930).
+    fn role_gradient_of(&self, user: &User) -> Option<dc_state::RoleColors> {
+        if self.pref_index("role_style", 0) != 0 {
+            return None;
+        }
+        self.role_gradient_by_id(user.id)
+    }
+
+    fn role_gradient_by_id(&self, user: Id) -> Option<dc_state::RoleColors> {
+        let guild = self.current_guild()?;
+        let member = self.stores.members.get(guild.id, user)?;
+        guild.role_gradient(&member.roles)
+    }
+
+    /// The role dot of "Next to names": the gradient dot when the colour role has a gradient, else the solid one.
+    fn role_dot_of(&self, user: Id, solid: u32) -> gpui::Div {
+        match self.role_gradient_by_id(user) {
+            Some(colors) => role_dot::dot_gradient(&colors),
+            None => role_dot::dot(solid),
+        }
+    }
+
+    /// `text` as a name in the user's role colours: the gradient when the role has one, else the plain text (which
+    /// takes the colour the caller set).
+    fn role_named(&self, user: &User, text: String) -> AnyElement {
+        match self.role_gradient_of(user) {
+            Some(colors) => role_gradient::name(text, colors).into_any_element(),
+            None => text.into_any_element(),
+        }
     }
 
     fn guild_display_name(&self, user: &User) -> String {
@@ -2257,10 +2296,20 @@ impl Root {
                     .h(px(42.))
                     .pt(px(20.))
                     .pl(px(16.))
+                    .flex()
+                    .flex_row()
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--channels-default"))
+                    // 282006: the role's icon, 16px with 4px after it (`roleIcon_86es0b`), before the group name.
+                    .children(
+                        id.parse::<Id>()
+                            .ok()
+                            .zip(self.current_guild())
+                            .and_then(|(role, guild)| self.role_icon_art(guild, role, 16.))
+                            .map(|icon| div().flex_none().mr(px(4.)).child(icon)),
+                    )
                     .child(format!("{} \u{2014} {count}", group_label(id, roles)))
                     .into_any_element(),
                 MemberRow::Member {
@@ -2343,7 +2392,7 @@ impl Root {
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
-                                                        .child(role_dot::dot(rgb))
+                                                        .child(self.role_dot_of(user.id, rgb))
                                                 }),
                                         )
                                         .child(
@@ -2359,22 +2408,41 @@ impl Root {
                                                     user.id,
                                                     "--channels-default",
                                                 ))
-                                                .child(name_styles::name(
-                                                    format!("member-{}", user.id),
-                                                    name,
-                                                    self.name_styles(user, self.guild).as_ref(),
-                                                    // 110574: without a guild (a group DM's list) the full
-                                                    // effect shows, animated under the row's pointer.
-                                                    if self.guild.is_some() {
-                                                        name_styles::Display::Font
-                                                    } else if self.hovered_nameplate
-                                                        == Some(user.id)
-                                                    {
-                                                        name_styles::Display::Animated
-                                                    } else {
-                                                        name_styles::Display::Static
+                                                .child(
+                                                    match self.role_gradient_of(user).filter(|_| {
+                                                        self.name_styles(user, self.guild).is_none()
+                                                    }) {
+                                                        // 463930: the gradient slides while the
+                                                        // pointer is on the row.
+                                                        Some(colors) => role_gradient::name(
+                                                            name.clone(),
+                                                            colors,
+                                                        )
+                                                        .animate(
+                                                            self.hovered_nameplate == Some(user.id),
+                                                        )
+                                                        .into_any_element(),
+                                                        None => name_styles::name(
+                                                            format!("member-{}", user.id),
+                                                            name,
+                                                            self.name_styles(user, self.guild)
+                                                                .as_ref(),
+                                                            // 110574: without a guild (a group DM's
+                                                            // list) the full effect shows, animated
+                                                            // under the row's pointer.
+                                                            if self.guild.is_some() {
+                                                                name_styles::Display::Font
+                                                            } else if self.hovered_nameplate
+                                                                == Some(user.id)
+                                                            {
+                                                                name_styles::Display::Animated
+                                                            } else {
+                                                                name_styles::Display::Static
+                                                            },
+                                                        )
+                                                        .into_any_element(),
                                                     },
-                                                )),
+                                                ),
                                         )
                                         .children(user.tag.as_ref().map(|tag| {
                                             self.server_tag_chip(tag).ml(px(4.)).flex_none()
@@ -3049,6 +3117,7 @@ impl Root {
                     image: None,
                     hover: None,
                     hover_underline: false,
+                    gradient: None,
                 }
             })
             .collect();
@@ -5320,9 +5389,24 @@ impl Root {
             run_font.family = family;
             run_font.weight = FontWeight(weight);
         }
+        // 787564 `er`: a role mention of a coloured role, with "Role Colors" in the name, takes the role colour for
+        // its text and the colour at .1 (.3 on hover) behind it (332173); the enhanced styles draw the text in the
+        // gradient (`roleColors` of the same module, gated by `X_` of 967144).
+        let role_look = match span.kind {
+            Kind::Role(id) if self.pref_index("role_style", 0) == 0 => {
+                self.current_guild().and_then(|guild| {
+                    let info = guild.role_info.get(&id).filter(|info| info.color != 0)?;
+                    Some((info.color, guild.role_colors_of(id)))
+                })
+            }
+            _ => None,
+        };
         let tint = match span.kind {
             Kind::Link(_) if self.failed_tint.get() => hsla("--text-feedback-critical"),
             Kind::Link(_) => hsla("--text-link"),
+            Kind::Role(_) if role_look.is_some() => {
+                Hsla::from(gpui::rgb(role_look.map_or(0, |(color, _)| color)))
+            }
             _ if mention => hsla("--mention-foreground"),
             // A hidden spoiler paints its text in the box's own color.
             _ if style.spoiler => hsla("--spoiler-hidden-background"),
@@ -5337,7 +5421,11 @@ impl Root {
             channel.icon = Some(("icons/text_channel.svg".into(), px(16.), px(20.)));
             Some(channel)
         } else if mention {
-            Some(pill(2., 3., "--mention-background"))
+            let mut mention_box = pill(2., 3., "--mention-background");
+            if let Some((color, _)) = role_look {
+                mention_box.background = role_tint(color, 0.1);
+            }
+            Some(mention_box)
         } else if matches!(span.kind, Kind::Timestamp { .. }) {
             Some(pill(2., 3., "--interactive-background-active"))
         } else {
@@ -5378,10 +5466,14 @@ impl Root {
             image,
             // `.interactive:hover { background-color: var(--brand-500); color: var(--white) }` on the mention
             // (stylesheet 17256's markup rules); `@everyone` and `@here` are not interactive.
-            hover: (mention && !matches!(span.kind, Kind::Everyone))
-                .then(|| (hsla("--brand-500"), hsla("--white"))),
+            hover: (mention && !matches!(span.kind, Kind::Everyone)).then(|| match role_look {
+                // The inline `color` outranks the stylesheet's white; only the background deepens.
+                Some((color, _)) => (role_tint(color, 0.3), tint),
+                None => (hsla("--brand-500"), hsla("--white")),
+            }),
             // `.anchor:hover` underlines a link.
             hover_underline: matches!(span.kind, Kind::Link(_)),
+            gradient: role_look.and_then(|(_, colors)| colors),
         }
     }
 
@@ -6700,7 +6792,7 @@ impl Root {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(role_dot::dot(rgb))
+                                                    .child(self.role_dot_of(message.author.id, rgb))
                                             }),
                                     )
                                     .child(
@@ -7504,6 +7596,13 @@ fn block_gaps(blocks: &[Block]) -> Vec<f32> {
             None => top(block),
         })
         .collect()
+}
+
+/// `gq(color, alpha)` of module 317097: the role colour at an opacity.
+fn role_tint(color: u32, alpha: f32) -> Hsla {
+    let mut tint = Hsla::from(gpui::rgb(color));
+    tint.a = alpha;
+    tint
 }
 
 /// A rounded box behind inline text: mentions, stamps and spoilers.
@@ -8734,6 +8833,7 @@ impl Render for Root {
             .children(self.toast_layer())
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
+            .children(self.soundboard_gift_picker(window, cx))
             .children(self.splash_layer(window, cx));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
