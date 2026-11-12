@@ -24,6 +24,13 @@ impl Stores {
         }
     }
 
+    /// `VOICE_STATE_UPDATE_BATCH {voice_states: [...]}`: each state is one `VOICE_STATE_UPDATE` (module 225123 `eH`).
+    pub(crate) fn voice_state_batch(&mut self, data: &Value) {
+        for state in data["voice_states"].as_array().into_iter().flatten() {
+            self.dispatch("VOICE_STATE_UPDATE", state);
+        }
+    }
+
     /// `MESSAGE_REACTION_REMOVE_ALL {channel_id, message_id}` and `MESSAGE_REACTION_REMOVE_EMOJI {…, emoji}`: all
     /// reactions go, or the ones of one emoji (matched by id for a custom emoji, otherwise by name).
     pub(crate) fn reactions_removed(&mut self, data: &Value, only_emoji: bool) {
@@ -126,6 +133,24 @@ mod tests {
             id: 10,
             ..User::default()
         });
+    }
+
+    #[test]
+    fn a_voice_state_batch_is_one_update_per_state() {
+        let mut stores = Stores::default();
+        let state = |user: &str, channel: Value| {
+            json!({"guild_id": "1", "user_id": user, "channel_id": channel, "session_id": "s",
+                   "deaf": false, "mute": false, "self_deaf": false, "self_mute": false})
+        };
+        stores.dispatch(
+            "VOICE_STATE_UPDATE_BATCH",
+            &json!({"voice_states": [state("5", json!("30")), state("6", json!("30")), state("5", Value::Null)]}),
+        );
+        let users: Vec<Id> = stores.voice_states[&1]
+            .iter()
+            .map(|state| state.user_id)
+            .collect();
+        assert_eq!(users, vec![6]);
     }
 
     #[test]

@@ -30,6 +30,18 @@ pub struct ReadStates {
     pub states: HashMap<Id, ReadState>,
     /// Channel to its newest message.
     pub latest: HashMap<Id, Id>,
+    /// The read states that are not a channel's (module 218461, `read_state_type` other than 0: guild events,
+    /// notification center, guild home, onboarding question, message requests), by (resource id, type).
+    pub typed: HashMap<(Id, u64), TypedReadState>,
+}
+
+/// One non-channel read state: what was acked, the newest thing there is, and the unread badge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TypedReadState {
+    pub acked: Id,
+    /// `lastMessageId` of the official entry; 0 when nothing newer is known.
+    pub last: Id,
+    pub mention_count: u64,
 }
 
 fn snowflake(value: &Value) -> Option<Id> {
@@ -58,7 +70,18 @@ pub fn days_since_epoch(unix_ms: u64) -> u64 {
 impl ReadStates {
     pub fn load(&mut self, read_state: &Value) {
         for entry in read_state["entries"].as_array().into_iter().flatten() {
-            if entry["read_state_type"].as_u64().unwrap_or(0) != 0 {
+            let kind = entry["read_state_type"].as_u64().unwrap_or(0);
+            if kind != 0 {
+                if let Some(resource) = snowflake(&entry["id"]) {
+                    self.typed.insert(
+                        (resource, kind),
+                        TypedReadState {
+                            acked: snowflake(&entry["last_acked_id"]).unwrap_or(0),
+                            last: 0,
+                            mention_count: entry["badge_count"].as_u64().unwrap_or(0),
+                        },
+                    );
+                }
                 continue;
             }
             let Some(channel) = snowflake(&entry["id"]) else {
@@ -142,6 +165,24 @@ impl ReadStates {
             .is_some_and(|latest| *latest > self.acked(channel, joined))
     }
 
+    /// `e2` of module 218461, run by `USER_NON_CHANNEL_ACK` (the resource is the account) and `GUILD_FEATURE_ACK`
+    /// (the resource is the guild): a state that has something unacked takes the acked id (else its newest, else
+    /// now) and loses its badge. True when the state changed.
+    pub fn non_channel_ack(&mut self, resource: Id, kind: u64, acked: Option<Id>, now: Id) -> bool {
+        let state = self.typed.entry((resource, kind)).or_default();
+        if acked == Some(state.acked)
+            || state.last == state.acked
+            || (state.last == 0 && state.mention_count == 0)
+        {
+            return false;
+        }
+        state.acked = acked
+            .or(Some(state.last).filter(|last| *last != 0))
+            .unwrap_or(now);
+        state.mention_count = 0;
+        true
+    }
+
     pub fn mentions(&self, channel: Id) -> u64 {
         self.states
             .get(&channel)
@@ -172,6 +213,39 @@ mod tests {
         states.message_created(10, 130, None, true);
         assert!(!states.is_unread(10, 0));
         assert!(!states.states.contains_key(&1));
+    }
+
+    #[test]
+    fn a_non_channel_ack_moves_the_typed_state_and_clears_its_badge() {
+        let mut states = ReadStates::default();
+        states.load(&json!({"entries": [
+            {"id": "1", "last_acked_id": "50", "read_state_type": 2, "badge_count": 2},
+        ]}));
+        assert_eq!(states.typed[&(1, 2)].mention_count, 2);
+        // The ack names an id: the state takes it and loses its badge.
+        assert!(states.non_channel_ack(1, 2, Some(80), 999));
+        assert_eq!(
+            states.typed[&(1, 2)],
+            TypedReadState {
+                acked: 80,
+                last: 0,
+                mention_count: 0
+            }
+        );
+        // The same ack again, or one for a state with nothing waiting, changes nothing.
+        assert!(!states.non_channel_ack(1, 2, Some(80), 999));
+        assert!(!states.non_channel_ack(7, 3, None, 999));
+        // Without an id the newest known one is taken, else now.
+        states.typed.insert(
+            (9, 5),
+            TypedReadState {
+                acked: 1,
+                last: 40,
+                mention_count: 1,
+            },
+        );
+        assert!(states.non_channel_ack(9, 5, None, 999));
+        assert_eq!(states.typed[&(9, 5)].acked, 40);
     }
 
     #[test]

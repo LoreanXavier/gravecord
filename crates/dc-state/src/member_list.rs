@@ -132,6 +132,31 @@ impl MemberList {
         self.refresh_group_counts();
     }
 
+    /// `GUILD_MEMBER_UPDATE` (module 963307 `rebuildMember`): the listed row of that user takes the new nickname and
+    /// roles; rows of other users, and the group sizes, only change through list operations.
+    pub fn member_updated(&mut self, data: &Value) {
+        let Some(user) = id_of(&data["user"]["id"]) else {
+            return;
+        };
+        for row in &mut self.rows {
+            if let Row::Member {
+                user: listed,
+                nick,
+                roles,
+                ..
+            } = row
+                && listed.id == user
+            {
+                if data.get("nick").is_some() {
+                    *nick = data["nick"].as_str().map(str::to_owned);
+                }
+                if let Some(new) = data["roles"].as_array() {
+                    *roles = new.iter().filter_map(id_of).collect();
+                }
+            }
+        }
+    }
+
     fn range(op: &Value) -> Option<(usize, usize)> {
         let range = op["range"].as_array()?;
         Some((
@@ -232,6 +257,31 @@ mod tests {
             "ops": [{"op": "SYNC", "range": [0, 99], "items": [{"group": {"id": "online"}}, member("1", "dnd"), member("2", "idle")]}],
         }));
         list
+    }
+
+    #[test]
+    fn a_member_update_changes_the_listed_nick_and_roles_of_that_user_only() {
+        let mut list = synced();
+        list.member_updated(
+            &json!({"guild_id": "9", "user": {"id": "1"}, "nick": "Nick", "roles": ["7"]}),
+        );
+        let rows: Vec<(Option<String>, Vec<Id>)> = list
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Member { nick, roles, .. } => Some((nick.clone(), roles.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows[0], (Some("Nick".to_owned()), vec![7]));
+        assert_eq!(rows[1], (None, vec![]));
+        // A later update without `nick` keeps it; a null one clears it.
+        list.member_updated(&json!({"user": {"id": "1"}, "roles": []}));
+        list.member_updated(&json!({"user": {"id": "2"}, "nick": null}));
+        let Row::Member { nick, roles, .. } = &list.rows[1] else {
+            panic!("member expected")
+        };
+        assert_eq!((nick.as_deref(), roles.len()), (Some("Nick"), 0));
     }
 
     #[test]

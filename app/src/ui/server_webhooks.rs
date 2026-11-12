@@ -3,7 +3,6 @@
 //! and Delete Webhook behind a confirmation. Edits save through the notice (`PATCH /webhooks/{id}`).
 //! Measured in `design/dom/settings/guild-webhooks-darker-cozy.json` and `guild-webhook-open-darker-cozy.json`.
 
-use super::server_settings_pages::WEBHOOKS_PREFIX;
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -67,12 +66,12 @@ fn created_on(id: &str) -> String {
 
 impl Root {
     fn guild_webhooks(&self, guild: Id) -> Vec<Value> {
-        self.fetched
-            .get(&format!("{WEBHOOKS_PREFIX}{guild}"))
-            .and_then(|body| body.as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
+        self.stores
+            .integrations
+            .webhooks_for_guild(guild)
+            .iter()
             .filter(|hook| hook["type"].as_u64() == Some(1))
+            .cloned()
             .collect()
     }
 
@@ -202,20 +201,21 @@ impl Root {
             route: format!("/webhooks/{id}"),
             body: Some(body.clone()),
         });
-        // The list shows the change at once; the reply refetches it.
-        if let Some(list) = self
-            .fetched
-            .get_mut(&format!("{WEBHOOKS_PREFIX}{guild}"))
-            .and_then(|list| list.as_array_mut())
-            && let Some(known) = list
-                .iter_mut()
-                .find(|known| known["id"].as_str() == Some(id.as_str()))
+        // The list shows the change at once (`WEBHOOK_UPDATE`); the reply refetches it.
+        if let Some(mut known) = self
+            .stores
+            .integrations
+            .webhooks_for_guild(guild)
+            .iter()
+            .find(|known| known["id"].as_str() == Some(id.as_str()))
+            .cloned()
         {
             for key in ["name", "channel_id"] {
                 if body[key].is_string() {
                     known[key] = body[key].clone();
                 }
             }
+            self.stores.integrations.webhook_put(guild, &known);
         }
         if let Some(open) = self
             .server_settings
@@ -856,13 +856,7 @@ impl Root {
                                 route: format!("/webhooks/{id}"),
                                 body: None,
                             });
-                            if let Some(list) = this
-                                .fetched
-                                .get_mut(&format!("{WEBHOOKS_PREFIX}{guild}"))
-                                .and_then(|list| list.as_array_mut())
-                            {
-                                list.retain(|known| known["id"].as_str() != Some(id.as_str()));
-                            }
+                            this.stores.integrations.webhook_delete(guild, &id);
                             if let Some(open) = this.server_settings.as_mut() {
                                 open.webhooks.open = None;
                             }

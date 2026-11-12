@@ -132,9 +132,34 @@ pub struct GuildScheduledEventStore {
     counts: HashMap<Id, HashMap<String, i64>>,
     /// The signed-in user, from `READY`: the store only counts a removed answer of someone else as the server's.
     me: Option<Id>,
+    /// `guild_scheduled_event_exceptions` of each event (a changed occurrence of a recurring event), as received.
+    exceptions: HashMap<Id, Vec<Value>>,
 }
 
 impl GuildScheduledEventStore {
+    /// The exceptions of an event's recurrence (`guild_scheduled_event_exceptions`), in the order they arrived.
+    pub fn exceptions_of(&self, event: Id) -> &[Value] {
+        self.exceptions.get(&event).map_or(&[], Vec::as_slice)
+    }
+
+    /// `GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE`, `_UPDATE` (module 698441 `R`: replaced by `event_exception_id`, else
+    /// added) and `_DELETE`; only for an event the store knows.
+    fn exception_event(&mut self, event: &str, data: &Value) {
+        let Some(known) = id(&data["event_id"]).filter(|known| self.events.contains_key(known))
+        else {
+            return;
+        };
+        let list = self.exceptions.entry(known).or_default();
+        let same = |other: &Value| other["event_exception_id"] == data["event_exception_id"];
+        if event == "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE" {
+            list.retain(|other| !same(other));
+        } else if let Some(at) = list.iter().position(same) {
+            list[at] = data.clone();
+        } else {
+            list.push(data.clone());
+        }
+    }
+
     /// `getGuildScheduledEvent`.
     pub fn get_guild_scheduled_event(&self, event: Id) -> Option<&ScheduledEvent> {
         self.events.get(&event)
@@ -286,12 +311,16 @@ impl GuildScheduledEventStore {
 
     fn forget_event(&mut self, event: Id) {
         self.events.remove(&event);
+        self.exceptions.remove(&event);
         self.rsvps.remove(&event);
         self.counts.remove(&event);
     }
 
     fn set(&mut self, value: &Value) {
         if let Some(event) = ScheduledEvent::from_value(value) {
+            if let Some(list) = value["guild_scheduled_event_exceptions"].as_array() {
+                self.exceptions.insert(event.id, list.clone());
+            }
             self.events.insert(event.id, event);
         }
     }
@@ -327,6 +356,7 @@ impl GuildScheduledEventStore {
         match event {
             "READY" => {
                 self.events.clear();
+                self.exceptions.clear();
                 self.rsvps.clear();
                 self.counts.clear();
                 self.me = id(&data["user"]["id"]);
@@ -374,6 +404,9 @@ impl GuildScheduledEventStore {
                 }
             }
             "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" => self.set(data),
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE"
+            | "GUILD_SCHEDULED_EVENT_EXCEPTION_UPDATE"
+            | "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE" => self.exception_event(event, data),
             "GUILD_SCHEDULED_EVENT_DELETE" => {
                 if let Some(event) = id(&data["id"]) {
                     self.forget_event(event);
@@ -439,6 +472,7 @@ impl GuildScheduledEventStore {
             }
             "LOGOUT" => {
                 self.events.clear();
+                self.exceptions.clear();
                 self.rsvps.clear();
                 self.counts.clear();
             }
@@ -531,6 +565,48 @@ mod tests {
         assert_eq!(order, vec![3, 2, 1]);
         assert!(store.is_active(3));
         assert_eq!(store.active(10).len(), 1);
+    }
+
+    #[test]
+    fn exceptions_are_added_replaced_and_deleted_for_a_known_event_only() {
+        let mut store = GuildScheduledEventStore::default();
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_CREATE",
+            &event("5", "10", "2026-11-12T10:00:00+00:00", 1),
+        );
+        let exception =
+            |id: &str, name: &str| json!({"event_id": "5", "event_exception_id": id, "name": name});
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE",
+            &exception("a", "one"),
+        );
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE",
+            &exception("b", "two"),
+        );
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_UPDATE",
+            &exception("a", "changed"),
+        );
+        let names: Vec<&str> = store
+            .exceptions_of(5)
+            .iter()
+            .filter_map(|known| known["name"].as_str())
+            .collect();
+        assert_eq!(names, ["changed", "two"]);
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE",
+            &exception("b", "two"),
+        );
+        assert_eq!(store.exceptions_of(5).len(), 1);
+        // An event the store does not know takes none.
+        store.dispatch(
+            "GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE",
+            &json!({"event_id": "6", "event_exception_id": "x"}),
+        );
+        assert!(store.exceptions_of(6).is_empty());
+        store.dispatch("GUILD_SCHEDULED_EVENT_DELETE", &json!({"id": "5"}));
+        assert!(store.exceptions_of(5).is_empty());
     }
 
     #[test]

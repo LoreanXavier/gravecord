@@ -249,27 +249,23 @@ impl Root {
 
     /// Search results join the loaded bans (`GUILD_SETTINGS_LOADED_BANS_BATCH`).
     pub(super) fn server_page_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
-        if let Some(guild) = key.strip_prefix(&format!("{BANS_PREFIX}search:")) {
-            let found = self
-                .fetched
-                .get(key)
-                .and_then(|body| body.as_array().cloned())
-                .unwrap_or_default();
-            let list_key = format!("{BANS_PREFIX}{guild}");
-            let list = self
-                .fetched
-                .entry(list_key)
-                .or_insert_with(|| Value::Array(Vec::new()));
-            if let Some(list) = list.as_array_mut() {
-                for ban in found {
-                    if !list
-                        .iter()
-                        .any(|known| known["user"]["id"] == ban["user"]["id"])
-                    {
-                        list.push(ban);
-                    }
-                }
-            }
+        // The ban list lives in GuildSettingsStore: a list answer replaces it (`GUILD_SETTINGS_LOADED_BANS`), a search
+        // answer joins it (`..._BATCH`), and the ban events change it.
+        let listed = self
+            .fetched
+            .get(key)
+            .and_then(|body| body.as_array().cloned())
+            .unwrap_or_default();
+        if let Some(guild) = key
+            .strip_prefix(&format!("{BANS_PREFIX}search:"))
+            .and_then(|guild| guild.parse::<Id>().ok())
+        {
+            self.stores.guild_bans.loaded_batch(guild, &listed);
+        } else if let Some(guild) = key
+            .strip_prefix(BANS_PREFIX)
+            .and_then(|guild| guild.parse::<Id>().ok())
+        {
+            self.stores.guild_bans.loaded(guild, &listed);
         }
         let users: Vec<User> = self
             .fetched
@@ -308,10 +304,26 @@ impl Root {
                 key: format!("{WEBHOOKS_PREFIX}{guild}"),
                 route: format!("/guilds/{guild}/webhooks"),
             });
+        } else if let Some((guild, channel)) = key
+            .strip_prefix(super::gateway_screens::WEBHOOKS_CHANNEL_PREFIX)
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(guild, channel)| {
+                Some((guild.parse::<Id>().ok()?, channel.parse::<Id>().ok()?))
+            })
+        {
+            // `fetchForChannel`'s answer replaces that channel's webhooks and keeps the server's others.
+            let list = self.fetched[key].as_array().cloned().unwrap_or_default();
+            self.stores
+                .integrations
+                .webhooks_loaded(guild, Some(channel), &list);
+            self.request_webhook_images(guild);
         } else if let Some(guild) = key
             .strip_prefix(WEBHOOKS_PREFIX)
             .and_then(|guild| guild.parse::<Id>().ok())
         {
+            // The server's list goes through WebhooksStore, which the pages read.
+            let list = self.fetched[key].as_array().cloned().unwrap_or_default();
+            self.stores.integrations.webhooks_loaded(guild, None, &list);
             self.request_webhook_images(guild);
         }
         cx.notify();
@@ -347,11 +359,7 @@ impl Root {
     /// Integrations (module 989433 `uM`, measured in `guild-integrations-darker-cozy.json`): the intro, the Webhooks
     /// and Channels Followed cards, then Bots and Apps. The webhook editor behind View Webhooks is not drawn yet.
     pub(super) fn server_integrations_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
-        let webhooks: Vec<Value> = self
-            .fetched
-            .get(&format!("{WEBHOOKS_PREFIX}{guild}"))
-            .and_then(|body| body.as_array().cloned())
-            .unwrap_or_default();
+        let webhooks: Vec<Value> = self.stores.integrations.webhooks_for_guild(guild).to_vec();
         // A followed channel's webhook has type 2, an incoming one type 1.
         let incoming = webhooks
             .iter()
@@ -776,10 +784,11 @@ impl Root {
         else {
             return div().into_any_element();
         };
-        let loaded = self.fetched.get(&format!("{BANS_PREFIX}{guild}"));
-        let bans: Vec<Value> = loaded
-            .and_then(|body| body.as_array().cloned())
-            .unwrap_or_default()
+        let loaded = self.stores.guild_bans.is_loaded(guild);
+        let bans: Vec<Value> = self
+            .stores
+            .guild_bans
+            .rows(guild)
             .into_iter()
             .filter(|ban| ban_matches(&ban["user"], &state.query))
             .collect();
@@ -850,7 +859,7 @@ impl Root {
                 })
                 .collect();
         let art = self.images.get(NO_BANS_ART).cloned();
-        let empty = bans.is_empty() && loaded.is_some();
+        let empty = bans.is_empty() && loaded;
         div()
             .pt(px(56.))
             .px(px(24.))
@@ -1023,14 +1032,8 @@ impl Root {
                                 route: format!("/guilds/{guild}/bans/{user}"),
                                 body: None,
                             });
-                            if let Some(list) = this
-                                .fetched
-                                .get_mut(&format!("{BANS_PREFIX}{guild}"))
-                                .and_then(|body| body.as_array_mut())
-                            {
-                                list.retain(|ban| {
-                                    ban["user"]["id"].as_str() != Some(user.as_str())
-                                });
+                            if let Ok(revoked) = user.parse::<Id>() {
+                                this.stores.guild_bans.revoked(guild, revoked);
                             }
                             close(this);
                         },

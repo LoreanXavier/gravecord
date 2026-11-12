@@ -234,6 +234,18 @@ impl PresenceStore {
                 }
             }
             "PRESENCE_UPDATE" => self.update(guild, None, data),
+            // 290863 `PRESENCES_REPLACE`: the friend scope (`ME`) is emptied (`U`), then every presence of the
+            // payload (the gateway sends the array itself) is stored in it.
+            "PRESENCES_REPLACE" => {
+                self.entries.retain(|(scope, _), _| scope.is_some());
+                self.rebuild_index();
+                let list = data.as_array().or_else(|| data["presences"].as_array());
+                for presence in list.into_iter().flatten() {
+                    if presence["user"].is_object() {
+                        self.update(None, None, presence);
+                    }
+                }
+            }
             "GUILD_CREATE" | "GUILD_MEMBERS_CHUNK" => {
                 let guild = guild.or_else(|| id(&data["id"]));
                 for presence in data["presences"].as_array().into_iter().flatten() {
@@ -360,6 +372,37 @@ mod tests {
         assert!(!store.is_mobile_online(2));
         store.dispatch("READY", &json!({"guilds":[]}));
         assert!(!store.is_mobile_online(2));
+    }
+
+    #[test]
+    fn presences_replace_swaps_the_friend_scope_and_leaves_guild_scopes() {
+        let mut store = PresenceStore::default();
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({"user":{"id":"2"},"status":"online"}),
+        );
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({"user":{"id":"3"},"status":"idle"}),
+        );
+        store.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({"guild_id":"9","user":{"id":"4"},"status":"dnd"}),
+        );
+        // The gateway payload is the array of presences itself.
+        store.dispatch(
+            "PRESENCES_REPLACE",
+            &json!([{"user":{"id":"3"},"status":"dnd","client_status":{"web":"dnd"},"activities":[{"type":0,"name":"Game"}]},
+                    {"user":{"id":"5"},"status":"online","activities":[]}]),
+        );
+        assert!(store.get(2, None).is_none());
+        assert_eq!(store.get(3, None).unwrap().status, "dnd");
+        assert_eq!(store.get(5, None).unwrap().status, "online");
+        assert_eq!(store.get(4, Some(9)).unwrap().status, "dnd");
+        // The same payload under a `presences` key (the dispatched action) is read alike.
+        store.dispatch("PRESENCES_REPLACE", &json!({"presences": []}));
+        assert!(store.get(3, None).is_none());
+        assert_eq!(store.get(4, Some(9)).unwrap().status, "dnd");
     }
 
     #[test]

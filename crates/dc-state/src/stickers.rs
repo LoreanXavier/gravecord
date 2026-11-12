@@ -431,6 +431,21 @@ impl StickersStore {
         self.guild.get(&guild).map_or(&[], Vec::as_slice)
     }
 
+    /// `DELETED_ENTITY_IDS` (module 74362): the guild keeps only the stickers the server still lists. True when
+    /// something went.
+    pub fn retain_guild_stickers(
+        &mut self,
+        guild: Id,
+        keep: &std::collections::HashSet<Id>,
+    ) -> bool {
+        let Some(list) = self.guild.get_mut(&guild) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|sticker| keep.contains(&sticker.id));
+        list.len() != before
+    }
+
     /// `getAllGuildStickers`.
     pub fn all_guild_stickers(&self) -> impl Iterator<Item = (Id, &[Sticker])> {
         self.guild

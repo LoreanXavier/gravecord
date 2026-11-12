@@ -216,14 +216,10 @@ impl Root {
                 }
             }
         } else if key == format!("note:{user}") {
-            let note = self.fetched[key]["note"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            if let Some(open) = self.full_profile.as_mut() {
-                open.saved_note = note.clone();
-                open.note.update(cx, |editor, _| editor.set_text(&note));
-            }
+            // The answer goes through NoteStore, which the field then reads.
+            let note = self.fetched[key]["note"].as_str().map(str::to_owned);
+            self.stores.notes.set(user, note);
+            self.full_profile_note_changed(user, cx);
         } else if key == format!("profile:{user}") {
             let friends: Vec<dc_state::User> = self.fetched[key]["mutual_friends"]
                 .as_array()
@@ -239,6 +235,18 @@ impl Root {
         cx.notify();
     }
 
+    /// The open profile's note field takes what NoteStore holds for its user (a read's answer, or another session's
+    /// `USER_NOTE_UPDATE`).
+    pub(super) fn full_profile_note_changed(&mut self, user: Id, cx: &mut Context<Self>) {
+        let note = self.stores.notes.text_of(user).to_owned();
+        if let Some(open) = self.full_profile.as_mut()
+            && open.user == user
+        {
+            open.saved_note = note.clone();
+            open.note.update(cx, |editor, _| editor.set_text(&note));
+        }
+    }
+
     /// `PUT /users/@me/notes/{id}` when the note changed.
     fn save_note(&mut self, text: String) {
         let Some(open) = self.full_profile.as_mut() else {
@@ -248,6 +256,7 @@ impl Root {
             return;
         }
         open.saved_note = text.clone();
+        self.stores.notes.set(open.user, Some(text.clone()));
         let _ = self.requests.send(Request::Rest {
             key: None,
             method: reqwest::Method::PUT,
