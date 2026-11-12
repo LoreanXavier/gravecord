@@ -1839,6 +1839,9 @@ impl Root {
                                         .ml(px(panel_nudge(window.viewport_size().width.into())))
                                         .my(px(64.))
                                         .px(px(16.))
+                                        // `panel_nNq2Vb` clips what the Theme fieldset's min-content width pushes
+                                        // past its right edge (the 200% captures).
+                                        .overflow_x_hidden()
                                         .flex()
                                         .flex_col()
                                         .children(body),
@@ -1989,8 +1992,10 @@ fn nearest_scroll(
     let delta = if top < view_top + padding {
         top - (view_top + padding)
     } else if bottom > view_bottom - padding {
-        // A node taller than the view keeps its top in sight.
-        (bottom - (view_bottom - padding)).min(top - (view_top + padding))
+        // Chromium's closest edge for a node below the view is its bottom, taller than the view or not: the 200 %
+        // capture (`zoom/settings-appearance-200-top`: view 322..720 device px, the last subnav row ending 24 px
+        // above the view's end, the subnav's top scrolled out) shows it.
+        bottom - (view_bottom - padding)
     } else {
         0.
     };
@@ -2240,6 +2245,11 @@ mod scroll_tests {
         assert_eq!(
             nearest_scroll(0., (169., 679.), (671., 1500.), 12., 300.),
             300.
+        );
+        // Taller than the view and below it: the bottom aligns, the top goes out of sight (the 200 % settings).
+        assert_eq!(
+            nearest_scroll(0., (161., 360.), (434., 650.), 12., 1000.),
+            650. - (360. - 12.)
         );
     }
 

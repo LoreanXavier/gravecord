@@ -16,6 +16,8 @@ use gpui::{
 pub(super) const PANEL: f32 = 696.;
 /// `column-gap` of a horizontal field.
 const COLUMN_GAP: f32 = 24.;
+/// The Theme fieldset's min-content width (see `render_node`): the Color Themes card's 398.890625 plus its 25px sides.
+const THEME_FIELDSET_MIN: f32 = 448.89;
 const SWITCH_WIDTH: f32 = 48.;
 
 /// `--custom-description-max-width: 70ch` of a horizontal field, in the description's 14px text.
@@ -860,6 +862,15 @@ impl Root {
                 description,
                 children,
             } => {
+                // The Theme `<fieldset>` is as wide as its widest content, never narrower (a fieldset's
+                // `min-inline-size: min-content`): the 200% capture shows it 897.78 device px = 448.890625 css wide
+                // in a 323px column, its right side clipped by the panel (`dom/zoom/settings-appearance-200-*`).
+                let fieldset = *key == "appearance_theme_fieldset";
+                let width = if fieldset {
+                    width.max(THEME_FIELDSET_MIN)
+                } else {
+                    width
+                };
                 let column = if *split { (width - 16.) / 2. } else { width };
                 // Each row keeps its official key as its id, the anchor the subnav and search scroll to.
                 // Rows the generated page lacks go after the row they follow; rows whose predicate fails are left out.
@@ -899,6 +910,7 @@ impl Root {
                 div()
                     .flex()
                     .flex_col()
+                    .when(fieldset, |this| this.w(px(width)).flex_none())
                     .children(title.map(|title| {
                         super::actions::link_owner(cx.entity().downgrade(), key);
                         let marker = self

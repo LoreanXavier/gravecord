@@ -540,7 +540,9 @@ impl Root {
                     .flex_col()
                     .child(
                         div()
-                            .h(px(40.))
+                            // `header_QF5mJe` is as tall as its content: in the 200% capture the heading shrinks to
+                            // its min-content (the title and the subtext wrap) beside the two buttons.
+                            .min_h(px(40.))
                             .flex()
                             .items_center()
                             .justify_between()
@@ -548,6 +550,9 @@ impl Root {
                                 div()
                                     .flex()
                                     .flex_col()
+                                    .flex_shrink(1.)
+                                    // 146.1 device px at dpr 2 (the dump's `headings_QF5mJe`).
+                                    .min_w(px(73.05))
                                     .child(
                                         div()
                                             .flex()
@@ -557,7 +562,14 @@ impl Root {
                                             .line_height(px(20.))
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-strong"))
-                                            .child("Color Themes")
+                                            // The title wraps with the heading (its widest word, "Themes", is
+                                            // 110.1 device px in the 200% dump).
+                                            .child(
+                                                div()
+                                                    .flex_shrink(1.)
+                                                    .min_w(px(55.05))
+                                                    .child("Color Themes"),
+                                            )
                                             .child(mask_icon("nitro_wheel", 16., "--text-default")),
                                     )
                                     .child(if nitro {
@@ -583,6 +595,7 @@ impl Root {
                                 this.child(
                                     div()
                                         .flex()
+                                        .flex_none()
                                         .gap(px(12.))
                                         .child(
                                             div()
