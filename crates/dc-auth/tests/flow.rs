@@ -770,3 +770,65 @@ async fn stopping_qr_closes_the_socket_and_logout_sends_the_token_once() {
     let sent = &rest.requests_to("/auth/logout")[0];
     assert_eq!(sent.header("authorization"), Some("TEST.LOGOUT.TOKEN"));
 }
+
+#[tokio::test]
+async fn refused_codes_show_the_sentence_the_dialog_shows() {
+    let rest = rest_server(|seen| match seen.path.as_str() {
+        "/auth/mfa/totp" => (
+            429,
+            json!({"message": "You are being rate limited.", "retry_after": 2.5}),
+        ),
+        "/auth/mfa/backup" => (502, Value::Null),
+        "/auth/mfa/sms" => (
+            429,
+            json!({"message": "You are being rate limited.", "retry_after": 2.5}),
+        ),
+        "/auth/mfa/sms/send" => (
+            429,
+            json!({"message": "You are being rate limited.", "retry_after": 2.5}),
+        ),
+        _ => mfa_login(seen),
+    })
+    .await;
+    let (commands, mut events) = spawn(config(&rest, None)).unwrap();
+    login(&commands, false);
+    assert!(matches!(outcome(&mut events).await, Event::Mfa(_)));
+    let code = |kind, text: &str| Command::Mfa {
+        kind,
+        code: text.into(),
+    };
+    commands.send(code(MfaKind::Totp, "000000")).unwrap();
+    let Event::MfaFailed(message) = outcome(&mut events).await else {
+        panic!("a rate limit must show in the dialog")
+    };
+    assert_eq!(message, "You are being rate limited.");
+    commands.send(code(MfaKind::Backup, "abcd1234")).unwrap();
+    let Event::MfaFailed(message) = outcome(&mut events).await else {
+        panic!("a 502 must show in the dialog")
+    };
+    assert_eq!(message, "POST /auth/mfa/backup [502]");
+    commands.send(code(MfaKind::Sms, "654321")).unwrap();
+    let Event::MfaFailed(message) = outcome(&mut events).await else {
+        panic!("a rate limit must show in the dialog")
+    };
+    assert_eq!(message, "POST /auth/mfa/sms [429]");
+    commands.send(Command::SendSms).unwrap();
+    let Event::SmsFailed(message) = outcome(&mut events).await else {
+        panic!("a rate limit must show in the dialog")
+    };
+    assert_eq!(message, "You are being rate limited.");
+
+    // No answer at all: superagent's own sentence.
+    let api = dc_auth::api::AuthApi::new("http://127.0.0.1:9", Identity::new()).unwrap();
+    let challenge = dc_auth::MfaChallenge {
+        ticket: "t".into(),
+        methods: vec![MfaMethod::Totp],
+        login_instance_id: None,
+    };
+    let Err(Failure::MfaInvalid(message)) =
+        api.mfa(MfaKind::Totp, "000000", &challenge, None).await
+    else {
+        panic!("a dead network must show in the dialog")
+    };
+    assert_eq!(message, dc_auth::api::NETWORK_MESSAGE);
+}

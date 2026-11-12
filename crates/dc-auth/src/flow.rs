@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-#[derive(Debug)]
 pub enum Command {
     Login {
         login: String,
@@ -42,6 +41,26 @@ pub enum Command {
     Reset,
 }
 
+/// Names the command and nothing it carries: a typed login, password or code never reaches a log or a panic message
+/// through `{:?}` (`Zeroizing<String>` would print its text).
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Login { .. } => "Command::Login(<redacted>)",
+            Self::CaptchaSolved(_) => "Command::CaptchaSolved(<redacted>)",
+            Self::CaptchaDismissed => "Command::CaptchaDismissed",
+            Self::Mfa { .. } => "Command::Mfa(<redacted>)",
+            Self::SendSms => "Command::SendSms",
+            Self::Forgot { .. } => "Command::Forgot(<redacted>)",
+            Self::RestoreAccount => "Command::RestoreAccount",
+            Self::StartQr => "Command::StartQr",
+            Self::RestartQr => "Command::RestartQr",
+            Self::StopQr => "Command::StopQr",
+            Self::Reset => "Command::Reset",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     LoggingIn,
@@ -61,7 +80,7 @@ pub enum Event {
     Captcha(CaptchaChallenge),
     Suspended,
     /// A rate limit or an answer with no field to show it under: the official form shows nothing, the button
-    /// just stops loading. The sentence is for logs and tests.
+    /// just stops loading and the typed login and password stay (see `login_event`).
     Quiet(Failure),
     ForgotSent {
         login: String,
@@ -69,6 +88,22 @@ pub enum Event {
     ForgotOneTimeLogin,
     ForgotFields(FormErrors),
     Qr(RemoteEvent),
+}
+
+/// What the login form is told about a refused `POST /auth/login`. The pinned page (module 275941, `handleLogin`)
+/// stores `p(error)` (module 15552) and its default form reads only `login`, `email` and `password` from it, so a
+/// rate limit (`{message, retry_after}`), a dead network, a 5xx and an unknown refusal show nothing and leave the typed
+/// login and password as they are; only the form's own field errors appear, under their fields.
+pub fn login_event(failure: Failure) -> Event {
+    match failure {
+        Failure::Fields(errors) => Event::Fields(errors),
+        Failure::Captcha(challenge) => Event::Captcha(challenge),
+        Failure::AccountDisabled => Event::AccountDisabled,
+        Failure::ScheduledForDeletion => Event::ScheduledForDeletion,
+        Failure::PhoneVerificationRequired => Event::PhoneVerificationRequired,
+        Failure::Suspended => Event::Suspended,
+        other => Event::Quiet(other),
+    }
 }
 
 pub struct Config {
@@ -223,21 +258,18 @@ impl Controller {
     }
 
     fn fail_login(&mut self, failure: Failure) {
-        match failure {
-            Failure::Fields(errors) => self.emit(Event::Fields(errors)),
-            Failure::Captcha(challenge) => self.emit(Event::Captcha(challenge)),
-            Failure::AccountDisabled => self.emit(Event::AccountDisabled),
-            Failure::ScheduledForDeletion => self.emit(Event::ScheduledForDeletion),
-            Failure::PhoneVerificationRequired => self.emit(Event::PhoneVerificationRequired),
-            Failure::Suspended => {
-                self.credentials = None;
-                self.emit(Event::Suspended);
-            }
-            other => {
-                self.credentials = None;
-                self.emit(Event::Quiet(other));
-            }
+        // Only a captcha, a disabled or scheduled account and a phone verification can resend the typed credentials;
+        // after any other answer the password is dropped (and wiped) at once.
+        if !matches!(
+            failure,
+            Failure::Captcha(_)
+                | Failure::AccountDisabled
+                | Failure::ScheduledForDeletion
+                | Failure::PhoneVerificationRequired
+        ) {
+            self.credentials = None;
         }
+        self.emit(login_event(failure));
     }
 
     fn succeed(&mut self, token: Token) {
@@ -287,5 +319,95 @@ impl Controller {
             Err(Failure::Fields(errors)) => self.emit(Event::ForgotFields(errors)),
             Err(other) => self.emit(Event::Quiet(other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::classify;
+    use serde_json::{Value, json};
+
+    fn event(status: u16, body: Value) -> Event {
+        login_event(classify(status, &body))
+    }
+
+    #[test]
+    fn commands_and_challenges_print_no_secret() {
+        let login = Command::Login {
+            login: "who@example.invalid".into(),
+            password: Zeroizing::new("hunter2-value".into()),
+            undelete: false,
+        };
+        let mfa = Command::Mfa {
+            kind: MfaKind::Totp,
+            code: "135790".into(),
+        };
+        let challenge = MfaChallenge {
+            ticket: "ticket-value".into(),
+            methods: vec![],
+            login_instance_id: None,
+        };
+        let text = format!(
+            "{login:?} {mfa:?} {challenge:?} {:?}",
+            Event::Mfa(challenge.clone())
+        );
+        for secret in ["who@example", "hunter2", "135790", "ticket-value"] {
+            assert!(!text.contains(secret), "{secret} reached a Debug print");
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_shows_nothing() {
+        let body =
+            json!({"message": "You are being rate limited.", "retry_after": 2.5, "global": false});
+        assert!(matches!(
+            event(429, body),
+            Event::Quiet(Failure::RateLimited { retry_after }) if retry_after == 2.5
+        ));
+    }
+
+    #[test]
+    fn a_server_error_or_a_page_instead_of_json_shows_nothing() {
+        assert!(matches!(
+            event(500, Value::Null),
+            Event::Quiet(Failure::Other { status: 500, .. })
+        ));
+        assert!(matches!(
+            event(502, json!({"message": "Bad Gateway", "code": 0})),
+            Event::Quiet(Failure::Other { status: 502, .. })
+        ));
+        assert!(matches!(
+            login_event(Failure::Network),
+            Event::Quiet(Failure::Network)
+        ));
+    }
+
+    #[test]
+    fn an_invalid_form_body_shows_under_its_fields() {
+        let body = json!({"code": 50035, "message": "Invalid Form Body", "errors": {
+            "login": {"_errors": [{"code": "INVALID_LOGIN", "message": "Login or password is invalid."}]},
+            "password": {"_errors": [{"code": "INVALID_LOGIN", "message": "Login or password is invalid."}]}}});
+        let Event::Fields(errors) = event(400, body) else {
+            panic!("not field errors");
+        };
+        assert_eq!(errors.field("login"), Some("Login or password is invalid."));
+        assert_eq!(
+            errors.field("password"),
+            Some("Login or password is invalid.")
+        );
+    }
+
+    #[test]
+    fn a_captcha_answer_that_is_not_a_demand_is_not_a_challenge() {
+        // A failed solution comes back as a 400 whose `captcha_key` lists "invalid-response" and the new challenge
+        // fields; the HTTP layer of the pinned client (module 596339) asks again for any 400 with `captcha_key`.
+        let body = json!({"captcha_key": ["invalid-response"], "captcha_service": "hcaptcha", "captcha_sitekey": "k"});
+        assert!(matches!(event(400, body), Event::Captcha(_)));
+        // Without the list it is only an unknown refusal, and the form shows nothing.
+        assert!(matches!(
+            event(400, json!({"captcha_key": "invalid-response"})),
+            Event::Quiet(Failure::Other { .. })
+        ));
     }
 }

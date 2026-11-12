@@ -21,11 +21,27 @@ pub struct LoginRequest {
 }
 
 /// `ea()` in module 46653: the methods the account offers, in the order the dialog starts with.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct MfaChallenge {
     pub ticket: String,
     pub methods: Vec<MfaMethod>,
     pub login_instance_id: Option<String>,
+}
+
+/// The ticket is a bearer of the half-finished login: it stays out of `{:?}`.
+impl std::fmt::Debug for MfaChallenge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MfaChallenge")
+            .field(
+                "methods",
+                &self
+                    .methods
+                    .iter()
+                    .map(MfaMethod::route)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -236,33 +252,59 @@ impl AuthApi {
             "login_instance_id": challenge.login_instance_id,
         });
         let route = format!("/auth/mfa/{}", kind.route());
-        let (status, answer) = self.post(&route, &body, captcha, None).await?;
+        let (status, answer) = match self.post(&route, &body, captcha, None).await {
+            Ok(answer) => answer,
+            // The dialog of the pinned client shows the request error's own text under the field.
+            Err(Failure::Network) => return Err(Failure::MfaInvalid(NETWORK_MESSAGE.to_owned())),
+            Err(other) => return Err(other),
+        };
         if (200..300).contains(&status) {
             return token_of(&answer).ok_or(Failure::Other {
                 status,
                 message: None,
             });
         }
-        // The dialog shows whatever sentence the server sent (`e.body?.message ?? e.message`).
-        match classify(status, &answer) {
-            Failure::Captcha(challenge) => Err(Failure::Captcha(challenge)),
-            Failure::RateLimited { retry_after } => Err(Failure::RateLimited { retry_after }),
-            Failure::Suspended => Err(Failure::Suspended),
-            Failure::Network => Err(Failure::Network),
-            _ => Err(Failure::MfaInvalid(
-                answer["message"].as_str().unwrap_or_default().to_owned(),
-            )),
+        // A captcha demand is the HTTP layer's (400 only) and a suspended token the action's; everything else is
+        // the sentence the dialog shows under the code field.
+        if status != 429 {
+            match classify(status, &answer) {
+                Failure::Captcha(challenge) => return Err(Failure::Captcha(challenge)),
+                Failure::Suspended => return Err(Failure::Suspended),
+                _ => {}
+            }
         }
+        Err(Failure::MfaInvalid(mfa_message(
+            kind, &route, status, &answer,
+        )))
     }
 
     /// `POST /auth/mfa/sms/send`: the masked number the code went to.
     pub async fn send_sms(&self, challenge: &MfaChallenge) -> Result<String, Failure> {
         let body = json!({"ticket": challenge.ticket});
-        let (status, answer) = self.post("/auth/mfa/sms/send", &body, None, None).await?;
+        let (status, answer) = match self.post("/auth/mfa/sms/send", &body, None, None).await {
+            Ok(answer) => answer,
+            Err(Failure::Network) => {
+                return Err(Failure::Other {
+                    status: 0,
+                    message: Some(NETWORK_MESSAGE.to_owned()),
+                });
+            }
+            Err(other) => return Err(other),
+        };
         if (200..300).contains(&status) {
             return Ok(answer["phone"].as_str().unwrap_or_default().to_owned());
         }
-        Err(classify(status, &answer))
+        // `rejectWithError: false`: the rejection is the raw answer, so the dialog shows `body.message` (nothing when
+        // the answer has none), a rate limit's included.
+        if status != 429
+            && let Failure::Captcha(challenge) = classify(status, &answer)
+        {
+            return Err(Failure::Captcha(challenge));
+        }
+        Err(Failure::Other {
+            status,
+            message: answer["message"].as_str().map(str::to_owned),
+        })
     }
 
     /// `POST /auth/forgot`.
@@ -314,6 +356,27 @@ impl AuthApi {
     }
 }
 
+/// The text of a request that never got an answer: superagent's `crossDomainError` (module 333405), which the
+/// pinned client's dialogs show as `e.message`. The line break is collapsed the way a web page's text collapses it.
+pub const NETWORK_MESSAGE: &str = "Request has been terminated Possible causes: the network is offline, Origin is not allowed by Access-Control-Allow-Origin, the page is being unloaded, etc.";
+
+/// What the Multi-Factor dialog shows under the code field after a refused `/auth/mfa/{type}`. `loginMFAv2` (module
+/// 830215) rethrows code 60008 as `Error(body.message)` and every other refusal as the `HTTPResponseError` (module
+/// 620632), whose `message` is `METHOD url [status]`. The authenticator and backup slides (module 397404) show
+/// `e.body?.message ?? e.message`; the SMS slide shows `e.message ?? e.body?.message`, which is always the former.
+pub fn mfa_message(kind: MfaKind, route: &str, status: u16, body: &Value) -> String {
+    let message = body["message"].as_str();
+    if body["code"].as_u64() == Some(crate::errors::CODE_MFA_INVALID_CODE) {
+        return message.unwrap_or_default().to_owned();
+    }
+    // The routes hold no digits, so the `\d+` -> `xxx` rewrite of the message changes nothing here.
+    let request_error = format!("POST {route} [{status}]");
+    match (kind, message) {
+        (MfaKind::Sms, _) | (_, None) => request_error,
+        (_, Some(message)) => message.to_owned(),
+    }
+}
+
 fn challenge(answer: &Value) -> MfaChallenge {
     let mut methods = Vec::new();
     if let Some(webauthn) = answer["webauthn"].as_str() {
@@ -338,6 +401,47 @@ fn challenge(answer: &Value) -> MfaChallenge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_code_shows_the_servers_sentence() {
+        let body = json!({"code": 60008, "message": "Invalid two-factor code"});
+        for kind in [MfaKind::Totp, MfaKind::Backup, MfaKind::Sms] {
+            assert_eq!(
+                mfa_message(kind, "/auth/mfa/totp", 400, &body),
+                "Invalid two-factor code"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rate_limited_code_shows_the_message_except_for_sms() {
+        let body = json!({"message": "You are being rate limited.", "retry_after": 2.5});
+        assert_eq!(
+            mfa_message(MfaKind::Totp, "/auth/mfa/totp", 429, &body),
+            "You are being rate limited."
+        );
+        assert_eq!(
+            mfa_message(MfaKind::Backup, "/auth/mfa/backup", 429, &body),
+            "You are being rate limited."
+        );
+        // The SMS slide reads `e.message` first, and the request error's message is never empty.
+        assert_eq!(
+            mfa_message(MfaKind::Sms, "/auth/mfa/sms", 429, &body),
+            "POST /auth/mfa/sms [429]"
+        );
+    }
+
+    #[test]
+    fn an_answer_without_a_message_shows_the_request_error() {
+        assert_eq!(
+            mfa_message(MfaKind::Totp, "/auth/mfa/totp", 502, &Value::Null),
+            "POST /auth/mfa/totp [502]"
+        );
+        assert_eq!(
+            mfa_message(MfaKind::Backup, "/auth/mfa/backup", 500, &json!({"x": 1})),
+            "POST /auth/mfa/backup [500]"
+        );
+    }
 
     #[test]
     fn methods_keep_the_dialogs_order() {

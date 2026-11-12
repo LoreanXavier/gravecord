@@ -5,7 +5,8 @@
 //! that key, which we decrypt (RSA-OAEP, SHA-256) and send back base64url -> `pending_remote_init` carries the key's
 //! fingerprint (SHA-256 of the SPKI, base64url), which must equal ours, and the QR code shows it -> `pending_ticket`
 //! carries the scanning user, encrypted -> `pending_login` carries a ticket we exchange at `REMOTE_AUTH_LOGIN` for the
-//! token, encrypted to our key. `cancel` and any failure start a new session after a backoff.
+//! token, encrypted to our key. `cancel` starts a new session at once and any failure starts one after a backoff; the
+//! panel shows no message for either, only the loading cubes again.
 //!
 //! `yapfast-discord/src/remote_auth.rs` was read for the protocol and not copied (GPL).
 //!
@@ -218,7 +219,10 @@ impl Drop for RemoteAuth {
 
 enum Ended {
     Finished,
+    /// A failure: a new session after the backoff (`p` in module 785161).
     Retry,
+    /// The phone cancelled: a new session at once (`cancel` calls the restart `h` directly, with no backoff).
+    Restart,
 }
 
 async fn run(
@@ -240,6 +244,7 @@ async fn run(
         };
         match ended {
             Ended::Finished => return,
+            Ended::Restart => fails = 0,
             Ended::Retry => {
                 // A session that got as far as showing a code was healthy: its end starts the backoff afresh.
                 fails = if reached_code { 1 } else { fails + 1 };
@@ -364,7 +369,7 @@ async fn session(
                             None => Ended::Retry,
                         };
                     }
-                    "cancel" => return Ended::Retry,
+                    "cancel" => return Ended::Restart,
                     _ => {}
                 }
             }

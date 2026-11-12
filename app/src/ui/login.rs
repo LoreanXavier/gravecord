@@ -8,10 +8,12 @@
 use super::{color, editor_style, icon, window_controls};
 use crate::editor::{Editor, EditorEvent};
 use crate::login_art::ArtBytes;
-use dc_auth::flow::{Command, Event};
+use dc_auth::errors::classify;
+use dc_auth::flow::{Command, Event, login_event};
 use dc_auth::qr::{self, Matrix};
 use dc_auth::{
-    CaptchaAnswer, CaptchaChallenge, FormErrors, MfaChallenge, MfaKind, MfaMethod, RemoteEvent,
+    CaptchaAnswer, CaptchaChallenge, Failure, FormErrors, MfaChallenge, MfaKind, MfaMethod,
+    RemoteEvent,
 };
 use dc_proto::secrets::Token;
 use dc_webhost::{CaptchaEvent, HostEvent, WebHost, captcha_event};
@@ -79,6 +81,8 @@ enum QrState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     Select,
+    /// The security key slide: one button that starts the platform's WebAuthn dialog (`Z` in module 397404).
+    WebAuthn,
     Totp,
     /// "Slow down! Are you sure?" before the backup code field.
     BackupWarning,
@@ -142,6 +146,7 @@ pub struct LoginView {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Wanted {
     Email,
+    Password,
     Code,
 }
 
@@ -152,6 +157,8 @@ pub type AvatarChannels = (
 );
 
 const REQUIRED: &str = "This field is required";
+/// `xSCvBf`: what the security key slide shows when the key step fails (module 397404 `Z`).
+const WEBAUTHN_FAILED: &str = "An error occurred. Please try again.";
 
 impl LoginView {
     pub fn new(
@@ -301,7 +308,96 @@ impl LoginView {
                 fill(self, cx);
                 self.apply(Event::LoggingIn, cx);
             }
-            "rate-limited" => fill(self, cx),
+            // The answer of the login route, run through the real mapping (`classify`, `login_event`), as a person
+            // sees it after the button stops loading: nothing under the fields for a rate limit, a dead network and a
+            // 5xx, the typed login and password still in the boxes.
+            "rate-limited" | "answer-429" => {
+                fill(self, cx);
+                self.preview_login_answer(
+                    429,
+                    serde_json::json!({"message": "You are being rate limited.", "retry_after": 2.5, "global": false}),
+                    cx,
+                );
+            }
+            "answer-network" => {
+                fill(self, cx);
+                self.apply(Event::LoggingIn, cx);
+                self.apply(login_event(Failure::Network), cx);
+            }
+            "answer-500" => {
+                fill(self, cx);
+                self.preview_login_answer(500, serde_json::Value::Null, cx);
+            }
+            "answer-invalid-form" => {
+                fill(self, cx);
+                self.preview_login_answer(
+                    400,
+                    serde_json::json!({"code": 50035, "message": "Invalid Form Body", "errors": {
+                        "login": {"_errors": [{"code": "INVALID_LOGIN", "message": "Login or password is invalid."}]},
+                        "password": {"_errors": [{"code": "INVALID_LOGIN", "message": "Login or password is invalid."}]}}}),
+                    cx,
+                );
+            }
+            // A form error under the login only, as `BASE_TYPE_REQUIRED` answers for an empty field.
+            "answer-login-field" => {
+                fill(self, cx);
+                self.preview_login_answer(
+                    400,
+                    serde_json::json!({"code": 50035, "message": "Invalid Form Body", "errors": {
+                        "login": {"_errors": [{"code": "EMAIL_TYPE_INVALID_EMAIL", "message": "Not a well formed email address."}]}}}),
+                    cx,
+                );
+            }
+            // A failed captcha solution is a 400 with `captcha_key` again: the dialog asks once more.
+            "answer-captcha-invalid" => {
+                fill(self, cx);
+                self.preview_login_answer(
+                    400,
+                    serde_json::json!({"captcha_key": ["invalid-response"], "captcha_service": "hcaptcha", "captcha_sitekey": "test"}),
+                    cx,
+                );
+            }
+            "answer-mfa-429" | "answer-mfa-500" | "answer-mfa-network" | "answer-mfa-sms-429" => {
+                self.apply(Event::Mfa(challenge(all.clone())), cx);
+                let (kind, route) = if state == "answer-mfa-sms-429" {
+                    self.goto_step(Step::Sms, cx);
+                    (MfaKind::Sms, "/auth/mfa/sms")
+                } else {
+                    (MfaKind::Totp, "/auth/mfa/totp")
+                };
+                let message = match state {
+                    "answer-mfa-network" => dc_auth::api::NETWORK_MESSAGE.to_owned(),
+                    "answer-mfa-500" => {
+                        dc_auth::api::mfa_message(kind, route, 500, &serde_json::Value::Null)
+                    }
+                    _ => dc_auth::api::mfa_message(
+                        kind,
+                        route,
+                        429,
+                        &serde_json::json!({"message": "You are being rate limited.", "retry_after": 2.5}),
+                    ),
+                };
+                self.code.update(cx, |editor, _| editor.set_text("123456"));
+                self.want_focus = None;
+                self.apply(Event::MfaFailed(message), cx);
+            }
+            "mfa-webauthn"
+            | "mfa-webauthn-failed"
+            | "mfa-webauthn-only"
+            | "mfa-select-webauthn" => {
+                let key = MfaMethod::WebAuthn("{}".to_owned());
+                let methods = if state == "mfa-webauthn-only" {
+                    vec![key]
+                } else {
+                    vec![key, MfaMethod::Totp, MfaMethod::Backup, MfaMethod::Sms]
+                };
+                self.apply(Event::Mfa(challenge(methods)), cx);
+                match state {
+                    "mfa-webauthn-failed" => self.authenticate_with_key(cx),
+                    "mfa-select-webauthn" => self.goto_step(Step::Select, cx),
+                    _ => {}
+                }
+            }
             "password-shown" => {
                 fill(self, cx);
                 self.show_password = true;
@@ -346,7 +442,8 @@ impl LoginView {
                 self.want_focus = None;
             }
             "mfa-sms" => {
-                self.apply(Event::Mfa(challenge(vec![MfaMethod::Sms])), cx);
+                self.apply(Event::Mfa(challenge(all)), cx);
+                self.goto_step(Step::Sms, cx);
                 self.apply(
                     Event::SmsSent {
                         phone: "+** *** *** ** 34".to_owned(),
@@ -355,7 +452,8 @@ impl LoginView {
                 );
             }
             "mfa-backup" => {
-                self.apply(Event::Mfa(challenge(vec![MfaMethod::Backup])), cx);
+                self.apply(Event::Mfa(challenge(all)), cx);
+                self.goto_step(Step::BackupWarning, cx);
                 if let Dialog::Mfa(mfa) = &mut self.dialog {
                     mfa.countdown = 9;
                 }
@@ -367,6 +465,21 @@ impl LoginView {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// A capture's answer of the login route, mapped the way the controller maps a real one. Nothing is sent.
+    fn preview_login_answer(
+        &mut self,
+        status: u16,
+        body: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(Event::LoggingIn, cx);
+        self.apply(login_event(classify(status, &body)), cx);
+        // The golden of a rate limit was taken after typing the password and pressing Enter there.
+        if self.want_focus == Some(Wanted::Email) {
+            self.want_focus = Some(Wanted::Password);
+        }
     }
 
     fn send(&self, command: Command) {
@@ -401,16 +514,13 @@ impl LoginView {
             }
             Event::Mfa(challenge) => {
                 self.busy = false;
-                let first = challenge
-                    .methods
-                    .iter()
-                    .find(|method| !matches!(method, MfaMethod::WebAuthn(_)))
-                    .cloned();
-                let step = match first {
+                // The dialog opens on the slide of the first method, WebAuthn's included (`methods[0]?.type ?? "select"`).
+                let step = match challenge.methods.first() {
+                    Some(MfaMethod::WebAuthn(_)) => Step::WebAuthn,
                     Some(MfaMethod::Totp) => Step::Totp,
                     Some(MfaMethod::Backup) => Step::BackupWarning,
                     Some(MfaMethod::Sms) => Step::Sms,
-                    _ => Step::Select,
+                    None => Step::Select,
                 };
                 self.code.update(cx, |editor, _| editor.set_text(""));
                 if step == Step::Sms {
@@ -494,6 +604,13 @@ impl LoginView {
             .or_else(|| errors.field("email"))
             .map(str::to_owned);
         self.password_error = errors.field("password").map(str::to_owned);
+        // New field errors move the keyboard to the password field, else to the login field (the `useEffect` on
+        // `errors` in the form of module 275941). Errors the form has no field for change nothing.
+        if self.password_error.is_some() {
+            self.want_focus = Some(Wanted::Password);
+        } else if self.login_error.is_some() {
+            self.want_focus = Some(Wanted::Email);
+        }
     }
 
     fn apply_qr(&mut self, event: RemoteEvent) {
@@ -609,6 +726,15 @@ impl LoginView {
         mfa.error = None;
         let _ = self.commands.send(Command::Mfa { kind, code });
         cx.notify();
+    }
+
+    /// "Authenticate with a passkey or security key". The platform's WebAuthn dialog is not built (`BLOCKED.md`), so
+    /// the attempt ends the way the official slide ends one the browser cannot complete: its own error sentence.
+    fn authenticate_with_key(&mut self, cx: &mut Context<Self>) {
+        if let Dialog::Mfa(mfa) = &mut self.dialog {
+            mfa.error = Some(WEBAUTHN_FAILED.to_owned());
+            cx.notify();
+        }
     }
 
     fn goto_step(&mut self, step: Step, cx: &mut Context<Self>) {
@@ -1473,6 +1599,8 @@ impl LoginView {
     fn mfa_dialog(&self, mfa: &Mfa, cx: &mut Context<Self>) -> AnyElement {
         let has = |wanted: &MfaMethod| mfa.challenge.methods.iter().any(|method| method == wanted);
         let title = heading("Multi-Factor Authentication");
+        // "Verify with something else" only exists when the account has more than one method (`y` in module 397404).
+        let several = mfa.challenge.methods.len() > 1;
         let verify_else = button("mfa-else", "Verify with something else", Look::Secondary)
             .on_click(cx.listener(|this, _, _, cx| this.goto_step(Step::Select, cx)));
         let confirm_enabled = !mfa.busy && !self.code.read(cx).text().trim().is_empty();
@@ -1561,6 +1689,20 @@ impl LoginView {
                             .flex()
                             .flex_col()
                             .gap(px(10.))
+                            .when(
+                                mfa.challenge
+                                    .methods
+                                    .iter()
+                                    .any(|method| matches!(method, MfaMethod::WebAuthn(_))),
+                                |this| {
+                                    this.child(item(
+                                        "mfa-pick-webauthn",
+                                        "Use a passkey or security key",
+                                        Step::WebAuthn,
+                                        cx,
+                                    ))
+                                },
+                            )
                             .when(has(&MfaMethod::Totp), |this| {
                                 this.child(item(
                                     "mfa-pick-totp",
@@ -1644,7 +1786,38 @@ impl LoginView {
                         40.,
                     ))
                     .child(para(last, 0., 41.))
-                    .child(div().mt(px(24.)).flex().flex_col().gap(px(8.)).child(verify_else).child(sure))
+                    .child(
+                        div()
+                            .mt(px(24.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .children(several.then_some(verify_else))
+                            .child(sure),
+                    )
+                    .into_any_element()
+            }
+            Step::WebAuthn => {
+                let authenticate = button(
+                    "mfa-webauthn",
+                    "Authenticate with a passkey or security key",
+                    Look::Primary,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.authenticate_with_key(cx)));
+                div()
+                    .child(div().px(px(24.)).pt(px(24.)).child(title))
+                    .children(error.map(|error| div().px(px(24.)).pt(px(16.)).child(error)))
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(24.))
+                            .pb(px(24.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .children(several.then_some(verify_else))
+                            .child(authenticate),
+                    )
                     .into_any_element()
             }
             step => {
@@ -1730,7 +1903,7 @@ impl LoginView {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
-                            .child(verify_else)
+                            .children(several.then_some(verify_else))
                             .child(confirm),
                     )
                     .into_any_element()
@@ -1964,6 +2137,7 @@ impl Render for LoginView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.want_focus.take() {
             Some(Wanted::Email) => window.focus(&self.email.focus_handle(cx), cx),
+            Some(Wanted::Password) => window.focus(&self.password.focus_handle(cx), cx),
             Some(Wanted::Code) => window.focus(&self.code.focus_handle(cx), cx),
             None => {}
         }
