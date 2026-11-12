@@ -6,6 +6,7 @@
 use super::{Kind, Mode, Open, text};
 use crate::parity::Parity;
 use crate::ui::modal::{self, Tone};
+use crate::ui::motion::Posed as _;
 use crate::ui::{Root, color, icon};
 use dc_state::User;
 use gpui::{
@@ -531,6 +532,7 @@ impl Root {
                             .child(modal::footer_button(apply, cx)),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("profile-editor-picker");
         Some(
             deferred(
                 div()
@@ -538,11 +540,11 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(3)
             .into_any_element(),

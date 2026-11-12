@@ -9,6 +9,7 @@
 use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
+use crate::ui::motion::Posed as _;
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, ObjectFit, SharedString,
     Subscription, Window, deferred, div, img, prelude::*, px, rgba,
@@ -597,6 +598,7 @@ impl Root {
                     .flex_col()
                     .children(sections),
             );
+        let pose = crate::ui::motion::modal_pose("activity-shelf");
         Some(
             deferred(
                 div()
@@ -604,7 +606,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -614,6 +616,7 @@ impl Root {
                     }))
                     .child(
                         div()
+                            .posed(pose)
                             .id("activity-shelf")
                             .occlude()
                             .w(px(502.))

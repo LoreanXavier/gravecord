@@ -176,6 +176,13 @@ pub(in crate::ui) const FAMILY_ART: (&str, &str) = (
     "https://cdn.discordapp.com/assets/content/bb4093f4ae937ad09bc359b162988c3cbb7d49d924073fee7d66a763e738fc67.svg",
 );
 
+/// The tab "Get Started" opens: My Family (`D.u9.REQUESTS`).
+pub(in crate::ui) const GET_STARTED_TAB: usize = 1;
+/// The banner's text before its link (`EMCf6j`).
+const FAMILY_BLURB: &str = "We built Family Center to provide you with more context on how your teen uses Discord so you can work together on building positive online behaviors. ";
+/// The `articleLink` of the parent's banner text.
+pub(in crate::ui) const FAMILY_ARTICLE: &str =
+    "https://support.discord.com/hc/articles/14155043715735";
 /// `privacy.family_center_enabled_v2` (field 21 of `PrivacySettings`): "Enable Family Center tab".
 pub(in crate::ui) const FAMILY_ENABLED: &str = "family_center_enabled";
 /// The email category behind "Receive Activity Summary emails" (`FAMILY_CENTER_DIGEST`, module 723923).
@@ -670,15 +677,25 @@ impl Root {
                             .mt(px(6.))
                             .max_w(px(364.))
                             .font_weight(FontWeight(500.))
-                            .child(Self::family_learn_more()),
+                            .child(Self::family_learn_more(cx)),
                     )
-                    .child(div().mt(px(16.)).flex().child(
-                        div().id("settings-family-get-started").child(button(
-                            "settings-family-get-started-button",
-                            "Get Started",
-                            ButtonKind::Primary,
-                        )),
-                    )),
+                    // `t1` of module 890623: an adult's "Get Started" (`LhlgY9`) opens the My Family tab
+                    // (`handleTabChange(REQUESTS)`).
+                    .child(
+                        div().mt(px(16.)).flex().child(
+                            div()
+                                .id("settings-family-get-started")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings_extra.family_tab = GET_STARTED_TAB;
+                                    cx.notify();
+                                }))
+                                .child(button(
+                                    "settings-family-get-started-button",
+                                    "Get Started",
+                                    ButtonKind::Primary,
+                                )),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -816,18 +833,35 @@ impl Root {
             .into_any_element()
     }
 
-    /// "Learn more" ends the banner's text (`anchorUnderlineOnHover_R6ReNl`).
-    fn family_learn_more() -> impl IntoElement {
-        described(
-            &[
-                (
-                    "We built Family Center to provide you with more context on how your teen uses Discord so you can work together on building positive online behaviors. ",
-                    false,
-                ),
-                ("Learn more", true),
-            ],
-            "--text-muted",
-        )
+    /// "Learn more" ends the banner's text (`anchorUnderlineOnHover_R6ReNl`) and opens the parent article
+    /// (`EMCf6j` with its `articleLink`, `t3` of module 890623).
+    fn family_learn_more(cx: &mut Context<Self>) -> impl IntoElement {
+        let start = FAMILY_BLURB.len();
+        let text = format!("{FAMILY_BLURB}Learn more");
+        let link = start..text.len();
+        let root = cx.weak_entity();
+        div()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .text_color(color("--text-muted"))
+            .child(
+                gpui::InteractiveText::new(
+                    "settings-family-learn-more",
+                    gpui::StyledText::new(text).with_highlights([(
+                        link.clone(),
+                        gpui::HighlightStyle {
+                            color: Some(color("--text-link").into()),
+                            ..Default::default()
+                        },
+                    )]),
+                )
+                .on_click(vec![link], move |_, _, cx| {
+                    let _ = root.update(cx, |this, cx| {
+                        this.settings_open_url(FAMILY_ARTICLE, cx);
+                        cx.notify();
+                    });
+                }),
+            )
     }
 
     fn family_my_family(&self) -> AnyElement {
@@ -1057,6 +1091,13 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn get_started_opens_my_family_and_learn_more_the_parent_article() {
+        assert_eq!(TABS[GET_STARTED_TAB], "My Family");
+        assert!(FAMILY_ARTICLE.ends_with("/articles/14155043715735"));
+        assert!(FAMILY_BLURB.ends_with("behaviors. "));
+    }
 
     #[test]
     fn the_standing_states_map_to_the_track() {

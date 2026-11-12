@@ -8,6 +8,7 @@
 use super::{Root, avatar_source, color, header_time, icon};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, ScrollHandle, SharedString, Window, deferred,
@@ -1213,6 +1214,7 @@ impl Root {
                     .child(super::menu::menu_scrollbar(scroll.clone())),
             )
             .children(footer);
+        let pose = crate::ui::motion::modal_pose("report");
         Some(
             deferred(
                 div()
@@ -1220,7 +1222,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1228,7 +1230,7 @@ impl Root {
                         this.report = None;
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(2)
             .into_any_element(),

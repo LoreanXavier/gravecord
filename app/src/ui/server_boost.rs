@@ -10,6 +10,7 @@ use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, FontWeight, IntoElement, PathPromptOptions,
@@ -831,6 +832,7 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let pose = crate::ui::motion::modal_pose("boost-perks");
         Some(
             deferred(
                 div()
@@ -838,13 +840,14 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(gpui::rgba(0x000000b8))
+                    .bg(pose.dim(gpui::rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
                     .on_click(close_scrim)
                     .child(
                         div()
+                            .posed(pose)
                             .id("boost-perks")
                             .occlude()
                             .relative()

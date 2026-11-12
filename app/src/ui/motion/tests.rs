@@ -586,6 +586,32 @@ fn a_layer_enters_from_scale_1_1_and_leaves_back_to_it() {
     assert!(settled(&pose_keys("layer")));
 }
 
+#[test]
+fn a_pose_dims_the_scrim_by_its_factor_and_keeps_the_colour() {
+    let pose = Pose {
+        scrim: 0.5,
+        opacity: 0.,
+        scale: 0.9,
+    };
+    let base = gpui::rgba(0x000000b8);
+    let dim = pose.dim(base);
+    assert_eq!((dim.r, dim.g, dim.b), (base.r, base.g, base.b));
+    close(dim.a as f64, base.a as f64 / 2., 1e-6);
+    let open = Pose {
+        scrim: 1.,
+        opacity: 1.,
+        scale: 1.,
+    };
+    assert_eq!(open.dim(base), base);
+}
+
+#[test]
+fn only_the_media_viewer_leaves_without_a_scale() {
+    assert!(subtle_layer("Name(\"lightbox\")"));
+    assert!(!subtle_layer("Name(\"lightbox-more-menu\")"));
+    assert!(!subtle_layer("Name(\"forward-layer\")"));
+}
+
 fn pop_at(ms: f64, reduced: bool, id: &str, kind: PopKind, side: PopSide) -> PopPose {
     freeze(Some(ms));
     begin_frame(reduced);

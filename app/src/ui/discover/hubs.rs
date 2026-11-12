@@ -9,6 +9,7 @@ use super::{Root, text};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use crate::ui::{color, editor_style, icon};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, HighlightStyle, InteractiveText, IntoElement,
@@ -376,6 +377,7 @@ impl Root {
                             })),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("discover-hub");
         Some(
             deferred(
                 div()
@@ -383,7 +385,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -391,7 +393,7 @@ impl Root {
                         this.hub_dialog_close();
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

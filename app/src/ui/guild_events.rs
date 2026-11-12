@@ -16,6 +16,7 @@ pub(super) mod schedule;
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::{Id, permissions, scheduled_events::ScheduledEvent};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, Window, deferred, div, prelude::*,
@@ -59,13 +60,14 @@ pub(super) fn layer(
     close: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
     cx: &mut Context<Root>,
 ) -> AnyElement {
+    let pose = crate::ui::motion::modal_pose(id);
     deferred(
         div()
             .id(id)
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x000000b8))
+            .bg(pose.dim(rgba(0x000000b8)))
             .flex()
             .items_center()
             .justify_center()
@@ -74,7 +76,7 @@ pub(super) fn layer(
                 close(this, window, cx);
                 cx.notify();
             }))
-            .child(modal),
+            .child(div().posed(pose).child(modal)),
     )
     .with_priority(1)
     .into_any_element()

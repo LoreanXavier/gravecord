@@ -3,10 +3,8 @@
 //! and the FAQ. Geometry and copy are from `design/dom/settings/server-boost-darker-cozy.json`; positions are relative
 //! to the page's top (154 in the capture). The level table is the guild limits table of module 682901.
 //!
-//! Not drawn: the "How do Boosts work?" video (a gradient card stands in), the recognition card illustrations, and the
-//! FAQ answers (the rows are drawn but do not open: the answers are not in the capture). "Boost this server" and
-//! "Learn more" are drawn but do nothing: boosting spends a Boost slot, and the help article is not named in the
-//! snapshot.
+//! Not drawn: the "How do Boosts work?" video (a gradient card stands in) and the recognition card illustrations.
+//! The open FAQ answer's height is estimated. The three "Learn more" links (header, Nitro banner, FAQ answer) open the `GUILD_BOOSTING_FAQ` article.
 
 use super::Root;
 use crate::ui::nitro::{oklab, rgb};
@@ -89,6 +87,14 @@ fn text(
         .font_weight(FontWeight(weight))
         .text_color(color(tint))
         .child(value.into())
+}
+
+/// The Nitro banner's second line (`6UAu+f` with a count of 2).
+const BANNER_LINE: &str = "Nitro users get 2 Boosts included with their membership. Learn more";
+
+/// The byte range of the banner's "Learn more".
+fn banner_link() -> std::ops::Range<usize> {
+    BANNER_LINE.len() - "Learn more".len()..BANNER_LINE.len()
 }
 
 fn at(x: f32, y: f32) -> gpui::Div {
@@ -295,21 +301,43 @@ impl Root {
                         linear_color_stop(oklab(0.35, 0.12, -0.1, 0.9), 0.),
                         linear_color_stop(oklab(0.26239, 0.0025, -0.0089, 1.), 0.6),
                     ))
-                    .child(at(14., 13.).size(px(40.)).rounded(px(8.)).bg(rgb(88, 40, 150)).flex().items_center().justify_center().child(icon("boost_gem", 24., "--white")))
-                    .child(at(66., 13.).child(text("Get 2 Boosts with Nitro!", 16., 20., 600., "--text-default")))
+                    .child(
+                        at(14., 13.)
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .bg(rgb(88, 40, 150))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("boost_gem", 24., "--white")),
+                    )
+                    .child(at(66., 13.).child(text(
+                        "Get 2 Boosts with Nitro!",
+                        16.,
+                        20.,
+                        600.,
+                        "--text-default",
+                    )))
                     .child(
                         at(66., 36.)
                             .flex()
                             .items_center()
                             .gap(px(4.))
                             .child(icon("nitro_wheel", 14., "--text-muted"))
-                            .child(text(
-                                "Nitro users get 2 Boosts included with their membership. Learn more",
-                                12.,
-                                16.,
-                                600.,
-                                "--text-muted",
-                            )),
+                            // "Learn more" is `helpdeskArticle`, `GUILD_BOOSTING_FAQ` (module 158935 `mB`).
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-muted"))
+                                    .child(article_line(
+                                        "boost-banner-learn-more",
+                                        BANNER_LINE,
+                                        banner_link(),
+                                        cx,
+                                    )),
+                            ),
                     )
                     .child(
                         at(584., 17.)
@@ -526,5 +554,16 @@ impl Root {
         }
         page = page.child(list);
         page.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_banner_link_is_its_learn_more() {
+        assert_eq!(&BANNER_LINE[banner_link()], "Learn more");
+        assert!(BOOSTING_ARTICLE.ends_with("/articles/360028038352"));
     }
 }

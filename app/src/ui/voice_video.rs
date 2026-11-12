@@ -108,6 +108,11 @@ impl Frames {
     }
 }
 
+/// `allowMultiple` of `watchStream`: asked for, or two streams of others are watched already.
+fn allows_multiple(forced: bool, others_watched: usize) -> bool {
+    forced || others_watched >= 2
+}
+
 /// One stream this client sends or watches.
 struct Live {
     tracker: Tracker,
@@ -537,6 +542,29 @@ impl Root {
                 remote_quality: watch.then_some((Some(1440), 60)),
             },
         );
+        if watch {
+            // A stand-in picture, so the tile has something to draw: 64px squares, a lighter one each third.
+            self.video_call_started(cx);
+            let (width, height) = (640u32, 360u32);
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    let cell = (x / 64 + y / 64) % 3;
+                    let shade = [40u8, 110, 200][cell as usize];
+                    data.extend_from_slice(&[shade, (x / 3) as u8, (y / 2) as u8, 255]);
+                }
+            }
+            self.video.frames.store(dc_voice::RemoteFrame {
+                user: owner,
+                source: dc_voice::VideoSource::Stream(owner),
+                picture: dc_media::Picture {
+                    width,
+                    height,
+                    layout: dc_media::Layout::Rgba,
+                    data,
+                },
+            });
+        }
         cx.notify();
         "a stream is shown without a connection; nothing was sent"
     }
@@ -742,12 +770,36 @@ impl Root {
             .filter(|info| info.role == Role::Send)
     }
 
-    /// Watch Stream on a tile of `owner`'s stream in our call.
+    /// Watch Stream on a tile of `owner`'s stream in our call (`watchStream` of module 401843). Several streams
+    /// stay watched when that was asked for (`forceMultiple`: the eye button, a shift click) or two of others
+    /// already are; else the others stop and the tile is focused.
     pub(super) fn watch_stream_of(&mut self, owner: u64, cx: &mut Context<Self>) {
+        self.watch_stream_with(owner, false, cx);
+    }
+
+    pub(super) fn watch_stream_with(
+        &mut self,
+        owner: u64,
+        force_multiple: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(call) = &self.call else {
             return;
         };
         let (guild, channel) = (call.guild, call.channel);
+        let others: Vec<u64> = self
+            .watched_streams()
+            .into_iter()
+            .map(|(other, _)| other)
+            .filter(|other| *other != owner)
+            .collect();
+        let multiple = allows_multiple(force_multiple, others.len());
+        if !multiple {
+            for other in others {
+                self.unwatch_stream_of(other, cx);
+            }
+            self.vv.focus.tile = Some((owner, super::video_tiles::TileKind::Stream));
+        }
         let key = if guild != 0 {
             StreamKey::Guild {
                 guild,
@@ -906,6 +958,14 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_third_stream_joins_the_two_already_watched() {
+        assert!(!super::allows_multiple(false, 0));
+        assert!(!super::allows_multiple(false, 1));
+        assert!(super::allows_multiple(false, 2));
+        assert!(super::allows_multiple(true, 0));
+    }
+
     use super::*;
 
     fn frame(user: u64, source: VideoSource) -> RemoteFrame {

@@ -1030,6 +1030,36 @@ pub fn modal_pose(id: &str) -> Pose {
     }
 }
 
+impl Pose {
+    /// The scrim's colour this frame: `base` (the resting scrim, `#000000b8` or `--background-scrim`) with its alpha
+    /// scaled by the scrim factor (the scrim's `opacity` spring, module 462824).
+    pub fn dim(&self, base: Rgba) -> Rgba {
+        Rgba {
+            a: base.a * self.scrim,
+            ..base
+        }
+    }
+}
+
+/// `.posed(pose)` on a dialog's box: its opacity and its scale about its centre (`kS` in module 150591), so every
+/// dialog that opens over a scrim enters and leaves like the design system modal.
+pub trait Posed: gpui::InteractiveElement + Styled + Sized {
+    fn posed(self, pose: Pose) -> Self {
+        let element = if pose.opacity < 1. {
+            self.opacity(pose.opacity)
+        } else {
+            self
+        };
+        if pose.scale != 1. {
+            element.paint_scale(pose.scale, gpui::point(0.5, 0.5))
+        } else {
+            element
+        }
+    }
+}
+
+impl<T: gpui::InteractiveElement + Styled + Sized> Posed for T {}
+
 /// A full-window layer's pose (`LayerContainer`, module 596339): it enters from `scale(1.1)` and opacity 0 and leaves
 /// back to them, on the layer-stack spring `{tension: 100, friction: 10}`. Reduced motion keeps the scale at 1.
 pub fn layer_pose(id: &str) -> Pose {
@@ -1702,6 +1732,8 @@ struct Ghost {
     centre: gpui::Point<gpui::Pixels>,
     /// A full-window layer (`LayerContainer`) leaves to `scale(1.1)`; a dialog to `scale(.9)`.
     layer: bool,
+    /// A `SUBTLE` modal (the media viewer, module 2323) only fades (`kS` in module 150591 keeps `scale(1)`).
+    subtle: bool,
 }
 
 thread_local! {
@@ -1754,6 +1786,7 @@ fn ghosts_step(window: &mut gpui::Window) {
                 snapshot,
                 centre,
                 layer,
+                subtle: subtle_layer(&name),
             });
         }
         let reduced = reduced();
@@ -1773,7 +1806,7 @@ fn ghosts_step(window: &mut gpui::Window) {
                 return false;
             }
             let opacity = progress.clamp(0., 1.);
-            let scale = if reduced {
+            let scale = if reduced || ghost.subtle {
                 1.
             } else if ghost.layer {
                 1.1 - 0.1 * progress
@@ -1784,6 +1817,12 @@ fn ghosts_step(window: &mut gpui::Window) {
             true
         });
     });
+}
+
+/// Whether the closed layer named `name` (its element id, as the layer system prints it) is a `SUBTLE` modal, which
+/// leaves without a scale: the media viewer (`animation: o.WM.SUBTLE` in module 2323).
+fn subtle_layer(name: &str) -> bool {
+    name.contains("\"lightbox\"")
 }
 
 /// How many layers are leaving (for the harness).

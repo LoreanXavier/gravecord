@@ -8,6 +8,7 @@
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
+use crate::ui::motion::Posed as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, deferred,
@@ -1024,6 +1025,7 @@ impl Root {
                 .child(closer)
                 .into_any_element()
         };
+        let pose = crate::ui::motion::modal_pose("community-wizard");
         Some(
             deferred(
                 div()
@@ -1031,12 +1033,12 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(gpui::rgba(0x000000b8))
+                    .bg(pose.dim(gpui::rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
                     .on_click(close_scrim)
-                    .child(content),
+                    .child(div().posed(pose).child(content)),
             )
             .with_priority(1)
             .into_any_element(),

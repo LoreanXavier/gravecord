@@ -9,6 +9,7 @@
 use super::{color, editor_style, icon, window_controls};
 use crate::editor::{Editor, EditorEvent};
 use crate::login_art::ArtBytes;
+use crate::ui::motion::Posed as _;
 use dc_auth::errors::classify;
 use dc_auth::flow::{Command, Event, login_event};
 use dc_auth::qr::{self, Matrix};
@@ -2280,18 +2281,19 @@ impl Render for LoginView {
                     .child(center),
             )
             .children(overlay.map(|dialog| {
+                let pose = crate::ui::motion::modal_pose("login-dialog");
                 deferred(
                     div()
                         .id("login-scrim")
                         .occlude()
                         .absolute()
                         .inset_0()
-                        .bg(rgba(0x000000b8))
+                        .bg(pose.dim(rgba(0x000000b8)))
                         .flex()
                         .items_center()
                         .justify_center()
                         .on_click(cx.listener(|this, _, _, cx| this.close_dialog(cx)))
-                        .child(dialog),
+                        .child(div().posed(pose).child(dialog)),
                 )
                 .with_priority(1)
             }))

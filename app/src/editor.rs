@@ -642,7 +642,9 @@ impl Editor {
         cx.notify();
     }
 
-    fn on_mouse_down(
+    /// A press on the editor or on the padding of the box that holds it: focus, and the caret at the nearest place
+    /// in the text.
+    pub fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
@@ -677,7 +679,13 @@ impl Editor {
     fn index_for_window_point(&self, position: Point<Pixels>) -> usize {
         let laid = self.laid.borrow();
         let origin = laid.bounds.map_or(Point::default(), |bounds| bounds.origin);
-        laid.index_at(position - origin)
+        // A point above or under the text (the padding of its box) reads as one on the first or the last line.
+        let mut at = position - origin;
+        if let Some(bounds) = laid.bounds {
+            at.y =
+                at.y.clamp(px(0.), (bounds.size.height - px(1.)).max(px(0.)));
+        }
+        laid.index_at(at)
     }
 }
 

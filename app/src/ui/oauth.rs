@@ -16,6 +16,7 @@ use super::oauth_spec::{self as spec, P};
 use super::{Root, avatar_source, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_webhost::sdk;
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, HighlightStyle, InteractiveText, IntoElement,
@@ -1494,6 +1495,7 @@ impl Root {
                     .child(cancel)
                     .child(primary),
             );
+        let pose = crate::ui::motion::modal_pose("oauth");
         Some(
             deferred(
                 div()
@@ -1501,7 +1503,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1509,7 +1511,7 @@ impl Root {
                         this.oauth_close(cx);
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

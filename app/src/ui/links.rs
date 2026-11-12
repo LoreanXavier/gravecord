@@ -5,6 +5,7 @@
 
 use super::{Root, color, icon};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, deferred, div, prelude::*, px, rgba};
 use serde_json::{Value, json};
 
@@ -448,6 +449,7 @@ impl Root {
                         .on_click(cx.listener(|this, _, _, cx| this.confirm_leaving(cx))),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("leaving");
         Some(
             deferred(
                 div()
@@ -455,7 +457,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -463,7 +465,7 @@ impl Root {
                         this.leaving = None;
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .into_any_element(),
         )

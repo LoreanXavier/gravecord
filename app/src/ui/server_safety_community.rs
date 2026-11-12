@@ -13,6 +13,7 @@ use super::server_settings::Page;
 use super::tooltip::{Side, Tip};
 use super::{Root, color, icon};
 use crate::net::Request;
+use crate::ui::motion::Posed as _;
 use dc_state::{Id, permissions};
 use gpui::{
     AnyElement, Context, FontWeight, HighlightStyle, IntoElement, SharedString, StyledText,
@@ -1096,6 +1097,7 @@ impl Root {
                         cx,
                     )),
             );
+        let pose = crate::ui::motion::modal_pose("safety-risky");
         Some(
             deferred(
                 div()
@@ -1103,7 +1105,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1113,7 +1115,7 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

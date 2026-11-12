@@ -1450,7 +1450,7 @@ impl Root {
                 "appearance_default_themes" => self.default_themes(cx),
                 "appearance_custom_themes_upsell" => self.custom_theme_card(window, cx),
                 "appearance_client_themes" => self.color_themes(cx),
-                "appearance_in_app_icon" => self.app_icon_grid(),
+                "appearance_in_app_icon" => self.app_icon_grid(cx),
                 _ => self
                     .billing_custom(key, cx)
                     .or_else(|| self.voice_custom(key, width, window, cx))

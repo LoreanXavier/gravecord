@@ -1065,6 +1065,10 @@ impl Root {
             );
         }
         let focus_head = focused.map(|index| self.focus_crumb(&people[index]));
+        self.stream_zoom.follow(focused.and_then(|index| {
+            let tile = &people[index].tile;
+            (tile.kind == TileKind::Stream).then_some(tile.user)
+        }));
         let activity_stage = self
             .activities
             .running
@@ -1333,9 +1337,73 @@ impl Root {
                         this.watch_stream_joining(user_id, cx);
                     }))
             })
+            .when(stream_tile && is_focus && video && !outside, |this| {
+                // Module 555148 `M`: the wheel zooms the focused stream about the pointer; zoomed, a drag pans.
+                let bounds = self.stream_zoom.bounds.clone();
+                let dragging = self.stream_zoom.drag.is_some();
+                let weak = cx.entity().downgrade();
+                this.on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, _, cx| {
+                    let delta_y = match event.delta {
+                        gpui::ScrollDelta::Pixels(delta) => -f32::from(delta.y),
+                        gpui::ScrollDelta::Lines(delta) => -delta.y * 100.,
+                    };
+                    this.stream_zoom
+                        .wheel(event.position.x, event.position.y, delta_y);
+                    this.voice_view_moved(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        this.stream_zoom.press(event.position.x, event.position.y);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |tile, (), window, _| {
+                            bounds.set(tile);
+                            if !dragging {
+                                return;
+                            }
+                            let moved = weak.clone();
+                            window.on_mouse_event(
+                                move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                                    if phase != gpui::DispatchPhase::Capture {
+                                        return;
+                                    }
+                                    let _ = moved.update(cx, |this, cx| {
+                                        this.stream_zoom
+                                            .drag_to(event.position.x, event.position.y);
+                                        cx.notify();
+                                    });
+                                },
+                            );
+                            let released = weak.clone();
+                            window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                                if phase != gpui::DispatchPhase::Capture {
+                                    return;
+                                }
+                                let _ = released.update(cx, |this, cx| {
+                                    this.stream_zoom.release();
+                                    cx.notify();
+                                });
+                            });
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            })
             .when(!waiting && !outside, |this| {
                 this.cursor_pointer().on_click(cx.listener(
                     move |this, event: &gpui::ClickEvent, window, cx| {
+                        if this.stream_zoom.take_moved() {
+                            // The press panned the zoomed picture.
+                            return;
+                        }
                         if event.click_count() >= 2 {
                             // `handleFullscreenParticipant` (module 540462): the tile is the selected one in Full
                             // Screen, and the same tile again leaves both. The first press of the pair has already
@@ -1453,9 +1521,19 @@ impl Root {
                                 .size_full()
                                 .object_fit(gpui::ObjectFit::Contain)
                         } else {
+                            // `--custom-zoom-scale` and the pan: the picture grows about the tile's centre and
+                            // moves by the pan; the tile crops it.
+                            let zoom = self.stream_zoom.of(key.0);
+                            let (width, height) = (
+                                layout.tile_width * zoom.level,
+                                layout.tile_height * zoom.level,
+                            );
                             img(image.clone())
-                                .w(px(layout.tile_width))
-                                .h(px(layout.tile_height))
+                                .absolute()
+                                .left(px((layout.tile_width - width) / 2. + zoom.pan.0))
+                                .top(px((layout.tile_height - height) / 2. + zoom.pan.1))
+                                .w(px(width))
+                                .h(px(height))
                                 .aspect_ratio(layout.tile_width / layout.tile_height)
                                 .object_fit(gpui::ObjectFit::Contain)
                         },
@@ -1501,6 +1579,39 @@ impl Root {
                         "Watch Stream"
                     }),
             )
+            // While another stream is watched: the eye that adds this one beside it (`forceMultiple`).
+            .when(self.in_a_stream(), |this| {
+                this.gap(px(8.)).child(
+                    self.with_tip(
+                        "vstream-watch-multiple-tip",
+                        Tip::text("Start watching multiple streams", Side::Top),
+                        div()
+                            .id(SharedString::from(format!(
+                                "vstream-watch-multiple-{owner}"
+                            )))
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(mid("--control-secondary-border-default"))
+                            .bg(mid("--control-secondary-background-default"))
+                            .hover(|style| style.bg(mid("--control-secondary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.watch_stream_with(owner, true, cx);
+                            }))
+                            .child(icon(
+                                "voice_view_eye_plus",
+                                20.,
+                                "--control-secondary-text-default",
+                            )),
+                        cx,
+                    ),
+                )
+            })
             .into_any_element()
     }
 

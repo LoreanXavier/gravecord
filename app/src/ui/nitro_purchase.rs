@@ -19,6 +19,7 @@ use super::nitro::{BASIC_FEATURES, NITRO_FEATURES, oklab, rgb};
 use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::premium::{self, Price, sku};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, Window, deferred, div,
@@ -414,18 +415,19 @@ impl Root {
             .child(header)
             .child(body)
             .children(footer);
+        let pose = crate::ui::motion::modal_pose(id);
         deferred(
             div()
                 .id(format!("{id}-layer"))
                 .occlude()
                 .absolute()
                 .inset_0()
-                .bg(rgba(0x000000b8))
+                .bg(pose.dim(rgba(0x000000b8)))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_click(scrim_close)
-                .child(modal),
+                .child(modal.posed(pose)),
         )
         .with_priority(1)
         .into_any_element()

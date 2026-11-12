@@ -6,6 +6,7 @@ use super::colour::{self, Target};
 use super::{Mode, text};
 use crate::parity::Parity;
 use crate::ui::modal::{self, Tone};
+use crate::ui::motion::Posed as _;
 use crate::ui::{Root, color, icon, name_styles};
 use dc_state::User;
 use dc_state::display_name_styles::{DisplayNameStyles, Effect};
@@ -603,6 +604,7 @@ impl Root {
                     })),
             );
         let popout = self.profile_editor_colour_popout(60., 590., cx);
+        let pose = crate::ui::motion::modal_pose("profile-editor-styles");
         Some(
             deferred(
                 div()
@@ -610,11 +612,11 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(modal_box)
+                    .child(modal_box.posed(pose))
                     .children(popout),
             )
             .with_priority(3)

@@ -8,6 +8,7 @@
 //! `GET /stickers/{id}/guild` (`STICKER_GUILD_DATA`) for the server of a sticker whose server is unknown or
 //! discoverable. "Join Server" is `PUT /guilds/{id}/members/@me` (`GUILD_JOIN` in module 778858 `joinGuild`).
 
+use super::motion::{PopKind, PopSide, Popout as _};
 use super::stickers::{PACKS_KEY, PACKS_ROUTE, art_key, art_url};
 use super::tooltip::{Body, Side, Tip};
 use super::{Root, color};
@@ -603,7 +604,12 @@ impl Root {
                             .anchor(gpui::Anchor::LeftCenter)
                             .position(at)
                             .snap_to_window_with_margin(px(8.))
-                            .child(content),
+                            // `animation: TRANSLATE` on the sticker's popout (module 679636), opening on its right.
+                            .child(
+                                div()
+                                    .popout("sticker-popout", PopKind::Translate, PopSide::Right)
+                                    .child(content),
+                            ),
                     ),
             )
             .with_priority(1)

@@ -8,6 +8,7 @@ use super::actions::FRECENCY_KEY;
 use super::{Root, avatar_source, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::frecency::{Frecency, Kind, Usage};
 use dc_state::{ChannelKind, Id, User};
 use gpui::{
@@ -641,9 +642,12 @@ impl Root {
                 })
             })
             .collect();
+        // The switcher is a modal: the scrim and the box run the modal's enter (modules 462824 and 150591).
+        let pose = super::motion::modal_pose("quick-switcher");
         let modal = div()
             .parity_with_border("quick-switcher", 1.)
             .id("quick-switcher")
+            .posed(pose)
             .occlude()
             .absolute()
             .left(px(left))
@@ -752,7 +756,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.quick_switcher = None;
                         cx.notify();

@@ -221,6 +221,14 @@ fn icon_key(kind: &str, dark: bool) -> String {
     )
 }
 
+/// `connectionEntrypointUrl` of an application (`connection_entrypoint_url`), when it has one.
+fn entrypoint_of(app: &Value) -> Option<String> {
+    app["connection_entrypoint_url"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+}
+
 fn app_icon_key(id: &str) -> String {
     format!("connection-app-icon:{id}")
 }
@@ -498,11 +506,30 @@ impl Root {
         self.connection_authorize(kind, cx);
     }
 
-    /// An application button (module 672130): the application's authorization, which module 724302 starts; not built.
-    fn connection_app_clicked(&mut self, id: &'static str, _cx: &mut Context<Self>) {
-        tracing::info!(
-            "connection application {id}: its authorization (module 724302) is not built"
-        );
+    /// An application button (module 672130): `startAuthorization` of module 724302. Its web flow opens the
+    /// application's `connectionEntrypointUrl` through the masked-link check (`h` of module 889558); the RPC flow needs
+    /// the game connected over local RPC, which never happens here. Without an entry point the button is disabled.
+    fn connection_app_clicked(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let app = self
+            .settings_extra
+            .connection_apps
+            .iter()
+            .flatten()
+            .find(|app| app["id"].as_str() == Some(id));
+        let Some(url) = app.and_then(entrypoint_of) else {
+            return;
+        };
+        let name = app
+            .and_then(|app| app["name"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        if crate::storage::is_capture_run() {
+            tracing::info!("connection application {id}: opens {url}");
+            self.settings_extra.last_url = Some(url);
+            cx.notify();
+            return;
+        }
+        self.follow_link(&url, &name, cx);
     }
 
     fn connection_authorize(&mut self, kind: &'static str, cx: &mut Context<Self>) {
@@ -714,6 +741,21 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_application_button_opens_its_entry_point_only() {
+        let riot =
+            json!({"id": GRID_APPS[0], "connection_entrypoint_url": "https://example.com/link"});
+        assert_eq!(
+            entrypoint_of(&riot).as_deref(),
+            Some("https://example.com/link")
+        );
+        assert_eq!(entrypoint_of(&json!({"id": GRID_APPS[1]})), None);
+        assert_eq!(
+            entrypoint_of(&json!({"connection_entrypoint_url": ""})),
+            None
+        );
+    }
 
     #[test]
     fn accounts_keep_type_id_and_name() {

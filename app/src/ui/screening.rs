@@ -1,5 +1,6 @@
 //! Pending-member composer and member verification: 678655, 93895, 408213; P.T. screening DOM captures.
 use super::{Root, color, icon};
+use crate::ui::motion::Posed as _;
 use crate::{net::Request, parity::Parity};
 use dc_state::Id;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, ScrollHandle, div, prelude::*, px};
@@ -427,10 +428,11 @@ impl Root {
                         )
                     })
             });
+        let pose = crate::ui::motion::modal_pose("screening");
         Some(gpui::deferred(div().id("screening-layer").absolute().inset_0().occlude()
-            .bg(color("--background-scrim")).flex().items_center().justify_center()
+            .bg(pose.dim(color("--background-scrim"))).flex().items_center().justify_center()
             .on_click(cx.listener(|this, _, _, cx| { this.screening = None; cx.notify(); }))
-            .child(div().id("screening-modal").parity_with_border("screening-modal", 1.)
+            .child(div().id("screening-modal").posed(pose).parity_with_border("screening-modal", 1.)
                 .relative().w(px(1024.)).h(px(608.)).rounded(px(16.)).border_1()
                 .border_color(color("--border-subtle")).bg(color("--background-surface-high"))
                 .on_click(|_, _, cx| cx.stop_propagation())

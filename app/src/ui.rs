@@ -121,6 +121,7 @@ mod sticker_player;
 mod sticker_popout;
 mod stickers;
 mod stream_previews;
+mod stream_zoom;
 mod timestamps;
 mod tray;
 mod unread_badges;
@@ -516,6 +517,7 @@ pub struct Root {
     vv: voice_view::State,
     call_volume: call_volume::State,
     stream_previews: stream_previews::Previews,
+    stream_zoom: stream_zoom::State,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
     pending_invite_link: Option<String>,
@@ -904,6 +906,7 @@ impl Root {
             vv: voice_view::State::default(),
             call_volume: call_volume::State::default(),
             stream_previews: stream_previews::Previews::default(),
+            stream_zoom: stream_zoom::State::default(),
             invite: None,
             invite_codes: HashMap::new(),
             pending_invite_link: None,
@@ -7553,6 +7556,17 @@ impl Root {
                                     .min_w(px(0.))
                                     .py(px(17.))
                                     .parity("composer-text")
+                                    // The padding above and under the text belongs to the text area: a press there
+                                    // focuses it like one on the text.
+                                    .cursor(gpui::CursorStyle::IBeam)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.composer.update(cx, |editor, cx| {
+                                                editor.on_mouse_down(event, window, cx);
+                                            });
+                                        }),
+                                    )
                                     .flex()
                                     .flex_wrap()
                                     .items_center()

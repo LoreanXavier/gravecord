@@ -493,24 +493,36 @@ impl Root {
                 .child(self.lightbox_arrow("lightbox-next", 1, cx))
         });
 
+        // The media viewer is a modal (module 256905, `backdropStyle: LIGHTBOX`): the scrim fades in on the modal
+        // spring, and the viewer (`animation: SUBTLE`, module 2323) fades after 64 ms without the scale (module 150591).
+        let pose = super::motion::Pose {
+            scale: 1.,
+            ..super::motion::modal_pose("lightbox")
+        };
         let layer = div()
             .id("lightbox")
             .absolute()
             .inset_0()
-            .bg(gpui::rgba(0x000000eb))
+            .bg(pose.dim(gpui::rgba(0x000000eb)))
             .occlude()
             .on_click(cx.listener(|this, _, _, cx| {
                 this.lightbox = None;
                 cx.notify();
             }))
-            .child(stage)
-            .children(arrows)
-            .children((many && !zoomed).then(|| self.lightbox_gallery(cx)))
-            // The sender and the pill fade while zoomed; the close button stays.
-            .children((!zoomed).then_some(bar))
-            .children((!zoomed).then_some(pill))
-            .children((!zoomed && open.more).then(|| self.lightbox_more_menu(cx)))
-            .child(close);
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(pose.opacity < 1., |this| this.opacity(pose.opacity))
+                    .child(stage)
+                    .children(arrows)
+                    .children((many && !zoomed).then(|| self.lightbox_gallery(cx)))
+                    // The sender and the pill fade while zoomed; the close button stays.
+                    .children((!zoomed).then_some(bar))
+                    .children((!zoomed).then_some(pill))
+                    .children((!zoomed && open.more).then(|| self.lightbox_more_menu(cx)))
+                    .child(close),
+            );
         Some(deferred(layer).with_priority(2).into_any_element())
     }
 

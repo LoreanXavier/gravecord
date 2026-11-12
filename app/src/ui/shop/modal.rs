@@ -7,6 +7,7 @@ use super::cards::{item_static, orbs_badge};
 use super::data::{self, Product};
 use super::{Root, color, icon, text};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use gpui::{
     AnyElement, Context, IntoElement, ObjectFit, SharedString, Window, deferred, div, img,
     prelude::*, px,
@@ -272,6 +273,7 @@ impl Root {
             .bg(color("--modal-background"))
             .flex()
             .child(body);
+        let pose = crate::ui::motion::modal_pose("shop-modal");
         Some(
             deferred(
                 div()
@@ -279,12 +281,12 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(color("--background-scrim"))
+                    .bg(pose.dim(color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| this.shop_close_modal(cx)))
-                    .child(modal)
+                    .child(modal.posed(pose))
                     .children(checkout),
             )
             .with_priority(3)
@@ -1428,12 +1430,13 @@ impl Root {
                     .justify_end()
                     .child(claim),
             );
+        let pose = crate::ui::motion::modal_pose("shop-checkout");
         div()
             .id("shop-checkout-layer")
             .occlude()
             .absolute()
             .inset_0()
-            .bg(color("--background-scrim"))
+            .bg(pose.dim(color("--background-scrim")))
             .flex()
             .items_center()
             .justify_center()
@@ -1442,7 +1445,7 @@ impl Root {
                 this.shop.checkout = None;
                 cx.notify();
             }))
-            .child(panel)
+            .child(panel.posed(pose))
             .into_any_element()
     }
 
@@ -1645,16 +1648,17 @@ impl Root {
                     .gap(px(8.))
                     .children(actions),
             );
+        let pose = crate::ui::motion::modal_pose("shop-collected");
         div()
             .id("shop-collected-layer")
             .occlude()
             .absolute()
             .inset_0()
-            .bg(color("--background-scrim"))
+            .bg(pose.dim(color("--background-scrim")))
             .flex()
             .items_center()
             .justify_center()
-            .child(panel)
+            .child(panel.posed(pose))
             .into_any_element()
     }
 }

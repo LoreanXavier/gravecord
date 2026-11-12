@@ -10,6 +10,7 @@
 
 use super::{Action, TABLE};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use crate::ui::{Root, SANS, color, kerning};
 use gpui::{
     AnyElement, Context, Font, FontWeight, IntoElement, ScrollHandle, SharedString, TextRun,
@@ -589,6 +590,7 @@ impl Root {
                             ),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("keyboard-help");
         Some(
             deferred(
                 div()
@@ -596,7 +598,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -606,6 +608,7 @@ impl Root {
                     }))
                     .child(
                         div()
+                            .posed(pose)
                             .parity_with_border("keyboard-help-root", 1.)
                             .id("keyboard-help-root")
                             .occlude()

@@ -8,6 +8,7 @@ use super::actions::FRECENCY_KEY;
 use super::{Root, avatar_source, color, editor_style, icon, status_dot};
 use crate::editor::{Editor, EditorEvent};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use crate::ui::motion::Transitions as _;
 use dc_state::frecency::{Frecency, Kind, Usage};
 use dc_state::{ChannelKind, Id, Message};
@@ -954,6 +955,7 @@ impl Root {
                             ),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("forward");
         Some(
             deferred(
                 div()
@@ -961,7 +963,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -969,7 +971,7 @@ impl Root {
                         this.forward = None;
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             // Above the media viewer (priority 2): Forward stacks over it, as the official does.
             .with_priority(3)

@@ -7,6 +7,7 @@ use super::modal::{self, Tone};
 use super::nitro::oklab;
 use super::{Root, color, icon};
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::premium::PremiumType;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, RenderImage, SharedString, deferred, div, img,
@@ -245,12 +246,13 @@ impl Root {
                 this.upload_error = None;
                 this.open_purchase(false, cx);
             }));
+        let pose = crate::ui::motion::modal_pose("upload-upsell");
         let layer = div()
             .id("upload-upsell-layer")
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x000000b8))
+            .bg(pose.dim(rgba(0x000000b8)))
             .flex()
             .items_center()
             .justify_center()
@@ -260,6 +262,7 @@ impl Root {
             }))
             .child(
                 div()
+                    .posed(pose)
                     .parity_with_border("upload-upsell", 1.)
                     .id("upload-upsell")
                     .occlude()

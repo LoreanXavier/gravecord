@@ -39,6 +39,69 @@ pub(super) const APP_ICONS: &[(&str, &str)] = &[
     ("Color Wave", "7ce5a942a5cc7cba"),
 ];
 
+/// The ids of `APP_ICONS`, in the same order (`LW.DEFAULT` and `Ic` of module 350972).
+pub(super) const APP_ICON_IDS: [&str; 23] = [
+    "AppIcon",
+    "BrandDarkIcon",
+    "MangaIcon",
+    "MatteDarkIcon",
+    "MatteLightIcon",
+    "PastelIcon",
+    "PirateIcon",
+    "CamoIcon",
+    "SunsetIcon",
+    "GalaxyIcon",
+    "Y2KIcon",
+    "CherryBlossomIcon",
+    "BeanieIcon",
+    "GamingIcon",
+    "CircuitIcon",
+    "HoloWavesIcon",
+    "BlushIcon",
+    "AngryIcon",
+    "ControllerIcon",
+    "BlurpleTwilightIcon",
+    "InRainbowsIcon",
+    "MidnightPrismIcon",
+    "ColorWaveIcon",
+];
+
+/// `AppIconPersistedStoreState` (module 526162): a local store, `{client: {desktop, coachmarkImpressions}}`.
+const APP_ICON_STORE: &str = "AppIconPersistedStoreState";
+
+/// The index of the icon an `AppIconPersistedStoreState` value holds; an unknown or missing id is the default.
+pub(super) fn app_icon_of(state: &serde_json::Value) -> usize {
+    state
+        .pointer("/client/desktop")
+        .and_then(|id| id.as_str())
+        .and_then(|id| APP_ICON_IDS.iter().position(|known| *known == id))
+        .unwrap_or(0)
+}
+
+/// `APP_ICON_UPDATED`: the store's `desktop` takes the id, its impressions stay.
+pub(super) fn app_icon_updated(state: serde_json::Value, index: usize) -> serde_json::Value {
+    let mut state = if state.is_object() {
+        state
+    } else {
+        serde_json::json!({})
+    };
+    let client = state
+        .as_object_mut()
+        .map(|state| {
+            state
+                .entry("client")
+                .or_insert_with(|| serde_json::json!({"coachmarkImpressions": 0}))
+        })
+        .and_then(|client| client.as_object_mut());
+    if let Some(client) = client {
+        client.insert(
+            "desktop".to_owned(),
+            serde_json::json!(APP_ICON_IDS[index.min(APP_ICON_IDS.len() - 1)]),
+        );
+    }
+    state
+}
+
 pub(super) fn app_icon_key(index: usize) -> String {
     format!("app_icon:{index}")
 }
@@ -426,14 +489,34 @@ impl Root {
             .into_any_element()
     }
 
-    /// `appIconSelection_jWcVMn`: the in-app icons, 48px, 8px apart. A free account sees them locked: the chosen
-    /// one (Blurple) wears the brand ring and the check, the rest take no clicks.
-    pub(super) fn app_icon_grid(&self) -> AnyElement {
+    /// The in-app icon worn now (`getCurrentDesktopIcon`). Without Nitro the store falls back to the default
+    /// (`f` of module 526162 resets it while `isUpsellPreview`).
+    pub(in crate::ui) fn app_icon_selected(&self) -> usize {
+        if self.premium() == dc_state::premium::PremiumType::None {
+            return 0;
+        }
+        crate::storage::get(APP_ICON_STORE)
+            .map(|state| app_icon_of(&state))
+            .unwrap_or(0)
+    }
+
+    fn choose_app_icon(&mut self, index: usize, cx: &mut Context<Self>) {
+        let state = crate::storage::get(APP_ICON_STORE).unwrap_or(serde_json::Value::Null);
+        crate::storage::set(APP_ICON_STORE, app_icon_updated(state, index));
+        cx.notify();
+    }
+
+    /// `appIconSelection_jWcVMn`: the in-app icons, 48px, 8px apart. A free account sees them locked
+    /// (`disabled: isUpsellPreview`): Blurple wears the brand ring and the check, the rest take no clicks. A Nitro
+    /// account picks one (`APP_ICON_UPDATED`, module 92533 `w`).
+    pub(super) fn app_icon_grid(&self, cx: &mut Context<Self>) -> AnyElement {
+        let chosen = self.app_icon_selected();
+        let enabled = self.premium() != dc_state::premium::PremiumType::None;
         let tiles: Vec<AnyElement> = APP_ICONS
             .iter()
             .enumerate()
             .map(|(index, (name, _))| {
-                let selected = index == 0;
+                let selected = index == chosen;
                 let picture = self.images.get(&app_icon_key(index)).cloned();
                 div()
                     .id(SharedString::from(format!("app-icon-{name}")))
@@ -441,6 +524,11 @@ impl Root {
                     .flex_none()
                     .size(px(48.))
                     .rounded(px(8.))
+                    .when(enabled, |this| {
+                        this.cursor_pointer().on_click(
+                            cx.listener(move |this, _, _, cx| this.choose_app_icon(index, cx)),
+                        )
+                    })
                     .children(picture.map(|image| img(image).size(px(48.)).rounded(px(8.))))
                     .when(selected, |this| {
                         this.child(
@@ -679,4 +767,37 @@ fn hsla_from_rgb(red: f32, green: f32, blue: f32, alpha: f32) -> gpui::Hsla {
         a: alpha,
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn every_in_app_icon_has_its_official_id() {
+        assert_eq!(APP_ICON_IDS.len(), APP_ICONS.len());
+        assert_eq!(APP_ICON_IDS[0], "AppIcon");
+        assert_eq!(APP_ICONS[2].0, "WHAM");
+        assert_eq!(APP_ICON_IDS[2], "MangaIcon");
+        assert_eq!(APP_ICON_IDS[22], "ColorWaveIcon");
+    }
+
+    #[test]
+    fn the_chosen_icon_is_kept_in_the_persisted_store_shape() {
+        assert_eq!(app_icon_of(&serde_json::Value::Null), 0);
+        let state = app_icon_updated(serde_json::Value::Null, 9);
+        assert_eq!(
+            state,
+            json!({"client": {"desktop": "GalaxyIcon", "coachmarkImpressions": 0}})
+        );
+        assert_eq!(app_icon_of(&state), 9);
+        // Impressions survive a later pick, an unknown id reads as the default.
+        let seen = json!({"client": {"desktop": "AppIcon", "coachmarkImpressions": 2}});
+        assert_eq!(
+            app_icon_updated(seen, 1),
+            json!({"client": {"desktop": "BrandDarkIcon", "coachmarkImpressions": 2}})
+        );
+        assert_eq!(app_icon_of(&json!({"client": {"desktop": "Gone"}})), 0);
+    }
 }

@@ -9,6 +9,7 @@ use super::{Root, avatar_source, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::{Id, Thread};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window,
@@ -1533,6 +1534,7 @@ impl Root {
                             .child("Close"),
                     ),
             );
+        let pose = crate::ui::motion::modal_pose("active-threads");
         Some(
             deferred(
                 div()
@@ -1540,7 +1542,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(gpui::rgba(0x000000b8))
+                    .bg(pose.dim(gpui::rgba(0x000000b8)))
                     .flex()
                     .items_start()
                     .justify_center()
@@ -1549,7 +1551,7 @@ impl Root {
                         this.thread_modal = false;
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

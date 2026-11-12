@@ -9,6 +9,7 @@ use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use gpui::Focusable as _;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, SharedString, Subscription,
@@ -946,6 +947,7 @@ impl Root {
             .child(header)
             .child(body)
             .child(footer);
+        let pose = crate::ui::motion::modal_pose("add-server");
         Some(
             deferred(
                 div()
@@ -953,7 +955,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -961,7 +963,7 @@ impl Root {
                         this.add_server = None;
                         cx.notify();
                     }))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

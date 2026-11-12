@@ -12,6 +12,7 @@ use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
+use crate::ui::motion::Posed as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, SharedString, Subscription, Window,
@@ -1099,6 +1100,7 @@ impl Root {
                     .child(icon("modal_close", 16., "--white"))
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
             );
+        let pose = crate::ui::motion::modal_pose("full-profile");
         Some(
             deferred(
                 div()
@@ -1106,11 +1108,11 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx)))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

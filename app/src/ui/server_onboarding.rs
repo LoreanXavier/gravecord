@@ -49,6 +49,7 @@ use super::tooltip::{Side, Tip};
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::net::Request;
+use crate::ui::motion::Posed as _;
 use crate::ui::motion::Transitions as _;
 use dc_state::{Channel, ChannelKind, Guild, Id, permissions};
 use gpui::{
@@ -7220,18 +7221,19 @@ impl Root {
                     .pb(px(8.))
                     .child(footer),
             );
+        let pose = crate::ui::motion::modal_pose(id);
         deferred(
             div()
                 .id(SharedString::from(format!("{id}-layer")))
                 .occlude()
                 .absolute()
                 .inset_0()
-                .bg(rgba(0x000000b8))
+                .bg(pose.dim(rgba(0x000000b8)))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_click(cx.listener(move |this, _, _, cx| close(this, cx)))
-                .child(panel),
+                .child(panel.posed(pose)),
         )
         .with_priority(1)
         .into_any_element()

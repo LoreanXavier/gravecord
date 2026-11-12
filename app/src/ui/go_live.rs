@@ -6,6 +6,7 @@
 
 use super::video_tiles::render_image;
 use super::{Root, color, icon};
+use crate::ui::motion::Posed as _;
 use dc_media::screen::{self, Resolution, Settings, Source, SourceId, StreamQuality};
 use dc_state::premium::{Feature, PremiumType};
 use gpui::{
@@ -831,6 +832,7 @@ impl Root {
             )
             .child(footer)
             .children(menu);
+        let pose = crate::ui::motion::modal_pose("golive");
         Some(
             deferred(
                 div()
@@ -838,12 +840,12 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000b8))
+                    .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| this.close_go_live(cx)))
-                    .child(modal),
+                    .child(modal.posed(pose)),
             )
             .with_priority(1)
             .into_any_element(),

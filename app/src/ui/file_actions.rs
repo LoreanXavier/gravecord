@@ -6,6 +6,7 @@
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
+use crate::ui::motion::Posed as _;
 use dc_state::{Attachment, Id};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, MouseButton, Pixels, Point, SharedString,
@@ -401,6 +402,7 @@ impl Root {
             .unwrap_or_default();
         let language = self.file_language.get(&attachment.id).map(String::as_str);
         let wrap = self.file_wrap.contains(&attachment.id);
+        let pose = crate::ui::motion::modal_pose("file-expanded");
         Some(
             deferred(
                 div()
@@ -408,7 +410,7 @@ impl Root {
                     .absolute()
                     .inset_0()
                     .occlude()
-                    .bg(gpui::rgba(0x000000b8))
+                    .bg(pose.dim(gpui::rgba(0x000000b8)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -418,6 +420,7 @@ impl Root {
                     }))
                     .child(
                         div()
+                            .posed(pose)
                             .id("file-expanded")
                             .occlude()
                             .w(px(1024.))
