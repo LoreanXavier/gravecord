@@ -92,6 +92,9 @@ impl Root {
         if let Some(invite) = self.invite.as_mut() {
             self.invite_codes.insert(invite.channel, code.clone());
             invite.code = Some(code);
+        } else if let Some(channel) = self.group_dm.as_ref().and_then(|picker| picker.channel) {
+            // "Or, send an invite link" of the group picker.
+            self.invite_codes.insert(channel, code);
         }
         cx.notify();
     }

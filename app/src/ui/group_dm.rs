@@ -507,40 +507,163 @@ impl Root {
                 String::new()
             })
         });
+        let adding = picker.channel.is_some();
+        let invite_code = picker
+            .channel
+            .and_then(|channel| self.invite_codes.get(&channel).cloned());
+        let invite_channel = picker.channel;
+        let field = div()
+            .parity_with_border("group-dm-search", 1.)
+            .flex_1()
+            .min_h(px(42.))
+            .px(px(4.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if focused {
+                color("--input-border-active")
+            } else {
+                color("--input-border-default")
+            })
+            .rule(crate::ui::motion::Rule::TextField)
+            .bg(color("--input-background-default"))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .children(tags)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(64.))
+                    .h(px(32.))
+                    .pl(px(8.))
+                    .pr(px(12.))
+                    .flex()
+                    .items_center()
+                    .child(div().w_full().child(search)),
+            );
+        // The add picker of a group: the Add button beside the field (`addButton`), and under the list the invite link
+        // (module 95655's footer: "Or, send an invite link", the link and Create / Copy).
+        let add_button = div()
+            .id("group-dm-add")
+            .ml(px(9.))
+            .w(px(100.))
+            .h(px(40.))
+            .flex_none()
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(color("--control-primary-background-default"))
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--white"))
+            .child("Add")
+            .when(waiting, |this| this.opacity(0.5))
+            .when(!waiting, |this| {
+                this.cursor_pointer()
+                    .hover(|style| style.bg(color("--control-primary-background-hover")))
+                    .on_click(cx.listener(|this, _, _, cx| this.group_dm_create(cx)))
+            });
+        let invite_footer = div()
+            .mx(px(-24.))
+            .px(px(24.))
+            .pt(px(23.))
+            // The modal's own bottom padding makes up the rest of the 24px.
+            .pb(px(9.))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Or, send an invite link"),
+            )
+            .child(
+                div()
+                    .mt(px(9.))
+                    .h(px(40.))
+                    .w(px(422.))
+                    .pl(px(11.))
+                    .pr(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--input-border-default"))
+                    .bg(color("--input-background-default"))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-muted"))
+                            .child(
+                                invite_code
+                                    .as_deref()
+                                    .map(|code| format!("https://discord.gg/{code}"))
+                                    .unwrap_or_else(|| "https://discord.gg/example".to_owned()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("group-dm-invite-link")
+                            .h(px(26.))
+                            .w(px(82.))
+                            .rounded(px(4.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|style| style.bg(color("--control-primary-background-hover")))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--white"))
+                            .child(if invite_code.is_some() {
+                                "Copy"
+                            } else {
+                                "Create"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let Some(channel) = invite_channel else {
+                                    return;
+                                };
+                                if let Some(code) = this.invite_codes.get(&channel) {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        format!("https://discord.gg/{code}"),
+                                    ));
+                                } else {
+                                    let _ = this.requests.send(crate::net::Request::Rest {
+                                        key: Some(super::invite::CREATE_KEY.to_owned()),
+                                        method: reqwest::Method::POST,
+                                        route: format!("/channels/{channel}/invites"),
+                                        body: Some(json!({
+                                            "validate": null,
+                                            "max_age": 86_400,
+                                            "max_uses": 0,
+                                            "target_type": null,
+                                            "temporary": false,
+                                            "flags": 0,
+                                        })),
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
         let body = div()
-            .h(px(418.))
+            .h(px(if adding { 491. } else { 418. }))
             .flex()
             .flex_col()
             .child(
                 div()
-                    .parity_with_border("group-dm-search", 1.)
-                    .min_h(px(42.))
-                    .px(px(4.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(if focused {
-                        color("--input-border-active")
-                    } else {
-                        color("--input-border-default")
-                    })
-                    .rule(crate::ui::motion::Rule::TextField)
-                    .bg(color("--input-background-default"))
                     .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(4.))
-                    .children(tags)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(64.))
-                            .h(px(32.))
-                            .pl(px(8.))
-                            .pr(px(12.))
-                            .flex()
-                            .items_center()
-                            .child(div().w_full().child(search)),
-                    ),
+                    .flex_row()
+                    .child(field)
+                    .when(adding, |this| this.child(add_button)),
             )
             .child(
                 div()
@@ -563,6 +686,7 @@ impl Root {
             )
             // `bodyScrollingSpacerBottom`: the rule over the footer, the modal's full width.
             .child(div().mx(px(-24.)).h(px(1.)).bg(color("--border-subtle")))
+            .when(adding, |this| this.child(invite_footer))
             .into_any_element();
         Some(modal::render(
             modal::Spec {
@@ -571,17 +695,8 @@ impl Root {
                 subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(body),
                 buttons: if picker.channel.is_some() {
-                    // Add to DM has the one button across the footer.
-                    vec![modal::button(
-                        "group-dm-create",
-                        "Create Group Message",
-                        if waiting {
-                            modal::Tone::PrimaryDisabled
-                        } else {
-                            modal::Tone::Primary
-                        },
-                        |this, _, cx| this.group_dm_create(cx),
-                    )]
+                    // Add to DM: the Add button sits beside the field and the invite link closes the body.
+                    Vec::new()
                 } else {
                     vec![
                         modal::button(

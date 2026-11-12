@@ -29,6 +29,9 @@ use gpui::{
 use serde_json::json;
 use std::sync::Arc;
 
+/// `DismissibleContent.INVITE_NONFRIENDS_TO_GDM_COACHMARK` (module 554146).
+const GDM_COACHMARK: u16 = 759;
+
 /// Capture only: the key of the one real request that creates a group holding only this account.
 #[cfg(feature = "capture")]
 pub(super) const SOLO_KEY: &str = "gdm-solo";
@@ -287,6 +290,7 @@ impl Root {
                             )
                             .child(
                                 div()
+                                    .mt(px(-2.))
                                     .text_size(px(12.))
                                     .line_height(px(16.))
                                     .font_weight(FontWeight(500.))
@@ -332,16 +336,21 @@ impl Root {
     ) -> AnyElement {
         let id = channel.id;
         let name = self.private_channel_name(channel);
-        let group = SharedString::from("group-header-name");
         let size = if channel.icon.is_none() && channel.recipients.len() >= 2 {
             24.
         } else {
             20.
         };
+        let hovered = self.group_header_hover;
         let button = div()
             .id("group-header-name")
             .parity("group-header-name")
-            .group(group.clone())
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if this.group_header_hover != *inside {
+                    this.group_header_hover = *inside;
+                    cx.notify();
+                }
+            }))
             .ml(px(-7.))
             .h(px(32.))
             .flex()
@@ -382,16 +391,18 @@ impl Root {
                     .text_color(color("--text-strong"))
                     .child(name),
             )
-            .child(
-                div()
-                    .hidden()
-                    .group_hover(group, |style| style.flex())
-                    .size(px(16.))
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("pm_edit", 16., "--text-strong")),
-            );
+            // Laid out only while hovered (`display: none` otherwise), so the pill grows by 8 + 16px.
+            .when(hovered, |this| {
+                this.child(
+                    div()
+                        .size(px(16.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("pm_edit", 16., "--text-strong")),
+                )
+            });
         self.with_tip(
             "group-header-name-tip",
             Tip::text("Edit Group", Side::Bottom),
@@ -525,6 +536,130 @@ impl Root {
             .into_any_element()
     }
 
+    /// `INVITE_NONFRIENDS_TO_GDM_COACHMARK` (content 759, module 753190 `tl`/`e9`): a popout left of the members
+    /// list's Invite button with the NEW badge, "Invite server members to Group DMs", its sentence and Got It, shown
+    /// until it is dismissed. Measured on `group-dm/view-coachmark` (card 238 wide, 16px padding); the arrow that
+    /// points at the button is not drawn.
+    fn group_coachmark(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.stores.content_dismissed(GDM_COACHMARK) || !self.stores.settings_loaded() {
+            return None;
+        }
+        let dismiss = |this: &mut Root, cx: &mut Context<Root>| {
+            this.dismiss_group_coachmark();
+            cx.notify();
+        };
+        Some(
+            div()
+                .id("group-coachmark")
+                .parity("group-coachmark")
+                .absolute()
+                .left(px(-236.))
+                .top(px(-3.))
+                .w(px(238.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(8.)),
+                    blur_radius: px(16.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .px(px(16.))
+                .pt(px(35.))
+                .pb(px(15.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .id("group-coachmark-close")
+                        .absolute()
+                        .top(px(10.))
+                        .right(px(10.))
+                        .size(px(16.))
+                        .cursor_pointer()
+                        .child(icon("close", 16., "--interactive-icon-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| dismiss(this, cx))),
+                )
+                .child(
+                    div()
+                        .h(px(16.))
+                        .px(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--white"))
+                        .child("NEW"),
+                )
+                .child(
+                    div()
+                        .mt(px(12.))
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child("Invite server members to Group DMs"),
+                )
+                .child(
+                    div()
+                        .mt(px(4.))
+                        .text_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(
+                            "Search to find specific server members. They\u{2019}ll need to accept your invite before they join the group DM.",
+                        ),
+                )
+                .child(
+                    div()
+                        .id("group-coachmark-got-it")
+                        .mt(px(20.))
+                        .w_full()
+                        .h(px(32.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|style| style.bg(color("--control-primary-background-hover")))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--white"))
+                        .child("Got It")
+                        .on_click(cx.listener(move |this, _, _, cx| dismiss(this, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Marks the coachmark dismissed in the account's settings (the `USER_DISMISS` write of `markAsDismissed`).
+    fn dismiss_group_coachmark(&mut self) {
+        if self.stores.content_dismissed(GDM_COACHMARK) {
+            return;
+        }
+        let patch = self.stores.dismiss_content(GDM_COACHMARK);
+        if patch.is_empty() || std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() == Ok("1") {
+            return;
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: "/users/@me/settings-proto/1".into(),
+            body: Some(json!({"settings": patch})),
+        });
+    }
+
     /// The member list beside a group (`membersWrap_86es0b`): "Members\u{2014}n", a row per person (the owner with a
     /// crown) and the "Invite to Group DM" button under them while there is room for more.
     pub(super) fn group_members_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -582,7 +717,7 @@ impl Root {
                                     .child(self.dm_display_name(user)),
                             )
                             .when(owner == Some(user.id), |this| {
-                                this.child(div().child(icon(
+                                this.child(div().ml(px(-8.)).child(icon(
                                     "owner_crown",
                                     14.,
                                     "--status-warning",
@@ -593,12 +728,15 @@ impl Root {
             })
             .collect();
         let room = count < super::group_dm::GROUP_LIMIT;
+        let coachmark = room.then(|| self.group_coachmark(cx)).flatten();
         Some(
             div()
+                .relative()
                 .flex_none()
                 .flex()
                 .flex_row()
                 .h_full()
+                .children(coachmark)
                 .child(
                     div()
                         .flex_none()
@@ -1127,7 +1265,11 @@ impl Root {
             // injected channels only.
             // `real`: an injected group shaped like the one created for the goldens (named, with an icon, nobody else in
             // it, owned by the test account, its two system lines from 2026-11-12 01:39 local); nothing is sent.
-            ["real"] => {
+            ["real"] | ["real", "coachmark"] => {
+                // The goldens other than `view-coachmark` were taken with the coachmark already dismissed.
+                if args.len() == 1 {
+                    let _ = self.stores.dismiss_content(GDM_COACHMARK);
+                }
                 let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) else {
                     return "no current user".to_owned();
                 };
@@ -1149,23 +1291,40 @@ impl Root {
                     );
                 }
                 let stamp = "2026-11-11T22:39:00.000000+00:00";
-                let mine = json!({"id": me.to_string(), "username": "me"});
-                for (index, (kind, content)) in
-                    [(4, "gravecord group"), (5, "")].into_iter().enumerate()
-                {
-                    self.stores.dispatch(
-                        "MESSAGE_CREATE",
-                        &json!({
-                            "id": (1_570_206_400_000_000_000_u64 + index as u64).to_string(),
+                let name = self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .map(|me| me.username.clone())
+                    .unwrap_or_default();
+                let mine = json!({"id": me.to_string(), "username": name});
+                // The page the service returns, newest first, reaching the start of the group.
+                let page: Vec<_> = [(5, ""), (4, "gravecord group")]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, content))| {
+                        json!({
+                            "id": (1_570_206_400_000_000_100_u64 - index as u64).to_string(),
                             "channel_id": group.to_string(), "type": kind, "content": content,
                             "author": mine, "mentions": [], "timestamp": stamp,
                             "attachments": [], "embeds": [], "pinned": false, "tts": false,
                             "mention_everyone": false, "mention_roles": [], "edited_timestamp": null,
-                        }),
-                    );
-                }
+                        })
+                    })
+                    .collect();
+                let spec = dc_state::message_window::FetchSpec {
+                    channel: group,
+                    before: None,
+                    after: None,
+                    limit: 50,
+                    jump: None,
+                    truncate: false,
+                    last_message_id: None,
+                    started_ms: 0,
+                };
                 self.group_members = true;
                 self.select_home(Some(group));
+                self.window_loaded(spec, json!(page), cx);
                 cx.notify();
                 "injected the real-shaped group; nothing was sent".to_owned()
             }
