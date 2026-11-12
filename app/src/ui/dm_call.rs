@@ -79,6 +79,10 @@ impl Root {
     /// After every dispatch: what the call store now owes the service.
     pub(super) fn calls_after_dispatch(&mut self, name: &str, cx: &mut Context<Self>) {
         // `CONNECTION_OPEN` and `CONNECTION_RESUMED`: the open DM asks for its call again.
+        if name == "READY" {
+            // `CONNECTION_OPEN` of `ApplicationStreamPreviewStore`.
+            self.stream_previews.clear();
+        }
         if matches!(name, "READY" | "RESUMED")
             && self.guild.is_none()
             && let Some(channel) = self.channel
@@ -696,6 +700,22 @@ impl Root {
                 }
                 cx.notify();
                 "the test person is shown with clips enabled; nothing was sent".to_owned()
+            }
+            // `fake-preview`: the test person's stream has a preview, their avatar's picture standing in for it.
+            ["fake-preview"] => {
+                let url = self
+                    .stores
+                    .users
+                    .get(&other)
+                    .map(|user| super::avatar_source(user).1)
+                    .unwrap_or_default();
+                let key = super::stream_previews::key_of(0, channel, other).to_string();
+                self.stream_preview_fetched(
+                    &format!("{}{key}", super::stream_previews::KEY_PREFIX),
+                    &json!({ "url": url }),
+                    cx,
+                );
+                "the stream has a preview picture; nothing was sent".to_owned()
             }
             ["fake-join"] => {
                 self.select_home(Some(channel));

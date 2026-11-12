@@ -120,6 +120,7 @@ mod stage;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
+mod stream_previews;
 mod timestamps;
 mod tray;
 mod unread_badges;
@@ -514,6 +515,7 @@ pub struct Root {
     /// The voice channel's call view: its idle timer, menus and docked chat.
     vv: voice_view::State,
     call_volume: call_volume::State,
+    stream_previews: stream_previews::Previews,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
     pending_invite_link: Option<String>,
@@ -901,6 +903,7 @@ impl Root {
             audio_menu: None,
             vv: voice_view::State::default(),
             call_volume: call_volume::State::default(),
+            stream_previews: stream_previews::Previews::default(),
             invite: None,
             invite_codes: HashMap::new(),
             pending_invite_link: None,
@@ -1341,6 +1344,10 @@ impl Root {
                 }
                 if key.starts_with(mod_view::KEY_PREFIX) {
                     self.mod_view_fetched(&key, body, cx);
+                    return;
+                }
+                if key.starts_with(stream_previews::KEY_PREFIX) {
+                    self.stream_preview_fetched(&key, &body, cx);
                     return;
                 }
                 if key.starts_with(boost_apply::KEY_PREFIX) {

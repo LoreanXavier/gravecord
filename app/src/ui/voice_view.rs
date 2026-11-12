@@ -123,6 +123,8 @@ pub(super) struct State {
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
     pub popout_render: bool,
+    /// The call the view was last built for (guild, channel), for what a tile looks up by its stream's key.
+    pub shown_call: (Id, Id),
     /// The red button of the tray shows Stop Watching, not Disconnect (`D` of `eT` in module 105225: it changes
     /// once the button has shrunk).
     pub end_shows_stream: std::cell::Cell<bool>,
@@ -153,6 +155,7 @@ impl Default for State {
             popout_render: false,
             outside: false,
             end_shows_stream: std::cell::Cell::new(false),
+            shown_call: (0, 0),
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -975,6 +978,18 @@ impl Root {
         let outside = self.vv.outside;
         let shown = self.controls_shown();
         let everyone = self.participants(guild, channel);
+        self.vv.shown_call = (guild, channel);
+        // A stream nobody here watches shows its preview behind Watch Stream; one that ended is forgotten.
+        for person in &everyone {
+            let key = super::stream_previews::key_of(guild, channel, person.tile.user);
+            match person.tile.kind {
+                TileKind::Stream if !person.tile.connected => self.stream_preview_want(key),
+                TileKind::User if !person.tile.going_live => {
+                    self.stream_previews.forget(&key.to_string());
+                }
+                _ => {}
+            }
+        }
         // Module 874739: outside the call the grid takes `participants`, not `filteredParticipants`.
         let show_non_video = outside || call_setting(SHOW_NON_VIDEO);
         let candidates: Vec<_> = everyone.iter().map(|person| person.tile.clone()).collect();
@@ -1335,10 +1350,23 @@ impl Root {
                     },
                 ))
             })
-            .child(self.tile_media(media, person))
+            .child(self.tile_media(media, person, layout))
             .when(loading, |this| this.child(spinner()))
             .when(waiting, |this| {
-                this.child(self.watch_overlay(user_id, layout.tile_width, cx))
+                let (guild, channel) = self.vv.shown_call;
+                this.children(
+                    self.stream_preview_image(guild, channel, user_id)
+                        .map(|picture| {
+                            div().absolute().inset_0().child(
+                                img(picture)
+                                    .w(px(layout.tile_width))
+                                    .h(px(layout.tile_height))
+                                    .aspect_ratio(layout.tile_width / layout.tile_height)
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            )
+                        }),
+                )
+                .child(self.watch_overlay(user_id, layout.tile_width, cx))
             })
             .children(indicators)
             .child(
@@ -1393,7 +1421,7 @@ impl Root {
     }
 
     /// The tile's picture.
-    fn tile_media(&self, media: TileMedia, person: &Participant) -> AnyElement {
+    fn tile_media(&self, media: TileMedia, person: &Participant, layout: GridLayout) -> AnyElement {
         match media {
             TileMedia::None => div().into_any_element(),
             TileMedia::Avatar => {
@@ -1416,9 +1444,19 @@ impl Root {
                     .inset_0()
                     .bg(rgba(0x000000ff))
                     .child(
-                        img(image.clone())
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain),
+                        // A stream keeps its own shape inside the tile (`fit` of module 555148). The element takes
+                        // the tile's ratio, or the layout gives it the picture's and the tile crops it.
+                        if key.1 == dc_voice::VideoSource::Camera {
+                            img(image.clone())
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Contain)
+                        } else {
+                            img(image.clone())
+                                .w(px(layout.tile_width))
+                                .h(px(layout.tile_height))
+                                .aspect_ratio(layout.tile_width / layout.tile_height)
+                                .object_fit(gpui::ObjectFit::Contain)
+                        },
                     )
                     .into_any_element(),
                 None => div().into_any_element(),
