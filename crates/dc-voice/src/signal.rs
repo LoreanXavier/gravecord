@@ -387,6 +387,9 @@ pub(crate) struct RemoteVideo {
     pub audio_ssrc: u32,
     /// Video and RTX SSRC; `None` when the user stopped sending video.
     pub video: Option<(u32, u32)>,
+    /// `max_resolution` and `max_framerate` of the source's stream: the height (`None` for the `source` type) and
+    /// the frames per second.
+    pub quality: Option<(Option<u32>, u32)>,
 }
 pub(crate) fn remote_video(data: &Value) -> Result<RemoteVideo, &'static str> {
     let user = id(data, "user_id")?;
@@ -418,10 +421,21 @@ pub(crate) fn remote_video(data: &Value) -> Result<RemoteVideo, &'static str> {
             )
         }),
     };
+    let quality = stream.and_then(|stream| {
+        let fps = u32::try_from(stream["max_framerate"].as_u64()?).ok()?;
+        let resolution = &stream["max_resolution"];
+        let height = if resolution["type"] == "source" {
+            None
+        } else {
+            Some(u32::try_from(resolution["height"].as_u64()?).ok()?)
+        };
+        Some((height, fps))
+    });
     Ok(RemoteVideo {
         user,
         audio_ssrc,
         video,
+        quality,
     })
 }
 
@@ -659,6 +673,23 @@ mod tests {
     }
 
     #[test]
+    fn a_watched_stream_says_what_it_sends_at_most() {
+        let fixed = json!({"user_id": "5", "audio_ssrc": 10, "streams": [{"type": "screen", "rid": "100",
+            "ssrc": 50, "rtx_ssrc": 51, "quality": 100, "active": true, "max_framerate": 60,
+            "max_resolution": {"type": "fixed", "width": 2560, "height": 1440}}]});
+        assert_eq!(
+            remote_video(&fixed).unwrap().quality,
+            Some((Some(1440), 60))
+        );
+        let source = json!({"user_id": "5", "audio_ssrc": 10, "streams": [{"type": "screen", "rid": "100",
+            "ssrc": 50, "rtx_ssrc": 51, "quality": 100, "active": true, "max_framerate": 30,
+            "max_resolution": {"type": "source", "width": 0, "height": 0}}]});
+        assert_eq!(remote_video(&source).unwrap().quality, Some((None, 30)));
+        let silent = json!({"user_id": "5", "audio_ssrc": 10, "video_ssrc": 11, "rtx_ssrc": 12});
+        assert_eq!(remote_video(&silent).unwrap().quality, None);
+    }
+
+    #[test]
     fn ready_streams_and_remote_video() {
         let base = |streams: Value| {
             let mut data = json!({"ssrc": 42, "ip": "203.0.113.9", "port": 1, "modes": ["aead_aes256_gcm_rtpsize"]});
@@ -680,7 +711,8 @@ mod tests {
             RemoteVideo {
                 user: 5,
                 audio_ssrc: 10,
-                video: Some((11, 12))
+                video: Some((11, 12)),
+                quality: None,
             }
         );
         let off = json!({"user_id": "5", "audio_ssrc": 10, "video_ssrc": 0, "streams": []});

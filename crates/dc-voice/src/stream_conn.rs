@@ -87,6 +87,9 @@ pub enum StreamEvent {
     Live { privacy_code: Option<String> },
     /// A JPEG thumbnail of the stream (at most 512 x 288) for `POST /streams/<key>/preview`.
     Preview { jpeg: Vec<u8> },
+    /// What the watched stream says it sends at most (`max_resolution`, `max_framerate` of its op 12): the height,
+    /// `None` for the source's own, and the frames per second.
+    Quality { height: Option<u32>, fps: u32 },
     /// Another participant of the stream connection came or went (viewers of a sent stream).
     Participants { count: usize },
     /// The sender's capture or the connection ended. Always the last event, unless the task was aborted.
@@ -786,6 +789,9 @@ pub(crate) async fn run(
                             Some(VoiceOp::Video) => {
                                 let remote = signal::remote_video(data)?;
                                 if !sending && remote.user == owner {
+                                    if let Some((height, fps)) = remote.quality {
+                                        let _ = events.send(StreamEvent::Quality { height, fps });
+                                    }
                                     if remote.audio_ssrc != 0 && dave.contains(remote.user) {
                                         mixer.announce(remote.user, remote.audio_ssrc)?;
                                     }

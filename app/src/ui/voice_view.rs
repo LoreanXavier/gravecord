@@ -123,6 +123,9 @@ pub(super) struct State {
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
     pub popout_render: bool,
+    /// The call view is being built for a call this account has not joined (`inCall` is false): every participant
+    /// has a tile, none can be focused, and the bar and its menus are left to the join buttons.
+    pub outside: bool,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
     pub(super) background: super::call_background::State,
@@ -145,6 +148,7 @@ impl Default for State {
             members_hidden: false,
             popout: None,
             popout_render: false,
+            outside: false,
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -166,9 +170,42 @@ pub(super) struct GridLayout {
 struct FocusCrumb {
     title: String,
     avatar: Option<std::sync::Arc<gpui::Image>>,
+    /// The focused tile is a stream: LIVE shows, after the quality when the stream told it.
+    stream: bool,
     quality: Option<String>,
     /// The viewers of a focused stream, for the pile of the header (`546871`): their avatars, in order.
     viewers: Vec<Option<std::sync::Arc<gpui::Image>>>,
+}
+
+/// The live indicator of a focused stream (module 872363 with `showQuality`): the quality, when the stream told it,
+/// joined to LIVE.
+pub(super) fn live_indicator(quality: Option<String>) -> AnyElement {
+    let pill = |text: String, fill: &'static str| {
+        div()
+            .h(px(16.))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .bg(mid(fill))
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(600.))
+            .text_color(rgba(0xffffffff))
+            .child(text)
+    };
+    let live = pill("LIVE".to_owned(), "--badge-critical-background").rounded_r(px(16.));
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .child(match quality {
+            Some(text) => div()
+                .flex()
+                .child(pill(text, "--interactive-muted").rounded_l(px(16.)))
+                .child(live),
+            None => div().flex().child(live.rounded_l(px(16.))),
+        })
+        .into_any_element()
 }
 
 /// `maxVisibleUsers` of the header's viewer pile.
@@ -561,6 +598,80 @@ impl Root {
         out
     }
 
+    /// Module 689874: clips are on for this account while it streams or a game shows, or a participant's client
+    /// announced them (`RTC_CONNECTION_FLAGS`, bit 1).
+    fn clips_in_call(&self) -> bool {
+        let Some(call) = &self.call else {
+            return false;
+        };
+        let own = self.clips_enabled()
+            && (self.own_stream().is_some() || self.detect.store.visible_game().is_some());
+        own || self
+            .stores
+            .voice_members(call.guild, call.channel)
+            .iter()
+            .any(|state| {
+                call.flags
+                    .get(&state.user_id)
+                    .is_some_and(|flags| flags & 1 != 0)
+            })
+    }
+
+    /// The ENABLED badge of a call's header (`clipsEnabledIndicator_U6LhXD`: margin 0 8px; a secondary badge of
+    /// module 805251 with the clips icon, `body-xs/semibold`, capitals).
+    pub(super) fn clips_enabled_badge(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.clips_in_call() {
+            return None;
+        }
+        Some(
+            div()
+                .mx(px(8.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .child(
+                    self.with_tip(
+                        "call-clips-enabled",
+                        Tip::text(
+                            "Participants in this call have clips enabled.",
+                            Side::Bottom,
+                        ),
+                        div()
+                            .id("call-clips-enabled-badge")
+                            .px(px(8.))
+                            .rounded_full()
+                            .bg(mid("--badge-secondary-background"))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(mid("--badge-secondary-text"))
+                            .child(icon("clips_clips", 12., "--badge-secondary-text"))
+                            .child("ENABLED"),
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The items a direct message's header gets from its call (module 289287 `renderHeaderToolbar`): the clips
+    /// indicator while in the call, then the quality and LIVE of a focused stream.
+    pub(super) fn dm_call_header_items(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !self.dm_call_in(self.channel) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        out.extend(self.clips_enabled_badge(cx));
+        if let Some((user, TileKind::Stream)) = self.vv.focus.tile {
+            let label = self.video_stream_of(user).and_then(|info| info.label);
+            out.push(live_indicator(label));
+        }
+        out
+    }
+
     /// The header crumb of a focused tile: the name with Screen for a stream, the name for a camera.
     fn focus_crumb(&self, person: &Participant) -> FocusCrumb {
         let name = person.user.display_name().to_owned();
@@ -575,11 +686,11 @@ impl Root {
                 .images
                 .get(&super::avatar_source(&person.user).0)
                 .cloned(),
+            stream,
             quality: stream
                 .then(|| self.video_stream_of(person.user.id))
                 .flatten()
-                .and_then(|info| info.quality)
-                .map(|(resolution, fps)| super::go_live::quality_badge(resolution, fps)),
+                .and_then(|info| info.label),
             viewers: stream
                 .then(|| self.video_stream_of(person.user.id))
                 .flatten()
@@ -857,9 +968,11 @@ impl Root {
         height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let outside = self.vv.outside;
         let shown = self.controls_shown();
         let everyone = self.participants(guild, channel);
-        let show_non_video = call_setting(SHOW_NON_VIDEO);
+        // Module 874739: outside the call the grid takes `participants`, not `filteredParticipants`.
+        let show_non_video = outside || call_setting(SHOW_NON_VIDEO);
         let candidates: Vec<_> = everyone.iter().map(|person| person.tile.clone()).collect();
         let hides_participants = video_tiles::hides_participants(&candidates, show_non_video);
         // `getUserParticipantCount`: users, not streams, whatever the filter hides.
@@ -883,17 +996,23 @@ impl Root {
                 .iter()
                 .any(|person| person.tile.user == user && person.tile.kind == kind)
         });
-        let focused = self.vv.focus.tile.and_then(|(user, kind)| {
-            people
-                .iter()
-                .position(|person| person.tile.user == user && person.tile.kind == kind)
-        });
+        // `selectedParticipant: v ? n : null`, `v` being in the call with video.
+        let focused = self
+            .vv
+            .focus
+            .tile
+            .filter(|_| !outside)
+            .and_then(|(user, kind)| {
+                people
+                    .iter()
+                    .position(|person| person.tile.user == user && person.tile.kind == kind)
+            });
         let can_invite = self.current_channel().is_some_and(|channel| {
             self.can_in_channel(channel, dc_state::permissions::CREATE_INSTANT_INVITE)
         });
         // Alone in the call with the right to invite: the invite card keeps the user's tile company (526369:
         // `userLimit <= 0 || > 1`, one user, `canInvite`). A person's stream does not count as a user.
-        let card = user_count == 1 && can_invite;
+        let card = user_count == 1 && can_invite && !outside;
         let count = (people.len() + usize::from(card)).max(1);
         let layout = grid_layout(count, width, height);
         if card {
@@ -963,6 +1082,10 @@ impl Root {
                 .children(rows)
                 .into_any_element()
         };
+        if outside {
+            // `disableGradients: !inCall`, and the bottom centre is the join buttons of the caller.
+            return div().absolute().inset_0().child(grid).into_any_element();
+        }
         div()
             .absolute()
             .inset_0()
@@ -1125,6 +1248,7 @@ impl Root {
                 cx.notify();
             }))
             .child(icon("voice_view_more", 16., "--white"));
+        let outside = self.vv.outside;
         let media = self.tile_media_for(person);
         let video = matches!(media, TileMedia::Video(_));
         let waiting = stream_tile && stream.is_none();
@@ -1155,9 +1279,7 @@ impl Root {
                     .text_color(rgba(0xffffffff))
                     .child(text)
             };
-            let quality = stream
-                .quality
-                .map(|(resolution, fps)| super::go_live::quality_badge(resolution, fps));
+            let quality = stream.label.clone();
             let live = pill("LIVE".to_owned(), "--badge-critical-background").rounded_r(px(16.));
             div()
                 .absolute()
@@ -1167,7 +1289,7 @@ impl Root {
                 .when_some(quality, |this, text| {
                     this.child(pill(text, "--interactive-muted").rounded_l(px(16.)))
                 })
-                .child(if stream.quality.is_none() {
+                .child(if stream.label.is_none() {
                     live.rounded_l(px(16.))
                 } else {
                     live
@@ -1183,7 +1305,14 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(background)
-            .when(!waiting, |this| {
+            .when(outside && stream_tile, |this| {
+                // `handleSelectParticipant` on a stream from outside the call: join it and watch.
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.watch_stream_joining(user_id, cx);
+                    }))
+            })
+            .when(!waiting && !outside, |this| {
                 this.cursor_pointer().on_click(cx.listener(
                     move |this, event: &gpui::ClickEvent, window, cx| {
                         if event.click_count() >= 2 {
@@ -1216,7 +1345,7 @@ impl Root {
                     .items_end()
                     .justify_between()
                     .child(pill)
-                    .child(options),
+                    .when(!outside, |this| this.child(options)),
             )
             .when(person.speaking && !stream_tile, |this| {
                 this.child(
@@ -1320,7 +1449,7 @@ impl Root {
                     .text_color(mid("--control-secondary-text-default"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.watch_stream_of(owner, cx);
+                        this.watch_stream_joining(owner, cx);
                     }))
                     .child(if width < 175. {
                         "Watch"
@@ -1539,28 +1668,13 @@ impl Root {
                     .filter(|crumb| !crumb.viewers.is_empty())
                     .map(|crumb| viewer_pile(&crumb.viewers)),
             )
-            .children(focus.and_then(|crumb| crumb.quality).map(|text| {
-                let pill = |text: String, fill: &'static str| {
-                    div()
-                        .h(px(16.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .bg(mid(fill))
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(rgba(0xffffffff))
-                        .child(text)
-                };
-                div()
-                    .mr(px(16.))
-                    .flex()
-                    .child(pill(text, "--interactive-muted").rounded_l(px(16.)))
-                    .child(
-                        pill("LIVE".to_owned(), "--badge-critical-background").rounded_r(px(16.)),
-                    )
-            }))
+            // Module 416528: the clips indicator, then the focused stream's quality and LIVE.
+            .children(self.clips_enabled_badge(cx))
+            .children(
+                focus
+                    .filter(|crumb| crumb.stream)
+                    .map(|crumb| div().mr(px(16.)).child(live_indicator(crumb.quality))),
+            )
             .when(!chat_open, |this| {
                 this.child(self.with_tip(
                     "voice-show-chat-tip",

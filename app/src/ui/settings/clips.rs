@@ -727,7 +727,7 @@ impl Root {
     }
 
     /// `useClipsEnabled` (module 572164): the entry is listed and Enable Clipping is on.
-    fn clips_enabled(&self) -> bool {
+    pub(in crate::ui) fn clips_enabled(&self) -> bool {
         self.clips_listed() && self.clips.store.settings.clips_enabled
     }
 

@@ -274,6 +274,11 @@ pub enum Event {
     ClientDisconnected {
         user_id: u64,
     },
+    /// Op 18: the flags a participant's client announces (`RTC_CONNECTION_FLAGS`; 1 is clips enabled).
+    Flags {
+        user_id: u64,
+        flags: u64,
+    },
     /// Our camera opened (true) or is off (false). Report it as `self_video` in the main gateway's voice state.
     VideoState {
         camera: bool,

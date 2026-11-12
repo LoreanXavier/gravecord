@@ -922,6 +922,13 @@ pub(crate) async fn run(
                                     mixer.announce(user, value)?;
                                 }
                             }
+                            Some(VoiceOp::Flags) => {
+                                if let (Ok(user_id), Some(flags)) =
+                                    (signal::id(data, "user_id"), data["flags"].as_u64())
+                                {
+                                    emit(&events, Event::Flags { user_id, flags });
+                                }
+                            }
                             Some(VoiceOp::ClientConnect) => {
                                 let ids = signal::client_connect(data)?;
                                 for user in &ids {

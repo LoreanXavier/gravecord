@@ -30,6 +30,8 @@ pub(crate) struct Call {
     pub stats: super::voice_panel::CallStats,
     /// Our camera is on (`Event::VideoState`), reported as `self_video` in op 4.
     pub camera: bool,
+    /// The flags each participant's client announced (`RTC_CONNECTION_FLAGS`).
+    pub flags: std::collections::HashMap<u64, u64>,
 }
 
 impl Call {
@@ -105,6 +107,7 @@ impl Root {
             connected: false,
             connected_at: None,
             rtc_users: Vec::new(),
+            flags: std::collections::HashMap::new(),
             tracker: Default::default(),
         });
         self.stores.voice_server = None;
@@ -136,6 +139,7 @@ impl Root {
             connected: true,
             connected_at: Some(std::time::Instant::now()),
             rtc_users: Vec::new(),
+            flags: std::collections::HashMap::new(),
             tracker: Default::default(),
         });
         self.start_voice_tick(cx);
@@ -155,6 +159,7 @@ impl Root {
             connected: true,
             connected_at: Some(std::time::Instant::now()),
             rtc_users: Vec::new(),
+            flags: std::collections::HashMap::new(),
             tracker: Default::default(),
         });
     }
@@ -316,6 +321,11 @@ impl Root {
             dc_voice::Event::PrivacyCode(code) => {
                 if let Some(call) = self.call.as_mut() {
                     call.stats.set_privacy_code(code);
+                }
+            }
+            dc_voice::Event::Flags { user_id, flags } => {
+                if let Some(call) = self.call.as_mut() {
+                    call.flags.insert(user_id, flags);
                 }
             }
             dc_voice::Event::ClientConnected { user_id } => {

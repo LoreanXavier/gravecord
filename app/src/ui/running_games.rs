@@ -28,7 +28,7 @@ const NAME_LIMIT: usize = 128;
 
 pub(super) struct Games {
     runtime: games::Runtime,
-    store: RunningGames,
+    pub(super) store: RunningGames,
     /// The activities the last presence update carried.
     /// The status and activities of the last presence update. The status is empty until one pass has seen it: the
     /// connection's own handshake already carried it.

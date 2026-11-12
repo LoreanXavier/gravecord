@@ -660,6 +660,23 @@ impl Root {
                     _ => "group join|leave|ring 0..3".to_owned(),
                 }
             }
+            // `fake-stream`: the test person is in the call and going live; this account is not in it.
+            ["fake-stream"] => {
+                self.select_home(Some(channel));
+                let mut live = state(other, false);
+                live["self_stream"] = json!(true);
+                self.stores.dispatch("VOICE_STATE_UPDATE", &live);
+                cx.notify();
+                "the test person is shown going live in the call; nothing was sent".to_owned()
+            }
+            // `fake-flags`: the test person's client announced that clips are enabled (voice op 18).
+            ["fake-flags"] => {
+                if let Some(call) = self.call.as_mut() {
+                    call.flags.insert(other, 1);
+                }
+                cx.notify();
+                "the test person is shown with clips enabled; nothing was sent".to_owned()
+            }
             ["fake-join"] => {
                 self.select_home(Some(channel));
                 self.stores.dispatch("VOICE_STATE_UPDATE", &state(me, false));
@@ -768,13 +785,6 @@ impl Root {
     }
 
     fn inject_call(&mut self, name: &str, data: Value, cx: &mut Context<Self>) -> String {
-        if name == "CALL_CREATE"
-            && let Some(states) = data["voice_states"].as_array()
-        {
-            for state in states {
-                self.stores.dispatch("VOICE_STATE_UPDATE", state);
-            }
-        }
         self.stores.dispatch(name, &data);
         self.calls_after_dispatch(name, cx);
         format!("injected {name}")

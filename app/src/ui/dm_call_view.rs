@@ -290,6 +290,13 @@ impl Root {
             div().into_any_element()
         } else if video && in_call {
             self.call_view(0, channel, width, height, cx)
+        } else if video {
+            // Module 874739 with `inCall` false and the mode `VIDEO`: the grid of everyone, a stream as a tile with
+            // Watch Stream.
+            self.vv.outside = true;
+            let grid = self.call_view(0, channel, width, height, cx);
+            self.vv.outside = false;
+            grid
         } else {
             self.dm_call_avatars(&people, width)
         };
@@ -315,7 +322,9 @@ impl Root {
                 }))
                 .child(body)
                 .child(div().absolute().top_0().left_0().right_0().child(header))
-                .when(!in_call && !video, |this| {
+                // `renderBottomCenter`: outside the call the tray of module 105225 is the join buttons, in the voice
+                // and the video mode alike.
+                .when(!in_call, |this| {
                     this.child(self.dm_join_tray(channel, people_ring_me, cx))
                 })
                 .when(in_call && !video, |this| {

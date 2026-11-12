@@ -1703,6 +1703,19 @@ impl Stores {
                     }
                 }
             }
+            "CALL_CREATE" => {
+                // Module 225123: the call's `voice_states` are dispatched as `VOICE_STATE_UPDATES` with no guild.
+                // They are who is in a call that began before this connection asked for it.
+                let list = self.voice_states.entry(0).or_default();
+                for state in data["voice_states"].as_array().into_iter().flatten() {
+                    if let Some(user) = id(&state["user_id"]) {
+                        list.retain(|known| known.user_id != user);
+                        if let Some(state) = VoiceState::from_value(state) {
+                            list.push(state);
+                        }
+                    }
+                }
+            }
             "VOICE_SERVER_UPDATE" => {
                 let guild = if data["guild_id"].is_null() {
                     Some(0)
@@ -3448,6 +3461,25 @@ mod tests {
         assert_eq!(
             stores.voice_server.as_ref().unwrap().endpoint,
             "c-ams.discord.media"
+        );
+    }
+
+    #[test]
+    fn a_call_that_was_asked_for_brings_who_is_in_it() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "CALL_CREATE",
+            &json!({"channel_id": "500", "message_id": "1", "region": "x", "ongoing_rings": {},
+                "voice_states": [
+                    {"channel_id": "500", "user_id": "5", "session_id": "s", "self_stream": true},
+                    {"channel_id": "500", "user_id": "6", "session_id": "t"}]}),
+        );
+        let members = stores.voice_members(0, 500);
+        assert_eq!(members.len(), 2);
+        assert!(
+            members
+                .iter()
+                .any(|state| state.user_id == 5 && state.self_stream)
         );
     }
 

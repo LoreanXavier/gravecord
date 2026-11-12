@@ -5011,6 +5011,7 @@ impl Root {
                     div()
                         .flex()
                         .gap(px(8.))
+                        .children(self.dm_call_header_items(cx))
                         .children(
                             self.channel
                                 .map(|channel| {

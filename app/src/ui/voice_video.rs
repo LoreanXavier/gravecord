@@ -117,6 +117,8 @@ struct Live {
     last: StreamUpdate,
     /// What the picker chose, for the panel row and the tile's badge.
     started: Option<Started>,
+    /// What a watched stream says it sends at most (`StreamEvent::Quality`).
+    remote_quality: Option<(Option<u32>, u32)>,
 }
 
 /// What a stream we send was started with.
@@ -132,7 +134,8 @@ pub(super) struct Started {
 #[derive(Clone, Debug)]
 pub(super) struct StreamInfo {
     pub role: Role,
-    pub quality: Option<(dc_media::screen::Resolution, u32)>,
+    /// The text of the quality pill (`720P 30FPS`, `SOURCE 60FPS`): what we send, or what the watched stream says.
+    pub label: Option<String>,
     pub name: Option<String>,
     pub icon: Option<Arc<RenderImage>>,
     /// Who watches the stream (`getViewerIds`).
@@ -451,6 +454,7 @@ impl Root {
                 source: Some(source),
                 last,
                 started: Some(started),
+                remote_quality: None,
             },
         );
         info!("stream: create");
@@ -596,6 +600,7 @@ impl Root {
                 source: None,
                 last,
                 started: None,
+                remote_quality: None,
             },
         );
         // The Stream Volume and Mute of this owner, as last chosen.
@@ -661,7 +666,16 @@ impl Root {
             .find(|(key, _)| key.owner() == owner)?;
         Some(StreamInfo {
             role: live.last.role,
-            quality: live.started.as_ref().map(|started| started.quality),
+            label: live
+                .started
+                .as_ref()
+                .map(|started| super::go_live::quality_badge(started.quality.0, started.quality.1))
+                .or_else(|| {
+                    live.remote_quality.map(|(height, fps)| match height {
+                        Some(height) => format!("{height}P {fps}FPS"),
+                        None => format!("SOURCE {fps}FPS"),
+                    })
+                }),
             name: live.started.as_ref().map(|started| started.name.clone()),
             icon: live
                 .started
@@ -699,6 +713,18 @@ impl Root {
             StreamKey::Call { channel, owner }
         };
         self.stream_watch(key, cx);
+    }
+
+    /// Watch Stream from a direct message whose call this account has not joined (`handleSelectParticipant` of
+    /// module 540462: `selectVoiceChannel`, then `watchStream`).
+    pub(super) fn watch_stream_joining(&mut self, owner: u64, cx: &mut Context<Self>) {
+        if self.guild.is_none()
+            && !self.dm_call_in(self.channel)
+            && let Some(channel) = self.channel
+        {
+            self.join_dm_call(channel, false, cx);
+        }
+        self.watch_stream_of(owner, cx);
     }
 
     /// Gives the call's stream audio mix the level stored for `owner`'s stream.
@@ -788,6 +814,11 @@ impl Root {
         let Some(live) = self.video.streams.get_mut(&key) else {
             return;
         };
+        if let StreamEvent::Quality { height, fps } = event {
+            live.remote_quality = Some((height, fps));
+            cx.notify();
+            return;
+        }
         if let Some(update) = live.tracker.connection(&event) {
             self.stream_changed(update, true, cx);
         }
