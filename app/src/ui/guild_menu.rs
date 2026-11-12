@@ -8,6 +8,7 @@ use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::Id;
+use dc_state::permissions;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, Window, deferred, div, prelude::*,
     px,
@@ -24,12 +25,30 @@ enum Entry {
     CreateEvent,
     ActiveThreads,
     AppDirectory,
+    /// `opt-in` (module 36942): the checkbox that turns "only show the channels I joined" off.
+    ShowAll,
     Notifications,
     Privacy,
     Profile,
     HideMuted,
     Leave,
 }
+
+/// `p.yC` of module 488926, behind `canAccessGuildSettings`: holding any one of these opens Server Settings.
+const SETTINGS_ACCESS: u64 = permissions::MANAGE_GUILD
+    | permissions::MANAGE_ROLES
+    | permissions::ADMINISTRATOR
+    | permissions::BAN_MEMBERS
+    | permissions::MANAGE_NICKNAMES
+    | permissions::CREATE_GUILD_EXPRESSIONS
+    | permissions::MANAGE_GUILD_EXPRESSIONS
+    | permissions::MANAGE_WEBHOOKS
+    | (1 << 7)  // VIEW_AUDIT_LOG
+    | (1 << 19); // VIEW_GUILD_ANALYTICS
+/// `CREATE_EVENTS` of module 652215 (module 770666 lets Administrator or this create an event).
+const CREATE_EVENTS: u64 = 1 << 44;
+/// `OPT_IN_ENABLED` of a server's notification settings flags (module 395504 `WW`).
+const OPT_IN_ENABLED: u64 = 16384;
 
 /// Members who are not the owner can leave: the owner has to transfer or delete the server instead.
 const LEAVE: &[(Entry, &str, &str)] = &[(Entry::Leave, "guild_menu_leave", "Leave Server")];
@@ -70,6 +89,7 @@ const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
         ),
     ],
     &[
+        (Entry::ShowAll, "clips_eye", "Show All Channels"),
         (
             Entry::Notifications,
             "guild_menu_notifications",
@@ -105,14 +125,70 @@ impl Root {
             .is_some_and(|settings| settings.hide_muted_channels)
     }
 
+    fn opt_in_flags(&self, guild: Id) -> u64 {
+        self.stores
+            .guild_settings
+            .guilds
+            .get(&guild)
+            .map_or(0, |settings| settings.flags)
+    }
+
+    /// Whether the header menu lists the row for the current person (module 808144): Server Settings by
+    /// `canAccessGuildSettings`, Create Channel and Create Category by Manage Channels, Create Event by Administrator
+    /// or Create Events, Active Threads by Manage Threads and a thread being open, Show All Channels by a Community
+    /// server. Create Event also opens for anyone with a voice channel they may host an event in (`A.p_`, not read).
+    fn guild_entry_shown(&self, guild: Id, entry: Entry) -> bool {
+        let Some(known) = self.stores.guild(guild) else {
+            return true;
+        };
+        let owner = known.owner_id.is_some()
+            && known.owner_id == self.stores.current_user.as_ref().map(|me| me.id);
+        let held = self
+            .stores
+            .me()
+            .map_or(0, |me| permissions::guild_permissions(known, me));
+        let can = |bit: u64| owner || held & bit == bit;
+        match entry {
+            Entry::Settings => owner || held & SETTINGS_ACCESS != 0,
+            Entry::CreateChannel | Entry::CreateCategory => can(permissions::MANAGE_CHANNELS),
+            Entry::CreateEvent => owner || held & (permissions::ADMINISTRATOR | CREATE_EVENTS) != 0,
+            Entry::ActiveThreads => can(permissions::MANAGE_THREADS) && !known.threads.is_empty(),
+            Entry::ShowAll => {
+                known.features.iter().any(|feature| feature == "COMMUNITY")
+                    || self
+                        .stores
+                        .current_user
+                        .as_ref()
+                        .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF))
+            }
+            _ => true,
+        }
+    }
+
     fn run_guild_entry(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
         let Some(guild) = self.guild else {
             return;
         };
-        if entry != Entry::HideMuted {
+        if !matches!(entry, Entry::HideMuted | Entry::ShowAll) {
             self.guild_menu = false;
         }
         match entry {
+            // `Lu` of module 234053 turns the opt-in flag of the server's notification settings (`d.e4`). Its other
+            // branch, a member who never finished onboarding, onboards them instead and is not built.
+            Entry::ShowAll => {
+                let flags = self.opt_in_flags(guild) ^ OPT_IN_ENABLED;
+                self.stores
+                    .guild_settings
+                    .guilds
+                    .entry(guild)
+                    .or_insert_with(|| {
+                        dc_state::guild_settings::GuildSettings::from_value(&json!({}))
+                    })
+                    .flags = flags;
+                let _ = self.requests.send(Request::GuildSettings {
+                    body: json!({"guilds": {guild.to_string(): {"flags": flags}}}),
+                });
+            }
             Entry::HideMuted => {
                 let hide = !self.hide_muted(guild);
                 if let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) {
@@ -140,9 +216,14 @@ impl Root {
             Entry::Notifications => self.open_guild_notifications(cx),
             Entry::Invite => self.open_invite(cx),
             Entry::Settings => self.open_server_settings(guild, cx),
-            // Their pages are being built: Create Event and App Directory.
             Entry::Leave => self.leave_guild = Some(guild),
-            Entry::CreateEvent | Entry::AppDirectory => {}
+            // `create-event` opens the Create Event flow of the current server, as the server context menu's row does.
+            Entry::CreateEvent => {
+                self.open_guild_events(cx);
+                self.open_create_event(window, cx);
+            }
+            // `application-directory` (module 808144): `transitionToGlobalDiscovery({tab: APPS})`.
+            Entry::AppDirectory => self.open_discover(super::discover::Place::Apps, cx),
         }
         cx.notify();
     }
@@ -167,7 +248,19 @@ impl Root {
         if !owner {
             groups.push(LEAVE);
         }
-        for (group, entries) in groups.iter().enumerate() {
+        // Entries this person may not use are not listed, and a group left empty takes its rule with it.
+        let shown: Vec<Vec<&(Entry, &str, &str)>> = groups
+            .iter()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(entry, _, _)| self.guild_entry_shown(guild, *entry))
+                    .collect()
+            })
+            .filter(|entries: &Vec<&(Entry, &str, &str)>| !entries.is_empty())
+            .collect();
+        let show_all = self.opt_in_flags(guild) & OPT_IN_ENABLED == 0;
+        for (group, entries) in shown.iter().enumerate() {
             if group > 0 {
                 items.push(
                     div()
@@ -218,7 +311,12 @@ impl Root {
                                 })
                                 .child(*label),
                         )
-                        .when(entry == Entry::HideMuted, |this| {
+                        .when(matches!(entry, Entry::HideMuted | Entry::ShowAll), |this| {
+                            let hidden = if entry == Entry::ShowAll {
+                                show_all
+                            } else {
+                                hidden
+                            };
                             this.child(
                                 div()
                                     .size(px(20.))

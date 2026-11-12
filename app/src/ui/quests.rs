@@ -3,9 +3,9 @@
 //! filter menus, the empty states and the Claimed Quests tab live here; the data is `dc_state::quests` (the official
 //! `QuestStore` and `VirtualCurrencyStore`).
 //!
-//! The captured account has no quests, so no quest card was ever captured. The cards (`n6`/`na` of module 635668 for
-//! the grid, `s$` for the claimed list) are not drawn: [`Root::quest_tiles`] is the place they go once their captures
-//! exist. Enrolling in, progressing and claiming a quest are account writes; `dc_state::quests` describes the requests
+//! The captured account has no quests, so no quest card was ever captured. The grid card (`n6` of module 635668) is
+//! drawn from the bundle alone and marked unconfirmed ([`quest_tile`], reached in captures with
+//! `gw QUESTS_CAPTURE_CURRENT <body>`); the claimed list's cards (`s$`) are not drawn. Enrolling in, progressing and claiming a quest are account writes; `dc_state::quests` describes the requests
 //! and nothing here sends them.
 //!
 //! Layout is measured in `design/dom/home/quests-*-darker-cozy.json`. Pieces followed from the bundle: `lP` (the
@@ -35,8 +35,12 @@ const CLAIMED_ART_LIGHT: &str = "https://discord.com/assets/a09cfd7678b20f8c.svg
 /// `PAID_TERMS_ORBS` of module 652215 (`MARKETING_ENDPOINT` is `https://discord.com`).
 const ORBS_TERMS: &str = "https://discord.com/terms/paid-services-terms#14";
 
-/// The hero's still picture (`lk`, module 635668): the client draws this PNG instead of the looping video where the
-/// video is not played. The video itself is not played here (its MP4 is HEVC, its WebM is VP9).
+/// `isVirtualCurrencyEnabled` of `lw` (`!QUEST_HOME_DESKTOP.enabled`, the `2026-06-orbs-holdout` experiment being
+/// off): the hero background is the looping orbs video (`fbd6cf99...webm`, `529e0aea...mp4`), as the capture shows.
+/// With it off `lk` draws the PNG below instead (a mountain with a sword), which no capture shows. Neither video
+/// codec (VP9, HEVC) can be decoded here, so with it on the hero keeps its black ground.
+const VIRTUAL_CURRENCY: bool = true;
+/// The hero's picture when [`VIRTUAL_CURRENCY`] is off (`lk`, module 635668).
 const HERO_VIDEO: &str = "https://cdn.discordapp.com/assets/content/fff9144c814ffc3126fdcaf5ec5bc68eff6d09e23ac8af5a3fbe61b05970cda0.png";
 pub(super) const HERO_VIDEO_KEY: &str = "quests:hero-video";
 const HERO_FRAME: &str = "quests:hero-frame";
@@ -118,6 +122,105 @@ fn cover_at(size: (u32, u32), area: (f32, f32), position: (f32, f32)) -> (f32, f
 }
 
 /// A popout opens below its button when the page has room for it and above otherwise (module 265872's auto flip).
+/// The standard quest tile (`n3`, module 635668, unhovered and not enrolled), from `container_fBxaQT`,
+/// `footer_2uXjfk` and `reward_tq3QTU` of 507de6202a746728.css. UNCONFIRMED: no tile was captured, so every value
+/// is the bundle's and none was compared with a frame. The width is `eW` (`(1220 - 2 * SPACE_XL * 0.75) / 3`) with
+/// `SPACE_XL` assumed 24 for the cozy density. Not drawn (assets are per-quest uploads absent from the snapshot, or
+/// state the harness cannot reach): the hero picture (a flat block of its 85 % height stands in), the reward tile
+/// picture, the header badge (`nM`: time left and task kind), the hover state and the footer description.
+fn quest_tile(quest: &dc_state::quests::Quest) -> AnyElement {
+    let base = |alpha: f32| {
+        let mut base = color("--background-base-low");
+        base.a = alpha;
+        base
+    };
+    div()
+        .flex_none()
+        .relative()
+        .w(px((1220. - 2. * 24. * 0.75) / 3.))
+        .h(px(260.))
+        .rounded(px(16.))
+        .overflow_hidden()
+        .border_1()
+        .border_color(color("--border-subtle"))
+        .bg(color("--background-base-low"))
+        // `heroBackground_fBxaQT`: 85 % of the height, faded over its last 16px.
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(px(260. * 0.85))
+                .bg(color("--background-base-lowest")),
+        )
+        // `scrim_fBxaQT`: clear down to a third, the page colour from two thirds (an 11-stop curve in the CSS).
+        .child(
+            div()
+                .absolute()
+                .top(px(-10.))
+                .left_0()
+                .w_full()
+                .h(px(270.))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(base(0.), 0.23),
+                    linear_color_stop(base(1.), 0.66),
+                )),
+        )
+        // `footer_2uXjfk` with `reward_tq3QTU`: 20px inset, a 52px tile beside the game title and the reward line.
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .w_full()
+                .px(px(20.))
+                .pb(px(20.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(52.))
+                                .rounded(px(10.))
+                                .bg(color("--background-base-lowest")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    text(14., 18., 500., "--text-overlay-light")
+                                        .text_color(rgba(0xffffffcc))
+                                        .child(quest.config.game_publisher.clone()),
+                                )
+                                .child(
+                                    text(16., 20., 500., "--text-overlay-light")
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .child(quest.config.quest_name.clone()),
+                                ),
+                        ),
+                )
+                // `footerPromotedRow_2uXjfk`: "Promoted" (string `o6FLcF`), white at 80 %.
+                .child(
+                    text(14., 18., 400., "--text-overlay-light")
+                        .text_color(rgba(0xffffffcc))
+                        .child("Promoted"),
+                ),
+        )
+        .into_any_element()
+}
+
 fn opens_below(button_bottom: f32, menu_height: f32, viewport_height: f32) -> bool {
     button_bottom + 8. + menu_height <= viewport_height
 }
@@ -176,7 +279,7 @@ impl Root {
         // `Qh` fetches with the "cache-and-network" policy: the quests are asked for on every visit.
         self.quests_fetch(CURRENT_KEY, dc_state::quests::CURRENT_ROUTE);
         self.quests.store.begin_current();
-        if !self.quests.hero_requested {
+        if !VIRTUAL_CURRENCY && !self.quests.hero_requested {
             self.quests.hero_requested = true;
             let _ = self.requests.send(Request::Image {
                 key: HERO_VIDEO_KEY.to_owned(),
@@ -293,11 +396,22 @@ impl Root {
         .collect()
     }
 
-    /// The quest cards of the grid (`n6`/`na` of module 635668). No card has been captured, so none is drawn and no
-    /// quest is invented: the missing captures are an enrolled card, a not-enrolled card, a completed card, a
-    /// claimed card (Claimed Quests tab) and each reward kind's tile.
-    fn quest_tiles(&self, _quests: &[&dc_state::quests::Quest]) -> Vec<AnyElement> {
-        Vec::new()
+    /// The quest cards of the grid (`n6` of module 635668, `carouselItems_mtY8m_`: a 20px gap). UNCONFIRMED: no card
+    /// was ever captured (the account has no quests); see [`quest_tile`]. Still missing as captures: an enrolled card,
+    /// a completed card, a claimed card (Claimed Quests tab) and each reward kind's tile.
+    fn quest_tiles(&self, quests: &[&dc_state::quests::Quest]) -> Vec<AnyElement> {
+        if quests.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            div()
+                .mt(px(24.))
+                .flex_none()
+                .flex()
+                .gap(px(20.))
+                .children(quests.iter().map(|quest| quest_tile(quest)))
+                .into_any_element(),
+        ]
     }
 
     // ---- the page ----
@@ -398,7 +512,8 @@ impl Root {
                     .ml(px(44.))
                     .flex()
                     .items_center()
-                    .gap(px(24.))
+                    // `.tabs_fgRQ5j`: "All Quests" ends at 529.8 and "Claimed Quests" starts at 561.8.
+                    .gap(px(32.))
                     .h(px(48.))
                     .child(tab("quests-tab-all", "All Quests", Tab::All, cx))
                     .child(tab(
@@ -605,6 +720,8 @@ impl Root {
             .id("quests-hero-shop")
             .parity_with_border("quests-hero-shop", 1.)
             .flex_none()
+            // 159.7 wide in the dump (`overlay-primary`); the face here measures a little narrower.
+            .w(px(159.7))
             .h(px(40.))
             .px(px(16.))
             .rounded(px(8.))
@@ -624,6 +741,8 @@ impl Root {
         let secondary = div()
             .id("quests-hero-terms")
             .flex_none()
+            // 166.7 wide in the dump (`overlay-secondary`).
+            .w(px(166.7))
             .h(px(40.))
             .px(px(16.))
             .rounded(px(8.))
@@ -683,10 +802,13 @@ impl Root {
                       glyph: &'static str,
                       open: bool,
                       which: Menu,
+                      width: f32,
                       cx: &mut Context<Self>| {
             div()
                 .id(id)
                 .flex_none()
+                // Widths from design/dom/home/quests-darker-cozy.json (106.9 and 82.6 with the default labels).
+                .min_w(px(width))
                 .h(px(32.))
                 .px(px(12.))
                 .rounded(px(8.))
@@ -740,6 +862,7 @@ impl Root {
                         "select_chevron",
                         menu == Menu::Sort,
                         Menu::Sort,
+                        106.9,
                         cx,
                     ))
                     .child(self.anchor_probe("quests-sort"))
@@ -757,6 +880,7 @@ impl Root {
                         "inbox_filter",
                         menu == Menu::Filters,
                         Menu::Filters,
+                        82.6,
                         cx,
                     ))
                     .child(self.anchor_probe("quests-filters"))

@@ -1,0 +1,26 @@
+{
+  "boost-page": {
+    "class": "root_oez3v3"
+  },
+  "boost-hero": {
+    "class": "heroSection_mQ3T6n"
+  },
+  "boost-video": {
+    "class": "container_hKMjy9"
+  },
+  "boost-tiers": {
+    "class": "wrapper_xZJtlG"
+  },
+  "boost-perks": {
+    "class": "cardsContainer_RL7BaR"
+  },
+  "boost-table": {
+    "class": "tableWrapper_twYJsJ"
+  },
+  "boost-recognized": {
+    "class": "cards_c_ash1"
+  },
+  "boost-faq": {
+    "class": "list_EVXXpI"
+  }
+}

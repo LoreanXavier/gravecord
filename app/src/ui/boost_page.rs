@@ -3,22 +3,160 @@
 //! `*_RL7BaR`, `*_twYJsJ`, `*_c_ash1`, `*_EVXXpI` of `196063.6435217f69e9b808.css`). Measured in
 //! `design/dom/boost/dropdown-boost-modal-*-darker-cozy.json`.
 //!
-//! Not drawn: the header's animated backdrop (a looping `.webm` of floating gems), the video card's picture and the
-//! FAQ answers (the frames show every answer collapsed). The tier cards use the existing perk icons in place of the
-//! per-perk art. "Boost This Server" goes as far as the existing Server Boost settings page and never past payment.
+//! Art is requested at run time from the CDN addresses the DOM dump and the modules name (none of it is in the
+//! snapshot's assets). Not drawn: the header's animated backdrop (a looping `.webm`; its dark-theme still is shown),
+//! the Rive glow around the two header buttons (no `.riv` in the snapshot), the text shadow of the headline, the
+//! 16px backdrop blur of the channel list's progress bar (a flat fill stands in) and the progress bar's context menu.
+//! The headline's letter spacing is applied per glyph. "Boost This Server" goes as far as the existing Server Boost
+//! settings page and never past payment.
 
 use super::discover::{gutter_scrollbar, text};
 use super::{Root, color, icon};
 use crate::parity::Parity;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ScrollHandle, div, linear_color_stop,
-    linear_gradient, prelude::*, px, rgba,
+    AnyElement, Context, FontWeight, IntoElement, ObjectFit, RenderImage, ScrollHandle, div, img,
+    prelude::*, px, rgba,
 };
+use std::sync::Arc;
 
-/// The page's open state: where it is scrolled and which FAQ rows are open.
+/// The page's open state: where it is scrolled and which FAQ row is open.
 pub(super) struct BoostPage {
     pub scroll: ScrollHandle,
-    pub faq_open: Vec<bool>,
+    /// The open FAQ row; one at a time (module 232122: `onClick: setOpen(open === index ? null : index)`).
+    pub faq_open: Option<usize>,
+    /// `.headerGradient_0jpYct`.
+    header_gradient: Arc<RenderImage>,
+    /// `.card_RL7BaR`'s radial glow, one image for both perk cards.
+    card_glow: Arc<RenderImage>,
+    /// `.overlay_hKMjy9` over the video card's picture.
+    video_overlay: Arc<RenderImage>,
+}
+
+const CDN: &str = "https://cdn.discordapp.com/assets/content/";
+/// Art the page shows, from the `img`/`source` elements of `design/dom/boost/*` and module 233824: the dark theme's
+/// still of the header video (`fallbackImage` of `ea`; the `.webm` itself is not played), the video card's
+/// thumbnail (module 519636), the three tier gems (`el.v`, `eo.w`, `ec.H`) and the two perk illustrations (the
+/// powerup catalog's `staticImageUrl`s).
+const ART: [(&str, &str); 7] = [
+    (
+        "boost:backdrop",
+        "f91111a24ca4c59e87a462e8a3523938628e03e3723c31e5681991a07b0acf48.png",
+    ),
+    (
+        "boost:thumbnail",
+        "7b8d6c9c9f8bc8092089a2f55081695d40f7f303f053fcc6f944bf4b38403573.png",
+    ),
+    (
+        "boost:tier1",
+        "33e98755a49cf85d07b8189a0001926c17d91599d53662a39999329f5253254f.svg",
+    ),
+    (
+        "boost:tier2",
+        "3bc18204c2bf43975ded85a602c7816d032bc07cf9b1d5589e52404f9bc1d687.svg",
+    ),
+    (
+        "boost:tier3",
+        "cb869ee40a8ed5d6210e69a02cebbf03025be47006b310ec2564f74f6ad1dff8.svg",
+    ),
+    (
+        "boost:roles",
+        "93c84331a5f11ba05946bce6fb4f85594d98cb52c8452e9b6869291da41cf62c.png",
+    ),
+    (
+        "boost:tag",
+        "478ce7fb9a64e4d6c4792c82d93f724c2aa0444ac2dfc3e2dfdf43dd11a39c79.png",
+    ),
+];
+/// The second "be recognized" card's picture (`icon_c_ash1`, an `img` of the capture).
+const MEMBER_ICON: (&str, &str) = (
+    "boost:badge-picture",
+    "https://discord.com/assets/185ece790f20d870.svg",
+);
+
+/// The headline's spacing per glyph: the CSS `letter-spacing` of -1.26px plus the 0.94px per glyph that setting each
+/// glyph in its own box loses in kerning, so both lines come out at the captured 768.7 and 558 pixels (measured
+/// from frames of both lines: 823.5 and 595.4 wide without tracking).
+const HEADING_TRACKING: f32 = -2.2;
+
+/// The open FAQ row after pressing `index`: that row, or none when it was the open one.
+fn toggled_faq(open: Option<usize>, index: usize) -> Option<usize> {
+    (open != Some(index)).then_some(index)
+}
+
+/// `text` with `spacing` pixels added after every glyph (CSS `letter-spacing`).
+///
+/// Each glyph is shifted by its own offset (a margin does not shrink the line's measured width), and the line by
+/// half the total so it stays centred in its box.
+fn tracked(text: &'static str, spacing: f32) -> gpui::Div {
+    let glyphs = text.chars().count();
+    div()
+        .relative()
+        .left(px(-spacing * (glyphs - 1) as f32 / 2.))
+        .w_full()
+        .flex()
+        .justify_center()
+        .children(text.chars().enumerate().map(|(index, glyph)| {
+            div()
+                .relative()
+                .left(px(spacing * index as f32))
+                .child(if glyph == ' ' {
+                    "\u{a0}".to_owned()
+                } else {
+                    glyph.to_string()
+                })
+        }))
+}
+
+/// A colour stop of a CSS gradient: the position along the ray (0 to 1) and straight RGBA (0 to 255, alpha 0 to 1).
+type Stop = (f32, [f32; 4]);
+
+/// A CSS `radial-gradient(ellipse rx ry at cx cy, stops)` as pixels: stops are interpolated premultiplied (the
+/// default for CSS gradients) and the last colour extends past the end. The atlas takes BGRA straight alpha.
+fn radial_image(
+    (width, height): (u32, u32),
+    (cx, cy): (f32, f32),
+    (rx, ry): (f32, f32),
+    stops: &[Stop],
+) -> Arc<RenderImage> {
+    let mut pixels = image::RgbaImage::new(width, height);
+    for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+        let dx = (x as f32 + 0.5 - cx) / rx;
+        let dy = (y as f32 + 0.5 - cy) / ry;
+        let [r, g, b, a] = stop_color(stops, (dx * dx + dy * dy).sqrt());
+        let channel = |value: f32| (value.clamp(0., 255.) + 0.5) as u8;
+        // Back from premultiplied.
+        let (r, g, b) = if a > 0. {
+            (r / a, g / a, b / a)
+        } else {
+            (0., 0., 0.)
+        };
+        *pixel = image::Rgba([channel(b), channel(g), channel(r), channel(a * 255.)]);
+    }
+    Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
+}
+
+/// The premultiplied colour at `t` along the stops.
+fn stop_color(stops: &[Stop], t: f32) -> [f32; 4] {
+    let premultiplied = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
+    let Some(first) = stops.first() else {
+        return [0.; 4];
+    };
+    if t <= first.0 {
+        return premultiplied(first.1);
+    }
+    for pair in stops.windows(2) {
+        let ((from_at, from), (to_at, to)) = (pair[0], pair[1]);
+        if t <= to_at {
+            let mix = if to_at > from_at {
+                (t - from_at) / (to_at - from_at)
+            } else {
+                1.
+            };
+            let (from, to) = (premultiplied(from), premultiplied(to));
+            return std::array::from_fn(|index| from[index] + (to[index] - from[index]) * mix);
+        }
+    }
+    premultiplied(stops[stops.len() - 1].1)
 }
 
 /// `.content_0jpYct` and the cards' shared width.
@@ -40,10 +178,10 @@ const TIERS: [Tier; 3] = [
         "Level 1",
         "2 Boosts",
         [
-            ("boost_perk_1", "100 Emoji Slots"),
-            ("boost_perk_2", "24 Soundboard Slots"),
+            ("boost_perk_3", "100 Emoji Slots"),
+            ("clips_soundboard", "24 Soundboard Slots"),
             ("boost_perk_gif", "Animated Server Icon"),
-            ("boost_perk_3", "Better Quality Audio"),
+            ("voice_select_headphones", "Better Quality Audio"),
         ],
     ),
     (
@@ -51,7 +189,7 @@ const TIERS: [Tier; 3] = [
         "7 Boosts",
         [
             ("boost_perk_2", "HD Streaming"),
-            ("boost_perk_3", "50MB File Uploads"),
+            ("ob_upload", "50MB File Uploads"),
             ("boost_perk_0", "Custom Role Icons"),
             ("boost_perk_images", "Server Banner"),
         ],
@@ -61,8 +199,8 @@ const TIERS: [Tier; 3] = [
         "14 Boosts",
         [
             ("boost_perk_v0", "Custom Server Invite Link"),
-            ("boost_perk_3", "100MB File Uploads"),
-            ("boost_perk_3", "Highest Quality Audio"),
+            ("ob_upload", "100MB File Uploads"),
+            ("voice_select_headphones", "Highest Quality Audio"),
             ("boost_perk_gif", "Animated Server Banner"),
         ],
     ),
@@ -170,33 +308,107 @@ const TABLE: [(&str, [Cell; 4]); 12] = [
 
 /// The four "be recognized" cards (`c_ash1`): the icon and the line under it.
 const RECOGNIZED: [(&str, &str); 4] = [
-    ("boost_gem", "Display your support with a Member List icon"),
+    ("boosts", "Display your support with a Member List icon"),
     (
-        "boost_badge",
+        BADGE_PICTURE,
         "Unlock a profile badge that evolves over time",
     ),
     ("role_shield", "Get an exclusive Booster role"),
-    ("boosts", "Show support for your community"),
+    ("shop_heart", "Show support for your community"),
 ];
+/// Marks the one "be recognized" card that shows a downloaded picture rather than a muted icon.
+const BADGE_PICTURE: &str = "@picture";
 
-/// The FAQ's questions, in the frame's order.
-const FAQ: [&str; 9] = [
-    "What is a Server Boost?",
-    "How do I Boost a server?",
-    "Can I Boost a Server multiple times?",
-    "Can I continue Boosting a server after it reaches Level 3?",
-    "What are 'additional perks' and how are they different from Levels?",
-    "How much do the new additional perks cost?",
-    "Are additional perks replacing the current server level system?",
-    "Do additional perks use separate Boosts from my server level?",
-    "Are additional perks a one-time purchase, or do they require ongoing Boosts?",
+/// The FAQ, in the frame's order: the question, the answer (`en-US` strings of module 232122) and, for the one
+/// answer with a Help Center link, its text and what follows it.
+type Faq = (
+    &'static str,
+    &'static str,
+    Option<(&'static str, &'static str)>,
+);
+
+const FAQ: [Faq; 9] = [
+    (
+        "What is a Server Boost?",
+        "Boosts allow you to support your favorite Servers, by unlocking perks for everyone in them. The more Boosts a server has, the more epic the perks that can be unlocked. See the chart above for more details.",
+        None,
+    ),
+    (
+        "How do I Boost a server?",
+        "You can Boost this server directly on this page! If you want to Boost a different server, you can find step-by-step instructions ",
+        Some(("in our Help Center", ".")),
+    ),
+    (
+        "Can I Boost a Server multiple times?",
+        "Yes, you can Boost a server as many times as you want! The more Boosts the server gets, the better the perks that will be unlocked.",
+        None,
+    ),
+    (
+        "Can I continue Boosting a server after it reaches Level 3?",
+        "Absolutely! Server Boosts are a great way to support your favorite servers. When you Boost a server, you'll be recognized with a special Member List Icon, a Boosting role, and a Profile Badge.",
+        None,
+    ),
+    (
+        "What are 'additional perks' and how are they different from Levels?",
+        "Additional Perks are new features you can unlock directly with Boosts, separate from your server's Boost Level. Currently, there are two available: Enhanced Role Styles (which add gradient and holographic effects to roles) and Server Tags (4-character identifiers members can display on their profiles across Discord). Unlike traditional server levels, these perks can be unlocked individually without reaching specific level thresholds.",
+        None,
+    ),
+    (
+        "How much do the new additional perks cost?",
+        "Enhanced Role Styles and Server Tags each cost 3 Boosts. If you want both perks, you'll need 6 Boosts total (3 for each perk).",
+        None,
+    ),
+    (
+        "Are additional perks replacing the current server level system?",
+        "No, this supplements the existing level system. All current server level perks (emoji slots, file upload limits, etc.) remain exactly the same. This new system simply gives you additional ways to use your Boosts for targeted perks without affecting your server's level progression.",
+        None,
+    ),
+    (
+        "Do additional perks use separate Boosts from my server level?",
+        "Yes, Boosts used for additional perks are dedicated specifically to those perks and don't count toward your server's level progression. Similarly, Boosts allocated to your server level can't be used for additional perks. You'll need separate Boosts for each - so if you want Enhanced Role Styles, you need 3 Boosts just for that perk, plus whatever Boosts you want to maintain your current server level.",
+        None,
+    ),
+    (
+        "Are additional perks a one-time purchase, or do they require ongoing Boosts?",
+        "Each additional perk requires an ongoing allocation of its required Boosts to stay active, just like levels. If your server drops below the required number of Boosts, the perk will be disabled until the necessary Boosts are reallocated.",
+        None,
+    ),
 ];
 
 impl BoostPage {
     pub(super) fn new() -> Self {
+        let sqrt2 = std::f32::consts::SQRT_2;
         Self {
             scroll: ScrollHandle::new(),
-            faq_open: vec![false; FAQ.len()],
+            faq_open: None,
+            // `radial-gradient(ellipse 100% 70% at 50% 0, rgba(156,89,209,.6) 0, rgba(88,47,140,.3) 50%,
+            // transparent 80%)` over the 1264x1280 box (`headerBackground`'s `min-height`).
+            header_gradient: radial_image(
+                (1264, 1280),
+                (632., 0.),
+                (1264., 896.),
+                &[
+                    (0., [156., 89., 209., 0.6]),
+                    (0.5, [88., 47., 140., 0.3]),
+                    (0.8, [0., 0., 0., 0.]),
+                ],
+            ),
+            // `radial-gradient(ellipse 355px 208px at 50% -31.5px, rgba(86,22,138,.5) 0, rgba(86,22,138,0) 100%)`
+            // over the card's 586x316 padding box.
+            card_glow: radial_image(
+                (586, 316),
+                (293., -31.5),
+                (355., 208.),
+                &[(0., [86., 22., 138., 0.5]), (1., [86., 22., 138., 0.])],
+            ),
+            // `radial-gradient(ellipse at center, rgba(25,22,58,.2) 0, rgba(25,22,58,.9) 100%)`: farthest-corner,
+            // so the radii are the half sides times the square root of two.
+            video_overlay: radial_image(
+                (770, 433),
+                (385., 216.5),
+                (385. * sqrt2, 216.5 * sqrt2),
+                &[(0., [25., 22., 58., 0.2]), (1., [25., 22., 58., 0.9])],
+            ),
         }
     }
 }
@@ -210,8 +422,24 @@ impl Root {
         if self.current_guild().is_none() {
             return;
         }
+        for (key, file) in ART {
+            self.request_image(key.to_owned(), format!("{CDN}{file}"));
+        }
+        self.request_image(MEMBER_ICON.0.to_owned(), MEMBER_ICON.1.to_owned());
         self.boost_page = Some(BoostPage::new());
         cx.notify();
+    }
+
+    /// A downloaded picture of the page at `width` x `height`, or an empty block of that size until it arrives.
+    fn boost_art(&self, key: &str, width: f32, height: f32) -> AnyElement {
+        match self.images.get(key) {
+            Some(image) => img(image.clone())
+                .w(px(width))
+                .h(px(height))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => div().w(px(width)).h(px(height)).into_any_element(),
+        }
     }
 
     pub(super) fn close_boost_page(&mut self) -> bool {
@@ -271,7 +499,7 @@ impl Root {
             1 => "1 Boost".to_owned(),
             n => format!("{n} Boosts"),
         };
-        let faq_open = page.faq_open.clone();
+        let faq_open = page.faq_open;
 
         let guild_chip = |size: f32, radius: f32| {
             div()
@@ -298,6 +526,8 @@ impl Root {
             .flex()
             .flex_col()
             .items_center()
+            // `.headerBackground_0jpYct`: the 1280px gradient with the header video (here its still frame, 632px
+            // tall at the page's width) above it.
             .child(
                 div()
                     .absolute()
@@ -305,11 +535,24 @@ impl Root {
                     .left(px(0.))
                     .right(px(0.))
                     .h(px(1280.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(rgba(0x9c59d199), 0.),
-                        linear_color_stop(rgba(0x582f8c4d), 0.5),
-                    )),
+                    .overflow_hidden()
+                    .child(
+                        img(page.header_gradient.clone())
+                            .absolute()
+                            .top(px(0.))
+                            .left(px(0.))
+                            .w_full()
+                            .h(px(1280.)),
+                    )
+                    .children(self.images.get("boost:backdrop").map(|backdrop| {
+                        img(backdrop.clone())
+                            .absolute()
+                            .top(px(0.))
+                            .left(px(0.))
+                            .w_full()
+                            .h(px(632.))
+                            .object_fit(ObjectFit::Cover)
+                    })),
             )
             .child(
                 div()
@@ -373,21 +616,30 @@ impl Root {
                             )
                             .child(
                                 div()
+                                    .parity("boost-hero")
+                                    .w(px(770.))
                                     .flex()
                                     .flex_col()
                                     .items_center()
                                     .gap(px(40.))
                                     .child(
-                                        // GPUI has no letter spacing, so the -1.26px tracking is not applied and the two
-                                        // lines (the wrap the official page makes at 770px) are set explicitly.
+                                        // `.heading_mQ3T6n`: 770px wide, `letter-spacing: -1.26px`; gpui has no tracking,
+                                        // so each glyph is its own box with the negative margin, and the two lines
+                                        // (the wrap the official page makes at 770px) are set explicitly.
                                         text(42., 46.2, 700., "--text-strong")
                                             .font_family(super::nitro::NITRO_FONT)
+                                            .w_full()
+                                            // Two lines of 46.2px (the line box is rounded here).
+                                            .h(px(92.4))
                                             .flex()
                                             .flex_col()
                                             .items_center()
                                             .whitespace_nowrap()
-                                            .child("BOOST THIS SERVER & UNLOCK")
-                                            .child("PERKS FOR EVERYONE"),
+                                            .child(tracked(
+                                                "BOOST THIS SERVER & UNLOCK",
+                                                HEADING_TRACKING,
+                                            ))
+                                            .child(tracked("PERKS FOR EVERYONE", HEADING_TRACKING)),
                                     )
                                     .child(
                                         div()
@@ -400,7 +652,9 @@ impl Root {
                                                     .h(px(40.))
                                                     .px(px(16.))
                                                     .rounded(px(8.))
-                                                    .bg(gpui::hsla(0., 0., 1., 0.1))
+                                                    // Translucent gray over the gradient: the capture reads
+                                                    // (59,45,76) over (46,30,64), which is `hsla(240,4%,61%,.12)`.
+                                                    .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.12))
                                                     .cursor_pointer()
                                                     .flex()
                                                     .items_center()
@@ -418,32 +672,55 @@ impl Root {
                                     ),
                             ),
                     )
-                    // `container_hKMjy9`: the video card, 770 wide, 1px border, radius lg; no picture.
+                    // `container_hKMjy9`: the video card, 770 wide plus the 1px border, radius lg; the thumbnail
+                    // (module 519636) under `overlay_hKMjy9`, and `CirclePlayIcon` 76px white in the middle.
                     .child(
                         div()
-                            .w(px(770.))
-                            .h(px(435.))
-                            .mb(px(32.))
+                            .id("boost-page-video")
+                            .parity_with_border("boost-video", 1.)
+                            .relative()
+                            .w(px(772.))
+                            .h(px(435.1))
+                            .flex_none()
+                            // 32px, plus the .53px the official layout carries down from the heading's 2 x 46.2 and
+                            // the thumbnail's 433.1 (layout here rounds each box to whole pixels).
+                            .mb(px(32.53))
                             .rounded(px(16.))
                             .border_1()
                             .border_color(color("--border-subtle"))
-                            .bg(rgba(0x1a1747ff))
-                            .flex()
-                            .items_center()
-                            .justify_center()
+                            .overflow_hidden()
+                            .children(self.images.get("boost:thumbnail").map(|thumbnail| {
+                                img(thumbnail.clone())
+                                    .absolute()
+                                    .top(px(0.))
+                                    .left(px(0.))
+                                    .w(px(770.))
+                                    .h(px(433.1))
+                                    .object_fit(ObjectFit::Cover)
+                                    .rounded(px(15.))
+                            }))
+                            .child(
+                                img(page.video_overlay.clone())
+                                    .absolute()
+                                    .top(px(0.))
+                                    .left(px(0.))
+                                    .w(px(770.))
+                                    .h(px(433.1))
+                                    .rounded(px(15.)),
+                            )
                             .child(
                                 div()
-                                    .size(px(76.))
-                                    .rounded(px(38.))
-                                    .bg(gpui::rgb(0xffffff))
+                                    .absolute()
+                                    .inset_0()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon(
-                                        "chevron_right_20",
-                                        32.,
-                                        "--background-base-lowest",
-                                    )),
+                                    .child(
+                                        gpui::svg()
+                                            .path("icons/boost_circle_play.svg")
+                                            .size(px(76.))
+                                            .text_color(gpui::rgb(0xffffff)),
+                                    ),
                             ),
                     )
                     .child(self.boost_tier_cards()),
@@ -481,36 +758,46 @@ impl Root {
                     ),
             )
             .child(
-                div().flex().gap(px(24.)).children(
+                div().parity("boost-perks").flex().gap(px(24.)).children(
                     [
                         (
+                            "boost:roles",
                             "Enhanced Role Styles",
                             "Make certain roles stand out with animated, vibrant gradients.",
                         ),
                         (
+                            "boost:tag",
                             "Server Tag",
                             "Let your members represent your server everywhere on Discord.",
                         ),
                     ]
-                    .map(|(title, body)| {
+                    .map(|(art, title, body)| {
+                        // `.card_RL7BaR`: the radial glow over `hsla(240,4%,61%,.08)`, 1px border, radius 16, then
+                        // the 250x140 illustration, the text and the cost badge, 24px apart.
                         div()
+                            .relative()
                             .w(px(588.))
                             .h(px(318.))
                             .flex_none()
                             .rounded(px(16.))
                             .border_1()
                             .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.12))
-                            .bg(linear_gradient(
-                                180.,
-                                linear_color_stop(rgba(0x56168a33), 0.),
-                                linear_color_stop(rgba(0x56168a00), 0.5),
-                            ))
+                            .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
                             .p(px(24.))
                             .flex()
                             .flex_col()
                             .items_center()
-                            .justify_end()
                             .gap(px(24.))
+                            .child(
+                                img(page.card_glow.clone())
+                                    .absolute()
+                                    .top(px(0.))
+                                    .left(px(0.))
+                                    .w(px(586.))
+                                    .h(px(316.))
+                                    .rounded(px(15.)),
+                            )
+                            .child(self.boost_art(art, 250., 140.))
                             .child(
                                 div()
                                     .flex()
@@ -551,22 +838,28 @@ impl Root {
             );
 
         let table = self.boost_table();
-        let recognized =
-            div()
-                .w(px(COLUMN))
-                .mt(px(80.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(32.))
-                .child(
-                    text(32., 40., 600., "--text-default")
-                        .child("Give your community a Boost & be recognized"),
-                )
-                .child(div().flex().gap(px(24.)).w_full().children(RECOGNIZED.map(
-                    |(art, line)| {
+        let recognized = div()
+            .w(px(COLUMN))
+            .mt(px(80.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(32.))
+            .child(
+                text(32., 40., 600., "--text-default")
+                    .child("Give your community a Boost & be recognized"),
+            )
+            .child(
+                div()
+                    .parity("boost-recognized")
+                    .flex()
+                    .gap(px(24.))
+                    .w_full()
+                    .children(RECOGNIZED.map(|(art, line)| {
+                        // `.card_c_ash1`: `flex: 1 1 0; min-width: 0`, padding 24, 12px between icon and line.
                         div()
                             .flex_1()
+                            .min_w(px(0.))
                             .h(px(150.))
                             .rounded(px(16.))
                             .border_1()
@@ -578,71 +871,134 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .gap(px(12.))
-                            .child(icon(art, 48., "--icon-muted"))
+                            .child(if art == BADGE_PICTURE {
+                                self.boost_art("boost:badge-picture", 48., 48.)
+                            } else {
+                                icon(art, 48., "--icon-muted").into_any_element()
+                            })
                             .child(
-                                text(16., 20., 500., "--text-default")
+                                text(16., 20., 500., "--text-muted")
                                     .text_center()
                                     .child(line),
                             )
-                    },
-                )));
-
-        let faq = div()
-            .w(px(COLUMN))
-            .mt(px(80.))
-            .flex()
-            .flex_col()
-            .gap(px(32.))
-            .child(
-                text(32., 40., 600., "--text-default")
-                    .w_full()
-                    .text_center()
-                    .child("Boosting FAQ"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .children(FAQ.iter().enumerate().map(|(index, question)| {
-                        let open = faq_open.get(index).copied().unwrap_or(false);
-                        div()
-                            .id(("boost-faq", index))
-                            .h(px(46.))
-                            .px(px(12.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(if open {
-                                color("--border-strong")
-                            } else {
-                                color("--border-subtle")
-                            })
-                            .bg(if open {
-                                color("--background-surface-highest")
-                            } else {
-                                color("--background-base-low")
-                            })
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(page) = this.boost_page.as_mut()
-                                    && let Some(row) = page.faq_open.get_mut(index)
-                                {
-                                    *row = !*row;
-                                }
-                                cx.notify();
-                            }))
-                            .child(
-                                text(16., 20., 600., "--text-default")
-                                    .flex_1()
-                                    .text_color(color("--text-muted"))
-                                    .child(*question),
-                            )
-                            .child(icon("chevron_down", 20., "--text-muted"))
                     })),
             );
+
+        let faq =
+            div()
+                .w(px(COLUMN))
+                .mt(px(80.))
+                .flex()
+                .flex_col()
+                .gap(px(32.))
+                .child(
+                    text(32., 40., 600., "--text-default")
+                        .w_full()
+                        .text_center()
+                        .child("Boosting FAQ"),
+                )
+                .child(
+                    div()
+                        .parity("boost-faq")
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .children(FAQ.iter().enumerate().map(
+                            |(index, (question, answer, link))| {
+                                let open = faq_open == Some(index);
+                                // `.listItem_EVXXpI`: padding 12, 1px border, radius 8; the question is
+                                // `heading-sm/semibold` (muted, default while open or hovered), the chevron 18px turned
+                                // over while open, the answer `body-sm/medium` muted 8px below.
+                                div()
+                                    .id(("boost-faq", index))
+                                    .px(px(12.))
+                                    .py(px(12.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(if open {
+                                        color("--border-strong")
+                                    } else {
+                                        color("--border-subtle")
+                                    })
+                                    .bg(if open {
+                                        color("--background-surface-highest")
+                                    } else {
+                                        color("--background-base-low")
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .flex_col()
+                                    .text_color(if open {
+                                        color("--text-default")
+                                    } else {
+                                        color("--text-muted")
+                                    })
+                                    .hover(|row| row.text_color(color("--text-default")))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(page) = this.boost_page.as_mut() {
+                                            page.faq_open = toggled_faq(page.faq_open, index);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(12.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_size(px(16.))
+                                                    .line_height(px(20.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .child(*question),
+                                            )
+                                            .child(
+                                                icon(
+                                                    "chevron_down",
+                                                    18.,
+                                                    "--interactive-icon-default",
+                                                )
+                                                .when(open, |chevron| {
+                                                    chevron.with_transformation(
+                                                        gpui::Transformation::rotate(
+                                                            gpui::percentage(0.5),
+                                                        ),
+                                                    )
+                                                }),
+                                            ),
+                                    )
+                                    .when(open, |row| {
+                                        row.child(
+                                            div()
+                                                .pt(px(8.))
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-muted"))
+                                                .child(match link {
+                                                    None => gpui::StyledText::new(*answer),
+                                                    Some((text, rest)) => {
+                                                        let start = answer.len();
+                                                        gpui::StyledText::new(format!(
+                                                            "{answer}{text}{rest}"
+                                                        ))
+                                                        .with_highlights([(
+                                                            start..start + text.len(),
+                                                            gpui::HighlightStyle {
+                                                                color: Some(
+                                                                    color("--text-link").into(),
+                                                                ),
+                                                                ..Default::default()
+                                                            },
+                                                        )])
+                                                    }
+                                                }),
+                                        )
+                                    })
+                            },
+                        )),
+                );
 
         let body = div()
             .w_full()
@@ -670,8 +1026,11 @@ impl Root {
                         .px(px(12.))
                         .rounded(px(16.))
                         .border_1()
-                        .border_color(gpui::hsla(0., 0., 1., 0.1))
-                        .bg(gpui::hsla(240. / 360., 0.06, 0.1, 0.8))
+                        // `.innerWrapper_RcIw1d`: `hsla(0,0%,100%,.17)` and a 1px `hsla(0,0%,100%,.16)` border over a
+                        // 16px backdrop blur. gpui has no backdrop blur, so the fill is the blurred result's colour
+                        // sampled from the capture (58,58,60 over the page, 70,70,73 over a card), flat.
+                        .border_color(gpui::hsla(0., 0., 1., 0.16))
+                        .bg(rgba(0x3c3c3eff))
                         .flex()
                         .items_center()
                         .gap(px(40.))
@@ -679,7 +1038,7 @@ impl Root {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(12.))
+                                .gap(px(8.))
                                 .child(guild_chip(32., 8.))
                                 .child(
                                     text(16., 20., 600., "--text-strong")
@@ -707,7 +1066,8 @@ impl Root {
                 this.boost_page = None;
                 cx.notify();
             }))
-            .child(icon("modal_close", 20., "--primary-330"));
+            // `XSmallIcon` at its `md` size, 24px.
+            .child(icon("clips_x_small", 24., "--primary-330"));
 
         Some(
             gpui::deferred(
@@ -744,6 +1104,7 @@ impl Root {
             .map_or(0, |guild| guild.premium_subscription_count);
         let needed = [2u64, 7, 14];
         div()
+            .parity("boost-tiers")
             .w_full()
             .flex()
             .gap(px(24.))
@@ -755,10 +1116,23 @@ impl Root {
                         let active = boosts >= needed[level];
                         let start = level == 0;
                         let end = level == 2;
+                        // `.progressBarActive`: `linear-gradient(90deg, #ff4ebb, rgba(255,78,187,.4))`;
+                        // `.progressBarInactive`: `#474464`.
                         let bar = if active {
-                            gpui::hsla(326. / 360., 1., 0.65, 1.)
+                            gpui::linear_gradient(
+                                90.,
+                                gpui::linear_color_stop(rgba(0xff4ebbff), 0.),
+                                gpui::linear_color_stop(rgba(0xff4ebb66), 1.),
+                            )
                         } else {
                             rgba(0x474464ff).into()
+                        };
+                        // `.gemContainerLevel{1,2,3}`: the ring's colour per level; an active gem is pink and rings
+                        // `#202024`.
+                        let ring = if active {
+                            0x202024ff
+                        } else {
+                            [0x202024ff, 0x211e40ff, 0x201d3dff][level]
                         };
                         div()
                             .flex_1()
@@ -795,8 +1169,8 @@ impl Root {
                                             .left(px(24.))
                                             .size(px(40.))
                                             .rounded(px(20.))
-                                            .border_4()
-                                            .border_color(rgba(0x202024ff))
+                                            .border_5()
+                                            .border_color(rgba(ring))
                                             .bg(if active {
                                                 super::hsla("--guild-boosting-pink-refresh")
                                             } else {
@@ -805,7 +1179,12 @@ impl Root {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(icon("boost_gem", 20., "--white")),
+                                            .child(self.boost_art(
+                                                ["boost:tier1", "boost:tier2", "boost:tier3"]
+                                                    [level],
+                                                24.,
+                                                24.,
+                                            )),
                                     ),
                             )
                             .child(
@@ -881,41 +1260,43 @@ impl Root {
 
     /// `table_twYJsJ`: Perks, Unboosted and the three levels, with the recommended column outlined.
     fn boost_table(&self) -> AnyElement {
+        // `.cell_twYJsJ`: `flex: 1 1 0`, `padding: 0 16px`; five equal 240px cells in the 1200px table.
         let cell = |content: AnyElement| {
             div()
-                .w(gpui::relative(0.2))
-                .flex_none()
-                .px(px(4.))
+                .flex_1()
+                .min_w(px(0.))
+                .px(px(16.))
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .child(content)
         };
+        // `heading-lg/semibold` (20/24) and `body-sm/medium` (14/18).
         let head = |title: &'static str, sub: &'static str| {
             cell(
                 div()
                     .flex()
                     .flex_col()
                     .items_center()
-                    .child(text(18., 22., 600., "--text-strong").child(title))
+                    .child(text(20., 24., 600., "--text-strong").child(title))
                     .child(text(14., 18., 500., "--text-muted").child(sub))
                     .into_any_element(),
             )
         };
         let header_row = div()
             .h(px(75.))
-            .py(px(12.))
+            .py(px(16.))
             .flex()
             .items_start()
             .border_b_1()
             .border_color(color("--border-normal"))
             .child(
                 div()
-                    .w(gpui::relative(0.2))
-                    .flex_none()
+                    .flex_1()
+                    .min_w(px(0.))
                     .px(px(16.))
-                    .child(text(18., 22., 600., "--text-strong").child("Perks")),
+                    .child(text(20., 24., 600., "--text-strong").child("Perks")),
             )
             .child(head("Unboosted", "No Boosts"))
             .child(head("Level 1", "2 Boosts"))
@@ -925,8 +1306,11 @@ impl Root {
             let last = index == TABLE.len() - 1;
             let has_icon = cells.iter().any(|cell| !matches!(cell, Cell::Text(_)));
             div()
-                .h(px(if has_icon { 57. } else { 53. }))
-                .py(px(12.))
+                // 16 + content + 16 + the 1px border, which the last row lacks.
+                .h(px(
+                    if has_icon { 57. } else { 53. } - if last { 1. } else { 0. }
+                ))
+                .py(px(16.))
                 .flex()
                 .items_center()
                 .when(!last, |row| {
@@ -934,8 +1318,8 @@ impl Root {
                 })
                 .child(
                     div()
-                        .w(gpui::relative(0.2))
-                        .flex_none()
+                        .flex_1()
+                        .min_w(px(0.))
                         .px(px(16.))
                         .child(text(16., 20., 400., "--text-muted").child(*label)),
                 )
@@ -956,7 +1340,10 @@ impl Root {
                         Cell::Yes => {
                             icon("checkmark_large", 24., "--text-strong").into_any_element()
                         }
-                        Cell::No => icon("close", 24., "--interactive-muted").into_any_element(),
+                        // `XSmallIcon` (14px of its 24px box).
+                        Cell::No => {
+                            icon("clips_x_small", 24., "--interactive-muted").into_any_element()
+                        }
                     };
                     cell(content)
                 }))
@@ -974,6 +1361,7 @@ impl Root {
             )
             .child(
                 div()
+                    .parity("boost-table")
                     .relative()
                     .w_full()
                     .child(
@@ -984,34 +1372,42 @@ impl Root {
                             .child(header_row)
                             .children(rows),
                     )
-                    // `.recommendedTierHighlight`: 20% wide, 2px pink border, 20px past the table at both ends.
+                    // `.recommendedTierHighlight`: 20% wide plus its 2px border (content-box), pink, 20px past the
+                    // table at both ends.
                     .child(
                         div()
                             .absolute()
                             .top(px(-20.))
                             .bottom(px(-20.))
                             .right(px(COLUMN * 0.2 * (4 - RECOMMENDED - 1) as f32))
-                            .w(px(COLUMN * 0.2))
+                            .w(px(COLUMN * 0.2 + 4.))
                             .rounded(px(16.))
                             .border_2()
-                            .border_color(super::hsla("--guild-boosting-pink-refresh"))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(-12.))
-                                    .left(px(COLUMN * 0.1 - 53.))
-                                    .px(px(8.))
-                                    .h(px(24.))
-                                    .rounded(px(8.))
-                                    .bg(super::hsla("--guild-boosting-pink-refresh"))
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(gpui::rgb(0xffffff))
-                                    .child("RECOMMENDED"),
-                            ),
+                            .border_color(super::hsla("--guild-boosting-pink-refresh")),
+                    )
+                    // `.recommendedTierHighlightTag`: `top: 0; left: 50%; translate(-50%, -50%)` of the highlight,
+                    // so centred on its top edge's inner side (capture: 105.6 by 24 at x 817.2, 5.5 over a
+                    // table at 35.5), drawn over the border line.
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(-30.))
+                            .left(px(COLUMN
+                                - COLUMN * 0.2 * (3 - RECOMMENDED) as f32
+                                - 122.
+                                - 52.8))
+                            .w(px(105.6))
+                            .h(px(24.))
+                            .rounded(px(8.))
+                            .bg(super::hsla("--guild-boosting-pink-refresh"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(gpui::rgb(0xffffff))
+                            .child("RECOMMENDED"),
                     ),
             )
             .into_any_element()
@@ -1031,10 +1427,43 @@ mod tests {
     }
 
     #[test]
-    fn the_faq_closes_and_toggles_by_row() {
-        let mut page = BoostPage::new();
-        assert_eq!(page.faq_open.len(), FAQ.len());
-        page.faq_open[2] = true;
-        assert!(page.faq_open[2] && !page.faq_open[1]);
+    fn one_faq_row_is_open_at_a_time_and_a_second_press_closes_it() {
+        assert_eq!(BoostPage::new().faq_open, None);
+        let open = toggled_faq(None, 2);
+        assert_eq!(open, Some(2));
+        assert_eq!(toggled_faq(open, 4), Some(4));
+        assert_eq!(toggled_faq(Some(4), 4), None);
+        assert!(FAQ.iter().all(|(_, answer, _)| !answer.is_empty()));
+    }
+
+    #[test]
+    fn gradient_stops_interpolate_premultiplied_and_extend_past_the_end() {
+        let stops: [Stop; 3] = [
+            (0., [156., 89., 209., 0.6]),
+            (0.5, [88., 47., 140., 0.3]),
+            (0.8, [0., 0., 0., 0.]),
+        ];
+        let first = stop_color(&stops, 0.);
+        assert!((first[3] - 0.6).abs() < 1e-6 && (first[0] - 156. * 0.6).abs() < 1e-3);
+        let middle = stop_color(&stops, 0.65);
+        // Halfway from the second stop to transparent: premultiplied values and alpha halve.
+        assert!((middle[3] - 0.15).abs() < 1e-6 && (middle[0] - 88. * 0.3 / 2.).abs() < 1e-3);
+        assert_eq!(stop_color(&stops, 3.), [0.; 4]);
+    }
+
+    #[test]
+    fn a_radial_image_is_clear_beyond_its_last_stop_and_straight_alpha_at_the_centre() {
+        let stops: [Stop; 2] = [(0., [86., 22., 138., 0.5]), (1., [86., 22., 138., 0.])];
+        let image = radial_image((4, 4), (2., 0.), (4., 4.), &stops);
+        let frame = image.as_bytes(0).unwrap();
+        // The top row's third pixel is 0.177 of the way out: it keeps its colour (BGRA) and 0.41 of alpha.
+        let near = 2 * 4;
+        assert!((i32::from(frame[near + 3]) - 105).abs() <= 3);
+        assert!(
+            (i32::from(frame[near]) - 138).abs() <= 1
+                && (i32::from(frame[near + 2]) - 86).abs() <= 1
+        );
+        // The far bottom-right pixel is almost clear.
+        assert!(frame[(3 * 4 + 3) * 4 + 3] < 40);
     }
 }
