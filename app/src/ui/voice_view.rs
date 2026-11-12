@@ -86,6 +86,8 @@ fn spinner() -> AnyElement {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Menu {
     More,
+    /// The chevron of the tray's red button: the watched streams of others, each with Stop Watching.
+    Watched,
     /// A tile's Options: whose, and where the pointer was (the menu's top-left corner).
     Tile(Id, Point<Pixels>),
     /// A stream tile's Options, by its owner.
@@ -2047,11 +2049,14 @@ impl Root {
                     0.7 + 0.3 * t
                 };
                 let stream = self.vv.end_shows_stream.get();
+                let others = self.watched_streams().len();
+                let nub_shown = others > usize::from(stream);
                 let button = div()
                     .id("call-disconnect")
                     .w(px(66. * scale))
                     .h(px(50. * scale))
                     .rounded(px(12. * scale))
+                    .when(nub_shown, |this| this.rounded_r(px(0.)))
                     .opacity(0.2 + 0.8 * t)
                     .bg(mid("--control-critical-primary-background-default"))
                     .hover(|style| style.bg(mid("--control-critical-primary-background-hover")))
@@ -2075,13 +2080,45 @@ impl Root {
                         20. * scale,
                         "--white",
                     ));
+                // `onPopoutClick`: the chevron exists while other streams are watched, more than one beside Stop
+                // Watching (module 105225: `N.length > 0`, `N.length > 1`).
                 div()
-                    .w(px(66.))
+                    .relative()
                     .h(px(50.))
                     .flex()
                     .flex_none()
                     .items_center()
                     .justify_center()
+                    .gap(px(1.))
+                    // The chevron is added first and shown last.
+                    .flex_row_reverse()
+                    .child(self.anchor_probe("call-end-group"))
+                    .when(nub_shown, |this| {
+                        this.child(
+                            div()
+                                .id("call-end-chevron")
+                                .w(px(20.))
+                                .h(px(50.))
+                                .rounded_r(px(12.))
+                                .bg(mid("--control-critical-primary-background-default"))
+                                .hover(|style| {
+                                    style.bg(mid("--control-critical-primary-background-hover"))
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.vv.menu = if this.vv.menu == Some(Menu::Watched) {
+                                        None
+                                    } else {
+                                        Some(Menu::Watched)
+                                    };
+                                    cx.notify();
+                                }))
+                                .child(icon("voice_view_caret", 16., "--white")),
+                        )
+                    })
                     .child(self.with_tip(
                         "call-disconnect-tip",
                         Tip::text(
@@ -2249,9 +2286,9 @@ impl Root {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn vmenu_row_ex(
         &self,
-        id: &'static str,
+        id: impl Into<gpui::ElementId>,
         glyph: Option<&'static str>,
-        label: &'static str,
+        label: impl Into<SharedString>,
         checked: Option<bool>,
         theme_mid: bool,
         danger: bool,
@@ -2303,7 +2340,7 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(strong)
-                    .child(label),
+                    .child(label.into()),
             )
             .when(caret, |this| {
                 this.child(icon("menu_caret_right", 20., "--interactive-icon-default"))
@@ -2561,6 +2598,7 @@ impl Root {
             }
             Menu::Camera => self.camera_menu(cx),
             Menu::Share => self.share_menu(cx),
+            Menu::Watched => self.watched_menu(cx),
             Menu::Stream(owner, at) => {
                 let me = self.stores.current_user.as_ref().map(|user| user.id);
                 let info = self.video_stream_of(owner);

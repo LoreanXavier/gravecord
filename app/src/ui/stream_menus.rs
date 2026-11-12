@@ -124,6 +124,84 @@ impl Root {
         out
     }
 
+    /// The streams of others this client watches: the owner and their name (`b` of module 848362).
+    pub(super) fn watched_streams(&self) -> Vec<(u64, String)> {
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let Some(call) = &self.call else {
+            return Vec::new();
+        };
+        self.stores
+            .voice_members(call.guild, call.channel)
+            .into_iter()
+            .filter(|state| Some(state.user_id) != me)
+            .filter(|state| {
+                self.video_stream_of(state.user_id)
+                    .is_some_and(|info| info.role == dc_voice::streams::Role::Watch)
+            })
+            .map(|state| {
+                let name = self
+                    .stores
+                    .users
+                    .get(&state.user_id)
+                    .map(|user| user.display_name().to_owned())
+                    .unwrap_or_default();
+                (state.user_id, name)
+            })
+            .collect()
+    }
+
+    /// `manage-streams` with `hideSelfOptions`: Stop Watching for each watched stream of someone else, none when
+    /// the only one is the focused one.
+    pub(super) fn watched_menu(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let streams = self.watched_streams();
+        let focused = match self.vv.focus.tile {
+            Some((user, super::video_tiles::TileKind::Stream)) => Some(user),
+            _ => None,
+        };
+        if streams.is_empty() || (streams.len() == 1 && Some(streams[0].0) == focused) {
+            return Vec::new();
+        }
+        let rows: Vec<AnyElement> = streams
+            .into_iter()
+            .map(|(owner, name)| {
+                self.vmenu_row_ex(
+                    ("vmenu-stop-watching-of", owner as usize),
+                    Some("voice_bar_screen_active"),
+                    format!("Stop Watching \u{2014} {name}"),
+                    None,
+                    true,
+                    false,
+                    false,
+                    cx,
+                    move |this, _, cx| {
+                        this.vv.menu = None;
+                        this.unwatch_stream_of(owner, cx);
+                    },
+                )
+            })
+            .collect();
+        let height = 36. * rows.len() as f32 + 16.;
+        let Some((left, top)) = self.menu_at("call-end-group", WIDTH, height) else {
+            return Vec::new();
+        };
+        vec![
+            deferred(
+                div().absolute().left(px(left)).top(px(top)).child(
+                    self.menu_panel(WIDTH, true)
+                        .id("voice-watched-menu")
+                        .popout("voice-watched-menu", PopKind::Fade, PopSide::Top)
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.vv.menu = None;
+                            cx.notify();
+                        }))
+                        .children(rows),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        ]
+    }
+
     /// Stream Quality: the resolutions and the frame rates the account may use, as radios. A choice becomes the Custom
     /// preset and restarts the stream, because the capture's size and rate are fixed when it starts.
     fn quality_submenu(&self, left: f32, top: f32, cx: &mut Context<Self>) -> AnyElement {
