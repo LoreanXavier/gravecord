@@ -18,6 +18,7 @@ mod upload;
 mod widgets;
 mod wishlist;
 
+use super::motion::Posed as _;
 use super::shop::data::{self as shop_data, Product};
 use super::{Root, SANS, color, kerning};
 use crate::editor::{Editor, EditorEvent};
@@ -463,9 +464,14 @@ impl Root {
                     ))
                     .on_click(cx.listener(|this, _, _, cx| this.close_profile_editor(cx))),
             );
+        // `UserProfileModalV2` (module 927071) is on the legacy modal root (`root__KoJTP` in the capture, `EO` in
+        // module 935462): the scrim fades in on `hP`, the editor from opacity 0 and `scale(.7)` over 200 ms.
+        let pose =
+            super::motion::legacy_modal_pose("profile-editor", "profile-editor-layer", false);
         let root = div()
             .parity("profile-editor")
             .id("profile-editor")
+            .posed(pose)
             .occlude()
             .relative()
             .w(px(1184.))
@@ -490,7 +496,7 @@ impl Root {
                 .top_0()
                 .left_0()
                 .size_full()
-                .bg(color("--background-scrim"))
+                .bg(pose.dim(color("--background-scrim")))
                 .flex()
                 .justify_center()
                 .child(root),

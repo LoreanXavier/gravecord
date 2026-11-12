@@ -417,7 +417,8 @@ impl Root {
                         })),
                     ),
             );
-        let pose = crate::ui::motion::modal_pose("remediation");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose = crate::ui::motion::legacy_modal_pose("remediation", "remediation-layer", false);
         Some(
             deferred(
                 div()

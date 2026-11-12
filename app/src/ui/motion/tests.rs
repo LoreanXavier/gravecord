@@ -612,6 +612,68 @@ fn only_the_media_viewer_leaves_without_a_scale() {
     assert!(!subtle_layer("Name(\"forward-layer\")"));
 }
 
+#[test]
+fn a_closed_dialog_fades_its_scrim_on_the_enter_spring_and_itself_on_the_exit_spring() {
+    reset_for_tests();
+    let (dialog, scrim) = (key("ghost-dialog"), key("ghost-scrim"));
+    frozen(0.);
+    assert_eq!(ghost_leave(dialog, scrim), (1., 1.));
+    frozen(60.);
+    let (body, dim) = ghost_leave(dialog, scrim);
+    // Each value is exactly its own spring: `{1200, 80}` for the dialog, `{1000, 48}` for the scrim.
+    let mut exit = Spring::new(MODAL_EXIT, 1., 0.);
+    exit.retarget(0., 0.);
+    exit.step_to(60.);
+    let mut enter = Spring::new(MODAL_ENTER, 1., 0.);
+    enter.retarget(0., 0.);
+    enter.step_to(60.);
+    close(body as f64, exit.position(), 1e-4);
+    close(dim as f64, enter.position(), 1e-4);
+    assert!(body != dim, "one curve drives both: {body} {dim}");
+    frozen(3000.);
+    let (body, dim) = ghost_leave(dialog, scrim);
+    assert!(body.abs() < 1e-3 && dim.abs() < 1e-3);
+    assert!(settled(&[dialog, scrim]));
+}
+
+#[test]
+fn a_legacy_dialog_enters_at_once_from_scale_point_seven_over_200ms() {
+    reset_for_tests();
+    frozen(0.);
+    let first = legacy_modal_pose("legacy", "legacy-layer", false);
+    assert_eq!((first.opacity, first.scale), (0., 0.7));
+    frozen(100.);
+    let mid = legacy_modal_pose("legacy", "legacy-layer", false);
+    // No delay: half way through the 200 ms, `Easing.out(quad)` of .5 is .75.
+    close(mid.opacity as f64, 0.75, 1e-3);
+    close(mid.scale as f64, 0.7 + 0.3 * 0.75, 1e-3);
+    assert!(mid.scrim > 0. && mid.scrim != mid.opacity);
+    frozen(200.);
+    let rest = legacy_modal_pose("legacy", "legacy-layer", false);
+    assert_eq!((rest.opacity, rest.scale), (1., 1.));
+    assert!(legacy_layer("Name(\"legacy-layer\")"));
+    assert!(!legacy_layer("Name(\"legacy-layer-2\")"));
+    frozen(300.);
+    let subtle = legacy_modal_pose("subtle", "subtle-layer", true);
+    assert_eq!((subtle.opacity, subtle.scale), (0., 1.));
+}
+
+#[test]
+fn out_quad_is_one_minus_the_square_of_the_rest() {
+    assert_eq!(Ease::OutQuad.apply(0.), 0.);
+    close(Ease::OutQuad.apply(0.25), 1. - 0.75 * 0.75, 1e-12);
+    assert_eq!(Ease::OutQuad.apply(1.), 1.);
+}
+
+#[test]
+fn a_centred_scale_popout_grows_from_its_centre() {
+    reset_for_tests();
+    let pose = pop_at(0., false, "centred", PopKind::Scale, PopSide::Center);
+    assert_eq!(pose.origin, (0.5, 0.5));
+    let left = pop_at(0., false, "left", PopKind::Scale, PopSide::Left);
+    assert_eq!(left.origin, (1., 0.));
+}
+
 fn pop_at(ms: f64, reduced: bool, id: &str, kind: PopKind, side: PopSide) -> PopPose {
     freeze(Some(ms));
     begin_frame(reduced);

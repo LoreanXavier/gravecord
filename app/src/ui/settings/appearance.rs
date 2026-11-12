@@ -102,6 +102,13 @@ pub(super) fn app_icon_updated(state: serde_json::Value, index: usize) -> serde_
     state
 }
 
+/// The icon `AppIconPersistedStoreState` holds on this machine, whatever the account's Nitro.
+fn stored_app_icon() -> usize {
+    crate::storage::get(APP_ICON_STORE)
+        .map(|state| app_icon_of(&state))
+        .unwrap_or(0)
+}
+
 pub(super) fn app_icon_key(index: usize) -> String {
     format!("app_icon:{index}")
 }
@@ -495,9 +502,25 @@ impl Root {
         if self.premium() == dc_state::premium::PremiumType::None {
             return 0;
         }
-        crate::storage::get(APP_ICON_STORE)
-            .map(|state| app_icon_of(&state))
-            .unwrap_or(0)
+        stored_app_icon()
+    }
+
+    /// The picture the server rail's Home button wears instead of Clyde (`nd` of module 396655): the in-app icon
+    /// worn now, once it is not the default one and its picture has arrived.
+    pub(in crate::ui) fn rail_app_icon(&self) -> Option<Arc<Image>> {
+        let index = self.app_icon_selected();
+        if index == 0 {
+            return None;
+        }
+        self.images.get(&app_icon_key(index)).cloned()
+    }
+
+    /// Asks for the stored in-app icon's picture, so the Home button can wear it before Appearance ever opens.
+    pub(in crate::ui) fn request_stored_app_icon(&mut self) {
+        let index = stored_app_icon();
+        if index != 0 {
+            self.request_image(app_icon_key(index), app_icon_url(index));
+        }
     }
 
     fn choose_app_icon(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -713,13 +736,21 @@ impl Root {
                                         )
                                         .into_any_element()
                                     } else {
-                                        super::described(
+                                        // `DWIjJ/` with `onPremiumClick` (module 87719 `e`): the Nitro page.
+                                        let root = cx.weak_entity();
+                                        super::described_linked(
+                                            "appearance-themes-nitro".into(),
                                             &[
                                                 ("Unlock more themes with ", false),
                                                 ("Nitro", true),
                                                 (".", false),
                                             ],
                                             "--text-subtle",
+                                            Box::new(move |_, cx| {
+                                                let _ = root.update(cx, |this, cx| {
+                                                    this.open_settings_section("Nitro", cx);
+                                                });
+                                            }),
                                         )
                                         .into_any_element()
                                     }),

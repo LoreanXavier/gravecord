@@ -1097,7 +1097,9 @@ impl Root {
                         cx,
                     )),
             );
-        let pose = crate::ui::motion::modal_pose("safety-risky");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose =
+            crate::ui::motion::legacy_modal_pose("safety-risky", "safety-risky-layer", false);
         Some(
             deferred(
                 div()

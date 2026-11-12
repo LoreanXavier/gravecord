@@ -274,6 +274,25 @@ const ACCOUNT_SCROLL_MARGIN: f32 = 16. + 8. + 52.;
 /// (`account-status-darker-cozy` shows neither).
 static ACCOUNT_STATUS_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// `TINY_BRONCO_NOTICE` of module 554146: the age group notice over Account Status, gone once dismissed
+/// (`onDismiss` of `ACCOUNT_STANDING_CATEGORY`, module 158935).
+const AGE_NOTICE_CONTENT: u16 = 821;
+
+/// `M1` of module 961943: where "learn more on our blog" goes (`bD`, module 158935).
+const AGE_GROUP_BLOG: &str = "https://discord.com/blog/safer-for-teens-same-discord-for-adults";
+
+/// `_J` of module 158935: the help article "some content and settings" opens for an unconfirmed age group, the
+/// country's own (`q5` of module 961943) or the general one (`GF`), through `getArticleURL` (module 975571).
+fn age_gated_article(country: Option<&str>) -> String {
+    let article = match country {
+        Some("AU") => "38832004637207-Age-Assurance-for-Australian-Users",
+        Some("BR") => "38860612202775-Age-Assurance-for-Brazilian-Users",
+        Some("GB") => "33362401287959-Age-Assurance-for-UK-Users",
+        _ => "42178056096663#h_01M0XEC24HG29RFJ4C04NM3SXM",
+    };
+    format!("https://support.discord.com/hc/en-us/articles/{article}")
+}
+
 /// The NEW badge after the Accessibility sidebar entry (`settings-appearance-67-top-darker-cozy` shows it beside
 /// the entry; `accessibility-darker-cozy`, with the page open, does not): it goes once the page has been opened.
 static ACCESSIBILITY_SEEN: AtomicBool = AtomicBool::new(false);
@@ -479,21 +498,122 @@ fn noticed(parts: &[(&str, bool)], base: &str) -> impl IntoElement {
     )
 }
 
-fn styled_runs(parts: &[(&str, bool)], base: &str, link_style: HighlightStyle) -> impl IntoElement {
+/// The text of the runs and the byte ranges of its link runs.
+fn run_ranges(parts: &[(&str, bool)]) -> (String, Vec<std::ops::Range<usize>>) {
     let mut text = String::new();
     let mut links = Vec::new();
     for (part, link) in parts {
         let start = text.len();
         text.push_str(part);
         if *link {
-            links.push((start..text.len(), link_style));
+            links.push(start..text.len());
         }
     }
+    (text, links)
+}
+
+fn styled_runs(parts: &[(&str, bool)], base: &str, link_style: HighlightStyle) -> impl IntoElement {
+    let (text, links) = run_ranges(parts);
     div()
         .text_size(px(14.))
         .line_height(px(18.))
         .text_color(color(base))
-        .child(StyledText::new(text).with_highlights(links))
+        .child(
+            StyledText::new(text)
+                .with_highlights(links.into_iter().map(|range| (range, link_style))),
+        )
+}
+
+/// `noticed` (or, for a description, `described_linked`) whose link runs take presses: `press` gets the index of
+/// the pressed link among the runs' links.
+fn linked_runs(
+    id: SharedString,
+    parts: &[(&str, bool)],
+    base: &str,
+    press: LinkPress,
+) -> impl IntoElement + use<> {
+    linked_runs_styled(
+        id,
+        parts,
+        base,
+        HighlightStyle {
+            underline: Some(gpui::UnderlineStyle {
+                thickness: px(1.),
+                color: Some(color(base).into()),
+                wavy: false,
+            }),
+            ..HighlightStyle::default()
+        },
+        press,
+    )
+}
+
+/// An account standing's text (`x` and `I` of module 881979): All good's links open the terms and the guidelines
+/// (`TOS_LINK`, `COMMUNITY_GUIDELINES` of module 239093); the other standings have none.
+fn standing_text(
+    id: &'static str,
+    runs: Runs,
+    base: &str,
+    root: gpui::WeakEntity<Root>,
+) -> impl IntoElement + use<> {
+    described_linked(
+        id.into(),
+        runs,
+        base,
+        Box::new(move |index, cx| {
+            let url = if index == 0 {
+                "https://discord.com/terms"
+            } else {
+                "https://discord.com/guidelines"
+            };
+            let _ = root.update(cx, |this, cx| {
+                this.settings_open_url(url, cx);
+            });
+        }),
+    )
+}
+
+/// `described` whose link runs take presses.
+fn described_linked(
+    id: SharedString,
+    parts: &[(&str, bool)],
+    base: &str,
+    press: LinkPress,
+) -> impl IntoElement + use<> {
+    linked_runs_styled(
+        id,
+        parts,
+        base,
+        HighlightStyle {
+            color: Some(color("--text-link").into()),
+            ..HighlightStyle::default()
+        },
+        press,
+    )
+}
+
+fn linked_runs_styled(
+    id: SharedString,
+    parts: &[(&str, bool)],
+    base: &str,
+    link_style: HighlightStyle,
+    press: LinkPress,
+) -> impl IntoElement + use<> {
+    let (text, links) = run_ranges(parts);
+    let styled = StyledText::new(text)
+        .with_highlights(links.iter().map(|range| (range.clone(), link_style)));
+    div()
+        .text_size(px(14.))
+        .line_height(px(18.))
+        .text_color(color(base))
+        .child(
+            gpui::InteractiveText::new(id, styled)
+                // `e.stopPropagation()`: a link in a pressable row does not also press the row.
+                .on_click(links, move |index, _, cx| {
+                    cx.stop_propagation();
+                    press(index, cx);
+                }),
+        )
 }
 
 struct Row {
@@ -682,7 +802,9 @@ fn category_header(
                         .child(title),
                 )
                 .when(!description.is_empty(), |this| {
-                    this.child(described(description, "--text-subtle"))
+                    // `runs_text` takes the link presses for the category `link_owner` named (Profile Privacy's
+                    // Learn more).
+                    this.child(render::runs_text(description, "--text-subtle"))
                 }),
         )
         // The spacer carries `data-settings-category-key`: the scroll-spy watches it.
@@ -730,8 +852,44 @@ fn divider() -> AnyElement {
         .into_any_element()
 }
 
-/// `container_0v8Ae1 info_0v8Ae1`.
-fn info_notice(parts: Runs) -> impl IntoElement {
+/// What a press on the `index`th link run of a text does.
+type LinkPress = Box<dyn Fn(usize, &mut gpui::App)>;
+
+/// `container_0v8Ae1 info_0v8Ae1`. With `dismiss`, the Dismiss button (`onDismiss` of the notice) runs it; with
+/// `links`, a press on a link run runs it with the link's index.
+fn info_notice(
+    id: &'static str,
+    parts: Runs,
+    links: Option<LinkPress>,
+    dismiss: Option<RowPress>,
+) -> impl IntoElement {
+    let close = div()
+        .id(SharedString::from(format!("{id}-dismiss")))
+        .flex_none()
+        .size(px(32.))
+        .mt(px(-7.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(mask_icon(
+            "settings_notice_close",
+            16.,
+            "--control-icon-only-icon-default",
+        ));
+    let close = match dismiss {
+        Some(press) => close
+            .cursor_pointer()
+            .hover(|style| style.bg(color("--control-icon-only-background-hover")))
+            .on_click(press),
+        None => close,
+    };
+    let text: AnyElement = match links {
+        Some(press) => {
+            linked_runs(SharedString::from(id), parts, "--text-strong", press).into_any_element()
+        }
+        None => noticed(parts, "--text-strong").into_any_element(),
+    };
     div()
         .mb(px(8.))
         .flex()
@@ -752,31 +910,30 @@ fn info_notice(parts: Runs) -> impl IntoElement {
                     16.,
                     "--icon-feedback-info",
                 )))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(noticed(parts, "--text-strong")),
-                ),
+                .child(div().flex_1().min_w(px(0.)).child(text)),
         )
-        .child(
-            div()
-                .flex_none()
-                .size(px(32.))
-                .mt(px(-7.))
-                .rounded(px(8.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(mask_icon(
-                    "settings_notice_close",
-                    16.,
-                    "--control-icon-only-icon-default",
-                )),
-        )
+        .child(close)
 }
 
 impl Root {
+    /// Dismiss on the age group notice: `markAsDismissed(USER_DISMISS)` sets the content's bit in the account's
+    /// `dismissed_contents` (a settings-proto write, held back in a harness run).
+    fn dismiss_age_notice(&mut self) {
+        if self.stores.content_dismissed(AGE_NOTICE_CONTENT) {
+            return;
+        }
+        let patch = self.stores.dismiss_content(AGE_NOTICE_CONTENT);
+        if patch.is_empty() || crate::storage::settings_writes_blocked() {
+            return;
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: "/users/@me/settings-proto/1".into(),
+            body: Some(serde_json::json!({"settings": patch})),
+        });
+    }
+
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = Some(Open::new(Page::Account));
         self.guild_search_ready(cx);
@@ -1668,6 +1825,7 @@ impl Root {
         );
         let standing = self.standing();
         let (tile_icon, tile_tint, tile_background) = account_nested::tile_look(standing);
+        let root = cx.weak_entity();
         let status = div()
             .flex()
             .flex_col()
@@ -1686,11 +1844,28 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(info_notice(&[
-                        ("Age groups determine if you can access content and settings meant for adults. Otherwise, Discord works the same. See your age group below and ", false),
-                        ("learn more on our blog", true),
-                        (".", false),
-                    ]))
+                    .children((!self.stores.content_dismissed(AGE_NOTICE_CONTENT)).then(|| {
+                        info_notice(
+                            "account-age-notice",
+                            &[
+                                ("Age groups determine if you can access content and settings meant for adults. Otherwise, Discord works the same. See your age group below and ", false),
+                                ("learn more on our blog", true),
+                                (".", false),
+                            ],
+                            Some(Box::new({
+                                let root = root.clone();
+                                move |_, cx| {
+                                    let _ = root.update(cx, |this, cx| {
+                                        this.settings_open_url(AGE_GROUP_BLOG, cx);
+                                    });
+                                }
+                            })),
+                            Some(Box::new(cx.listener(|this, _, _, cx| {
+                                this.dismiss_age_notice();
+                                cx.notify();
+                            }))),
+                        )
+                    }))
                     .child(
                         Row::new("Age Group")
                             .badge_if(!ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed))
@@ -1699,7 +1874,10 @@ impl Root {
                                 "--background-mod-subtle",
                                 "--icon-strong",
                             ))
-                            .description(described(
+                            // `W0/7DD` with `handleOnAgeGatedContentHook: _J`; the second link is
+                            // `handleOnConfirmAgeHook` (age verification itself), not built.
+                            .description(described_linked(
+                                "account-age-group-text".into(),
                                 &[
                                     ("Your age group hasn\u{2019}t been confirmed yet, so ", false),
                                     ("some content and settings", true),
@@ -1708,6 +1886,16 @@ impl Root {
                                     (".", false),
                                 ],
                                 "--text-subtle",
+                                Box::new({
+                                    let root = root.clone();
+                                    move |index, cx| {
+                                        if index == 0 {
+                                            let _ = root.update(cx, |this, cx| {
+                                                this.settings_open_url(&age_gated_article(None), cx);
+                                            });
+                                        }
+                                    }
+                                }),
                             ))
                             .trailing(
                                 div()
@@ -1727,10 +1915,15 @@ impl Root {
                         Row::new("Account Standing")
                             .leading(tile(tile_icon, tile_background, tile_tint))
                             .description(match standing {
-                                Some(standing) => {
-                                    described(standing.description(), "--text-subtle")
-                                        .into_any_element()
-                                }
+                                // `x` of module 881979: the All good text's links open the terms and the
+                                // guidelines (`TOS_LINK`, `COMMUNITY_GUIDELINES` of module 239093).
+                                Some(standing) => standing_text(
+                                    "account-standing-text",
+                                    standing.description(),
+                                    "--text-subtle",
+                                    root.clone(),
+                                )
+                                .into_any_element(),
                                 None => described(
                                     &[("Loading your account standing...", false)],
                                     "--text-subtle",
@@ -1823,7 +2016,7 @@ impl Root {
         let panel_width = panel_inner_width(window.viewport_size().width.into());
         let mut body = match open.page {
             Page::Account => match self.settings_extra.panel {
-                Some(account_panels::Panel::Standing) => self.standing_body(),
+                Some(account_panels::Panel::Standing) => self.standing_body(cx),
                 Some(account_panels::Panel::Family) => self.family_body(cx),
                 Some(panel) => self.account_panel_page(panel, cx),
                 None => self.account_page(cx),
@@ -2279,7 +2472,21 @@ fn mask_phone(phone: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{devices, mask_email, mask_phone};
+    use super::{age_gated_article, devices, mask_email, mask_phone, run_ranges};
+
+    #[test]
+    fn age_group_links_go_where_the_bundle_sends_them() {
+        assert_eq!(
+            age_gated_article(None),
+            "https://support.discord.com/hc/en-us/articles/42178056096663#h_01M0XEC24HG29RFJ4C04NM3SXM"
+        );
+        assert!(
+            age_gated_article(Some("GB")).ends_with("33362401287959-Age-Assurance-for-UK-Users")
+        );
+        assert_eq!(age_gated_article(Some("TR")), age_gated_article(None));
+        let (text, links) = run_ranges(&[("see ", false), ("blog", true), (".", false)]);
+        assert_eq!(&text[links[0].clone()], "blog");
+    }
 
     #[test]
     fn email_and_phone_masks_match_the_bundle() {

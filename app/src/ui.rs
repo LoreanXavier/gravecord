@@ -104,6 +104,7 @@ mod links;
 mod live_activity;
 pub mod login;
 mod logout;
+mod lottie_icon;
 mod mark_read;
 mod member_actions;
 mod message_header;
@@ -1981,6 +1982,7 @@ impl Root {
     }
 
     fn request_images(&mut self) {
+        self.request_stored_app_icon();
         self.request_role_icon_images();
         self.request_stage_art();
         let guilds: Vec<(Id, String)> = self
@@ -4465,27 +4467,34 @@ impl Root {
                 motion::css(200., motion::Ease::Ease),
             )
         };
-        let toggle = |name: &str, muted: bool, parent: &'static str| {
-            let part = SharedString::from(format!("{parent}-button-part"));
-            audio_look(
-                div().id(SharedString::from(format!("{parent}-button"))),
-                muted,
-                parent,
-            )
-            .group(part.clone())
-            .size(px(32.))
-            .rounded_l(px(8.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(icon(name, 20., tint(muted)).group_hover(part, |style| {
-                style.text_color(color(if muted {
-                    "--icon-voice-muted"
-                } else {
-                    "--interactive-text-hover"
-                }))
-            }))
-        };
+        // Module 993382 draws `useMicrophoneLottie(muted ? "unmute" : "mute")` and
+        // `useDeafenLottie(deafened ? "undeafen" : "deafen")` (348858), the hover events on the button.
+        let toggle =
+            |anim: lottie_icon::Anim, state: &'static str, muted: bool, parent: &'static str| {
+                let lottie = format!("user-panel-{parent}");
+                let hovered = lottie_icon::hovered(&lottie);
+                audio_look(
+                    div().id(SharedString::from(format!("{parent}-button"))),
+                    muted,
+                    parent,
+                )
+                .size(px(32.))
+                .rounded_l(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(lottie_icon::icon(
+                    &lottie,
+                    anim,
+                    Some(state),
+                    20.,
+                    color(match (muted, hovered) {
+                        (true, _) => "--icon-voice-muted",
+                        (false, true) => "--interactive-text-hover",
+                        (false, false) => "--interactive-text-default",
+                    }),
+                ))
+            };
         let chevron = |muted: bool, side: audio_menu::Side| {
             let (probe, parent) = match side {
                 audio_menu::Side::Input => ("mic-chevron", "mic-pair"),
@@ -4630,16 +4639,25 @@ impl Root {
                             .id("toggle-mute")
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_self_mute(cx)))
-                            .child(self.with_tip(
-                                "mic",
-                                Tip::text(if mic_muted { "Unmute" } else { "Mute" }, Side::Top),
-                                toggle(
-                                    if mic_muted { "mic_muted" } else { "mic" },
-                                    mic_muted,
-                                    "mic-pair",
+                            .child(
+                                self.with_tip(
+                                    "mic",
+                                    Tip::text(if mic_muted { "Unmute" } else { "Mute" }, Side::Top),
+                                    toggle(
+                                        lottie_icon::Anim::Microphone,
+                                        if mic_muted { "unmute" } else { "mute" },
+                                        mic_muted,
+                                        "mic-pair",
+                                    )
+                                    .on_hover(
+                                        voice_view::lottie_hover(
+                                            "user-panel-mic-pair".to_owned(),
+                                            cx,
+                                        ),
+                                    ),
+                                    cx,
                                 ),
-                                cx,
-                            )),
+                            ),
                     )
                     .child(mic_chevron),
             )
@@ -4655,23 +4673,28 @@ impl Root {
                             .id("toggle-deafen")
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_self_deaf(cx)))
-                            .child(self.with_tip(
-                                "deafen",
-                                Tip::text(
-                                    if self.self_deaf { "Undeafen" } else { "Deafen" },
-                                    Side::Top,
+                            .child(
+                                self.with_tip(
+                                    "deafen",
+                                    Tip::text(
+                                        if self.self_deaf { "Undeafen" } else { "Deafen" },
+                                        Side::Top,
+                                    ),
+                                    toggle(
+                                        lottie_icon::Anim::Deafen,
+                                        if self.self_deaf { "undeafen" } else { "deafen" },
+                                        self.self_deaf,
+                                        "headphones-pair",
+                                    )
+                                    .on_hover(
+                                        voice_view::lottie_hover(
+                                            "user-panel-headphones-pair".to_owned(),
+                                            cx,
+                                        ),
+                                    ),
+                                    cx,
                                 ),
-                                toggle(
-                                    if self.self_deaf {
-                                        "headphones_deafened"
-                                    } else {
-                                        "headphones"
-                                    },
-                                    self.self_deaf,
-                                    "headphones-pair",
-                                ),
-                                cx,
-                            )),
+                            ),
                     )
                     .child(headphones_chevron),
             )
@@ -8809,6 +8832,7 @@ impl Render for Root {
             .children(self.discover_layers(window, cx))
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
+            .children(self.lottie_icon_probe())
             .child(motion::driver())
             .child(motion::layers::faded(
                 self.regions.place(

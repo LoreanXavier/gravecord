@@ -107,7 +107,8 @@ impl Root {
             self.stream_previews.start(&key);
             let _ = self.requests.send(crate::net::Request::Fetch {
                 key: format!("{KEY_PREFIX}{key}"),
-                route: format!("/streams/{key}/preview"),
+                // `query: {version: Date.now()}`.
+                route: format!("/streams/{key}/preview?version={}", now as u64),
             });
         }
     }

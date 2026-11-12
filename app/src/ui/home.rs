@@ -8,6 +8,51 @@ use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px, svg,
 };
 
+/// The in-app icon on the Home button: `nd` of module 396655 draws it 48px wide (`SIZE_48`) in the 40px
+/// `childWrapper_JJ-hgR`, centred, so the tile's rounded mask shows its middle 40 of 48.
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct RailIconSource(std::sync::Arc<gpui::Image>);
+
+struct RailIcon;
+
+/// The part of a `width` x `height` picture drawn 48px wide that a centred 40px tile shows: (x, y, width, height).
+fn rail_icon_crop(width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let keep = |side: u32| ((u64::from(side) * 40 + 24) / 48).max(1) as u32;
+    let (kept_width, kept_height) = (keep(width), keep(height));
+    (
+        (width - kept_width) / 2,
+        (height - kept_height) / 2,
+        kept_width,
+        kept_height,
+    )
+}
+
+impl gpui::Asset for RailIcon {
+    type Source = RailIconSource;
+    type Output = Option<std::sync::Arc<gpui::RenderImage>>;
+
+    fn load(
+        source: Self::Source,
+        cx: &mut gpui::App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+        let renderer = cx.svg_renderer();
+        async move {
+            let decoded = source.0.to_image_data(renderer).ok()?;
+            let size = decoded.size(0);
+            let (width, height) = (u32::from(size.width), u32::from(size.height));
+            if width == 0 || height == 0 {
+                return None;
+            }
+            let pixels = image::RgbaImage::from_raw(width, height, decoded.as_bytes(0)?.to_vec())?;
+            let (x, y, width, height) = rail_icon_crop(width, height);
+            let cropped = image::imageops::crop_imm(&pixels, x, y, width, height).to_image();
+            Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
+                image::Frame::new(cropped),
+            ])))
+        }
+    }
+}
+
 impl Root {
     pub(super) fn select_home(&mut self, channel: Option<Id>) {
         super::last_channel::remember_home();
@@ -78,6 +123,25 @@ impl Root {
         let requests = self.friend_request_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
         let row_key = "home";
+        // `nd` (module 396655): the chosen in-app icon instead of Clyde, once it is not the default one.
+        let glyph: AnyElement = match self.rail_app_icon() {
+            Some(picture) => {
+                let source = RailIconSource(picture);
+                img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                    window.use_asset::<RailIcon>(&source, cx).flatten().map(Ok)
+                })
+                .size(px(40.))
+                .rounded(px(12.))
+                .flex_none()
+                .into_any_element()
+            }
+            None => svg()
+                .path(crate::branding::home_path())
+                .size(px(24.))
+                .flex_none()
+                .text_color(motion::rail::tile_foreground(row_key, selected))
+                .into_any_element(),
+        };
         div()
             .relative()
             .w(px(72.))
@@ -114,13 +178,7 @@ impl Root {
                         this.select_home(None);
                         cx.notify();
                     }))
-                    .child(
-                        svg()
-                            .path(crate::branding::home_path())
-                            .size(px(24.))
-                            .flex_none()
-                            .text_color(motion::rail::tile_foreground(row_key, selected)),
-                    ),
+                    .child(glyph),
                     cx,
                 ),
             )
@@ -726,5 +784,18 @@ impl Root {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rail_icon_crop;
+
+    #[test]
+    fn the_home_button_shows_the_middle_of_a_48px_icon() {
+        // A 96px asset drawn 48px wide: the 40px tile shows its middle 80px.
+        assert_eq!(rail_icon_crop(96, 96), (8, 8, 80, 80));
+        assert_eq!(rail_icon_crop(48, 48), (4, 4, 40, 40));
+        assert_eq!(rail_icon_crop(1, 1), (0, 0, 1, 1));
     }
 }

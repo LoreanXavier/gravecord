@@ -2,8 +2,10 @@
 //! voice channel. The join flow is `selectVoiceChannel` / `voiceStateUpdate` in the bundle; flags from
 //! `computeVoiceFlags` (CLIPS_ENABLED 1, ALLOW_VOICE_RECORDING 2).
 
+use super::lottie_icon::{self, Anim};
 use super::tooltip::{Body, Side, Tip};
 use super::voice_panel::{Popout, Tab};
+use super::voice_view::lottie_hover;
 use super::{Root, avatar_source, color};
 use crate::net::Request;
 use dc_state::Id;
@@ -552,7 +554,7 @@ impl Root {
         let (guild_id, channel_id) = (call.guild, call.channel);
         let noise_on = self.noise_cancellation();
         let noise_open = self.panel.popout == Some(Popout::Noise);
-        let round = |id: &'static str, name: &'static str| {
+        let round_box = |id: &'static str| {
             div()
                 .id(id)
                 .size(px(32.))
@@ -562,9 +564,13 @@ impl Root {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(color("--interactive-background-hover")))
-                .child(super::icon(name, 20., "--text-subtle"))
         };
-        let wide = |id: &'static str, name: &'static str| {
+        let round = |id: &'static str, name: &'static str| {
+            round_box(id).child(super::icon(name, 20., "--text-subtle"))
+        };
+        // The row's icons are the animated hooks of module 596339 (`useVideoLottie`, `useScreenshareLottie`,
+        // `useActivityLottie`, `useSoundboardLottie`), 20px (`buttonIcon_9U6LUN`), with the hover events on the button.
+        let wide_box = |id: &'static str| {
             div()
                 .id(id)
                 .w_full()
@@ -576,9 +582,8 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(super::icon(name, 20., "--control-secondary-text-default"))
         };
-        let wide_active = |id: &'static str, name: &'static str| {
+        let wide_active_box = |id: &'static str| {
             div()
                 .id(id)
                 .w_full()
@@ -590,8 +595,34 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(super::icon(name, 20., "--text-feedback-positive"))
         };
+        let wide = |id: &'static str, lottie: &str, anim: Anim, state: Option<&'static str>| {
+            wide_box(id).child(lottie_icon::icon(
+                lottie,
+                anim,
+                state,
+                20.,
+                color("--control-secondary-text-default"),
+            ))
+        };
+        let wide_active =
+            |id: &'static str, lottie: &str, anim: Anim, state: Option<&'static str>| {
+                wide_active_box(id).child(lottie_icon::icon(
+                    lottie,
+                    anim,
+                    state,
+                    20.,
+                    color("--text-feedback-positive"),
+                ))
+            };
+        let panel_id = |name: &str| format!("panel-{name}-{channel_id}");
+        let (camera_id, screen_id, activity_id, soundboard_id, disconnect_id) = (
+            panel_id("camera"),
+            panel_id("screen"),
+            panel_id("activity"),
+            panel_id("soundboard"),
+            panel_id("disconnect"),
+        );
         let ping = div()
             .id("voice-ping")
             .size(px(32.))
@@ -639,7 +670,16 @@ impl Root {
         let disconnect = self.with_tip(
             "voice-disconnect-tip",
             Tip::text("Disconnect", Side::Top),
-            round("voice-disconnect", "voice_disconnect")
+            // `Tn` of module 596339: `useDisconnectLottie`, its events on the button.
+            round_box("voice-disconnect")
+                .child(lottie_icon::icon(
+                    &disconnect_id,
+                    Anim::Disconnect,
+                    None,
+                    20.,
+                    color("--text-subtle"),
+                ))
+                .on_hover(lottie_hover(disconnect_id.clone(), cx))
                 .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx))),
             cx,
         );
@@ -654,10 +694,11 @@ impl Root {
                 Side::Top,
             ),
             if camera_on {
-                wide_active("voice-camera", "dm_video")
+                wide_active("voice-camera", &camera_id, Anim::Camera, Some("disable"))
             } else {
-                wide("voice-camera", "voice_camera")
+                wide("voice-camera", &camera_id, Anim::Camera, Some("enable"))
             }
+            .on_hover(lottie_hover(camera_id.clone(), cx))
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
             cx,
@@ -666,10 +707,21 @@ impl Root {
             "voice-screen-tip",
             Tip::text("Share Your Screen", Side::Top),
             if own_stream.is_some() {
-                wide_active("voice-screen", "voice_screen_active")
+                wide_active(
+                    "voice-screen",
+                    &screen_id,
+                    Anim::ScreenShare,
+                    Some("disable"),
+                )
             } else {
-                wide("voice-screen", "voice_screen")
+                wide(
+                    "voice-screen",
+                    &screen_id,
+                    Anim::ScreenShare,
+                    Some("enable"),
+                )
             }
+            .on_hover(lottie_hover(screen_id.clone(), cx))
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
             cx,
@@ -679,25 +731,37 @@ impl Root {
             Tip::text("Start An Activity", Side::Top),
             if self.activities.running.is_some() {
                 // `greyButtonActive`: green while this session is in an activity.
-                wide_active("voice-activity", "voice_activity")
+                wide_active("voice-activity", &activity_id, Anim::Activity, None)
             } else {
-                wide("voice-activity", "voice_activity")
+                wide("voice-activity", &activity_id, Anim::Activity, None)
             }
+            .on_hover(lottie_hover(activity_id.clone(), cx))
             .cursor_pointer()
-            .on_click(cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx))),
+            .on_click({
+                // `onClick: () => { A(), ... }`: the `click` marker.
+                let id = activity_id.clone();
+                cx.listener(move |this, _, window, cx| {
+                    lottie_icon::click(&id);
+                    this.voice_activity_clicked(window, cx);
+                })
+            }),
             cx,
         );
         // `greyButtonActive` while the picker is open, `disabled` (opacity .3) under a server mute, suppression or deafening.
         let soundboard_reason = self.soundboard_disabled();
         let soundboard_open = self.panel.popout == Some(Popout::Soundboard);
-        let soundboard = wide("voice-soundboard", "voice_soundboard")
+        // Module 596339's panel button plays the soundboard marker on every click and both hover halves always.
+        let soundboard = wide("voice-soundboard", &soundboard_id, Anim::Soundboard, None)
+            .on_hover(lottie_hover(soundboard_id.clone(), cx))
             .when(soundboard_open, |this| {
                 this.bg(color("--background-mod-strong"))
             })
             .when(soundboard_reason.is_some(), |this| this.opacity(0.3))
             .when(soundboard_reason.is_none(), |this| {
+                let id = soundboard_id.clone();
                 this.cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        lottie_icon::click(&id);
                         this.toggle_soundboard(window, cx);
                     }))
             });

@@ -3,6 +3,7 @@
 //! `timeout: 2e3`), the More Options and tile Options menus, the disconnected state and the docked chat.
 //! Geometry is measured in `design/dom/channel/voice-view-*-darker-cozy.json`; the grid sizing is module 511205.
 
+use super::lottie_icon::{self, Anim};
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::tooltip::{Side, Tip};
 use super::video_tiles::{self, Candidate, TileKind};
@@ -50,6 +51,22 @@ pub(super) fn set_call_setting(key: &str, on: bool) {
 
 fn toggle_call_setting(key: &str) {
     storage::set(key, serde_json::json!(!call_setting(key)));
+}
+
+/// The animated icon `id` of a call tray button in the call on `channel`: a call in another channel mounts its own.
+pub(super) fn tray_icon_id(name: &str, channel: Id) -> String {
+    format!("tray-{name}-{channel}")
+}
+
+/// A button's `onMouseEnter` / `onMouseLeave` for its animated icon `id` (the hooks' `events`).
+pub(super) fn lottie_hover(
+    id: String,
+    cx: &mut Context<Root>,
+) -> impl Fn(&bool, &mut Window, &mut gpui::App) + 'static {
+    cx.listener(move |_, entered: &bool, _, cx| {
+        lottie_icon::hover(&id, *entered);
+        cx.notify();
+    })
 }
 
 /// `midnight`: the call container carries `theme-midnight`, whatever the app's own theme is.
@@ -125,6 +142,8 @@ pub(super) struct State {
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
     pub popout_render: bool,
+    /// The popped-out window stays above the others (`popoutWindowAlwaysOnTop`).
+    pub popout_on_top: bool,
     /// The call the view was last built for (guild, channel), for what a tile looks up by its stream's key.
     pub shown_call: (Id, Id),
     /// The red button of the tray shows Stop Watching, not Disconnect (`D` of `eT` in module 105225: it changes
@@ -155,6 +174,7 @@ impl Default for State {
             members_hidden: false,
             popout: None,
             popout_render: false,
+            popout_on_top: false,
             outside: false,
             end_shows_stream: std::cell::Cell::new(false),
             shown_call: (0, 0),
@@ -1397,6 +1417,15 @@ impl Root {
                     .inset_0(),
                 )
             })
+            .when(waiting && !outside, |this| {
+                // `handleSelectParticipant` on a stream nobody here watches: watch it, beside the others when
+                // shift is held (`forceMultiple: t.shiftKey`).
+                this.cursor_pointer().on_click(cx.listener(
+                    move |this, event: &gpui::ClickEvent, _, cx| {
+                        this.watch_stream_with(user_id, event.modifiers().shift, cx);
+                    },
+                ))
+            })
             .when(!waiting && !outside, |this| {
                 this.cursor_pointer().on_click(cx.listener(
                     move |this, event: &gpui::ClickEvent, window, cx| {
@@ -1851,7 +1880,6 @@ impl Root {
     ) -> AnyElement {
         let muted = self.self_mute || self.self_deaf;
         let soundboard_reason = self.soundboard_disabled();
-        let _ = channel;
         let tray = |id: &'static str, glyph: &'static str| {
             div().id(id).size(px(24.)).cursor_pointer().child(icon(
                 glyph,
@@ -1859,7 +1887,7 @@ impl Root {
                 "--interactive-icon-default",
             ))
         };
-        let primary_tinted = |id: &'static str, glyph: &'static str, tint: &'static str| {
+        let primary_box = |id: &'static str| {
             div()
                 .id(id)
                 .size(px(40.))
@@ -1869,9 +1897,29 @@ impl Root {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(gpui::hsla(0., 0., 1., 0.1)))
-                .child(icon(glyph, 20., tint))
+        };
+        let primary_tinted = |id: &'static str, glyph: &'static str, tint: &'static str| {
+            primary_box(id).child(icon(glyph, 20., tint))
         };
         let primary = |id: &'static str, glyph: &'static str| primary_tinted(id, glyph, "--white");
+        // The animated centre icons (`centerIcon_K9Xq13`, 20px; module 693409 draws the hook's `Component` with
+        // `color: currentColor`): white on `primaryDark`, `--red-400` on `redGlow`, `--green-300` on `greenGlow`, and
+        // `--control-critical-primary-text-default` on `disconnect` (stylesheet 491899; the captured
+        // `popouts/stream-live` shows 218,62,68 muted and 115,196,139 streaming).
+        let mic_id = tray_icon_id("mic", channel);
+        let camera_id = tray_icon_id("camera", channel);
+        let screen_id = tray_icon_id("screen", channel);
+        let activity_id = tray_icon_id("activity", channel);
+        let soundboard_id = tray_icon_id("soundboard", channel);
+        let disconnect_id = tray_icon_id("disconnect", channel);
+        let stop_watching_id = tray_icon_id("stop-watching", channel);
+        let animated = |id: &'static str,
+                        lottie: &str,
+                        anim: Anim,
+                        state: Option<&'static str>,
+                        tint: &'static str| {
+            primary_box(id).child(lottie_icon::icon(lottie, anim, state, 20., color(tint)))
+        };
         // The microphone and camera buttons each carry a 20px chevron nub after a pixel of gap.
         let nub = |id: &'static str, tint: &'static str| {
             div()
@@ -1894,6 +1942,7 @@ impl Root {
             .justify_center()
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.toggle_self_mute(cx)))
+            .on_hover(lottie_hover(mic_id.clone(), cx))
             .when(muted, |this| {
                 this.bg(mid("--opacity-red-12"))
                     .hover(|style| style.bg(mid("--opacity-red-16")))
@@ -1901,10 +1950,13 @@ impl Root {
             .when(!muted, |this| {
                 this.hover(|style| style.bg(gpui::hsla(0., 0., 1., 0.1)))
             })
-            .child(icon(
-                if muted { "mic_muted" } else { "mic" },
+            // Module 577062: `useMicrophoneLottie(muted ? "unmute" : "mute")`.
+            .child(lottie_icon::icon(
+                &mic_id,
+                Anim::Microphone,
+                Some(if muted { "unmute" } else { "mute" }),
                 20.,
-                if muted { "--red-400" } else { "--white" },
+                color(if muted { "--red-400" } else { "--white" }),
             ));
         let mic_open = self.audio_menu.as_ref().is_some_and(|menu| menu.call);
         let mic_nub = nub(
@@ -1959,12 +2011,33 @@ impl Root {
         let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
         let active_fill = gpui::rgba(0x00854520);
         let active_text = "--text-feedback-positive";
-        let camera_button = if camera_on {
-            primary("call-camera", "dm_video")
-                .rounded_l(px(8.))
-                .bg(active_fill)
+        // Module 970636: the popped-out window keeps the still `VideoIcon` / `VideoSlashIcon`, elsewhere
+        // `useVideoLottie(enabled ? "disable" : "enable")` (color `green` while on: `greenGlow`).
+        let camera_tint = if camera_on { "--green-300" } else { "--white" };
+        let camera_button = if self.vv.popout_render {
+            primary_tinted(
+                "call-camera",
+                if camera_on {
+                    "dm_video"
+                } else {
+                    "voice_camera"
+                },
+                camera_tint,
+            )
         } else {
-            primary("call-camera", "voice_camera")
+            animated(
+                "call-camera",
+                &camera_id,
+                Anim::Camera,
+                Some(if camera_on { "disable" } else { "enable" }),
+                camera_tint,
+            )
+            .on_hover(lottie_hover(camera_id.clone(), cx))
+        };
+        let camera_button = if camera_on {
+            camera_button.rounded_l(px(8.)).bg(active_fill)
+        } else {
+            camera_button
         };
         let camera = div()
             .relative()
@@ -2032,11 +2105,25 @@ impl Root {
                 };
                 cx.notify();
             }));
-        let soundboard = primary("call-soundboard", "voice_soundboard")
-            .when(soundboard_reason.is_some(), |this| this.opacity(0.3))
-            .when(soundboard_reason.is_none(), |this| {
-                this.on_click(cx.listener(|this, _, window, cx| this.toggle_soundboard(window, cx)))
-            });
+        // Module 533978: `play()` when a click opens the picker (`ed`), and the leave half of the hover events only
+        // while no popout is open.
+        let soundboard = animated(
+            "call-soundboard",
+            &soundboard_id,
+            Anim::Soundboard,
+            None,
+            "--white",
+        )
+        .when(soundboard_reason.is_some(), |this| this.opacity(0.3))
+        .when(soundboard_reason.is_none(), |this| {
+            let id = soundboard_id.clone();
+            this.on_click(cx.listener(move |this, _, window, cx| {
+                this.toggle_soundboard(window, cx);
+                if this.panel.popout == Some(super::voice_panel::Popout::Soundboard) {
+                    lottie_icon::click(&id);
+                }
+            }))
+        });
         let centre = div()
             .parity("dm-call-tray")
             .flex()
@@ -2058,11 +2145,15 @@ impl Root {
                             self.with_tip(
                                 "call-screen-tip",
                                 Tip::text("Stop Streaming", Side::Top),
-                                primary_tinted(
+                                // Module 958449: `useScreenshareLottie(streamActive ? "disable" : "enable")`.
+                                animated(
                                     "call-screen",
-                                    "voice_bar_screen_active",
-                                    "--icon-voice-connected",
+                                    &screen_id,
+                                    Anim::ScreenShare,
+                                    Some("disable"),
+                                    "--green-300",
                                 )
+                                .on_hover(lottie_hover(screen_id.clone(), cx))
                                 .rounded_l(px(8.))
                                 .bg(active_fill)
                                 .on_click(
@@ -2094,8 +2185,15 @@ impl Root {
                     self.with_tip(
                         "call-screen-tip",
                         Tip::text("Share Your Screen", Side::Top),
-                        primary("call-screen", "voice_screen")
-                            .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
+                        animated(
+                            "call-screen",
+                            &screen_id,
+                            Anim::ScreenShare,
+                            Some("enable"),
+                            "--white",
+                        )
+                        .on_hover(lottie_hover(screen_id.clone(), cx))
+                        .on_click(cx.listener(|this, _, _, cx| this.voice_screen_clicked(cx))),
                         cx,
                     )
                     .into_any_element()
@@ -2103,17 +2201,38 @@ impl Root {
                 self.with_tip(
                     "call-activity-tip",
                     Tip::text("Start An Activity", Side::Top),
-                    primary("call-activity", "voice_activity").on_click(
-                        cx.listener(|this, _, window, cx| this.voice_activity_clicked(window, cx)),
-                    ),
+                    // Module 168754: the hover events, and `play()` (the `click` marker) on click.
+                    animated(
+                        "call-activity",
+                        &activity_id,
+                        Anim::Activity,
+                        None,
+                        "--white",
+                    )
+                    .on_hover(lottie_hover(activity_id.clone(), cx))
+                    .on_click({
+                        let id = activity_id.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            lottie_icon::click(&id);
+                            this.voice_activity_clicked(window, cx);
+                        })
+                    }),
                     cx,
                 )
                 .into_any_element(),
                 div()
                     .id("call-soundboard-hover")
-                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                        this.soundboard_hover(*inside, cx);
-                    }))
+                    .on_hover({
+                        let id = soundboard_id.clone();
+                        cx.listener(move |this, inside: &bool, _, cx| {
+                            if *inside
+                                || this.panel.popout != Some(super::voice_panel::Popout::Soundboard)
+                            {
+                                lottie_icon::hover(&id, *inside);
+                            }
+                            this.soundboard_hover(*inside, cx);
+                        })
+                    })
                     .child(self.with_tip(
                         "call-soundboard-tip",
                         Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
@@ -2182,15 +2301,38 @@ impl Root {
                             None => this.leave_voice(cx),
                         }
                     }))
-                    .child(icon(
+                    // Stop Watching is 958449 with `streamActive` (`useScreenshareLottie("disable")`), Disconnect
+                    // 404355 (`useDisconnectLottie`, hover only); the swap mounts the other one afresh.
+                    .on_hover(lottie_hover(
                         if stream {
-                            "voice_bar_screen_active"
+                            stop_watching_id.clone()
                         } else {
-                            "voice_disconnect"
+                            disconnect_id.clone()
                         },
-                        20. * scale,
-                        "--white",
-                    ));
+                        cx,
+                    ))
+                    .child({
+                        let tint = color("--control-critical-primary-text-default");
+                        if stream {
+                            lottie_icon::forget(&disconnect_id);
+                            lottie_icon::icon(
+                                &stop_watching_id,
+                                Anim::ScreenShare,
+                                Some("disable"),
+                                20. * scale,
+                                tint,
+                            )
+                        } else {
+                            lottie_icon::forget(&stop_watching_id);
+                            lottie_icon::icon(
+                                &disconnect_id,
+                                Anim::Disconnect,
+                                None,
+                                20. * scale,
+                                tint,
+                            )
+                        }
+                    });
                 // `onPopoutClick`: the chevron exists while other streams are watched, more than one beside Stop
                 // Watching (module 105225: `N.length > 0`, `N.length > 1`).
                 div()
@@ -2310,6 +2452,33 @@ impl Root {
                     .justify_end()
                     .gap(px(20.))
                     .children(self.call_volume_control(cx))
+                    // `canStayOnTop`: in the popped-out window (module 619344).
+                    .when(self.vv.popout_render, |this| {
+                        let on = self.vv.popout_on_top;
+                        this.child(
+                            self.with_tip(
+                                "call-stay-on-top-tip",
+                                Tip::text(
+                                    if on { "Remove From Top" } else { "Stay On Top" },
+                                    Side::Top,
+                                ),
+                                tray(
+                                    "call-stay-on-top",
+                                    if on {
+                                        "voice_view_pin_upright_slash"
+                                    } else {
+                                        "voice_view_pin_upright"
+                                    },
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.toggle_call_popout_on_top(cx)
+                                    }),
+                                ),
+                                cx,
+                            ),
+                        )
+                    })
                     // Module 540462: Pop Out and Full Screen only exist in video mode (`mode === VIDEO && inCall`),
                     // so a DM's voice call has neither (golden `dm-call/in-call-alone`).
                     .when(guild != 0 || self.dmc.video, |this| {

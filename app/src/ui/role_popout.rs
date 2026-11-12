@@ -7,6 +7,7 @@
 //! name. Opening preloads (module 545868): `GET /guilds/{id}/roles/{role}/member-ids`, whose ids are then asked of the
 //! gateway (`requestMembersById`), and `GET /guilds/{id}/roles/member-counts` for the number in the header.
 
+use super::motion::{PopKind, PopSide, Popout};
 use super::sticker_popout::text;
 use super::{Root, avatar_source, color};
 use crate::net::Request;
@@ -270,6 +271,7 @@ impl Root {
             .map(|member| self.role_row(member, open.guild, cx))
             .collect();
         let more = more_label(count, rows.len());
+        let (row_count, has_more) = (rows.len(), more.is_some());
         let header = div()
             .flex_none()
             .h(px(40.))
@@ -326,7 +328,31 @@ impl Root {
                             .child(SharedString::from(label))
                     })),
             );
-        let at = point(open.anchor.right() + px(GAP), open.anchor.top());
+        // `position: "top"` with `autoInvert` (module 787564 through `Popout`, module 265872): above the mention,
+        // or below it when that leaves more room (`calculateState`, module 623646). The default `TRANSLATE`
+        // animation slides it in from the side it opened on.
+        let height =
+            (2. + 4. + 40. + row_count as f32 * ROW + if has_more { 40. } else { 0. } + 8.)
+                .min(limit);
+        let below = opens_below(
+            f32::from(open.anchor.top()),
+            f32::from(open.anchor.bottom()),
+            height,
+            self.viewport.1,
+        );
+        let (corner, at, side) = if below {
+            (
+                gpui::Anchor::TopLeft,
+                point(open.anchor.left(), open.anchor.bottom() + px(GAP)),
+                PopSide::Bottom,
+            )
+        } else {
+            (
+                gpui::Anchor::BottomLeft,
+                point(open.anchor.left(), open.anchor.top() - px(GAP)),
+                PopSide::Top,
+            )
+        };
         Some(
             deferred(
                 div()
@@ -341,10 +367,14 @@ impl Root {
                     )
                     .child(
                         anchored()
-                            .anchor(gpui::Anchor::TopLeft)
+                            .anchor(corner)
                             .position(at)
                             .snap_to_window_with_margin(px(8.))
-                            .child(popout),
+                            .child(
+                                div()
+                                    .popout("role-popout", PopKind::Translate, side)
+                                    .child(popout),
+                            ),
                     ),
             )
             .with_priority(1)
@@ -353,9 +383,27 @@ impl Root {
     }
 }
 
+/// Whether a popout asked for above its target opens below it instead (`autoInvert`, `calculateState` in module
+/// 623646): the room left above is `top - GAP - height`, below it `viewport - (bottom + GAP + height)`; it inverts
+/// when the room above is negative and the room below is larger.
+fn opens_below(top: f32, bottom: f32, height: f32, viewport: f32) -> bool {
+    let above = top - GAP - height;
+    let below = viewport - (bottom + GAP + height);
+    above < 0. && below > above
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_popout_opens_above_the_mention_unless_it_does_not_fit() {
+        assert!(!opens_below(400., 418., 200., 720.));
+        // 100 - 8 - 200 < 0 and there is more room below.
+        assert!(opens_below(100., 118., 200., 720.));
+        // Neither fits: it stays where the room is larger.
+        assert!(!opens_below(300., 318., 600., 400.));
+    }
 
     fn member(id: Id, name: &str, nick: Option<&str>, roles: &[Id]) -> Member {
         Member {

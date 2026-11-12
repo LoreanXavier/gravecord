@@ -1331,10 +1331,11 @@ impl Root {
                     .child(super::content_filters::age_notice(
                         "message-requests-confirm-age",
                         text,
+                        cx.weak_entity(),
                     ))
                     .into_any_element()
             }
-            Node::Notice { text, .. } => info_notice(text).into_any_element(),
+            Node::Notice { key, text } => info_notice(key, text, None, None).into_any_element(),
             Node::Accordion {
                 key,
                 label,

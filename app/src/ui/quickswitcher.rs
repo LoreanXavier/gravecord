@@ -619,16 +619,17 @@ impl Root {
                 [false, true].into_iter().filter_map(move |right| {
                     let picture = self.arrow_image(asset, *degrees, right, (*width, *height))?;
                     // The tutorial reaches 60px past the switcher box (1px inside the modal's border).
+                    // Placed in the box's padding box (inside its 1px border), which carries them through its pose.
                     let base_x = if right {
-                        left + 1. + 678. + 60. - x - width
+                        678. + 60. - x - width
                     } else {
-                        left + 1. - 60. + x
+                        -60. + x
                     };
                     Some(
                         div()
                             .absolute()
                             .left(px(base_x))
-                            .top(px(top + 9. - 80.
+                            .top(px(9. - 1. - 80.
                                 + y
                                 + if has_query_results {
                                     // 910839 moves the horizontal arrow nine pixels below the selected row's top.
@@ -642,7 +643,27 @@ impl Root {
                 })
             })
             .collect();
-        // The switcher is a modal: the scrim and the box run the modal's enter (modules 462824 and 150591).
+        // The caption over the arrows, centred on the box (the tutorial spans 60px past it on both sides).
+        let caption = div()
+            .absolute()
+            .left(px(-61.))
+            .right(px(-61.))
+            .top(px(9. - 1. - 80. + 40.))
+            .h(px(24.))
+            .flex()
+            .justify_center()
+            .text_size(px(18.))
+            .line_height(px(24.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--white"))
+            .child(if !has_query_results {
+                "Search for servers, channels or DMs"
+            } else {
+                "Select a result and press ENTER to jump to it"
+            });
+        // The switcher is a modal: the scrim and the box run the modal's enter (modules 462824 and 150591). The
+        // tutorial (`tutorial_12gY2-`, module 910839) is rendered inside the modal root, so its arrows and caption
+        // take the box's opacity and scale.
         let pose = super::motion::modal_pose("quick-switcher");
         let modal = div()
             .parity_with_border("quick-switcher", 1.)
@@ -666,6 +687,8 @@ impl Root {
             }])
             .pt(px(8.))
             .pb(px(16.))
+            .child(caption)
+            .children(arrows)
             .child(
                 div()
                     .pt(px(12.))
@@ -761,26 +784,6 @@ impl Root {
                         this.quick_switcher = None;
                         cx.notify();
                     }))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(0.))
-                            .right(px(0.))
-                            .top(px(top + 9. - 80. + 40.))
-                            .h(px(24.))
-                            .flex()
-                            .justify_center()
-                            .text_size(px(18.))
-                            .line_height(px(24.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--white"))
-                            .child(if !has_query_results {
-                                "Search for servers, channels or DMs"
-                            } else {
-                                "Select a result and press ENTER to jump to it"
-                            }),
-                    )
-                    .children(arrows)
                     .child(modal),
             )
             .with_priority(1)

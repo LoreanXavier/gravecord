@@ -398,7 +398,8 @@ impl Root {
             .destination
             .and_then(|id| channel_options.iter().find(|(known, _)| *known == id))
             .map(|(_, name)| name.clone());
-        let pose = super::motion::modal_pose("follow-modal");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose = super::motion::legacy_modal_pose("follow-modal", "follow-modal-layer", false);
         let picture = self.images.get(&format!("guild:{}", source.id)).cloned();
         // `header_MXlLC1`: `--background-base-lowest`, the server's icon and `channelContainer_MXlLC1` (16px in, 320
         // at most, `--background-base-lower`, 4px radius) holding the selected-looking channel row. Assumed: 40px

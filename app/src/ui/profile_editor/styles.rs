@@ -604,7 +604,12 @@ impl Root {
                     })),
             );
         let popout = self.profile_editor_colour_popout(60., 590., cx);
-        let pose = crate::ui::motion::modal_pose("profile-editor-styles");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose = crate::ui::motion::legacy_modal_pose(
+            "profile-editor-styles",
+            "profile-editor-styles-layer",
+            false,
+        );
         Some(
             deferred(
                 div()

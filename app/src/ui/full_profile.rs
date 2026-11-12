@@ -1100,7 +1100,9 @@ impl Root {
                     .child(icon("modal_close", 16., "--white"))
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
             );
-        let pose = crate::ui::motion::modal_pose("full-profile");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose =
+            crate::ui::motion::legacy_modal_pose("full-profile", "full-profile-layer", false);
         Some(
             deferred(
                 div()

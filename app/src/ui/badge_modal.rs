@@ -933,7 +933,9 @@ impl Root {
                     })),
             );
 
-        let pose = super::motion::modal_pose("badge-modal");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+
+        let pose = super::motion::legacy_modal_pose("badge-modal", "badge-modal-layer", false);
         let card = div()
             .id("badge-modal")
             .occlude()

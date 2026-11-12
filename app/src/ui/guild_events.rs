@@ -60,7 +60,13 @@ pub(super) fn layer(
     close: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
     cx: &mut Context<Root>,
 ) -> AnyElement {
-    let pose = crate::ui::motion::modal_pose(id);
+    // The Events modal (568036) and Create Event (688218) are on the legacy root (`root__KoJTP`, module 935462);
+    // the event detail is on the design-system root (`container_dvN-MP`, module 224640).
+    let pose = if id == "event-detail-layer" {
+        crate::ui::motion::modal_pose(id)
+    } else {
+        crate::ui::motion::legacy_modal_pose(id, id, false)
+    };
     deferred(
         div()
             .id(id)

@@ -4,7 +4,7 @@
 //! call back.
 //!
 //! Not from the official client: the window's first size (960 by 540) and its title. Tooltips of the controls in
-//! the popped-out window are not drawn (they belong to the main window's layer), and "Stay on Top" is not offered.
+//! the popped-out window are not drawn (they belong to the main window's layer).
 
 use super::Root;
 use gpui::{
@@ -72,6 +72,7 @@ impl Root {
                     let closed = view.clone();
                     window.on_window_should_close(cx, move |_, cx| {
                         let _ = closed.update(cx, |root, cx| {
+                            root.vv.popout_on_top = false;
                             root.vv.popout = None;
                             cx.notify();
                         });
@@ -96,7 +97,22 @@ impl Root {
         cx.notify();
     }
 
+    /// Stay On Top and Remove From Top of the popped-out window (`handleStayOnTop`).
+    pub(super) fn toggle_call_popout_on_top(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.vv.popout else {
+            return;
+        };
+        let on = !self.vv.popout_on_top;
+        self.vv.popout_on_top = on;
+        // The window is being drawn when its own button asks: it is changed once this update is over.
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| crate::autostart::set_topmost(window, on));
+        });
+        cx.notify();
+    }
+
     pub(super) fn close_call_popout(&mut self, cx: &mut Context<Self>) {
+        self.vv.popout_on_top = false;
         if let Some(handle) = self.vv.popout.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }

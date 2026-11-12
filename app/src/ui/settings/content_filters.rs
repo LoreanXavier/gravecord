@@ -6,7 +6,7 @@
 //! 444802). Changing one writes all three fields, as `Jz` and `qY` do.
 
 use super::render::runs_text;
-use super::{Choice, mask_icon, noticed};
+use super::{Choice, mask_icon};
 use crate::net::Request;
 use crate::ui::{Root, color};
 use dc_proto::settings::{CONTENT_REDACTION, EXPLICIT_CONTENT_FILTER, ProtoPref};
@@ -93,7 +93,17 @@ pub(super) fn current(kind: usize, stored: [Option<u64>; 3], filter: u64) -> [u6
 
 /// `useInlineNotice` for an account that is not confirmed as an adult: the info icon, the line, and the small
 /// "Confirm Age" button (captured: 58 tall, the text at 162, the 99 wide button 13px from the right edge).
-pub(super) fn age_notice(id: &'static str, parts: &[(&str, bool)]) -> gpui::Div {
+/// Its Learn more is `handleLearnMore` of `yb(AGE_CONFIRMATION_NOTICE, _J)` (module 158935): the age group article.
+pub(super) fn age_notice(
+    id: &'static str,
+    parts: &[(&str, bool)],
+    root: gpui::WeakEntity<Root>,
+) -> gpui::Div {
+    let learn_more: super::LinkPress = Box::new(move |_, cx| {
+        let _ = root.update(cx, |this, cx| {
+            this.settings_open_url(&super::age_gated_article(None), cx);
+        });
+    });
     div()
         .flex()
         .items_start()
@@ -114,12 +124,12 @@ pub(super) fn age_notice(id: &'static str, parts: &[(&str, bool)]) -> gpui::Div 
                     16.,
                     "--icon-feedback-info",
                 )))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(noticed(parts, "--text-strong")),
-                ),
+                .child(div().flex_1().min_w(px(0.)).child(super::linked_runs(
+                    SharedString::from(format!("{id}-text")),
+                    parts,
+                    "--text-strong",
+                    learn_more,
+                ))),
         )
         // `cI+bc/`: the age check opens a verification flow that is not built (listed as missing).
         // The captured button is the small size: 32 high, 14/18 medium, 99 wide.
@@ -239,6 +249,7 @@ impl Root {
                     }))
                     .child(*name)
             }));
+        let root = cx.weak_entity();
         let rows = (0..3).map(|row| {
             let open_key = OPEN[kind][row];
             let open = self.setting_choices.get(open_key) == Some(&Choice::On(true));
@@ -381,6 +392,7 @@ impl Root {
                 ),
                 ("Learn more", true),
             ],
+            root,
         )
         .mb(px(24.));
         // Title 16/20 medium (`title_GDNGH2`), 4px, the 14/18 line in `--text-default`; the tabs and rows start 16px

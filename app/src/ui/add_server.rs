@@ -947,7 +947,8 @@ impl Root {
             .child(header)
             .child(body)
             .child(footer);
-        let pose = crate::ui::motion::modal_pose("add-server");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose = crate::ui::motion::legacy_modal_pose("add-server", "add-server-layer", false);
         Some(
             deferred(
                 div()

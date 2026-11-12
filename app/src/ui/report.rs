@@ -1214,7 +1214,8 @@ impl Root {
                     .child(super::menu::menu_scrollbar(scroll.clone())),
             )
             .children(footer);
-        let pose = crate::ui::motion::modal_pose("report");
+        // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
+        let pose = crate::ui::motion::legacy_modal_pose("report", "report-layer", false);
         Some(
             deferred(
                 div()

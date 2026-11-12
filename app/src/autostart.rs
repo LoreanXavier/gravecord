@@ -393,6 +393,37 @@ pub fn place_hidden(window: &gpui::Window, bounds: gpui::Bounds<gpui::Pixels>) {
 #[cfg(not(windows))]
 pub fn place_hidden(_: &gpui::Window, _: gpui::Bounds<gpui::Pixels>) {}
 
+/// Keeps a window above the others, or lets it go back among them ("Stay On Top" of the popped-out call).
+#[cfg(windows)]
+pub fn set_topmost(window: &gpui::Window, on: bool) {
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+    };
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    let _ = unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+    };
+}
+
+#[cfg(not(windows))]
+pub fn set_topmost(_: &gpui::Window, _: bool) {}
+
 /// The launch arguments: `--start-minimized` and `--start-inactive`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LaunchFlags {

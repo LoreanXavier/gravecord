@@ -57,6 +57,8 @@ pub enum Ease {
     /// `ease-in-out`: `cubic-bezier(.42, 0, .58, 1)`.
     EaseInOut,
     Bezier(f32, f32, f32, f32),
+    /// `Easing.out(Easing.quad)` of the Animated library: `1 - (1 - x)²`.
+    OutQuad,
     /// `linear(a 0%, b 10%, ...)`: (input progress, output) pairs, both from 0 to 1.
     Stops(&'static [(f32, f32)]),
 }
@@ -72,6 +74,7 @@ impl Ease {
             Ease::EaseOut => bezier(0., 0., 0.58, 1., x),
             Ease::EaseInOut => bezier(0.42, 0., 0.58, 1., x),
             Ease::Bezier(x1, y1, x2, y2) => bezier(x1 as f64, y1 as f64, x2 as f64, y2 as f64, x),
+            Ease::OutQuad => 1. - (1. - x) * (1. - x),
             Ease::Stops(stops) => {
                 let mut previous = (0., 0.);
                 for &(at, value) in stops {
@@ -1041,6 +1044,61 @@ impl Pose {
     }
 }
 
+/// The legacy modal root's transition (`EO` in module 935462): `{duration: 200, easing: Easing.out(Easing.quad)}`
+/// both ways, no delay.
+pub const LEGACY_MODAL: Css = css(200., Ease::OutQuad);
+
+thread_local! {
+    /// The layer element ids of the dialogs drawn on the legacy modal root, so their ghosts leave on its curve.
+    static LEGACY_LAYERS: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// A dialog on the legacy modal root (`EO` in module 935462, `ModalRoot` of the older dialogs): the scrim fades in on
+/// `hP` like every modal (module 462824 in the modal stack, module 638495), the dialog at once from opacity 0 and
+/// `scale(.7)` to 1 and `scale(1)` over 200 ms `Easing.out(quad)`. `subtle` (`animation: SUBTLE`) and reduced motion
+/// keep `scale(1)`. `layer` is the id of the dialog's layer element (the root of its `deferred`), so its exit runs the
+/// same curve.
+pub fn legacy_modal_pose(id: &str, layer: &str, subtle: bool) -> Pose {
+    LEGACY_LAYERS.with(|layers| {
+        let mut layers = layers.borrow_mut();
+        if !layers.contains(layer) {
+            layers.insert(layer.to_owned());
+        }
+    });
+    let scrim = enter_between(
+        key(&("modal-scrim", id)),
+        0.,
+        1.,
+        Drive::Spring(MODAL_ENTER),
+    );
+    let body = enter(key(&("legacy-modal-body", id)), Drive::Css(LEGACY_MODAL));
+    Pose {
+        scrim: scrim.clamp(0., 1.),
+        opacity: body.clamp(0., 1.),
+        scale: legacy_scale(body, subtle),
+    }
+}
+
+/// The legacy root's scale for a progress (0 closed, 1 open).
+fn legacy_scale(progress: f32, subtle: bool) -> f32 {
+    if subtle || reduced() {
+        1.
+    } else {
+        0.7 + 0.3 * progress
+    }
+}
+
+/// Whether the closed layer named `name` (its element id, as the layer system prints it) is a legacy-root dialog.
+fn legacy_layer(name: &str) -> bool {
+    LEGACY_LAYERS.with(|layers| {
+        layers
+            .borrow()
+            .iter()
+            .any(|layer| name.contains(&format!("\"{layer}\"")))
+    })
+}
+
 /// `.posed(pose)` on a dialog's box: its opacity and its scale about its centre (`kS` in module 150591), so every
 /// dialog that opens over a scrim enters and leaves like the design system modal.
 pub trait Posed: gpui::InteractiveElement + Styled + Sized {
@@ -1139,8 +1197,10 @@ pub fn popout_pose(id: &str, kind: PopKind, side: PopSide) -> PopPose {
                 PopSide::Top => (0.5, 1.),
                 PopSide::Bottom => (0.5, 0.),
                 PopSide::Left => (1., 0.),
+                // `.animatorRight` is given `top left` and then `top center`; the later rule wins.
                 PopSide::Right => (0.5, 0.),
-                PopSide::Center => (0.5, 0.),
+                // No `.scale.animatorCenter` rule: the initial `transform-origin`, the box's centre.
+                PopSide::Center => (0.5, 0.5),
             },
         },
         PopKind::Translate => {
@@ -1732,8 +1792,11 @@ struct Ghost {
     centre: gpui::Point<gpui::Pixels>,
     /// A full-window layer (`LayerContainer`) leaves to `scale(1.1)`; a dialog to `scale(.9)`.
     layer: bool,
-    /// A `SUBTLE` modal (the media viewer, module 2323) only fades (`kS` in module 150591 keeps `scale(1)`).
+    /// A `SUBTLE` modal (the media viewer, module 2323) only fades (`kS` in module 150591 and `EO` in module 935462
+    /// keep `scale(1)`).
     subtle: bool,
+    /// A dialog on the legacy root (module 935462): it leaves over 200 ms `Easing.out(quad)` to `scale(.7)`.
+    legacy: bool,
 }
 
 thread_local! {
@@ -1787,21 +1850,34 @@ fn ghosts_step(window: &mut gpui::Window) {
                 centre,
                 layer,
                 subtle: subtle_layer(&name),
+                legacy: legacy_layer(&name),
             });
         }
         let reduced = reduced();
         ghosts.retain(|ghost| {
             let progress_key = key(&("ghost", ghost.key));
-            let progress = if ghost.layer {
-                rn_spring_from(progress_key, 1., 0., 100., 10.)
+            let scrim_key = key(&("ghost-scrim", ghost.key));
+            let (progress, scrim) = if ghost.layer {
+                let progress = rn_spring_from(progress_key, 1., 0., 100., 10.);
+                (progress, progress)
+            } else if ghost.legacy {
+                // The legacy root leaves on its 200 ms tween; the scrim on `hP` as for every modal.
+                let progress = value_from(progress_key, 1., 0., LEGACY_MODAL);
+                let scrim = spring_from(scrim_key, 1., 0., MODAL_ENTER);
+                (progress, scrim)
             } else {
-                spring_from(progress_key, 1., 0., MODAL_EXIT)
+                // The dialog leaves on `{1200, 80}` (`kS`, module 150591) while the scrim fades out on `hP`
+                // (`leave: {opacity: 0}` with `config: hP`, module 462824).
+                ghost_leave(progress_key, scrim_key)
             };
-            let done = settled(&[progress_key]);
-            if done && progress <= 0.001 {
+            let done = settled(&[progress_key, scrim_key]);
+            if done && progress <= 0.001 && scrim <= 0.001 {
                 with(|motion| {
-                    motion.springs.remove(&progress_key);
-                    motion.rn_springs.remove(&progress_key);
+                    for key in [progress_key, scrim_key] {
+                        motion.springs.remove(&key);
+                        motion.rn_springs.remove(&key);
+                        motion.tweens.remove(&key);
+                    }
                 });
                 return false;
             }
@@ -1810,13 +1886,30 @@ fn ghosts_step(window: &mut gpui::Window) {
                 1.
             } else if ghost.layer {
                 1.1 - 0.1 * progress
+            } else if ghost.legacy {
+                legacy_scale(progress, false)
             } else {
                 0.9 + 0.1 * progress
             };
-            window.paint_layer_snapshot(&ghost.snapshot, opacity, scale, ghost.centre);
+            window.paint_layer_snapshot_split(
+                &ghost.snapshot,
+                scrim.clamp(0., 1.),
+                opacity,
+                scale,
+                ghost.centre,
+            );
             true
         });
     });
+}
+
+/// A closed dialog's two leave values this frame, from 1 to 0: the dialog's (on `MODAL_EXIT`) and its scrim's (on
+/// `MODAL_ENTER`, the scrim's config both ways in module 462824).
+fn ghost_leave(dialog_key: u64, scrim_key: u64) -> (f32, f32) {
+    (
+        spring_from(dialog_key, 1., 0., MODAL_EXIT),
+        spring_from(scrim_key, 1., 0., MODAL_ENTER),
+    )
 }
 
 /// Whether the closed layer named `name` (its element id, as the layer system prints it) is a `SUBTLE` modal, which

@@ -79,6 +79,9 @@ pub(in crate::ui) enum Dialog {
     /// fields they ask for (password, new value) and the request behind the primary button are not built, so the
     /// primary button only closes it.
     Account(&'static str),
+    /// Cancel on the Subscriptions page: the first step (`WHAT_YOU_LOSE`) of
+    /// `PremiumBrandRefreshSubscriptionCancellationModal` (module 673761). Nothing is canceled from it.
+    CancelNitro,
     Alert {
         title: String,
         body: String,
@@ -186,6 +189,9 @@ pub(super) fn article_of(key: &str) -> Option<&'static str> {
         "pinot_member_setting" => "44302319454359",
         // GDPR_REQUEST_DATA
         "data_harvest_request_setting" => "360004027692",
+        // `dliU4j` of the Sensitive content filters (`learnMoreLink`: `WX` of module 444802,
+        // `MVz.EXPLICIT_MEDIA_REDACTION`).
+        "content_filters_setting" => "18210995019671",
         // The Profile Privacy category's own article (module 158935 `CY`).
         "profile_privacy_category" => "38859942749463-Profile-Privacy-Setting-on-Discord",
         // END_TO_END_ENCRYPTION (`C0.Lu`).
@@ -681,6 +687,7 @@ impl Root {
                     close: Box::new(|this, _, _| this.settings_extra.dialog = None),
                 }
             }
+            Dialog::CancelNitro => return Some(self.cancel_nitro_dialog(cx)),
             Dialog::Disconnect(account) => modal::Spec {
                 id: "settings-disconnect",
                 title: format!("Disconnect {}", account.name).into(),

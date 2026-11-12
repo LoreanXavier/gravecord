@@ -4,7 +4,7 @@
 //! Sizes and colours are from `design/dom/settings/account-standing-nested-darker-cozy.json` and the
 //! `family-center-*` dumps beside it; the standing comes from `GET /safety-hub/@me` (module 308645 `Yn`).
 
-use super::{ButtonKind, Choice, button, color, described, mask_icon, render};
+use super::{ButtonKind, Choice, button, color, mask_icon, render};
 use crate::net::Request;
 use crate::parity::Parity;
 use crate::ui::{Root, avatar_source};
@@ -439,7 +439,7 @@ impl Root {
 
     /// The Account Standing panel: the avatar in its ring, "Your account is ...", the policy text and the track of
     /// the five standings with the account's lit (module 37380 `L`).
-    pub(in crate::ui) fn standing_body(&self) -> Vec<AnyElement> {
+    pub(in crate::ui) fn standing_body(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let standing = self.standing();
@@ -457,21 +457,22 @@ impl Root {
                         .child(shown.hook()),
                 ),
             );
-        let status = div()
-            .flex_1()
-            .min_w(px(0.))
-            .flex()
-            .flex_col()
-            .gap(px(24.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(title)
-                    .child(described(shown.description(), "--text-default")),
-            )
-            .child(self.standing_track(shown));
+        let status =
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(24.))
+                .child(div().flex().flex_col().gap(px(8.)).child(title).child(
+                    super::standing_text(
+                        "standing-panel-text",
+                        shown.description(),
+                        "--text-default",
+                        cx.weak_entity(),
+                    ),
+                ))
+                .child(self.standing_track(shown));
         let card = div()
             .parity("settings-standing-card")
             .flex()

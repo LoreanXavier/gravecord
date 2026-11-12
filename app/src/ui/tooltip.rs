@@ -695,7 +695,8 @@ impl Root {
 
     /// The tooltips on screen: the one under the pointer and any that is still leaving. Module 280336 runs
     /// `useTransition` with `{tension: 2400, friction: 52}`, from `{scale: .95, opacity: 0}` to `{1, 1}`; the opacity
-    /// of that spring is applied here (an element cannot be scaled in this renderer). Under reduced motion the
+    /// of that spring fades the body and caret, and its scale is painted about the body's centre (`Placed`). Under
+    /// reduced motion the
     /// official `from` and `leave` keep scale 1 and still fade, which is what this does.
     pub(super) fn tip_layer(&self) -> Vec<AnyElement> {
         let frames: Vec<(Active, f32)> = TIPS.with(|tips| {

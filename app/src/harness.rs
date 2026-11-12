@@ -963,6 +963,11 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_sticker_player(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // Capture only: one call-tray Lottie icon drawn over the window (`ui/lottie_icon.rs`).
+            ["lottie", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_lottie_icon(rest, cx));
+                let _ = writeln!(output, "lottie: {line}");
+            }
             // Capture only, the motion layer (`ui/motion.rs`): `motion clock <ms>` stands the animation clock still at
             // that many ms (a frame is drawn at the old time first, so what the last input started has begun), the
             // time of every later input; `motion clock real` lets it run. `motion shot <path>` writes the frame at

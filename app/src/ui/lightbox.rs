@@ -494,11 +494,9 @@ impl Root {
         });
 
         // The media viewer is a modal (module 256905, `backdropStyle: LIGHTBOX`): the scrim fades in on the modal
-        // spring, and the viewer (`animation: SUBTLE`, module 2323) fades after 64 ms without the scale (module 150591).
-        let pose = super::motion::Pose {
-            scale: 1.,
-            ..super::motion::modal_pose("lightbox")
-        };
+        // spring (module 462824), and the viewer is on the legacy root (`EO` in module 935462 with `animation:
+        // SUBTLE`, module 2323): it fades over 200 ms `Easing.out(quad)` without the scale.
+        let pose = super::motion::legacy_modal_pose("lightbox", "lightbox", true);
         let layer = div()
             .id("lightbox")
             .absolute()

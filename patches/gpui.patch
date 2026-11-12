@@ -903,7 +903,7 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..b1d662f 100644
+index 4e2e1a7..60b9587 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
@@ -1586,7 +1586,7 @@ index 4e2e1a7..b1d662f 100644
          });
      }
  
-@@ -4780,10 +5228,183 @@ impl Window {
+@@ -4780,10 +5228,200 @@ impl Window {
      /// for performance reasons.
      ///
      /// This method should only be called as part of the paint phase of element drawing.
@@ -1659,6 +1659,19 @@ index 4e2e1a7..b1d662f 100644
 +        scale: f32,
 +        origin: Point<Pixels>,
 +    ) {
++        self.paint_layer_snapshot_split(snapshot, opacity, opacity, scale, origin);
++    }
++
++    /// [`Self::paint_layer_snapshot`] with the primitives that cover the whole window (a scrim) faded by
++    /// `scrim_opacity` and the others by `opacity`, for a scrim that leaves on its own curve.
++    pub fn paint_layer_snapshot_split(
++        &mut self,
++        snapshot: &LayerSnapshot,
++        scrim_opacity: f32,
++        opacity: f32,
++        scale: f32,
++        origin: Point<Pixels>,
++    ) {
 +        self.invalidator.debug_assert_paint();
 +        let factor = self.scale_factor();
 +        let origin = origin.scale(factor);
@@ -1667,7 +1680,11 @@ index 4e2e1a7..b1d662f 100644
 +            if let crate::scene::PaintOperation::Primitive(primitive) = operation {
 +                let covers = primitive.bounds().size.width >= viewport.width
 +                    && primitive.bounds().size.height >= viewport.height;
-+                let ghost = primitive.ghosted(opacity, if covers { 1. } else { scale }, origin);
++                let ghost = if covers {
++                    primitive.ghosted(scrim_opacity, 1., origin)
++                } else {
++                    primitive.ghosted(opacity, scale, origin)
++                };
 +                self.next_frame.scene.insert_primitive(ghost);
 +            }
 +        }
@@ -1770,7 +1787,7 @@ index 4e2e1a7..b1d662f 100644
          let clipped_bounds = bounds.intersect(&content_mask.bounds);
          if !clipped_bounds.is_empty() {
              self.next_frame
-@@ -4816,9 +5437,12 @@ impl Window {
+@@ -4816,9 +5454,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1783,7 +1800,7 @@ index 4e2e1a7..b1d662f 100644
              if shadow.inset {
                  continue;
              }
-@@ -4852,9 +5476,12 @@ impl Window {
+@@ -4852,9 +5493,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1796,7 +1813,7 @@ index 4e2e1a7..b1d662f 100644
              if !shadow.inset {
                  continue;
              }
-@@ -4935,6 +5562,12 @@ impl Window {
+@@ -4935,6 +5579,12 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let opacity = self.element_opacity();
@@ -1809,7 +1826,7 @@ index 4e2e1a7..b1d662f 100644
          let snapped_bounds = self.snap_bounds(quad.bounds);
          let snapped_border_widths = self.snap_border_widths(quad.border_widths);
          let quad = Quad {
-@@ -5009,6 +5642,11 @@ impl Window {
+@@ -5009,6 +5659,11 @@ impl Window {
          let content_mask = self.content_mask();
          let opacity = self.element_opacity();
          path.content_mask = content_mask;
@@ -1821,7 +1838,7 @@ index 4e2e1a7..b1d662f 100644
          let color: Background = color.into();
          path.color = color.opacity(opacity);
          self.next_frame
-@@ -5042,7 +5680,10 @@ impl Window {
+@@ -5042,7 +5697,10 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1833,7 +1850,7 @@ index 4e2e1a7..b1d662f 100644
          let bounds = Bounds {
              origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
              size: size(self.snap_stroke(width), self.snap_stroke(height)),
-@@ -5054,7 +5695,7 @@ impl Window {
+@@ -5054,7 +5712,7 @@ impl Window {
              pad: 0,
              bounds,
              content_mask: self.snapped_content_mask(),
@@ -1842,7 +1859,7 @@ index 4e2e1a7..b1d662f 100644
              color: style.color.unwrap_or_default().opacity(opacity),
              wavy: false.into(),
          });
-@@ -5080,6 +5721,9 @@ impl Window {
+@@ -5080,6 +5738,9 @@ impl Window {
  
          let element_opacity = self.element_opacity();
          let scale_factor = self.scale_factor();
@@ -1852,7 +1869,7 @@ index 4e2e1a7..b1d662f 100644
          let glyph_origin = origin.scale(scale_factor);
  
          let quantized_origin = Point::new(
-@@ -5100,7 +5744,7 @@ impl Window {
+@@ -5100,7 +5761,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant,
@@ -1861,7 +1878,7 @@ index 4e2e1a7..b1d662f 100644
              is_emoji: false,
              subpixel_rendering,
              dilation,
-@@ -5183,6 +5827,8 @@ impl Window {
+@@ -5183,6 +5844,8 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1870,7 +1887,7 @@ index 4e2e1a7..b1d662f 100644
          let glyph_origin = origin.scale(scale_factor);
          let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
          let params = RenderGlyphParams {
-@@ -5190,7 +5836,7 @@ impl Window {
+@@ -5190,7 +5853,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant: Default::default(),
@@ -1879,7 +1896,7 @@ index 4e2e1a7..b1d662f 100644
              is_emoji: true,
              subpixel_rendering: false,
              dilation: 0,
-@@ -5242,7 +5888,7 @@ impl Window {
+@@ -5242,7 +5905,7 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let element_opacity = self.element_opacity();
@@ -1888,7 +1905,7 @@ index 4e2e1a7..b1d662f 100644
  
          let params = RenderSvgParams {
              path,
-@@ -5311,6 +5957,9 @@ impl Window {
+@@ -5311,6 +5974,9 @@ impl Window {
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
@@ -1898,7 +1915,7 @@ index 4e2e1a7..b1d662f 100644
          let visible_bounds = bounds.intersect(&image_bounds);
          if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
              return Ok(());
-@@ -5319,23 +5968,48 @@ impl Window {
+@@ -5319,23 +5985,48 @@ impl Window {
              return Ok(());
          }
  
@@ -1954,7 +1971,7 @@ index 4e2e1a7..b1d662f 100644
  
          let visible_bounds_snapped = self.snap_bounds(visible_bounds);
  
-@@ -5411,7 +6085,7 @@ impl Window {
+@@ -5411,7 +6102,7 @@ impl Window {
  
          self.invalidator.debug_assert_paint();
  
@@ -1963,7 +1980,7 @@ index 4e2e1a7..b1d662f 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5421,15 +6095,56 @@ impl Window {
+@@ -5421,15 +6112,56 @@ impl Window {
          });
      }
  
@@ -2020,7 +2037,7 @@ index 4e2e1a7..b1d662f 100644
          }
  
          Ok(())
-@@ -5444,6 +6159,7 @@ impl Window {
+@@ -5444,6 +6176,7 @@ impl Window {
                      &RenderImageParams {
                          image_id: data.id,
                          frame_index,
@@ -2028,7 +2045,7 @@ index 4e2e1a7..b1d662f 100644
                      }
                      .into(),
                  )
-@@ -5525,6 +6241,7 @@ impl Window {
+@@ -5525,6 +6258,7 @@ impl Window {
      pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
          self.invalidator.debug_assert_prepaint();
  
@@ -2036,7 +2053,7 @@ index 4e2e1a7..b1d662f 100644
          let scale_factor = self.scale_factor();
          let mut bounds = self
              .layout_engine
-@@ -5864,6 +6581,7 @@ impl Window {
+@@ -5864,6 +6598,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -2044,7 +2061,7 @@ index 4e2e1a7..b1d662f 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,11 +7643,17 @@ impl Window {
+@@ -6925,11 +7660,17 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -2062,7 +2079,7 @@ index 4e2e1a7..b1d662f 100644
          self.platform_window.toggle_fullscreen();
      }
  
-@@ -10677,4 +11401,121 @@ mod inspector_tests {
+@@ -10677,4 +11418,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }
