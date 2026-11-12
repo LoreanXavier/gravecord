@@ -312,6 +312,11 @@ pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyEle
     render_sized(spec, 400., true, None, None, cx)
 }
 
+/// The dialog above a layer that is still open under it (User Settings).
+pub(super) fn render_over_layers(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized_at(spec, 480., false, None, None, 4, cx)
+}
+
 /// The small dialog above a popout that is still open under it (the inbox's Mark All as Read question).
 pub(super) fn render_small_over_popouts(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     render_sized_at(spec, 400., false, None, None, 4, cx)

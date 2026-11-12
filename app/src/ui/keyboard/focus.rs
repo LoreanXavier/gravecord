@@ -309,6 +309,7 @@ impl Root {
                 self.thread_modal,
                 self.guild_notifications.is_some(),
                 self.channel_status.is_some(),
+                self.boost_apply_open(),
                 self.follow.is_some(),
                 self.start_stage.is_some(),
                 self.stage_welcome.is_some(),

@@ -945,13 +945,15 @@ impl Root {
                                                 .child("Boost This Server"),
                                         )
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            // The account's free Boosts go to this server (`boost_apply.rs`).
                                             this.close_perks();
-                                            if let Some(open) = this.server_settings.as_mut() {
-                                                open.page =
-                                                    super::server_settings::Page::BoostPerks;
+                                            match this.guild {
+                                                Some(guild) => this.boost_this_server(guild, cx),
+                                                None => {
+                                                    this.server_settings = None;
+                                                    this.open_settings_section("Server Boost", cx);
+                                                }
                                             }
-                                            this.server_settings = None;
-                                            this.open_settings_section("Server Boost", cx);
                                         })),
                                 ),
                             )

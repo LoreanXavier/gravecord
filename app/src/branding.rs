@@ -164,16 +164,14 @@ fn tray_at(
     }
     Some((size, premultiplied(image)))
 }
-fn badge_at(root: &Path, set: IconSet, index: usize) -> Option<Vec<u8>> {
+/// The taskbar's count badge. Both icon sets show the official client's badges (`images/badges` of desktop core):
+/// the set chooses the app's own icon, and a count drawn in another weight and size reads as another program's.
+fn badge_at(root: &Path, _set: IconSet, index: usize) -> Option<Vec<u8>> {
     if index >= 11 {
         return None;
     }
     decode_icon(
-        &root.join(format!(
-            "branding/{}/badges/badge-{}.ico",
-            set.name(),
-            index + 1
-        )),
+        &root.join(format!("branding/original/badges/badge-{}.ico", index + 1)),
         16,
     )
 }
@@ -205,14 +203,14 @@ mod tests {
         }
     }
     #[test]
-    fn both_icon_sets_decode_each_badge_at_its_native_size() {
+    fn both_icon_sets_show_the_official_badges_at_their_native_size() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
         for set in [IconSet::Gravecord, IconSet::Original] {
             for index in 0..11 {
                 let pixels = badge_at(&root, set, index).expect("valid native ICO frame");
                 assert_eq!(pixels.len(), 16 * 16 * 4);
-                // The original 16px BMP frames retain white at alpha 1 in the corner.
-                assert_eq!(pixels[3], if set == IconSet::Original { 1 } else { 0 });
+                // The original 16px BMP frames retain white at alpha 1 in the corner: both sets give those frames.
+                assert_eq!(pixels[3], 1);
                 assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
                 assert!(
                     pixels
@@ -223,7 +221,7 @@ mod tests {
                 );
             }
         }
-        assert_ne!(
+        assert_eq!(
             badge_at(&root, IconSet::Gravecord, 0),
             badge_at(&root, IconSet::Original, 0)
         );

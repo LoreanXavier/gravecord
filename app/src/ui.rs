@@ -41,9 +41,11 @@ mod audio_attachment;
 mod audio_menu;
 mod audit_spec;
 mod autocomplete;
+mod autoscroll;
 mod badge_modal;
 mod badge_paths;
 mod blocked;
+mod boost_apply;
 mod call_background;
 #[cfg(feature = "capture")]
 mod ch_fixture;
@@ -410,6 +412,8 @@ pub struct Root {
     guild_guide_scroll: gpui::ScrollHandle,
     /// The full-window Server Boost page (`boost_page.rs`).
     boost_page: Option<boost_page::BoostPage>,
+    /// The "Boost This Server" dialog (`boost_apply.rs`).
+    boost_apply: Option<boost_apply::BoostApply>,
     /// The scroll position of the open context menu (a menu taller than the window scrolls).
     pub(crate) menu_scroll: gpui::ScrollHandle,
     channel_browser_open: bool,
@@ -441,6 +445,8 @@ pub struct Root {
     #[cfg(feature = "capture")]
     capture_friend_nickname: bool,
     notification_focused: bool,
+    /// Middle-button autoscroll (`autoscroll.rs`).
+    autoscroll: autoscroll::Shared,
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
     list: ListState,
@@ -818,6 +824,7 @@ impl Root {
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
             boost_page: None,
+            boost_apply: None,
             menu_scroll: gpui::ScrollHandle::new(),
             channel_browser_open: false,
             channel_browser: None,
@@ -843,6 +850,7 @@ impl Root {
             #[cfg(feature = "capture")]
             capture_friend_nickname: false,
             notification_focused: false,
+            autoscroll: autoscroll::Shared::default(),
             notification_sounds: Default::default(),
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
@@ -1329,6 +1337,10 @@ impl Root {
                 }
                 if key.starts_with(mod_view::KEY_PREFIX) {
                     self.mod_view_fetched(&key, body, cx);
+                    return;
+                }
+                if key.starts_with(boost_apply::KEY_PREFIX) {
+                    self.boost_apply_fetched(&key, &body, cx);
                     return;
                 }
                 if key == channel_status::STATUS_KEY {
@@ -4989,8 +5001,9 @@ impl Root {
             .child(div().flex_1())
             .when(dm_user.is_some(), |this| {
                 let shown = self.show_dm_profile;
-                // In a call the profile panel is hidden and its button disabled (`iconDisabled_ybUK7Z`, opacity .6).
-                let profile_disabled = in_call_area && self.dm_call_in(self.channel);
+                // `l2` of module 289287: the button is disabled while the call panel shows, joined or not, and in a
+                // window narrower than 1132px, and then says so (`iconDisabled_ybUK7Z`, opacity .6).
+                let profile_disabled = self.dm_call_shown() || self.viewport.0 < 1132.;
                 this.child(
                     div()
                         .flex()
@@ -5049,7 +5062,9 @@ impl Root {
                                 self.with_tip(
                                     "dm-profile",
                                     Tip::text(
-                                        if shown {
+                                        if profile_disabled {
+                                            "Show User Profile (Unavailable)"
+                                        } else if shown {
                                             "Hide User Profile"
                                         } else {
                                             "Show User Profile"
@@ -8177,6 +8192,11 @@ impl Render for Root {
                     return;
                 }
                 // Dialogs of the server menu and the Stage and announcement flows: a modal's own Escape.
+                if keys.key == "escape" && this.close_boost_apply() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && (this.guild_notifications.is_some()
                         || this.channel_status.is_some()
@@ -8610,6 +8630,7 @@ impl Render for Root {
                 .absolute()
                 .size_0()
             })
+            .child(autoscroll::layer(self.autoscroll.clone()))
             .children(self.theme_preview_panel(cx))
             .children(self.custom_theme_panel(cx))
             .children(self.settings_layer(window, cx))
@@ -8648,6 +8669,7 @@ impl Render for Root {
             .children(self.overview_select_layer(cx))
             .children(self.boost_perks_modal(cx))
             .children(self.boost_page_overlay(cx))
+            .children(self.boost_apply_layer(cx))
             .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
             .children(self.discovery_select_layer(cx))

@@ -468,6 +468,31 @@ pub async fn run(
                     cx.update(|cx| dispatch(cx, window, up(position)));
                 }
             }
+            // `middle down|up <x> <y>`: the middle button, for autoscroll (`ui/autoscroll.rs`).
+            ["middle", edge @ ("down" | "up"), x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        let event = if *edge == "down" {
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Middle,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            })
+                        } else {
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Middle,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            })
+                        };
+                        dispatch(cx, window, event);
+                    });
+                }
+            }
             // The primary button goes down and stays down, so a frame can show the `:active` look; `release` lets go.
             ["hold", x, y] => {
                 if let Some(position) = at(x, y) {
@@ -674,6 +699,11 @@ pub async fn run(
             ["gift", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_gift(rest, cx));
                 let _ = writeln!(output, "gift: {line}");
+            }
+            // Capture only: the "Boost This Server" dialog as an account with free Boosts sees it (`script_boost_apply`).
+            ["boost-apply", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_boost_apply(rest, cx));
+                let _ = writeln!(output, "{line}");
             }
             ["mfa", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_mfa(rest, cx));

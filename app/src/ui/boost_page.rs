@@ -446,10 +446,16 @@ impl Root {
         self.boost_page.take().is_some()
     }
 
-    /// "Boost This Server": as far as the existing Server Boost page; nothing here buys anything.
+    /// "Boost This Server": the account's free Boosts go to this server (`boost_apply.rs`); with none, as far as
+    /// the account's Server Boost page, since nothing here buys anything.
     fn boost_page_boost(&mut self, cx: &mut Context<Self>) {
-        self.boost_page = None;
-        self.open_settings_section("Server Boost", cx);
+        match self.guild {
+            Some(guild) => self.boost_this_server(guild, cx),
+            None => {
+                self.boost_page = None;
+                self.open_settings_section("Server Boost", cx);
+            }
+        }
     }
 
     fn boost_cta_button(
@@ -502,22 +508,32 @@ impl Root {
         };
         let faq_open = page.faq_open;
 
+        // The server's picture when it has one (the rail has loaded it), its initials otherwise.
+        let picture = self.images.get(&format!("guild:{}", guild.id)).cloned();
         let guild_chip = |size: f32, radius: f32| {
-            div()
+            let chip = div()
                 .size(px(size))
                 .flex_none()
                 .rounded(px(radius))
                 .border_1()
                 .border_color(gpui::hsla(0., 0., 1., 0.16))
                 .bg(color("--background-base-low"))
+                .overflow_hidden()
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_size(px(if size > 40. { 20. } else { 12. }))
                 .line_height(px(if size > 40. { 24. } else { 16. }))
                 .font_weight(FontWeight(600.))
-                .text_color(color("--text-strong"))
-                .child(acronym.clone())
+                .text_color(color("--text-strong"));
+            match picture.clone() {
+                Some(picture) => chip.child(
+                    gpui::img(picture)
+                        .size(px(size - 2.))
+                        .rounded(px(radius - 1.)),
+                ),
+                None => chip.child(acronym.clone()),
+            }
         };
 
         // The header: the gradient the backdrop video sits on, the server, the headline, the two buttons.

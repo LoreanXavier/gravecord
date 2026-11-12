@@ -211,13 +211,9 @@ impl Root {
                 at(537., 16.)
                     .id(SharedString::from(format!("boost-this-server-{id}")))
                     .cursor_pointer()
-                    // The existing Server Boost screen of that server (the settings row opens the same flow).
+                    // The same flow as the server's own button (module 987144 `g` with this server).
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.close_settings(cx);
-                        if this.guild != Some(id) {
-                            this.select(id, None);
-                        }
-                        this.open_boost_page(cx);
+                        this.boost_server_from(id, true, cx);
                     }))
                     .w(px(146.))
                     .h(px(32.))

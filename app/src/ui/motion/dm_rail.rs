@@ -96,6 +96,9 @@ pub fn step(ids: &[u64]) -> Vec<(u64, bool, Pose)> {
                     },
                 ));
             } else if state.immediate.contains(&id) || !focused {
+                // An item that came while the window was away is there when the window is back: it does not enter
+                // again at every return.
+                state.immediate.insert(id);
                 out.push((id, false, Pose::SHOWN));
             } else {
                 let fraction = enter_between(fade, 0., 1., Drive::Css(FADE));
