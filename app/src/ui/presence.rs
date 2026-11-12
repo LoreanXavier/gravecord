@@ -57,7 +57,28 @@ impl Root {
         if matches!(presence.status.as_str(), "offline" | "invisible") {
             return false;
         }
-        presence.custom().is_some() || !presence.visible_activities().is_empty()
+        presence.custom().is_some()
+            || !presence.visible_activities().is_empty()
+            || self.voice_activity(user.id, guild).is_some()
+    }
+
+    /// Module 342312 `F`: the line a person in a voice channel of this server gets after their activities, "In voice"
+    /// (`msxteM`) or "In a stage" (`QygGCN`) for a Stage channel; `Some(true)` for the Stage.
+    fn voice_activity(&self, user: Id, guild: Option<Id>) -> Option<bool> {
+        let guild = guild?;
+        let state = self
+            .stores
+            .voice_states
+            .get(&guild)?
+            .iter()
+            .find(|state| state.user_id == user)?;
+        let channel = self
+            .stores
+            .guild(guild)?
+            .channels
+            .iter()
+            .find(|channel| channel.id == state.channel_id)?;
+        Some(channel.kind == dc_state::ChannelKind::Other(13))
     }
 
     /// The same line at another line height and colour: the user panel draws it 13px high in its own text colour
@@ -80,7 +101,8 @@ impl Root {
         let custom = presence.custom();
         let activities = presence.visible_activities();
         let first = activities.first().copied();
-        if custom.is_none() && first.is_none() {
+        let voice = self.voice_activity(user.id, guild);
+        if custom.is_none() && first.is_none() && voice.is_none() {
             return None;
         }
         let custom_text = custom.and_then(|a| a["state"].as_str());
@@ -122,8 +144,26 @@ impl Root {
                 );
             }
         }
+        // Only when no activity leads: the voice entry is the last of the list and the first shown otherwise.
+        if first.is_none()
+            && let Some(stage) = voice
+        {
+            row = row
+                .child(icon(
+                    "voice_status_in_voice",
+                    if compact { 12. } else { 14. },
+                    "--status-positive",
+                ))
+                .when(!hide_activity_text, |this| {
+                    this.child(div().min_w(px(0.)).text_ellipsis().child(if stage {
+                        "In a stage"
+                    } else {
+                        "In voice"
+                    }))
+                });
+        }
         if let Some(custom) = custom {
-            if first.is_some() {
+            if first.is_some() || voice.is_some() {
                 row = row.child(div().flex_none().child("•"));
             }
             if let Some(url) = emoji_source(&custom["emoji"]) {

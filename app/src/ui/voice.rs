@@ -1004,6 +1004,8 @@ impl Root {
                     .on_mouse_down(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            // The voice list's user menu carries the media items (module 340851).
+                            this.context_voice_row();
                             this.open_context_menu(
                                 super::context_menu::Target::User {
                                     user: member,

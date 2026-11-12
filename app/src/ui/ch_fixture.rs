@@ -185,14 +185,40 @@ impl Root {
                 else {
                     return "needs an open server and a json array".to_owned();
                 };
-                self.fetched.insert(
-                    format!("{}{guild}", super::server_settings_pages::WEBHOOKS_PREFIX),
-                    list,
-                );
+                let hooks = list.as_array().cloned().unwrap_or_default();
+                self.stores
+                    .integrations
+                    .webhooks_loaded(guild, None, &hooks);
                 self.data_revision += 1;
                 "webhooks set".to_owned()
             }
-            _ => "usage: ch features | create | post | inject | webhooks".to_owned(),
+            // `ch vs <me|user id> <leave|flags...>`: a voice state of that person in the fixture voice channel, fed to the
+            // stores only (nothing is sent, nobody joins). Flags: selfmute, selfdeaf, mute, deaf.
+            ["vs", who, flags @ ..] => {
+                let user = match *who {
+                    "me" => self.stores.current_user.as_ref().map(|me| me.id),
+                    other => other.parse::<Id>().ok(),
+                };
+                let Some(user) = user else {
+                    return "usage: ch vs <me|user id> <leave|selfmute|selfdeaf|mute|deaf>"
+                        .to_owned();
+                };
+                let leaving = flags.contains(&"leave");
+                let data = json!({
+                    "guild_id": FIXTURE_GUILD.to_string(),
+                    "channel_id": if leaving { Value::Null } else { json!("1568692565136375901") },
+                    "user_id": user.to_string(),
+                    "session_id": "harness",
+                    "self_mute": flags.contains(&"selfmute"),
+                    "self_deaf": flags.contains(&"selfdeaf"),
+                    "mute": flags.contains(&"mute"),
+                    "deaf": flags.contains(&"deaf"),
+                });
+                self.stores.dispatch("VOICE_STATE_UPDATE", &data);
+                self.data_revision += 1;
+                format!("voice state injected for {user}")
+            }
+            _ => "usage: ch features | create | post | inject | vs | webhooks".to_owned(),
         }
     }
 }
