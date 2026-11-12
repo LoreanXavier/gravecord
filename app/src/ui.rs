@@ -523,6 +523,8 @@ pub struct Root {
     /// for that Stage channel.
     stage_leave_menu: bool,
     stage_end_confirm: Option<Id>,
+    /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
+    stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
     live_now_closed: Vec<Id>,
     publish_confirm: Option<(Id, Id)>,
@@ -900,6 +902,7 @@ impl Root {
             stage_welcome_seen: false,
             stage_leave_menu: false,
             stage_end_confirm: None,
+            stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
             follower_stats: Default::default(),
@@ -1943,6 +1946,7 @@ impl Root {
         }
         let mut users: Vec<User> = self.stores.current_user.iter().cloned().collect();
         users.extend(self.stores.friends().into_iter().cloned());
+        users.extend(self.stage_people());
         users.extend(
             self.stores
                 .private_channels
@@ -7929,6 +7933,10 @@ impl Render for Root {
                     return;
                 }
                 if this.clips_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.escape_purchase(cx) {
                     cx.stop_propagation();
                     return;
                 }

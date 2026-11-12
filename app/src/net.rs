@@ -394,6 +394,27 @@ static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_n
 
 /// The routes that change the account itself: its settings, its per-server notification settings, its relationships,
 /// its profile, its server memberships, and anything that spends or grants.
+/// One frame of the Gift Nitro box (module 446263, the Standard Box loop file) as PNG bytes, `side` pixels on the
+/// longer side. The renderer has no merge paths (`mm`, the "Zipper" layer): they are left out, which keeps the
+/// shapes' own fills and strokes.
+pub(crate) fn gift_box_png(json: &[u8], side: u32, frame: f32) -> Option<Vec<u8>> {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::Array(items)) = map.get_mut("it") {
+                    items.retain(|item| item["ty"] != "mm");
+                }
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(list) => list.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut document: Value = serde_json::from_slice(json).ok()?;
+    strip(&mut document);
+    crate::lottie::frame_png(&serde_json::to_vec(&document).ok()?, side, Some(frame))
+}
+
 fn account_route(route: &str) -> bool {
     let path = route.split('?').next().unwrap_or(route);
     // Opening a DM channel changes nothing about the account.
@@ -1932,6 +1953,23 @@ pub async fn run(
                         }
                     };
                     match fetched {
+                        Ok(bytes) if key == "nitro-art:gift-box" => {
+                            // The Gift Nitro box (module 446263, the Standard Box loop file): one frame at twice its
+                            // 435px width, drawn off the UI thread.
+                            let _slot = IMAGE_DRAWS.acquire().await;
+                            // Frames 0 to 8 and 60 to 71 are the resting pose the capture shows.
+                            match tokio::task::spawn_blocking(move || gift_box_png(&bytes, 870, 0.))
+                                .await
+                            {
+                                Ok(Some(bytes)) => {
+                                    let _ = updates.send(Update::Image { key, bytes });
+                                }
+                                _ => {
+                                    warn!("lottie failed");
+                                    let _ = updates.send(Update::ImageFailed { key });
+                                }
+                            }
+                        }
                         Ok(bytes)
                             if url
                                 .split(['?', '#'])
