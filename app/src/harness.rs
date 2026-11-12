@@ -200,6 +200,11 @@ pub async fn run(
                     cx.update(|cx| root.update(cx, |root, cx| root.script_accounts(rest, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            ["favorites", rest @ ..] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_favorites(rest, cx)));
+                let _ = writeln!(output, "{note}");
+            }
             ["rail", rest @ ..] => {
                 let note = cx.update(|cx| root.update(cx, |root, cx| root.script_rail(rest, cx)));
                 let _ = writeln!(output, "{note}");

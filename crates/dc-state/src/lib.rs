@@ -1,15 +1,18 @@
 //! Flux stores. M0 slice: the parts of UserStore, GuildStore, ChannelStore and MessageStore the first screen reads.
 //! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
 
+pub mod account_events;
 pub mod autocomplete;
 pub mod automod_messages;
 pub mod calls;
+pub mod channel_member_counts;
 pub mod channel_status;
 pub mod collectibles;
 pub mod components;
 pub mod confusables;
 pub mod content_inventory;
 pub mod content_inventory_manager;
+pub mod deleted_entities;
 pub mod display_name_styles;
 pub mod entitlements;
 pub mod experiments;
@@ -17,6 +20,9 @@ pub mod folders;
 pub mod frecency;
 mod gateway_extra;
 pub mod grouping;
+pub mod guild_bans;
+pub mod guild_integrations;
+pub mod guild_join_requests;
 pub mod guild_member_counts;
 pub mod guild_settings;
 pub mod interactions;
@@ -26,6 +32,7 @@ pub mod members;
 pub mod message_kinds;
 pub mod message_requests;
 pub mod message_window;
+pub mod notes;
 pub mod notification_center;
 pub mod notifications;
 pub mod permissions;
@@ -44,7 +51,9 @@ pub mod slowmode;
 pub mod stage;
 pub mod stickers;
 pub mod thread_list;
+pub mod thread_member_list;
 pub mod thread_members;
+pub mod thread_messages;
 pub mod thread_previews;
 pub mod unread;
 
@@ -1445,6 +1454,22 @@ pub struct Stores {
     pub automod: automod_messages::AutomodMessages,
     /// `NotificationCenterItemsStore`.
     pub notification_center: notification_center::NotificationCenter,
+    /// `UserGuildJoinRequestStore` and `GuildJoinRequestStoreV2`.
+    pub join_requests: guild_join_requests::JoinRequests,
+    /// `LAST_MESSAGES` previews by channel (`MESSAGE_PREVIEWS_LOADED`).
+    pub previews: HashMap<Id, Message>,
+    /// `NoteStore`.
+    pub notes: notes::NoteStore,
+    /// The Bans page's list (`GuildSettingsStore`).
+    pub guild_bans: guild_bans::GuildBans,
+    /// Integrations, webhooks and the reads their events ask for (`WebhooksStore`, `MyGuildApplicationsStore`).
+    pub integrations: guild_integrations::GuildIntegrations,
+    /// `ChannelMemberCountStore`.
+    pub channel_member_counts: channel_member_counts::ChannelMemberCounts,
+    /// `ThreadMemberListStore`.
+    pub thread_member_lists: thread_member_list::ThreadMemberLists,
+    /// Required action, friend suggestions, forum unread counts, pending bulk bans.
+    pub account_events: account_events::AccountEvents,
     pub member_lists: HashMap<Id, member_list::MemberList>,
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
@@ -1498,6 +1523,7 @@ pub struct Stores {
     pub thread_members: thread_members::ThreadMembers,
     /// `ThreadMembersStore` (module 802958): member counts and previews of threads.
     pub thread_previews: thread_previews::ThreadMemberPreviews,
+    pub thread_messages: thread_messages::ThreadMessages,
     /// Newest and acknowledged pin times per channel (`hasUnreadPins`).
     pub pin_states: pins_unread::PinStates,
     /// Guild stickers and the standard packs (`GuildStickersStore`, `StickersPackStore`).
@@ -1513,6 +1539,10 @@ pub struct Stores {
 
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
+        if name == "VOICE_STATE_UPDATE_BATCH" {
+            self.voice_state_batch(data);
+            return;
+        }
         if name == "READY" {
             // `CONNECTION_OPEN` (module 596344 `H`): every window is stale until it is loaded again.
             for window in self.windows.values_mut() {
@@ -1546,6 +1576,7 @@ impl Stores {
         let me = self.current_user.as_ref().map(|user| user.id);
         self.thread_members.dispatch(name, data, me);
         self.thread_previews.dispatch(name, data);
+        self.thread_messages.dispatch(name, data);
         self.pin_states.dispatch(name, data);
         match name {
             "READY" => self.on_ready(data),
@@ -1720,6 +1751,11 @@ impl Stores {
                 }
             }
             "GUILD_MEMBER_UPDATE" => {
+                if let Some(list) =
+                    id(&data["guild_id"]).and_then(|g| self.member_lists.get_mut(&g))
+                {
+                    list.member_updated(data);
+                }
                 let me = self.current_user.as_ref().map(|user| user.id);
                 if me.is_some()
                     && id(&data["user"]["id"]) == me
@@ -1979,6 +2015,14 @@ impl Stores {
         self.entitlements_dispatch(name, data);
         self.automod_dispatch(name, data);
         self.notification_center_dispatch(name, data);
+        self.join_requests_dispatch(name, data);
+        self.deleted_entities_dispatch(name, data);
+        self.notes_dispatch(name, data);
+        self.guild_bans_dispatch(name, data);
+        self.guild_integrations_dispatch(name, data);
+        self.channel_member_counts_dispatch(name, data);
+        self.thread_member_list_dispatch(name, data);
+        self.account_events_dispatch(name, data);
         match name {
             "READY" => self.rebuild_channel_index(),
             "GUILD_CREATE" => {
@@ -2240,6 +2284,11 @@ impl Stores {
     /// request flags).
     pub fn proto_varint(&self, path: &[u64], field: u64) -> Option<u64> {
         settings::varint_in(&self.settings_raw, path, field)
+    }
+
+    /// Whether the account's settings have arrived (dismissals are unknown before).
+    pub fn settings_loaded(&self) -> bool {
+        self.settings_loaded
     }
 
     pub fn content_dismissed(&self, content: u16) -> bool {

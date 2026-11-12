@@ -36,6 +36,7 @@ mod text_buffer;
 mod tray;
 mod ui;
 mod updater;
+mod upload_flow;
 mod video_clip;
 #[cfg(feature = "capture")]
 mod webhook_demo;

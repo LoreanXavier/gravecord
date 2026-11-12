@@ -238,6 +238,8 @@ impl Root {
             "--text-muted"
         };
         let group = SharedString::from(format!("dm-row-{id}"));
+        // `Pinned` (flag 2048 of the "@me" channel override, `xl` of module 816662).
+        let pinned = self.stores.guild_settings.channel(0, id).flags & 2048 != 0;
         Some(
             div()
                 .id(SharedString::from(format!("dm-{id}")))
@@ -409,14 +411,16 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .opacity(0.)
+                                    // A pinned DM keeps the button at rest (frame menus2/dm-pinned: the row's own
+                                    // text colour at 0.7); the others show it under the pointer.
+                                    .opacity(if pinned { 0.7 } else { 0. })
                                     .group_hover(group, |style| style.opacity(0.7))
                                     .hover(|style| style.opacity(1.))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.close_dm(id, cx);
                                     }))
-                                    .child(icon("friend_ignore", 16., "--text-strong")),
+                                    .child(icon("friend_ignore", 16., tint)),
                             )
                         }),
                 )
@@ -616,7 +620,8 @@ impl Root {
                     .pl(px(17.))
                     .pr(px(16.))
                     .flex()
-                    .items_center()
+                    .items_start()
+                    .pt(px(1.))
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
@@ -629,6 +634,7 @@ impl Root {
                         // "Create DM": the same New Message picker as the Friends page's New Group DM.
                         div()
                             .id("dm-plus")
+                            .mt(px(1.))
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_group_dm_picker(window, cx)
