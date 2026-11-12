@@ -13,7 +13,6 @@ use gpui::{
     AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, deferred, div, img,
     prelude::*, px, rgba,
 };
-#[cfg(not(feature = "capture"))]
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -330,12 +329,7 @@ impl Root {
         let (Some(destination), false) = (open.destination, open.busy) else {
             return;
         };
-        #[cfg(feature = "capture")]
-        {
-            eprintln!("follow: refused in the harness (would follow into {destination})");
-            let _ = destination;
-        }
-        #[cfg(not(feature = "capture"))]
+        // Under `GRAVECORD_INERT=1` the request is refused and logged as `inert: refused Rest ...`.
         {
             open.busy = true;
             open.error = None;
@@ -979,18 +973,12 @@ impl Root {
 
     /// `crosspostMessage`: `POST /channels/<c>/messages/<m>/crosspost`.
     fn publish_message(&mut self, channel: Id, message: Id) {
-        #[cfg(feature = "capture")]
-        {
-            eprintln!("publish: refused in the harness ({channel}/{message})");
-        }
-        #[cfg(not(feature = "capture"))]
-        {
-            let _ = self.requests.send(Request::Rest {
-                key: Some(CROSSPOST_KEY.to_owned()),
-                method: reqwest::Method::POST,
-                route: format!("/channels/{channel}/messages/{message}/crosspost"),
-                body: None,
-            });
-        }
+        // Under `GRAVECORD_INERT=1` the request is refused and logged as `inert: refused Rest ...`.
+        let _ = self.requests.send(Request::Rest {
+            key: Some(CROSSPOST_KEY.to_owned()),
+            method: reqwest::Method::POST,
+            route: format!("/channels/{channel}/messages/{message}/crosspost"),
+            body: None,
+        });
     }
 }

@@ -9,7 +9,6 @@
 use super::channel_status::{HEADER_HEIGHT, HEADER_WIDTH, MODAL_WIDTH, header_gradient};
 use super::{Root, color, editor_style, icon, modal};
 use crate::editor::{Editor, EditorEvent};
-#[cfg(not(feature = "capture"))]
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::{Channel, ChannelKind, Id, permissions};
@@ -17,7 +16,6 @@ use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, RenderImage, Rgba,
     Subscription, Window, deferred, div, img, prelude::*, px, rgba,
 };
-#[cfg(not(feature = "capture"))]
 use serde_json::json;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -26,10 +24,14 @@ use std::sync::Arc;
 const STAGE: ChannelKind = ChannelKind::Other(13);
 /// Module 973324: the modal's graphic.
 const GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/ef7fa86f8c519fe9764867c1ba473ee1939292fddb2c897885aab732e3bd31d2.svg";
+/// The age coachmark's graphic (`image_sYj23M` in stage-ann/stage-live-controls).
+const COACH_ART: &str = "https://cdn.discordapp.com/assets/content/971d3a140aa11a3830346a83266ea28b2f4e586e9b4f02eed4315538f6a9ebbe.svg";
+/// The age notice of the start modal and its link (`ageVerificationNotice_CWLnwx`, stage-ann/stage-start-modal).
+const AGE_NOTICE: &str = "You must confirm you're an adult to speak on Stages. Confirm age";
+const AGE_LINK: &str = "Confirm age";
 /// `maxLength` of the topic field (module 128347).
 const MAX_TOPIC: usize = 120;
 /// `privacy_level` 2: `GUILD_ONLY`, what the modal starts with.
-#[cfg(not(feature = "capture"))]
 const GUILD_ONLY: u64 = 2;
 /// The key the answer of a start, edit or end comes back under.
 pub(super) const STAGE_KEY: &str = "stage-instance";
@@ -137,6 +139,91 @@ pub(super) fn new_channel_pill(
         && channel.id > joined
 }
 
+/// `atPreviousMillisecond` (module 811091): the snowflake of the millisecond before the id's own, low bits zero.
+fn snowflake_before(id: Id) -> Id {
+    ((id >> 22).saturating_sub(1)) << 22
+}
+
+#[cfg(test)]
+mod before_tests {
+    use super::snowflake_before;
+
+    #[test]
+    fn the_previous_millisecond_drops_the_worker_and_sequence_bits() {
+        let id = (1_000_u64 << 22) | 0x2A_BCDE;
+        assert_eq!(snowflake_before(id), 999 << 22);
+        assert_eq!(snowflake_before(5), 0);
+    }
+}
+
+/// The Stage page's top bar (`topControls_rTsZa_` of stage-ann/stage-live-hover and stage-after-end): the channel's
+/// glyph, the topic (the channel's name while no Stage is live), the speaking and audience counts, and the hand and
+/// chat icons. Hidden until the pointer is over the page (`group` "stage-live").
+fn stage_header(title: String, speaking: usize, audience: usize) -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(49.))
+        .px(px(16.))
+        .pt(px(8.))
+        .border_b_1()
+        .border_color(color("--border-subtle"))
+        .invisible()
+        .group_hover("stage-live", |style| style.visible())
+        .flex()
+        .items_start()
+        .child(
+            div()
+                .h(px(32.))
+                .flex_1()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("stage_channel", 24., "--text-muted")),
+                )
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .mx(px(16.))
+                        .size(px(4.))
+                        .rounded_full()
+                        .bg(color("--text-muted")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(icon("mic", 16., "--text-muted"))
+                        .child(div().ml(px(4.)).child(format!("{speaking} is speaking")))
+                        .child(div().ml(px(8.)).child(icon("members", 16., "--text-muted")))
+                        .child(div().ml(px(4.)).child(format!("{audience} in audience"))),
+                ),
+        )
+        .child(
+            div()
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .gap(px(24.))
+                .child(icon("system_hand", 24., "--interactive-icon-default"))
+                .child(icon("voice_view_chat", 24., "--interactive-icon-default")),
+        )
+}
+
 impl Root {
     /// Whether the list row of `channel` carries the NEW pill.
     pub(super) fn is_new_channel(&self, channel: &Channel) -> bool {
@@ -167,7 +254,7 @@ impl Root {
         if !self.is_new_channel(&known) || self.stores.read_states.mentions(channel) != 0 {
             return;
         }
-        let before = channel.saturating_sub(1 << 22);
+        let before = snowflake_before(channel);
         self.stores.read_states.ack_local(channel, before, false);
         self.data_revision += 1;
         let _ = self.requests.send(crate::net::Request::Ack {
@@ -175,7 +262,7 @@ impl Root {
             message: before,
             manual: false,
             mention_count: 0,
-            last_viewed: 0,
+            last_viewed: dc_state::read_state::days_since_epoch(super::picker::now_ms()),
         });
     }
 
@@ -198,6 +285,12 @@ impl Root {
             .all(|permission| self.can_in_channel(channel, permission))
     }
 
+    /// The graphics of the Stage's popovers, asked for when pictures are (`request_images`).
+    pub(super) fn request_stage_art(&mut self) {
+        self.request_image(COACH_ART.to_owned(), COACH_ART.to_owned());
+        self.request_image(GRAPHIC.to_owned(), GRAPHIC.to_owned());
+    }
+
     /// The Stage view: the waiting view over its gradient, or the live Stage. Both fill the page under the title bar
     /// (stage-ann/stage-waiting and stage-live-hover: the page is 905 by 687 at (375, 33)).
     pub(super) fn stage_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -208,7 +301,7 @@ impl Root {
             None => self.stage_waiting(channel, cx),
             Some(instance) => {
                 let topic = instance.topic.clone();
-                self.stage_live(channel, topic)
+                self.stage_live(channel, topic, cx)
             }
         }
     }
@@ -219,8 +312,11 @@ impl Root {
         let target = channel.id;
         let moderator = self.can_moderate_stage(channel);
         let guild = self.guild;
+        let here = self.stores.voice_members(guild.unwrap_or_default(), target);
+        let audience = here.iter().filter(|state| state.suppress).count();
         div()
             .parity("stage-view")
+            .group("stage-live")
             .relative()
             .flex_1()
             .min_w(px(0.))
@@ -228,6 +324,18 @@ impl Root {
             .bg(color("--black"))
             .overflow_hidden()
             .child(img(backdrop()).absolute().top_0().left_0().size_full())
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .child(stage_header(
+                        channel.name.clone(),
+                        here.len() - audience,
+                        audience,
+                    )),
+            )
             .child(
                 div()
                     .absolute()
@@ -270,7 +378,7 @@ impl Root {
                             )
                             .child(
                                 div()
-                                    .mt(px(16.))
+                                    .mt(px(24.))
                                     .flex()
                                     .flex_col()
                                     .gap(px(8.))
@@ -288,7 +396,7 @@ impl Root {
                                     .children(moderator.then(|| {
                                         self.stage_card(
                                             "stage-event-card",
-                                            "guild_menu_create_event",
+                                            "events",
                                             "Create Event",
                                             "Schedule a Stage for a future date.",
                                             cx.listener(move |this, _, window, cx| {
@@ -302,9 +410,13 @@ impl Root {
                                         "Continue without starting",
                                         "For mic checks. Start when you're ready.",
                                         cx.listener(move |this, _, _, cx| {
-                                            if let Some(guild) = guild {
+                                            // The first visit shows the welcome first; "Got it!" joins.
+                                            if !this.stage_welcome_seen {
+                                                this.stage_welcome = Some(target);
+                                            } else if let Some(guild) = guild {
                                                 this.request_join_voice(guild, target, cx);
                                             }
+                                            cx.notify();
                                         }),
                                     )),
                             ),
@@ -368,18 +480,21 @@ impl Root {
                             .child(description),
                     ),
             )
-            .child(icon("chevron_right_20", 16., "--white"))
+            .child(icon("inventory_chevron_right", 16., "--white"))
             .into_any_element()
     }
 
     /// The live Stage on black: `participants_ZW-j0k` over the speakers' and audience's sections, the controls under
     /// them (`bottomControls_rTsZa_`).
-    fn stage_live(&self, channel: &Channel, topic: String) -> AnyElement {
+    fn stage_live(&self, channel: &Channel, topic: String, cx: &mut Context<Self>) -> AnyElement {
         let guild = self.guild.unwrap_or_default();
         let target = channel.id;
         let mut speakers = Vec::new();
         let mut audience = Vec::new();
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let mut listening = false;
         for state in self.stores.voice_members(guild, target) {
+            listening |= state.suppress && Some(state.user_id) == me;
             let user = self
                 .stores
                 .users
@@ -477,76 +592,7 @@ impl Root {
         };
         // stage-live and stage-live-hover: at rest the page shows neither the header nor the controls; the pointer over
         // the page brings both (`visible`).
-        let header = div()
-            .flex_none()
-            .h(px(49.))
-            .px(px(16.))
-            .pt(px(8.))
-            .border_b_1()
-            .border_color(color("--border-subtle"))
-            .invisible()
-            .group_hover("stage-live", |style| style.visible())
-            .flex()
-            .items_start()
-            .child(
-                div()
-                    .h(px(32.))
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .size(px(32.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("stage_channel", 24., "--text-muted")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(topic),
-                    )
-                    .child(
-                        div()
-                            .mx(px(16.))
-                            .size(px(4.))
-                            .rounded_full()
-                            .bg(color("--text-muted")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-muted"))
-                            .child(icon("mic", 16., "--text-muted"))
-                            .child(
-                                div()
-                                    .ml(px(4.))
-                                    .child(format!("{} is speaking", speakers.len())),
-                            )
-                            .child(div().ml(px(8.)).child(icon("members", 16., "--text-muted")))
-                            .child(
-                                div()
-                                    .ml(px(4.))
-                                    .child(format!("{} in audience", audience.len())),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(32.))
-                    .flex()
-                    .items_center()
-                    .gap(px(24.))
-                    .child(icon("system_hand", 24., "--interactive-icon-default"))
-                    .child(icon("voice_view_chat", 24., "--interactive-icon-default")),
-            );
+        let header = stage_header(topic, speakers.len(), audience.len());
         let round = |id: &'static str, glyph: &'static str| {
             div()
                 .id(id)
@@ -559,10 +605,56 @@ impl Root {
                 .hover(|style| style.bg(color("--interactive-background-hover")))
                 .child(icon(glyph, 20., "--white"))
         };
-        let red = color("--red-400");
+        // The leave button's red is the notification red (210, 45, 57) in stage-ann/stage-leave-menu.
+        let red = color("--background-feedback-notification");
+        let moderator = self.can_moderate_stage(channel);
+        let menu_open = moderator && self.stage_leave_menu;
+        // `End Stage for Everyone` (stage-ann/stage-leave-menu): a 202 by 53 popout above the caret, the item 37 high
+        // with a red circle-x and red text.
+        let leave_menu = menu_open.then(|| {
+            div()
+                .absolute()
+                .left(px(455.))
+                .top(px(552.))
+                .w(px(202.))
+                .h(px(53.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(Rgba {
+                    a: 0.12,
+                    ..rgba(0x6c6d76ff)
+                })
+                .bg(color("--neutral-76"))
+                .child(
+                    div()
+                        .id("stage-end-item")
+                        .h(px(35.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(color("--background-mod-subtle")))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.stage_leave_menu = false;
+                            this.stage_end_confirm = Some(target);
+                            cx.notify();
+                        }))
+                        .child(icon("circle_x_small", 18., "--red-new-28"))
+                        .child(
+                            div()
+                                .ml(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--red-new-28"))
+                                .child("End Stage for Everyone"),
+                        ),
+                )
+        });
         let controls = div()
             .absolute()
-            .invisible()
+            .when(!menu_open, |this| this.invisible())
             .group_hover("stage-live", |style| style.visible())
             .left_0()
             .right_0()
@@ -610,16 +702,39 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.stage_leave_menu = false;
+                                        this.leave_voice(cx);
+                                        cx.notify();
+                                    }))
                                     .child(icon("voice_disconnect", 20., "--white")),
                             )
-                            .child(
+                            .children(moderator.then(|| {
                                 div()
+                                    .id("stage-leave-caret")
                                     .size(px(24.))
+                                    .cursor_pointer()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon("voice_view_caret", 16., "--white")),
-                            ),
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.stage_leave_menu = !this.stage_leave_menu;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        gpui::svg()
+                                            .path("icons/voice_view_caret.svg")
+                                            .size(px(16.))
+                                            .text_color(color("--white"))
+                                            .when(menu_open, |this| {
+                                                this.with_transformation(
+                                                    gpui::Transformation::rotate(gpui::radians(
+                                                        std::f32::consts::PI,
+                                                    )),
+                                                )
+                                            }),
+                                    )
+                            })),
                     ),
             )
             .child(
@@ -632,6 +747,100 @@ impl Root {
                     .child(icon("voice_view_popout", 24., "--white"))
                     .child(icon("voice_view_fullscreen", 24., "--white")),
             );
+        // `popoverGradientWrapper` of stage-ann/stage-live-controls: 240 by 241 above the hand button (box (641, 404)),
+        // 12px radius on #242429 under the blue header gradient (144.6 high), the graphic 144 by 81 32px down, the
+        // heading 20px under it, the button 20px under that, 16px of padding.
+        let art = self.images.get(COACH_ART).cloned();
+        let coach = (listening && !self.stage_coach_closed).then(|| {
+            div()
+                .absolute()
+                .invisible()
+                .group_hover("stage-live", |style| style.visible())
+                .left(px(266.))
+                .top(px(371.))
+                .w(px(240.))
+                .h(px(241.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .bg(color("--background-secondary-alt"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(12.)),
+                    blur_radius: px(24.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .child(
+                    img(header_gradient(
+                        color("--expressive-gradient-blue-start"),
+                        color("--expressive-gradient-blue-end"),
+                    ))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(240.))
+                    .h(px(144.6)),
+                )
+                .child(
+                    div()
+                        .id("stage-coach-close")
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(4.))
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.stage_coach_closed = true;
+                            cx.notify();
+                        }))
+                        .child(icon("x_small", 16., "--white")),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(32.))
+                        .left(px(48.))
+                        .w(px(144.))
+                        .h(px(81.))
+                        .children(art.map(|art| img(art).w(px(144.)).h(px(81.)))),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(133.))
+                        .left(px(16.))
+                        .w(px(208.))
+                        .h(px(40.))
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child("Confirm you're an adult to speak on stage"),
+                )
+                .child(
+                    div()
+                        .id("stage-coach-confirm")
+                        .absolute()
+                        .top(px(193.))
+                        .left(px(16.))
+                        .w(px(208.))
+                        .h(px(32.))
+                        .rounded(px(8.))
+                        .bg(color("--background-brand"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--white"))
+                        .child("Confirm age"),
+                )
+        });
         div()
             .parity("stage-view")
             .group("stage-live")
@@ -663,7 +872,9 @@ impl Root {
                         "members",
                     )),
             )
+            .children(coach)
             .child(controls)
+            .children(leave_menu)
             .into_any_element()
     }
 
@@ -719,15 +930,7 @@ impl Root {
         if topic.is_empty() || topic.chars().count() > MAX_TOPIC || open.busy {
             return;
         }
-        #[cfg(feature = "capture")]
-        {
-            eprintln!(
-                "stage: refused in the harness (topic of {} chars, channel {})",
-                topic.len(),
-                open.channel
-            );
-        }
-        #[cfg(not(feature = "capture"))]
+        // Under `GRAVECORD_INERT=1` the request is refused and logged as `inert: refused Rest ...`.
         {
             open.busy = true;
             open.error = None;
@@ -825,8 +1028,9 @@ impl Root {
                 div()
                     .absolute()
                     .top(px(36.))
-                    .left(px(151.5))
-                    .child(img(art).w(px(175.)).h(px(108.)))
+                    // `image_sYj23M` of stage-ann/stage-start-modal-typed: 162 by 108 at (558, 145).
+                    .left(px(158.))
+                    .child(img(art).w(px(162.)).h(px(108.)))
             }))
             .child(
                 div()
@@ -857,19 +1061,75 @@ impl Root {
                     .text_color(color("--text-subtle"))
                     .child(subtitle),
             );
+        // `control_VhFsFg` (stage-ann/stage-start-modal-typed): 40 high, a 1px ring that is brand while the field has
+        // the focus, black at .12 inside, the text 12px in.
+        let focused = open.field.read(cx).focus_handle(cx).is_focused(window);
         let input = div()
+            .w_full()
+            .h(px(40.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if over {
+                color("--text-feedback-critical")
+            } else if focused {
+                color("--brand-500")
+            } else {
+                Rgba { a: 0., ..rgba(0) }
+            })
+            .bg(Rgba {
+                a: 0.12,
+                ..rgba(0x000000ff)
+            })
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .child(div().flex_1().child(open.field.clone()));
+        // `ageVerificationNotice_CWLnwx`: a warning box, 62 high with 12px of padding, whose link is drawn only
+        // ("Confirm age" is never pressed). Shown always: the account's age state is not read.
+        let age_notice = div()
+            .mt(px(8.))
             .w_full()
             .rounded(px(8.))
             .border_1()
-            .border_color(color(if over {
-                "--text-feedback-critical"
-            } else {
-                "--border-subtle"
-            }))
-            .bg(color("--input-background-default"))
-            .px(px(15.))
-            .py(px(11.))
-            .child(open.field.clone());
+            .border_color(Rgba {
+                a: 0.32,
+                ..rgba(0xe8a838ff)
+            })
+            .bg(Rgba {
+                a: 0.08,
+                ..rgba(0xe8a838ff)
+            })
+            .p(px(11.))
+            .flex()
+            .items_start()
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(18.))
+                    .flex()
+                    .items_center()
+                    .child(icon("warning_triangle", 16., "--text-feedback-warning")),
+            )
+            .child(
+                div()
+                    .ml(px(8.))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-strong"))
+                    .child(gpui::StyledText::new(AGE_NOTICE).with_highlights([(
+                        AGE_NOTICE.len() - AGE_LINK.len()..AGE_NOTICE.len(),
+                        gpui::HighlightStyle {
+                            underline: Some(gpui::UnderlineStyle {
+                                thickness: px(1.),
+                                color: None,
+                                wavy: false,
+                            }),
+                            ..Default::default()
+                        },
+                    )])),
+            );
         let body = div()
             .flex_none()
             .px(px(32.))
@@ -879,14 +1139,22 @@ impl Root {
             .child(
                 div()
                     .h(px(20.))
+                    .flex()
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    // `5FPBOB`.
-                    .child("Stage Topic"),
+                    // `5FPBOB`, with the required mark.
+                    .child("Stage Topic")
+                    .child(
+                        div()
+                            .ml(px(4.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child("*"),
+                    ),
             )
             .child(input)
+            .child(age_notice)
             .children(open.error.clone().map(|message| {
                 div()
                     .text_size(px(14.))
@@ -917,16 +1185,16 @@ impl Root {
                         cx.notify();
                     }))
                     .child(
+                        // `checkboxIndicator_vTUVyc`: 20 square, a 4px radius, a 1px ring at .12 and brand inside when on.
                         div()
                             .size(px(20.))
                             .rounded(px(4.))
-                            .border_2()
-                            .border_color(color(if notify {
-                                "--control-brand-foreground"
-                            } else {
-                                "--interactive-text-default"
-                            }))
-                            .when(notify, |this| this.bg(color("--control-brand-foreground")))
+                            .border_1()
+                            .border_color(Rgba {
+                                a: 0.12,
+                                ..rgba(0x97979fff)
+                            })
+                            .when(notify, |this| this.bg(color("--brand-500")))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -945,8 +1213,8 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .w(px(220.))
-                    .child(modal::footer_button(
+                    .w(px(218.6))
+                    .child(div().w(px(100.)).flex().child(modal::footer_button(
                         modal::button(
                             "start-stage-cancel",
                             "Cancel",
@@ -956,8 +1224,8 @@ impl Root {
                             },
                         ),
                         cx,
-                    ))
-                    .child(modal::footer_button(
+                    )))
+                    .child(div().w(px(110.6)).flex().child(modal::footer_button(
                         modal::button(
                             "start-stage-submit",
                             if open.editing {
@@ -975,7 +1243,7 @@ impl Root {
                             |this, _, cx| this.submit_stage(cx),
                         ),
                         cx,
-                    )),
+                    ))),
             );
         let panel = div()
             .id("start-stage-modal")
@@ -1045,6 +1313,344 @@ impl Root {
             )
             .with_priority(1)
             .into_any_element(),
+        )
+    }
+
+    /// The end question (stage-ann/stage-end-confirm): the small dialog (400 wide) with a critical End Stage.
+    /// `DELETE /stage-instances/<channel>` (module 993838's end); the harness never sends it.
+    pub(super) fn stage_end_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let channel = self.stage_end_confirm?;
+        Some(modal::render_small(
+            modal::Spec {
+                id: "stage-end-modal",
+                title: "Are you sure you want to end the Stage for everyone?".into(),
+                subtitle: Some(
+                    div()
+                        .child("The Stage will end immediately.")
+                        .into_any_element(),
+                ),
+                body: None,
+                buttons: vec![
+                    modal::button(
+                        "stage-end-cancel",
+                        "Cancel",
+                        modal::Tone::Secondary,
+                        |this, _, _| {
+                            this.stage_end_confirm = None;
+                        },
+                    ),
+                    modal::button(
+                        "stage-end-confirm",
+                        "End Stage",
+                        modal::Tone::Critical,
+                        move |this, _, cx| {
+                            this.stage_end_confirm = None;
+                            // Under `GRAVECORD_INERT=1` the request is refused and logged.
+                            let _ = this.requests.send(Request::Rest {
+                                key: None,
+                                method: reqwest::Method::DELETE,
+                                route: format!("/stage-instances/{channel}"),
+                                body: None,
+                            });
+                            cx.notify();
+                        },
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.stage_end_confirm = None),
+            },
+            cx,
+        ))
+    }
+
+    /// "Welcome to Stages!" (stage-ann/stage-welcome-modal): the start modal's shell without its field, 538 high: the
+    /// header (216 high, title at 168), three 40px bullets 24px apart, "Got it!" full width 32px under them.
+    pub(super) fn stage_welcome_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let target = self.stage_welcome?;
+        let art = self.images.get(GRAPHIC).cloned();
+        let gradient = header_gradient(
+            color("--expressive-gradient-purple-start"),
+            color("--expressive-gradient-purple-end"),
+        );
+        let pose = super::motion::modal_pose("stage-welcome-modal");
+        let bullet = |glyph: &'static str, tint: &'static str, text: &'static str| {
+            div()
+                .flex_none()
+                .h(px(40.))
+                .mb(px(24.))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(40.))
+                        .rounded_full()
+                        .bg(color("--background-base-lowest"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(glyph, 20., tint)),
+                )
+                .child(
+                    div()
+                        .ml(px(16.))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(text),
+                )
+        };
+        let header = div()
+            .relative()
+            .flex_none()
+            .w(px(HEADER_WIDTH as f32))
+            .h(px(216.))
+            .child(
+                img(gradient)
+                    .object_fit(gpui::ObjectFit::Fill)
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .w(px(HEADER_WIDTH as f32))
+                    .h(px(216.)),
+            )
+            .children(art.map(|art| {
+                div()
+                    .absolute()
+                    .top(px(36.))
+                    .left(px(158.))
+                    .child(img(art).w(px(162.)).h(px(108.)))
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(168.))
+                    .left(px(32.))
+                    .w(px(414.))
+                    .h(px(32.))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(24.))
+                    .line_height(px(32.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child("Welcome to Stages!"),
+            );
+        let body = div()
+            .flex_none()
+            .px(px(32.))
+            .child(bullet(
+                "mic_muted",
+                "--text-feedback-critical",
+                "Your mic will be muted unless you are invited to speak.",
+            ))
+            .child(bullet(
+                "voice_disconnect",
+                "--white",
+                "You can leave and rejoin anytime without making noise.",
+            ))
+            .child(bullet(
+                "system_hand",
+                "--white",
+                "Request to speak to join the conversation!",
+            ));
+        let got_it = move |this: &mut Self, cx: &mut Context<Self>| {
+            this.stage_welcome = None;
+            this.stage_welcome_seen = true;
+            if let Some(guild) = this.guild {
+                this.request_join_voice(guild, target, cx);
+            }
+        };
+        let panel =
+            div()
+                .id("stage-welcome-modal")
+                .opacity(pose.opacity)
+                .paint_scale(pose.scale, gpui::point(0.5, 0.5))
+                .occlude()
+                .relative()
+                .w(px(MODAL_WIDTH))
+                .pt(px(8.))
+                .pb(px(32.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(12.)),
+                    blur_radius: px(24.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex_none().h(px(16.)))
+                .child(body)
+                .child(div().flex_none().mt(px(32.)).px(px(32.)).flex().child(
+                    modal::footer_button(
+                        modal::button(
+                            "stage-welcome-got-it",
+                            "Got it!",
+                            modal::Tone::Primary,
+                            move |this, _, cx| got_it(this, cx),
+                        ),
+                        cx,
+                    ),
+                ))
+                .child(
+                    super::keyboard::inset_ring_when_focused(div().id("stage-welcome-close"))
+                        .focusable()
+                        .tab_index(0)
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(8.))
+                        .size(px(38.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("modal_close", 20., "--text-strong"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.stage_welcome = None;
+                            this.stage_welcome_seen = true;
+                            cx.notify();
+                        })),
+                );
+        Some(
+            deferred(
+                div()
+                    .id("stage-welcome-modal-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(Rgba {
+                        a: f32::from(0xb8u8) / 255. * pose.scrim,
+                        ..rgba(0x000000ff)
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stage_welcome = None;
+                        cx.notify();
+                    }))
+                    .child(panel),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+
+    /// `channelNotice_hVh8FI` under the server name: "Live Now", the topic and where it is (stage-ann/stage-live: a
+    /// 303 by 85 block with 16px of padding, the green dot at (88, 94), the 12/16 line, the 16/20 semibold title 4px
+    /// under it and the channel line 8px under that). Closed with its X; nothing is sent.
+    pub(super) fn live_now_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let guild = self.current_guild()?;
+        let (channel, instance) = guild.channels.iter().find_map(|channel| {
+            (channel.kind == STAGE)
+                .then(|| self.stores.stage_instances.get_by_channel(channel.id))
+                .flatten()
+                .map(|instance| (channel, instance))
+        })?;
+        if self.live_now_closed.contains(&instance.id) {
+            return None;
+        }
+        let audience = self
+            .stores
+            .voice_members(guild.id, channel.id)
+            .into_iter()
+            .filter(|state| state.suppress)
+            .count();
+        let target = channel.id;
+        let closing = instance.id;
+        let line = |text: String| {
+            div()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .text_color(color("--channels-default"))
+                .child(text)
+        };
+        Some(
+            div()
+                .flex_none()
+                .w(px(303.))
+                .h(px(85.))
+                .pl(px(16.))
+                .pr(px(16.))
+                .pt(px(8.))
+                .border_b_1()
+                .border_color(color("--border-subtle"))
+                .child(
+                    div()
+                        .h(px(16.))
+                        .flex()
+                        .items_center()
+                        .child(div().size(px(8.)).rounded_full().bg(color("--green-360")))
+                        .child(
+                            div()
+                                .ml(px(4.))
+                                .flex_1()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-feedback-positive"))
+                                .child("Live Now"),
+                        )
+                        .child(
+                            div()
+                                .id("live-now-close")
+                                .w(px(20.))
+                                .h(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.live_now_closed.push(closing);
+                                    cx.notify();
+                                }))
+                                .child(icon("x_small", 16., "--channels-default")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("live-now-topic")
+                        .mt(px(4.))
+                        .h(px(24.))
+                        .pt(px(3.))
+                        .cursor_pointer()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(instance.topic.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(guild) = this.guild {
+                                this.select(guild, Some(target));
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .h(px(16.))
+                        .flex()
+                        .items_center()
+                        .child(icon("stage_channel", 16., "--channels-default"))
+                        .child(div().ml(px(4.)).child(line(channel.name.clone())))
+                        .child(div().mx(px(4.)).child(line("\u{2022}".to_owned())))
+                        .child(icon("headphones", 16., "--channels-default"))
+                        .child(
+                            div()
+                                .ml(px(2.))
+                                .child(line(format!("{audience} in audience"))),
+                        ),
+                )
+                .into_any_element(),
         )
     }
 

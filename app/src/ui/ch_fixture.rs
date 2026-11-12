@@ -177,6 +177,21 @@ impl Root {
                 self.rebuild_rows();
                 "history marked whole".to_owned()
             }
+            // `ch call <channel>`: this account counts as connected to the channel of the open guild, with no voice
+            // state sent and no media opened.
+            ["call", "off"] => {
+                self.call = None;
+                self.data_revision += 1;
+                "call dropped".to_owned()
+            }
+            ["call", channel] => {
+                let (Some(guild), Ok(channel)) = (self.guild, channel.parse::<Id>()) else {
+                    return "no guild or bad channel id".to_owned();
+                };
+                self.fake_guild_call(guild, channel);
+                self.data_revision += 1;
+                "call faked".to_owned()
+            }
             // `ch blocker <on|off>`: shows the Follow bar as an account without Send Messages would see it.
             ["blocker", state] => {
                 self.follow_blocker_forced = *state == "on";
