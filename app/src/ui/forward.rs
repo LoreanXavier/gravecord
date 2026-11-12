@@ -7,7 +7,6 @@
 use super::actions::FRECENCY_KEY;
 use super::{Root, avatar_source, color, editor_style, icon, status_dot};
 use crate::editor::{Editor, EditorEvent};
-use crate::net::Request;
 use crate::parity::Parity;
 use crate::ui::motion::Transitions as _;
 use dc_state::frecency::{Frecency, Kind, Usage};
@@ -298,12 +297,7 @@ impl Root {
                 format!("{link}\n\n{note}")
             };
             for destination in &forward.selected {
-                let _ = self.requests.send(Request::Send {
-                    channel: destination.channel(),
-                    content: content.clone(),
-                    files: Vec::new(),
-                    reply: None,
-                });
+                self.start_local_text(destination.channel(), content.clone());
             }
         }
         let Some(source) = forward.message.as_ref() else {
@@ -323,13 +317,12 @@ impl Root {
             })
             .map(|guild| guild.id);
         for destination in &forward.selected {
-            let _ = self.requests.send(Request::Forward {
-                destination: destination.channel(),
-                guild,
-                channel: source.channel_id,
-                message: source.id,
-                note: (!note.is_empty()).then(|| note.clone()),
-            });
+            // The forward first, then the note as a message of its own: the queue keeps that order, and a failed
+            // forward fails the note that waits behind it.
+            self.start_local_forward(destination.channel(), (guild, source.channel_id, source.id));
+            if !note.is_empty() {
+                self.start_local_text(destination.channel(), note.clone());
+            }
         }
         self.go_to_destination(&forward.selected);
         self.show_app_toast("Message forwarded!", cx);

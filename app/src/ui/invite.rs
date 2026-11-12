@@ -122,12 +122,7 @@ impl Root {
             .map(|channel| channel.id)
         {
             Some(channel) => {
-                let _ = self.requests.send(Request::Send {
-                    channel,
-                    content: link,
-                    files: Vec::new(),
-                    reply: None,
-                });
+                self.start_local_text(channel, link);
             }
             None => {
                 self.pending_invite_link = Some(link);
@@ -150,12 +145,7 @@ impl Root {
         };
         self.stores.add_private_channel(&report["body"]);
         if let Some(content) = self.pending_invite_link.take() {
-            let _ = self.requests.send(Request::Send {
-                channel,
-                content,
-                files: Vec::new(),
-                reply: None,
-            });
+            self.start_local_text(channel, content);
         }
         if std::mem::take(&mut self.open_dm_after_send) {
             self.select_home(Some(channel));

@@ -44,8 +44,20 @@ pub(super) struct LocalSend {
     pub files: Vec<Upload>,
     pub reply: Option<(Option<Id>, Id, bool)>,
     pub sticker_ids: Vec<Id>,
+    /// A forward: the guild (if any), channel and id of the message it points at (`message_reference` type 1).
+    pub forward: Option<(Option<Id>, Id, Id)>,
     /// The row, kept so a reloaded window can show it again.
     pub message: Option<Message>,
+}
+
+/// What a message to send is made of.
+#[derive(Default)]
+struct Parts {
+    content: String,
+    files: Vec<Upload>,
+    reply: Option<(Option<Id>, Id, bool)>,
+    sticker_ids: Vec<Id>,
+    forward: Option<(Option<Id>, Id, Id)>,
 }
 
 #[derive(Default)]
@@ -267,19 +279,49 @@ impl Root {
         sticker_ids: Vec<Id>,
     ) {
         let nonce = crate::net::nonce();
-        self.send_with_nonce(channel, nonce, content, files, reply, sticker_ids);
+        let parts = Parts {
+            content,
+            files,
+            reply,
+            sticker_ids,
+            forward: None,
+        };
+        self.send_with_nonce(channel, nonce, parts);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn send_with_nonce(
+    /// A message of text alone that goes through the queue: a GIF's link, a profile or invite link.
+    pub(super) fn start_local_text(&mut self, channel: Id, content: String) {
+        self.start_local_send(channel, content, Vec::new(), None, Vec::new());
+    }
+
+    /// A message of one sticker (the picker's, answering the reply bar).
+    pub(super) fn start_local_sticker(
         &mut self,
         channel: Id,
-        nonce: String,
-        content: String,
-        files: Vec<Upload>,
         reply: Option<(Option<Id>, Id, bool)>,
-        sticker_ids: Vec<Id>,
+        sticker: Id,
     ) {
+        self.start_local_send(channel, String::new(), Vec::new(), reply, vec![sticker]);
+    }
+
+    /// A forward of `message` (of `source_channel`, in `guild` if any) into `channel`: an empty message that points at
+    /// the source with `message_reference` type 1.
+    pub(super) fn start_local_forward(&mut self, channel: Id, source: (Option<Id>, Id, Id)) {
+        let parts = Parts {
+            forward: Some(source),
+            ..Parts::default()
+        };
+        self.send_with_nonce(channel, crate::net::nonce(), parts);
+    }
+
+    fn send_with_nonce(&mut self, channel: Id, nonce: String, parts: Parts) {
+        let Parts {
+            content,
+            files,
+            reply,
+            sticker_ids,
+            forward,
+        } = parts;
         let Some(id) = id_of(&nonce) else {
             return;
         };
@@ -309,7 +351,10 @@ impl Root {
                 .collect();
         }
         // A message of files alone shows the placeholder of its uploads (`upload_progress.rs`).
-        let shown = !content.is_empty() || !sticker_ids.is_empty() || !files.is_empty();
+        let shown = !content.is_empty()
+            || !sticker_ids.is_empty()
+            || !files.is_empty()
+            || forward.is_some();
         if shown && let Some(message) = message.clone() {
             self.insert_local(message);
         }
@@ -323,6 +368,7 @@ impl Root {
                 files,
                 reply,
                 sticker_ids,
+                forward,
                 message,
             },
         );
@@ -348,6 +394,7 @@ impl Root {
             files: send.files.clone(),
             reply: send.reply,
             sticker_ids: send.sticker_ids.clone(),
+            forward: send.forward,
         });
     }
 
@@ -583,14 +630,14 @@ impl Root {
             return;
         };
         self.remove_local(send.channel, id);
-        self.send_with_nonce(
-            send.channel,
-            send.nonce,
-            send.content,
-            send.files,
-            send.reply,
-            send.sticker_ids,
-        );
+        let parts = Parts {
+            content: send.content,
+            files: send.files,
+            reply: send.reply,
+            sticker_ids: send.sticker_ids,
+            forward: send.forward,
+        };
+        self.send_with_nonce(send.channel, send.nonce, parts);
         cx.notify();
     }
 
@@ -776,6 +823,7 @@ mod tests {
             files: Vec::new(),
             reply: None,
             sticker_ids: Vec::new(),
+            forward: None,
             message: None,
         }
     }
