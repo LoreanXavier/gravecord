@@ -1309,7 +1309,7 @@ impl LoginView {
 /// Draws the modules as filled runs. No quiet zone: the card around it is the white.
 /// The `wanderingCubes` spinner (module 193433's `spinner-wandering-cubes`): two 10px cubes in a 32px box, 1.8s,
 /// the second half a turn behind. Each key frame is eased in and out (`ease-in-out`).
-fn wandering_cubes() -> impl IntoElement {
+pub(super) fn wandering_cubes() -> impl IntoElement {
     // (percent, x, y, turns' degrees, scale)
     const FRAMES: [(f32, f32, f32, f32, f32); 5] = [
         (0., 0., 0., 0., 1.),

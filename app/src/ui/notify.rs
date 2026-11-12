@@ -359,16 +359,9 @@ impl Root {
         let joined = thread.joined;
         let radio = |selected: bool| super::settings::radio_dot(selected).into_any_element();
         let settings = move |this: &mut Self, body: serde_json::Value| {
-            if !joined {
-                this.join_thread(id);
-            }
-            let _ = this.requests.send(Request::Rest {
-                key: None,
-                method: reqwest::Method::PATCH,
-                route: format!("/channels/{id}/thread-members/@me/settings"),
-                body: Some(body),
-            });
+            this.patch_thread_settings(id, body);
             this.notify_open = false;
+            this.notify_submenu = None;
         };
         let mut top: Vec<AnyElement> = Vec::new();
         if !joined {
@@ -405,12 +398,32 @@ impl Root {
             }))
             .into_any_element()
         } else {
-            self.notify_row("thread-mute", Self::label("Mute Thread"), None, None)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    settings(this, json!({"muted": true}));
+            // `mute-channel` (module 57907): the row mutes until it is turned back on, its children are the durations.
+            self.notify_row(
+                "thread-mute",
+                Self::label("Mute Thread"),
+                None,
+                Some(
+                    svg()
+                        .path("icons/menu_caret.svg")
+                        .size(px(20.))
+                        .text_color(color("--text-muted"))
+                        .into_any_element(),
+                ),
+            )
+            .relative()
+            .child(self.anchor_probe("notify-mute-row"))
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if *inside {
+                    this.notify_submenu = this.tip_anchors.borrow().get("notify-mute-row").copied();
                     cx.notify();
-                }))
-                .into_any_element()
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                settings(this, json!({"muted": true}));
+                cx.notify();
+            }))
+            .into_any_element()
         };
         top.push(mute);
         let levels: [(&'static str, &'static str, u64); 3] = [
@@ -426,6 +439,12 @@ impl Root {
             .into_iter()
             .map(|(row, label, flag)| {
                 self.notify_row(row, Self::label(label), None, Some(radio(selected == flag)))
+                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                        if *inside && this.notify_submenu.is_some() {
+                            this.notify_submenu = None;
+                            cx.notify();
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         settings(this, json!({"flags": flag}));
                         cx.notify();
@@ -435,6 +454,12 @@ impl Root {
             .collect();
         let leave = joined.then(|| {
             self.notify_row("thread-leave", Self::label("Leave Thread"), None, None)
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    if *inside && this.notify_submenu.is_some() {
+                        this.notify_submenu = None;
+                        cx.notify();
+                    }
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.leave_thread(id);
                     this.notify_open = false;
@@ -465,9 +490,17 @@ impl Root {
                         spread_radius: px(0.),
                         inset: false,
                     }])
-                    .on_mouse_down_out(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
-                        if this.press_outside(super::keyboard::Layer::Notify, cx) {
-                            cx.stop_propagation();
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        let in_submenu = this
+                            .tip_anchors
+                            .borrow()
+                            .get("submenu")
+                            .is_some_and(|bounds| bounds.contains(&event.position));
+                        if !in_submenu {
+                            this.notify_submenu = None;
+                            if this.press_outside(super::keyboard::Layer::Notify, cx) {
+                                cx.stop_propagation();
+                            }
                         }
                     }))
                     .p(px(8.))
@@ -516,7 +549,19 @@ impl Root {
             return None;
         }
         let row = self.notify_submenu?;
-        let (guild, channel, _) = self.channel_settings_target()?;
+        // A thread's durations (module 57907) go out as the account's thread member settings, not as a channel override.
+        let open_thread = self.channel.filter(|open| {
+            self.current_guild()
+                .is_some_and(|guild| guild.threads.iter().any(|known| known.id == *open))
+        });
+        let thread = open_thread.is_some();
+        let (guild, channel) = match open_thread {
+            Some(thread) => (0, thread),
+            None => {
+                let (guild, channel, _) = self.channel_settings_target()?;
+                (guild, channel)
+            }
+        };
         let rows: Vec<(AnyElement, f32)> = DURATIONS
             .into_iter()
             .enumerate()
@@ -529,16 +574,20 @@ impl Root {
                         34.,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let end = (seconds > 0).then(|| {
-                            (chrono::Utc::now() + chrono::Duration::seconds(seconds))
-                                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                                .to_string()
-                        });
-                        this.patch_channel_override(
-                            guild,
-                            channel,
-                            json!({"muted": true, "mute_config": {"selected_time_window": seconds, "end_time": end}}),
-                        );
+                        if thread {
+                            this.patch_thread_settings(channel, Self::thread_mute_body(seconds));
+                        } else {
+                            let end = (seconds > 0).then(|| {
+                                (chrono::Utc::now() + chrono::Duration::seconds(seconds))
+                                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                                    .to_string()
+                            });
+                            this.patch_channel_override(
+                                guild,
+                                channel,
+                                json!({"muted": true, "mute_config": {"selected_time_window": seconds, "end_time": end}}),
+                            );
+                        }
                         this.notify_open = false;
                         this.notify_submenu = None;
                         cx.notify();

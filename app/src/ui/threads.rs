@@ -36,6 +36,9 @@ pub(crate) struct ThreadBrowser {
     has_more: bool,
     failed: bool,
     scroll: gpui::ScrollHandle,
+    /// Capture only: the routes asked for so far, for `threads requests`.
+    #[cfg(feature = "capture")]
+    asked: Vec<String>,
 }
 
 /// The key of a page of archived threads asked for by the browser, followed by the channel id.
@@ -280,6 +283,107 @@ impl Root {
         out
     }
 
+    /// Capture only: `threads archived [name part]` answers the open browser's archived-threads request the way the
+    /// server does (`threads/search?archived=true`): the named thread of the open channel (default "gravecord test
+    /// thread") comes back archived, with the member preview the store already holds. The request itself is not
+    /// replaced: it still goes out on open and on scroll, and this only supplies the page the fixture has none of.
+    /// Any other words go to `script_threads`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_threads_with(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        // `threads requests`: every archived-threads route the open browser has asked for, in order.
+        if let ["requests"] = words {
+            let Some(browser) = self.thread_browser.as_ref() else {
+                return "threads: the browser is not open".to_owned();
+            };
+            return format!(
+                "threads: {} archived-page requests{}",
+                browser.asked.len(),
+                browser
+                    .asked
+                    .iter()
+                    .map(|route| format!("\n  GET {route}"))
+                    .collect::<String>()
+            );
+        }
+        // `threads loading`: the open browser is put back into the state of a first page still on its way.
+        if let ["loading"] = words {
+            let Some(browser) = self.thread_browser.as_mut() else {
+                return "threads: the browser is not open".to_owned();
+            };
+            browser.loading = true;
+            browser.failed = false;
+            browser.archived.clear();
+            cx.notify();
+            return "threads: first page held as loading".to_owned();
+        }
+        let ["archived", name @ ..] = words else {
+            return self.script_threads(words);
+        };
+        // `threads archived more`: the page says `has_more`, so scrolling to the end asks for the next one.
+        let (more, name) = match name {
+            ["more", rest @ ..] => (true, rest),
+            rest => (false, rest),
+        };
+        let name = if name.is_empty() {
+            "gravecord test thread".to_owned()
+        } else {
+            name.join(" ")
+        };
+        let Some(parent) = self
+            .thread_browser
+            .as_ref()
+            .and_then(|browser| browser.parent)
+        else {
+            return "threads: the browser is not open".to_owned();
+        };
+        let Some(thread) = self
+            .guild_threads(Some(parent))
+            .into_iter()
+            .find(|thread| thread.name.contains(&name))
+        else {
+            return format!("threads: no thread named {name}");
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let stamp = |at: i64| {
+            chrono::DateTime::from_timestamp_millis(at)
+                .map(|time| time.to_rfc3339())
+                .unwrap_or_default()
+        };
+        let preview: Vec<String> = self
+            .stores
+            .thread_previews
+            .member_ids_preview(thread.id)
+            .unwrap_or_default()
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        let body = json!({
+            "threads": [{
+                "id": thread.id.to_string(),
+                "parent_id": thread.parent_id.to_string(),
+                "name": thread.name,
+                "type": thread.kind,
+                "owner_id": thread.owner_id.map(|id| id.to_string()),
+                "last_message_id": thread.last_message_id.map(|id| id.to_string()),
+                "message_count": thread.message_count,
+                "member_count": self.stores.thread_previews.member_count(thread.id).unwrap_or(0),
+                "member_ids_preview": preview,
+                "thread_metadata": {
+                    "archived": true,
+                    "archive_timestamp": stamp(now - 3 * 24 * 3_600_000),
+                    "auto_archive_duration": thread.auto_archive_duration,
+                    "locked": false,
+                },
+            }],
+            "members": [],
+            "has_more": more,
+            "total_results": 1,
+        });
+        let key = format!("{BROWSER_PAGE_KEY}{parent}");
+        self.thread_browser_fetched(&key, &json!({"ok": true, "body": body}), cx);
+        format!("threads: archived page for {} fed", thread.id)
+    }
+
     #[cfg(feature = "capture")]
     fn sidebar_threads_all(&self) -> Vec<Id> {
         let Some(guild) = self.current_guild() else {
@@ -394,7 +498,15 @@ impl Root {
             }
         }
         let search = cx.new(|cx| {
-            let mut editor = Editor::new(editor_style(), cx);
+            // The wrapper is `body-sm/normal` (14px) and the input inherits it (`font-size: inherit`, module 0PLWhS).
+            let mut style = editor_style();
+            style.size = 14.;
+            style.line_height = 18.;
+            style.font.weight = FontWeight(400.);
+            style.text = super::hsla("--input-text-default");
+            style.caret = super::hsla("--input-text-default");
+            style.placeholder = super::hsla("--input-placeholder-text-default");
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Search for Thread Name".to_owned());
             editor
         });
@@ -428,6 +540,8 @@ impl Root {
             has_more: true,
             failed: false,
             scroll: gpui::ScrollHandle::new(),
+            #[cfg(feature = "capture")]
+            asked: Vec::new(),
         });
         // `Fr` loads the first page of archived threads when the browser mounts (module 424798).
         self.thread_browser_load();
@@ -451,12 +565,62 @@ impl Root {
             "/channels/{parent}/threads/search?archived=true&sort_by=last_message_time&sort_order=desc&limit=25&tag_setting=match_some&offset={}",
             browser.archived.len()
         );
+        tracing::debug!(
+            "thread browser: asking for archived threads, offset {}",
+            browser.archived.len()
+        );
+        #[cfg(feature = "capture")]
+        browser.asked.push(route.clone());
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{BROWSER_PAGE_KEY}{parent}")),
             method: reqwest::Method::GET,
             route,
             body: None,
         });
+    }
+
+    /// `setNotificationSettings` (module 7909): the account's own settings of a thread, `{muted, mute_config}` or
+    /// `{flags}`. The thread's member state changes at once (`hs`), the account joins the thread first when it is not a
+    /// member, and `PATCH /channels/:id/thread-members/@me/settings` carries the change (`THREAD_MEMBER_SETTINGS`).
+    pub(super) fn patch_thread_settings(&mut self, thread: Id, body: serde_json::Value) {
+        let mut joined = true;
+        for guild in &mut self.stores.guilds {
+            let Some(known) = guild.threads.iter_mut().find(|known| known.id == thread) else {
+                continue;
+            };
+            joined = known.joined;
+            if let Some(muted) = body["muted"].as_bool() {
+                known.muted = muted;
+                known.mute_end = body["mute_config"]["end_time"]
+                    .as_str()
+                    .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                    .map(|time| time.with_timezone(&chrono::Utc));
+            }
+            if let Some(flags) = body["flags"].as_u64() {
+                known.member_flags = Some(flags);
+            }
+            break;
+        }
+        if !joined {
+            self.join_thread(thread);
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: format!("/channels/{thread}/thread-members/@me/settings"),
+            body: Some(body),
+        });
+    }
+
+    /// The body of Mute Thread's duration `seconds` (`p` in module 812141; `-1` or less is until it is turned back
+    /// on, whose `end_time` is null).
+    pub(super) fn thread_mute_body(seconds: i64) -> serde_json::Value {
+        let end = (seconds > 0).then(|| {
+            (chrono::Utc::now() + chrono::Duration::seconds(seconds))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string()
+        });
+        json!({"muted": true, "mute_config": {"selected_time_window": if seconds > 0 { seconds } else { -1 }, "end_time": end}})
     }
 
     /// The answer of `thread_browser_load` (`LOAD_ARCHIVED_THREADS_SUCCESS` / `_FAIL`): the threads join the guild's
@@ -658,7 +822,9 @@ impl Root {
         let Some(thread) = Thread::from_value(body) else {
             return;
         };
-        if let Some(guild) = self.guild.and_then(|guild| {
+        // The answer comes later: the server it names, not the one selected now, is where the thread lives.
+        let created_in = created_thread_guild(body, self.guild);
+        if let Some(guild) = created_in.and_then(|guild| {
             self.stores
                 .guilds
                 .iter_mut()
@@ -677,7 +843,7 @@ impl Root {
                 reply: None,
             });
         }
-        if let Some(guild) = self.guild {
+        if let Some(guild) = created_in {
             self.select(guild, Some(thread.id));
         }
         cx.notify();
@@ -747,18 +913,34 @@ impl Root {
                 .map(ago)
                 .or_else(|| thread.archive_timestamp_ms.map(|at| short_ago(now - at)))
                 .unwrap_or_default();
-            let mut row = line();
+            // `subtext_yRVHqK` is a `body-sm/normal` flex row: 18px tall (the 16px avatar is shorter than the line).
+            let mut row = line().h(px(18.));
             if let Some(owner) = owner {
                 row = row
                     .child(self.thread_avatar(&owner, 16., cx).mr(px(8.)))
+                    // `GFDmd/` "Started by {authorHook}": the words stay `text-default`; the name is
+                    // `startedByName_yRVHqK` (semibold, 4px in, at most 150px) in the member's role colour.
+                    .child(div().flex_none().child("Started by"))
                     .child(
                         div()
                             .flex_none()
+                            .max_w(px(150.))
+                            .ml(px(4.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .font_weight(FontWeight(600.))
                             .text_color(self.guild_author_color(owner.id, "--text-default"))
-                            .child(format!("Started by {}", owner.display_name())),
+                            .child(owner.display_name().to_owned()),
                     )
-                    .child(div().flex_none().child("\u{2022}").mx(px(8.)));
+                    // `.bullet_yRVHqK`: `--background-mod-muted`, 8px each side.
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(8.))
+                            .text_color(color("--background-mod-muted"))
+                            .child("\u{2022}"),
+                    );
             }
             row.child(div().flex_none().child(format!("Last active {since}")))
                 .into_any_element()
@@ -952,7 +1134,8 @@ impl Root {
         let left = anchor
             .map_or(416., |bounds| f32::from(bounds.right()) - 480.)
             .max(8.);
-        let _ = window;
+        let search_focused =
+            gpui::Focusable::focus_handle(browser.search.read(cx), cx).is_focused(window);
         let query = browser.query.trim().to_lowercase();
         let threads: Vec<Thread> = self
             .guild_threads(self.channel)
@@ -983,10 +1166,13 @@ impl Root {
         let mut list: Vec<AnyElement> = Vec::new();
         let heading = |text: String| {
             // `sectionHeader_6_wQXw`: 14 px, weight 500, 8 px above and below (the box is 24 high).
+            // The recording shows the text 1px below where the 18.67px line box rounds to in this text system.
             div()
                 .mt(px(8.))
                 .mb(px(8.))
                 .h(px(24.))
+                .relative()
+                .top(px(1.))
                 .flex()
                 .items_center()
                 .text_size(px(14.))
@@ -1023,7 +1209,17 @@ impl Root {
         }
         let scroll = browser.scroll.clone();
         let body: AnyElement = if loading_first {
-            div().h(px(351.)).into_any_element()
+            // `R` (module 628707): the `d.y` spinner, wandering cubes by default, in the list's `padding: 0 16px` with
+            // `.spinner_6_wQXw { margin: 64px 0 }` (module 798393), centred by `.spinner_3H5mjG { display: flex }`.
+            div()
+                .h(px(351.))
+                .px(px(16.))
+                .pt(px(64.))
+                .flex()
+                .justify_center()
+                .items_start()
+                .child(super::login::wandering_cubes())
+                .into_any_element()
         } else if empty {
             div()
                 .p(px(32.))
@@ -1148,13 +1344,20 @@ impl Root {
                             .bg(color("--border-subtle")),
                     )
                     .child(
+                        // `.wrapper_UcGqzv`: a 1px border, and `:has(input:focus)` adds the 2px inset outline in the same
+                        // colour, so a focused box shows a 2px ring (`--input-border-active`); unfocused it is
+                        // `--input-border-default`.
                         div()
                             .w(px(220.5))
                             .h(px(32.))
-                            .pl(px(4.))
+                            .when(search_focused, |this| this.pl(px(3.)).border_2())
+                            .when(!search_focused, |this| this.pl(px(4.)).border_1())
                             .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--input-border-active"))
+                            .border_color(color(if search_focused {
+                                "--input-border-active"
+                            } else {
+                                "--input-border-default"
+                            }))
                             .bg(color("--input-background-default"))
                             .flex()
                             .items_center()
@@ -1585,6 +1788,26 @@ impl Root {
     }
 }
 
+/// The server a created thread belongs to: its own `guild_id`, else the one selected.
+fn created_thread_guild(body: &serde_json::Value, selected: Option<Id>) -> Option<Id> {
+    body["guild_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .or(selected)
+}
+
+#[cfg(test)]
+mod created_tests {
+    use super::*;
+
+    #[test]
+    fn a_created_thread_belongs_to_the_server_in_its_answer() {
+        let body = json!({"id": "9", "guild_id": "55"});
+        assert_eq!(created_thread_guild(&body, Some(7)), Some(55));
+        assert_eq!(created_thread_guild(&json!({"id": "9"}), Some(7)), Some(7));
+    }
+}
+
 #[cfg(test)]
 mod ago_tests {
     use super::short_ago;
@@ -1602,5 +1825,22 @@ mod ago_tests {
         assert_eq!(short_ago(29 * 24 * 60 * minute), "29d ago");
         assert_eq!(short_ago(30 * 24 * 60 * minute), ">30d ago");
         assert_eq!(short_ago(359 * 24 * 60 * minute), ">30d ago");
+    }
+
+    #[test]
+    fn a_thread_mute_carries_its_window_and_end_time() {
+        let hour = super::Root::thread_mute_body(3600);
+        assert_eq!(hour["muted"], true);
+        assert_eq!(hour["mute_config"]["selected_time_window"], 3600);
+        let end = hour["mute_config"]["end_time"].as_str().unwrap();
+        let end = chrono::DateTime::parse_from_rfc3339(end).unwrap();
+        let ahead = (end.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        assert!((3590..=3600).contains(&ahead), "{ahead}");
+        // "Until I turn it back on" is -1 with no end (module 812141 `p`).
+        for forever in [0, -1] {
+            let body = super::Root::thread_mute_body(forever);
+            assert_eq!(body["mute_config"]["selected_time_window"], -1);
+            assert!(body["mute_config"]["end_time"].is_null());
+        }
     }
 }
