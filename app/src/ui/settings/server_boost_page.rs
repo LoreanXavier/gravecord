@@ -11,10 +11,28 @@
 use super::Root;
 use crate::ui::nitro::{oklab, rgb};
 use crate::ui::{color, icon};
+use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, div, img, linear_color_stop, linear_gradient,
-    prelude::*, px, rgba,
+    AnyElement, Context, FontWeight, HighlightStyle, InteractiveText, IntoElement, SharedString,
+    StyledText, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgba,
 };
+
+/// `GUILD_BOOSTING_FAQ` of the help centre (module 652215): the article the "Learn more" link opens.
+const BOOSTING_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360028038352";
+
+/// The answers of the Boosting FAQ, in the order of `FAQ` (strings `nhkk6k`, `8zlqlD`, `Vz/SCQ`, `+OURPp`, `3TeauK`,
+/// `bTRacj`, `2T5iPo`, `NZax1u`, `Aje8Pb`; module 232122). The second one ends with a link to the help centre.
+const ANSWERS: [&str; 9] = [
+    "Boosts allow you to support your favorite Servers, by unlocking perks for everyone in them. The more Boosts a server has, the more epic the perks that can be unlocked. See the chart above for more details.",
+    "You can Boost this server directly on this page! If you want to Boost a different server, you can find step-by-step instructions in our Help Center.",
+    "Yes, you can Boost a server as many times as you want! The more Boosts the server gets, the better the perks that will be unlocked.",
+    "Absolutely! Server Boosts are a great way to support your favorite servers. When you Boost a server, you'll be recognized with a special Member List Icon, a Boosting role, and a Profile Badge.",
+    "Additional Perks are new features you can unlock directly with Boosts, separate from your server's Boost Level. Currently, there are two available: Enhanced Role Styles (which add gradient and holographic effects to roles) and Server Tags (4-character identifiers members can display on their profiles across Discord). Unlike traditional server levels, these perks can be unlocked individually without reaching specific level thresholds.",
+    "Enhanced Role Styles and Server Tags each cost 3 Boosts. If you want both perks, you'll need 6 Boosts total (3 for each perk).",
+    "No, this supplements the existing level system. All current server level perks (emoji slots, file upload limits, etc.) remain exactly the same. This new system simply gives you additional ways to use your Boosts for targeted perks without affecting your server's level progression.",
+    "Yes, Boosts used for additional perks are dedicated specifically to those perks and don't count toward your server's level progression. Similarly, Boosts allocated to your server level can't be used for additional perks. You'll need separate Boosts for each - so if you want Enhanced Role Styles, you need 3 Boosts just for that perk, plus whatever Boosts you want to maintain your current server level.",
+    "Each additional perk requires an ongoing allocation of its required Boosts to stay active, just like levels. If your server drops below the required number of Boosts, the perk will be disabled until the necessary Boosts are reallocated.",
+];
 
 /// The perks table: label, then the three levels' values. A level with `""` shows a check; `"-"` shows nothing.
 const TABLE: [(&str, [&str; 3], f32); 12] = [
@@ -77,6 +95,51 @@ fn at(x: f32, y: f32) -> gpui::Div {
     div().absolute().left(px(x)).top(px(y))
 }
 
+/// A sentence whose `link` part opens the Boosting article (the help centre link of the official strings).
+fn article_line(
+    id: &'static str,
+    shown: &str,
+    link: std::ops::Range<usize>,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let styled = StyledText::new(shown.to_owned()).with_highlights([(
+        link.clone(),
+        HighlightStyle {
+            color: Some(color("--text-link").into()),
+            ..HighlightStyle::default()
+        },
+    )]);
+    let root = cx.weak_entity();
+    InteractiveText::new(id, styled)
+        .on_click(vec![link], move |_, _, cx| {
+            let _ = root.update(cx, |this, cx| {
+                this.settings_open_url(BOOSTING_ARTICLE, cx);
+                cx.notify();
+            });
+        })
+        .into_any_element()
+}
+
+/// The open FAQ item's answer; the second one ends in a link.
+fn faq_answer(index: usize, cx: &mut Context<Root>) -> AnyElement {
+    let answer = ANSWERS[index];
+    if index == 1 {
+        let start = answer.find("in our Help Center").unwrap_or(0);
+        return article_line(
+            "boost-faq-help-center",
+            answer,
+            start..start + "in our Help Center".len(),
+            cx,
+        );
+    }
+    div().child(answer).into_any_element()
+}
+
+/// The lines a text of `chars` characters takes in the 670px answer column at 14px (about 100 characters a line).
+fn answer_lines(chars: usize) -> f32 {
+    chars.div_ceil(100).max(1) as f32
+}
+
 /// "gravecord fixture" as "gf": the first letter of each word.
 fn acronym(name: &str) -> String {
     name.split_whitespace()
@@ -87,11 +150,12 @@ fn acronym(name: &str) -> String {
 impl Root {
     fn boost_server_row(
         &self,
-        id: impl std::fmt::Display,
+        id: Id,
         name: &str,
         boosts: u64,
         tier: u64,
         top: f32,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let icon_image = self.images.get(&format!("guild:{id}")).cloned();
         let count = if boosts == 0 {
@@ -145,6 +209,16 @@ impl Root {
             )
             .child(
                 at(537., 16.)
+                    .id(SharedString::from(format!("boost-this-server-{id}")))
+                    .cursor_pointer()
+                    // The existing Server Boost screen of that server (the settings row opens the same flow).
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_settings(cx);
+                        if this.guild != Some(id) {
+                            this.select(id, None);
+                        }
+                        this.open_boost_page(cx);
+                    }))
                     .w(px(146.))
                     .h(px(32.))
                     .rounded(px(8.))
@@ -163,21 +237,32 @@ impl Root {
 
     pub(super) fn server_boost_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let subscriber = self.premium().is_subscriber();
-        let mut page = div().relative().w_full().h(px(2095.6));
+        // The open FAQ answer lengthens the page: a 4px gap, 8px of padding and its lines.
+        let open_extra = self
+            .settings_extra
+            .boost_faq
+            .map_or(0., |index| 12. + 18. * answer_lines(ANSWERS[index].len()));
+        let mut page = div().relative().w_full().h(px(2095.6 + open_extra));
         page = page
             .child(at(0., 49.).child(icon("boost_gem", 24., "--text-strong")))
             .child(at(26., 49.).child(text("Server Boosts", 24., 32., 500., "--text-strong")))
-            .child(
-                at(0., 85.).w(px(349.)).child(
-                    text(
-                        "Boosting a server unlocks perks for everyone in that server. You can manage your Boosts here (add, subtract, cancel \u{2014} just beware the 7 day cooldown). Learn more",
-                        14.,
-                        18.,
-                        400.,
-                        "--text-muted",
-                    ),
-                ),
-            )
+            .child({
+                // "Learn more" is the link to the Boosting article (`helpDeskArticle`, module 440074).
+                let line = "Boosting a server unlocks perks for everyone in that server. You can manage your Boosts here (add, subtract, cancel \u{2014} just beware the 7 day cooldown). Learn more";
+                let start = line.len() - "Learn more".len();
+                at(0., 85.)
+                    .w(px(349.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(400.))
+                    .text_color(color("--text-muted"))
+                    .child(article_line(
+                        "boost-header-learn-more",
+                        line,
+                        start..line.len(),
+                        cx,
+                    ))
+            })
             .child(
                 at(396., 9.)
                     .w(px(300.))
@@ -266,6 +351,7 @@ impl Root {
                 guild.premium_subscription_count,
                 guild.premium_tier,
                 top,
+                cx,
             ));
             top += 74.;
         }
@@ -353,19 +439,96 @@ impl Root {
             500.,
             "--text-strong",
         )));
+        // `listItem_EVXXpI` (module 232122): a column with a 4px gap; one answer open at a time, the open item on
+        // `--background-surface-highest` with a strong border, its answer 8px under the question (`answer_EVXXpI`).
+        let open = self.settings_extra.boost_faq;
+        let mut list = at(0., faq_head + 48.)
+            .w(px(696.))
+            .flex()
+            .flex_col()
+            .gap(px(4.));
         for (index, question) in FAQ.iter().enumerate() {
-            page = page.child(
-                at(0., faq_head + 48. + index as f32 * 50.)
+            let expanded = open == Some(index);
+            let group = SharedString::from(format!("boost-faq-{index}"));
+            list = list.child(
+                div()
+                    .id(group.clone())
+                    .group(group.clone())
                     .w(px(696.))
-                    .h(px(46.))
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(color("--border-subtle"))
-                    .bg(color("--background-surface-high"))
-                    .child(at(13., 11.).child(text(*question, 16., 20., 600., "--text-muted")))
-                    .child(at(660., 12.).child(icon("chevron_down", 20., "--text-muted"))),
+                    .border_color(color(if expanded {
+                        "--border-strong"
+                    } else {
+                        "--border-subtle"
+                    }))
+                    .bg(color(if expanded {
+                        "--background-surface-highest"
+                    } else {
+                        "--background-surface-high"
+                    }))
+                    .p(px(12.))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let faq = &mut this.settings_extra.boost_faq;
+                        *faq = if *faq == Some(index) {
+                            None
+                        } else {
+                            Some(index)
+                        };
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color(if expanded {
+                                        "--text-default"
+                                    } else {
+                                        "--text-muted"
+                                    }))
+                                    .group_hover(group, |style| {
+                                        style.text_color(color("--text-default"))
+                                    })
+                                    .child(*question),
+                            )
+                            .child({
+                                let chevron = icon("chevron_down", 20., "--text-muted");
+                                if expanded {
+                                    chevron
+                                        .with_transformation(gpui::Transformation::rotate(
+                                            gpui::percentage(0.5),
+                                        ))
+                                        .into_any_element()
+                                } else {
+                                    chevron.into_any_element()
+                                }
+                            }),
+                    )
+                    .when(expanded, |this| {
+                        this.child(
+                            div()
+                                .pt(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(faq_answer(index, cx)),
+                        )
+                    }),
             );
         }
+        page = page.child(list);
         page.into_any_element()
     }
 }

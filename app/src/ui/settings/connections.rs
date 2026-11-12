@@ -3,7 +3,7 @@
 //! only that dialog's confirm button sends `DELETE /users/@me/connections/{type}/{id}` or `DELETE /oauth2/tokens/{id}`
 //! (module 158935 `Tq`, `TW`, `TK`). The "Add a new connection" grid below the header draws the provider buttons; a
 //! button opens its authorize URL (`GET /connections/{type}/authorize`). The providers that open an in-app dialog
-//! first (Crunchyroll, Xbox, PlayStation, domain, Bluesky) have no dialog yet.
+//! first (Crunchyroll, Xbox, PlayStation, domain, Bluesky) have theirs in `connection_dialogs.rs`.
 
 use super::actions::Dialog;
 use super::{button, mask_icon};
@@ -492,7 +492,7 @@ impl Root {
     /// browser (`738104`). Five platforms start with a dialog of their own first (`80320`); those dialogs are not built.
     fn connection_clicked(&mut self, kind: &'static str, cx: &mut Context<Self>) {
         if opens_a_dialog(kind) {
-            tracing::info!("connection {kind}: its own first dialog (module 80320) is not built");
+            self.open_connection_dialog(kind, cx);
             return;
         }
         self.connection_authorize(kind, cx);
@@ -527,12 +527,18 @@ impl Root {
         body: &Value,
         cx: &mut Context<Self>,
     ) -> bool {
+        if key == super::connection_dialogs::DOMAIN_KEY {
+            self.connection_domain_answered(body, cx);
+            return true;
+        }
         if !key.starts_with(AUTHORIZE_KEY) {
             return false;
         }
-        if let Some(url) = body["url"].as_str() {
+        let url = body["url"].as_str();
+        if let Some(url) = url {
             self.settings_open_url(url, cx);
         }
+        self.connection_authorized(url.is_some(), cx);
         true
     }
 

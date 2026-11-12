@@ -253,6 +253,12 @@ impl Root {
         }
     }
 
+    /// The stored friend source flags, for `pref get` in a harness run.
+    #[cfg(feature = "capture")]
+    pub(super) fn friend_flags_for_script(&self) -> u64 {
+        self.friend_flags()
+    }
+
     fn friend_flags(&self) -> u64 {
         // A message without the field means the account never narrowed it: everyone.
         self.stores

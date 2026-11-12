@@ -327,6 +327,18 @@ impl Root {
         true
     }
 
+    /// "Reset Default Layout" (`OVERLAY_WIDGETS_RESET`, module 667419 `eL`: `resetDefaultLayout`): every overlay
+    /// widget switch goes back to off, the value its row starts with here.
+    pub(super) fn overlay_widgets_reset(&mut self) {
+        for (key, _) in LOCAL
+            .iter()
+            .filter(|(key, _)| key.starts_with("overlay_widgets_"))
+        {
+            self.setting_choices.insert(key, Choice::On(false));
+            save_local(key, json!(false));
+        }
+    }
+
     /// A slider was let go (or moved by a key): its value is a device setting.
     pub(super) fn slider_committed(&mut self, key: &'static str, value: f32) {
         self.setting_choices.insert(key, Choice::Number(value));
@@ -382,6 +394,19 @@ impl Root {
                 });
             }
             return format!("theme = {}", self.stores.theme);
+        }
+        // The Messaging Permissions switches read the proto's lists and flags through `privacy.rs`: what the switch
+        // shows, and the stored value behind it.
+        if *verb == "get"
+            && let Some(view) = self.messaging_view(key)
+        {
+            return format!(
+                "{key} = {} (disabled {}) friend_source_flags {} dm_guild {}",
+                if view.on { "on" } else { "off" },
+                view.disabled,
+                self.friend_flags_for_script(),
+                self.settings_extra.dm_guild
+            );
         }
         let Some(pref) = proto_spec(key) else {
             return format!("{key} is not a proto preference");

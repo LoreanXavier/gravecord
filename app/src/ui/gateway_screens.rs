@@ -57,7 +57,8 @@ impl Root {
             "USER_CONNECTIONS_UPDATE" if data["accounts"].is_null() => {
                 self.settings_extra.connections_asked = false;
                 if self.settings.is_some() {
-                    self.settings_pages_opened();
+                    // Only the connections are read again: the open panel and tab must not move.
+                    self.settings_request_connections();
                 }
                 cx.notify();
             }

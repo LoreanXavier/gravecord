@@ -1425,6 +1425,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.connection_dialog_focus(window, cx);
         let Some(form) = self.settings_extra.form.as_mut() else {
             return;
         };

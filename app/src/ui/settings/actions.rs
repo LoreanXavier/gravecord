@@ -100,6 +100,8 @@ pub(in crate::ui) struct State {
     pub panel: Option<super::account_panels::Panel>,
     /// The Family Center panel's tab: Activity 0, My Family 1, Settings 2.
     pub family_tab: usize,
+    /// The Server Boost page's open FAQ item (one at a time).
+    pub boost_faq: Option<usize>,
     /// Where the Account page was scrolled when a nested panel opened, so Back returns there.
     pub nested_return: Option<gpui::Point<gpui::Pixels>>,
     pub notif: super::notifications_page::State,
@@ -131,17 +133,20 @@ pub(in crate::ui) struct State {
     pub search: Option<gpui::Entity<crate::editor::Editor>>,
     pub search_sub: Option<gpui::Subscription>,
     pub(in crate::ui) connections_asked: bool,
+    /// The dialog a connection button opens first (`connection_dialogs.rs`).
+    pub(in crate::ui) conn: Option<super::connection_dialogs::Dlg>,
 }
 
 impl State {
     /// A dialog of this module is open: it takes the keys and the focus like every modal.
     pub(in crate::ui) fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.form.is_some()
+        self.dialog.is_some() || self.form.is_some() || self.conn.is_some()
     }
 
     /// Escape or an outside press: the dialog goes away and nothing it asked for happens.
     pub(in crate::ui) fn close_dialog(&mut self) {
         self.dialog = None;
+        self.conn = None;
         self.close_form();
     }
 }
@@ -332,28 +337,36 @@ impl Root {
                 route: CONSENT_ROUTE.to_owned(),
             });
         }
-        if !self.settings_extra.connections_asked {
-            self.settings_extra.connections_asked = true;
-            let _ = self.requests.send(Request::Fetch {
-                key: super::connections::CONNECTIONS_KEY.to_owned(),
-                route: super::connections::CONNECTIONS_ROUTE.to_owned(),
-            });
-            let _ = self.requests.send(Request::Fetch {
-                key: super::connections::TOKENS_KEY.to_owned(),
-                route: super::connections::TOKENS_ROUTE.to_owned(),
-            });
-            let _ = self.requests.send(Request::Fetch {
-                key: super::connections::APPS_KEY.to_owned(),
-                route: super::connections::apps_route(),
-            });
-            self.request_connection_icons();
-        }
+        self.settings_request_connections();
         if !self.settings_extra.harvest_loaded {
             let _ = self.requests.send(Request::Fetch {
                 key: HARVEST_KEY.to_owned(),
                 route: HARVEST_ROUTE.to_owned(),
             });
         }
+    }
+
+    /// The connections, authorized apps and grid applications, once per `connections_asked`. A gateway
+    /// `USER_CONNECTIONS_UPDATE` clears the flag and calls this alone: the open panel and tab stay where they are
+    /// (`settings_pages_opened` resets them, which is right only when Settings just opened).
+    pub(in crate::ui) fn settings_request_connections(&mut self) {
+        if self.settings_extra.connections_asked {
+            return;
+        }
+        self.settings_extra.connections_asked = true;
+        let _ = self.requests.send(Request::Fetch {
+            key: super::connections::CONNECTIONS_KEY.to_owned(),
+            route: super::connections::CONNECTIONS_ROUTE.to_owned(),
+        });
+        let _ = self.requests.send(Request::Fetch {
+            key: super::connections::TOKENS_KEY.to_owned(),
+            route: super::connections::TOKENS_ROUTE.to_owned(),
+        });
+        let _ = self.requests.send(Request::Fetch {
+            key: super::connections::APPS_KEY.to_owned(),
+            route: super::connections::apps_route(),
+        });
+        self.request_connection_icons();
     }
 
     /// A fetch of this module came back: true when the key was ours.
@@ -502,8 +515,13 @@ impl Root {
         &mut self,
         key: &'static str,
         _index: usize,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        if key == "overlay_widgets_reset" {
+            self.overlay_widgets_reset();
+            cx.notify();
+            return;
+        }
         if key == super::notifications_page::UNSUBSCRIBE {
             self.unsubscribe_marketing();
             return;
@@ -589,6 +607,9 @@ impl Root {
 
     /// The dialogs of this module, drawn over the settings layer.
     pub(in crate::ui) fn settings_dialogs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.settings_extra.conn.is_some() {
+            return self.connection_dialog(cx);
+        }
         if self.settings_extra.form.is_some() {
             return self.account_form_dialog(cx);
         }
