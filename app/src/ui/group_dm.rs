@@ -507,7 +507,9 @@ impl Root {
                 String::new()
             })
         });
-        let adding = picker.channel.is_some();
+        // The Add button and invite link belong to a group's own picker; a one-to-one DM's Add to DM still makes a new
+        // group message (`friends/add-to-dm` capture), with one button across the footer.
+        let adding = group == Some(true);
         let invite_code = picker
             .channel
             .and_then(|channel| self.invite_codes.get(&channel).cloned());
@@ -694,9 +696,20 @@ impl Root {
                 title: title.into(),
                 subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(body),
-                buttons: if picker.channel.is_some() {
-                    // Add to DM: the Add button sits beside the field and the invite link closes the body.
+                buttons: if adding {
+                    // Invite to Group DM: the Add button sits beside the field and the invite link closes the body.
                     Vec::new()
+                } else if picker.channel.is_some() {
+                    vec![modal::button(
+                        "group-dm-create",
+                        "Create Group Message",
+                        if waiting {
+                            modal::Tone::PrimaryDisabled
+                        } else {
+                            modal::Tone::Primary
+                        },
+                        |this, _, cx| this.group_dm_create(cx),
+                    )]
                 } else {
                     vec![
                         modal::button(

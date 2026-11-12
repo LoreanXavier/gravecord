@@ -109,7 +109,8 @@ impl Root {
             "all" => FriendsTab::All,
             "online" => FriendsTab::Online,
             "pending" => FriendsTab::Pending,
-            _ => return "usage: friends all | online | pending".into(),
+            "add" => FriendsTab::Add,
+            _ => return "usage: friends all | online | pending | add".into(),
         };
         self.set_friends_tab(tab, window, cx);
         format!("friends tab: {name}")
@@ -753,10 +754,10 @@ impl Root {
                     .bg(color("--background-mod-strong")),
             )
             .child(div().flex_none().w(px(4.)))
-            .when(!self.stores.online_friends().is_empty(), |header| {
+            .when(self.stores.has_online_friends(), |header| {
                 header.child(tab("friends-online", "Online", FriendsTab::Online))
             })
-            .when(!self.stores.friends().is_empty(), |header| {
+            .when(self.stores.has_friends(), |header| {
                 header.child(tab("friends-all", "All", FriendsTab::All))
             })
             .when(self.has_pending(), |this| {
