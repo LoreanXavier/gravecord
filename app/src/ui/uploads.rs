@@ -5,8 +5,9 @@
 use super::{Root, color, icon};
 use dc_proto::pin;
 use gpui::{
-    AnyElement, BoxShadow, Context, ExternalPaths, Image, ImageFormat, IntoElement,
-    PathPromptOptions, SharedString, div, hsla, img, point, prelude::*, px,
+    AnyElement, Bounds, BoxShadow, Context, ExternalPaths, FontWeight, Image, ImageFormat,
+    IntoElement, PathPromptOptions, ScrollHandle, SharedString, canvas, div, fill, hsla, img,
+    point, prelude::*, px, rgb, size,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -158,6 +159,11 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
+/// The kind of a file about to be sent, as its card names it.
+pub(super) fn upload_kind(upload: &crate::net::Upload) -> &'static str {
+    file_kind(&upload.filename(), mime_of(&upload.path))
+}
+
 pub(crate) struct Pending {
     pub path: PathBuf,
     pub name: String,
@@ -165,6 +171,8 @@ pub(crate) struct Pending {
     preview: Option<Arc<Image>>,
     /// The picture's own size, for fitting it into the card.
     picture: Option<(u32, u32)>,
+    /// The picture as a card shows it under the spoiler mark: blurred, over the spoiler background.
+    blurred: Option<Arc<Image>>,
     /// The alt text set in Modify Attachment.
     pub description: Option<String>,
 }
@@ -192,11 +200,14 @@ impl Pending {
         let name = path.file_name()?.to_string_lossy().into_owned();
         let mime = mime_of(&path);
         let kind = file_kind(&name, mime);
+        let mut blurred = None;
         let (preview, picture) = if kind == "image" {
             let bytes = std::fs::read(&path).ok()?;
-            let size = image::load_from_memory(&bytes)
-                .ok()
+            let decoded = image::load_from_memory(&bytes).ok();
+            let size = decoded
+                .as_ref()
                 .map(|decoded| (decoded.width(), decoded.height()));
+            blurred = decoded.as_ref().and_then(spoiler_bake);
             let format = match mime {
                 Some("image/jpeg") => ImageFormat::Jpeg,
                 Some("image/gif") => ImageFormat::Gif,
@@ -214,14 +225,16 @@ impl Pending {
             kind,
             preview,
             picture,
+            blurred,
             description: None,
         })
     }
 
-    /// The picture and the size it is drawn at in Modify Attachment (240 by 150 at most).
+    /// The picture and the size it is drawn at in Modify Attachment: its own size, at most 150 tall and the 430px
+    /// column less 2 x 16 wide (`imageFilePreviewImg_TLgD1o`).
     pub(super) fn preview_image(&self) -> Option<(Arc<Image>, f32, f32)> {
         let (width, height) = (self.picture?.0 as f32, self.picture?.1 as f32);
-        let scale = (240. / width).min(150. / height);
+        let scale = (398. / width).min(150. / height).min(1.);
         Some((self.preview.clone()?, width * scale, height * scale))
     }
 
@@ -239,6 +252,75 @@ impl Pending {
     }
 }
 
+/// The spoiler cover of a picture: the picture fitted to the card's media box, blurred with a 28px radius and laid at
+/// 28% over `--__spoiler-background-color--hidden` (oklab 0.516 0.0027 -0.0139, rgb 102 103 112). The radius and the
+/// share are fitted to the pixels of `design/golden/windows/upload/row-image-spoiler` (mean error under 2 levels).
+fn spoiler_bake(decoded: &image::DynamicImage) -> Option<Arc<Image>> {
+    const COVER: [f32; 3] = [102., 103., 112.];
+    const SHARE: f32 = 0.28;
+    let (width, height) = fitted((decoded.width(), decoded.height()));
+    let small = decoded
+        .resize_exact(
+            width.round().max(1.) as u32,
+            height.round().max(1.) as u32,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgba8();
+    let mut blurred = image::imageops::blur(&small, 28.);
+    for pixel in blurred.pixels_mut() {
+        for (channel, cover) in pixel.0.iter_mut().zip(COVER) {
+            *channel = (cover * (1. - SHARE) + f32::from(*channel) * SHARE).round() as u8;
+        }
+        pixel.0[3] = 255;
+    }
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(blurred)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+}
+
+/// What follows the last card in the row: the action bar hangs 15px past the card's edge and counts as content
+/// (`design/dom/upload/row-three-scroll`: the bar of the last card ends at 1111, the row starts at 384).
+const ROW_TAIL: f32 = 15.;
+
+/// The scrollable width of a row of `count` cards (`upload_JyxBSo` 218 wide, 24 apart, 10 in front).
+fn row_content_width(count: usize) -> f32 {
+    10. + count as f32 * 218. + count.saturating_sub(1) as f32 * 24. + ROW_TAIL
+}
+
+/// `scrollbarGhost_s8JExU`: a 14px bar under the row whose track (8% black) and thumb (40% black) keep a 3px margin
+/// (module 415695's CSS); the thumb is the viewport's share of the content.
+fn upload_scrollbar(handle: ScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let max = handle.max_offset().x;
+            if max <= px(0.) {
+                return;
+            }
+            let track = Bounds::new(
+                point(bounds.left() + px(3.), bounds.top() + px(3.)),
+                size(bounds.size.width - px(6.), px(8.)),
+            );
+            let viewport = bounds.size.width;
+            let thumb = (track.size.width * (viewport / (viewport + max))).max(px(40.));
+            let scrolled = (-f32::from(handle.offset().x) / f32::from(max)).clamp(0., 1.);
+            let left = track.left() + (track.size.width - thumb) * scrolled;
+            window.paint_quad(fill(track, hsla(0., 0., 0., 0.08)).corner_radii(px(4.)));
+            window.paint_quad(
+                fill(
+                    Bounds::new(point(left, track.top()), size(thumb, px(8.))),
+                    hsla(0., 0., 0., 0.4),
+                )
+                .corner_radii(px(4.)),
+            );
+        },
+    )
+    .mr(px(12.))
+    .h(px(14.))
+}
+
 /// The 200px media box of a card: a picture fitted to its width, centred above the name.
 fn fitted(picture: (u32, u32)) -> (f32, f32) {
     let (width, height) = (picture.0 as f32, picture.1 as f32);
@@ -248,11 +330,21 @@ fn fitted(picture: (u32, u32)) -> (f32, f32) {
 
 impl Root {
     pub(crate) fn attach_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        // A batch the official client refuses (empty, over the limit, too many) adds none of its files.
+        let sizes: Vec<u64> = paths
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len())
+            .collect();
+        if self.refuse_upload(&sizes) {
+            cx.notify();
+            return;
+        }
         for path in paths {
             if let Some(pending) = Pending::new(path) {
-                if pending.preview.is_none() {
-                    self.request_image(kind_icon_key(pending.kind), kind_icon_url(pending.kind));
-                }
+                // The art of the kind also draws the card of the message that sends this file.
+                self.request_image(kind_icon_key(pending.kind), kind_icon_url(pending.kind));
                 self.pending_files.push(pending);
             }
         }
@@ -283,6 +375,11 @@ impl Root {
         let media = match (&pending.preview, pending.picture) {
             (Some(preview), Some(picture)) => {
                 let (width, height) = fitted(picture);
+                let cover = pending
+                    .is_spoiler()
+                    .then(|| pending.blurred.clone())
+                    .flatten();
+                let shown = cover.clone().unwrap_or_else(|| preview.clone());
                 div()
                     .flex_1()
                     .flex()
@@ -294,12 +391,33 @@ impl Root {
                             .h(px(height))
                             .rounded(px(8.))
                             .bg(color("--background-mod-subtle"))
-                            .child(
-                                img(preview.clone())
-                                    .w(px(width))
-                                    .h(px(height))
-                                    .rounded(px(8.)),
-                            ),
+                            .relative()
+                            .child(img(shown).w(px(width)).h(px(height)).rounded(px(8.)))
+                            // `spoilerWarning_0_7_Rr`: a 20px-radius pill (60% black, padding 8 by 12) centred on the cover.
+                            .when(cover.is_some(), |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .size_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .px(px(12.))
+                                                .py(px(8.))
+                                                .rounded(px(20.))
+                                                .bg(hsla(0., 0., 0., 0.6))
+                                                .text_size(px(15.))
+                                                .line_height(px(15.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(rgb(0xe4e4e6))
+                                                .child("SPOILER"),
+                                        ),
+                                )
+                            }),
                     )
                     .into_any_element()
             }
@@ -360,16 +478,23 @@ impl Root {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .child(pending.name.clone()),
+                            .child(
+                                pending
+                                    .name
+                                    .strip_prefix(SPOILER_PREFIX)
+                                    .unwrap_or(&pending.name)
+                                    .to_owned(),
+                            ),
                     ),
             )
             // `actionBar_JyxBSo`: pinned to the corner and pushed out by a quarter of its size.
             .child(
                 div()
                     .absolute()
-                    .top(px(0.))
-                    .right(px(-16.))
-                    .h(px(32.))
+                    .top(px(-1.))
+                    .right(px(-17.))
+                    .h(px(34.))
+                    .items_center()
                     .rounded(px(4.))
                     .bg(color("--background-surface-highest"))
                     .border_1()
@@ -378,12 +503,13 @@ impl Root {
                     .child(
                         action(
                             format!("upload-spoiler-{index}"),
-                            "upload_spoiler",
+                            // The eye becomes the slashed eye while the card is a spoiler.
                             if pending.is_spoiler() {
-                                "--text-brand"
+                                "eye_slash"
                             } else {
-                                "--interactive-text-default"
+                                "upload_spoiler"
                             },
+                            "--interactive-text-default",
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(pending) = this.pending_files.get_mut(index) {
@@ -433,15 +559,46 @@ impl Root {
             .map(|(index, pending)| self.upload_card(index, pending, cx))
             .chain(staged)
             .collect();
+        let handle = self.upload_scroll.clone();
+        let count = cards.len();
+        let viewport = handle.bounds().size.width;
+        let overflows = viewport > px(0.) && px(row_content_width(count)) > viewport;
         Some(
             div()
                 .flex()
-                .gap(px(24.))
-                .pt(px(20.))
-                .px(px(10.))
-                .pb(px(10.))
-                .pr(px(30.))
-                .children(cards)
+                .flex_col()
+                .child(
+                    div()
+                        .id("upload-row")
+                        .flex()
+                        .gap(px(24.))
+                        .pt(px(20.))
+                        .pl(px(10.))
+                        .pb(px(10.))
+                        .pr(px(ROW_TAIL))
+                        // The area is 14px narrower than the composer's outer box: 612 in a 626 box
+                        // (`scrollableContainer_2x8-Qn` and `channelAttachmentArea_iH8bsl`, row-three-scroll).
+                        .mr(px(12.))
+                        .overflow_x_scroll()
+                        .track_scroll(&handle)
+                        .children(cards),
+                )
+                .when(overflows, |this| {
+                    this.child(upload_scrollbar(handle.clone()))
+                })
+                // The scrollbar takes room only when the row overflows: ask for another frame once that changes.
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, window, _| {
+                            if (handle.max_offset().x > px(0.)) != overflows {
+                                window.refresh();
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
                 .into_any_element(),
         )
     }

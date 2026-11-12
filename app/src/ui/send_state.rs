@@ -58,6 +58,8 @@ pub(super) struct State {
     pub hold: bool,
     /// The notices Clyde added, per channel.
     notices: HashMap<Id, Vec<Message>>,
+    /// The file a sending message is uploading, with the bytes sent and its size (the placeholder's bar).
+    pub progress: HashMap<Id, (usize, u64, u64)>,
 }
 
 impl State {
@@ -94,6 +96,7 @@ impl State {
             self.in_flight = None;
         }
         self.queue.retain(|known| *known != id);
+        self.progress.remove(&id);
     }
 
     /// `cancelPendingSendRequests(channel)`: what still waits in that channel, which now fails with the message.
@@ -220,6 +223,16 @@ impl Root {
         self.send_ui.state_of(message)
     }
 
+    /// The message this account is sending (or that failed) under this id.
+    pub(super) fn send_ui_send(&self, id: Id) -> Option<&LocalSend> {
+        self.send_ui.sends.get(&id)
+    }
+
+    /// The file being uploaded for the message, with the bytes sent and its size.
+    pub(super) fn send_ui_progress(&self, id: Id) -> Option<(usize, u64, u64)> {
+        self.send_ui.progress.get(&id).copied()
+    }
+
     fn me_json(&self) -> Value {
         match &self.stores.current_user {
             Some(me) => json!({
@@ -295,8 +308,8 @@ impl Root {
                 .map(|sticker| (sticker.id, sticker.name.clone(), sticker.format_type))
                 .collect();
         }
-        // A message of files alone has no row until it ends (its upload row is the composer's).
-        let shown = !content.is_empty() || !sticker_ids.is_empty();
+        // A message of files alone shows the placeholder of its uploads (`upload_progress.rs`).
+        let shown = !content.is_empty() || !sticker_ids.is_empty() || !files.is_empty();
         if shown && let Some(message) = message.clone() {
             self.insert_local(message);
         }
@@ -368,8 +381,44 @@ impl Root {
                 }
             }
             Outcome::Failed(failure) => self.send_failed(channel, id, &failure, cx),
+            // A cancelled or silently failed upload leaves no row and no failed message.
+            Outcome::Dropped => self.drop_local(channel, id),
         }
         self.send_pump();
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// `Update::SendProgress`: the bar of the placeholder row moves.
+    pub(super) fn send_progress(
+        &mut self,
+        nonce: &str,
+        index: usize,
+        sent: u64,
+        total: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = id_of(nonce)
+            && self.send_ui.state_of(id) == Some(SendState::Sending)
+        {
+            self.send_ui.progress.insert(id, (index, sent, total));
+            cx.notify();
+        }
+    }
+
+    /// The cancel button of a placeholder row: the upload stops if it runs, or the message leaves the queue.
+    pub(super) fn cancel_upload(&mut self, id: Id, cx: &mut Context<Self>) {
+        let Some(send) = self.send_ui.sends.get(&id) else {
+            return;
+        };
+        let (channel, nonce) = (send.channel, send.nonce.clone());
+        if self.send_ui.in_flight == Some(id) {
+            // The task answers with `Outcome::Dropped`.
+            crate::upload_flow::cancel(&nonce);
+            return;
+        }
+        self.send_ui.ended(id);
+        self.drop_local(channel, id);
         self.rebuild_rows();
         cx.notify();
     }
@@ -633,6 +682,30 @@ impl Root {
                 self.send_ui.hold = false;
                 self.send_pump();
                 "send: released".to_owned()
+            }
+            // The bar of the placeholder row: `send progress <sent> <total>` for the first file of the oldest sending.
+            ["progress", sent, total] => {
+                let Some(id) = self.send_ui.first_sending() else {
+                    return "send: nothing is sending".to_owned();
+                };
+                let (Ok(sent), Ok(total)) = (sent.parse::<u64>(), total.parse::<u64>()) else {
+                    return "send: progress <sent> <total>".to_owned();
+                };
+                self.send_ui.progress.insert(id, (0, sent, total));
+                cx.notify();
+                format!("send: progress {sent}/{total}")
+            }
+            // An upload that ends with nothing to tell: the row goes (design/golden/windows/upload/after-failure).
+            ["drop"] => {
+                let Some(id) = self.send_ui.first_sending() else {
+                    return "send: nothing is sending".to_owned();
+                };
+                let Some(send) = self.send_ui.sends.get(&id) else {
+                    return "send: nothing is sending".to_owned();
+                };
+                let (channel, nonce) = (send.channel, send.nonce.clone());
+                self.send_finished(channel, &nonce, Outcome::Dropped, cx);
+                format!("send: dropped {nonce}")
             }
             ["fail", rest @ ..] => {
                 let Some(id) = self.send_ui.first_sending() else {

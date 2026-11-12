@@ -293,6 +293,9 @@ pub fn explicit_media_notice(is_dm: bool, is_group_dm: bool) -> Notice {
 pub enum Outcome {
     Sent(Value),
     Failed(Failure),
+    /// The upload stopped with nothing to tell (the cancel button, or an error without a code): the row goes and
+    /// no failed message stays (design/golden/windows/upload/after-failure).
+    Dropped,
 }
 
 #[cfg(test)]

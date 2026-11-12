@@ -65,6 +65,8 @@ pub struct Client {
     identity: Identity,
     /// Called when Discord answers 401: the session is gone (`401` in `interceptResponse`, module 596339).
     unauthorized: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Where routes are sent; a test points it at a local server.
+    api_base: String,
 }
 
 /// The header set every request of the pinned client carries, shared with the login client (`dc-auth`).
@@ -113,7 +115,14 @@ impl Client {
             token: std::sync::RwLock::new(token),
             identity,
             unauthorized: None,
+            api_base: pin::API_BASE.to_owned(),
         })
+    }
+
+    /// Sends every route to `base` instead of the API (for tests against a local server).
+    pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
+        self.api_base = base.into();
+        self
     }
 
     /// Every request after this one carries the new token: `PATCH /users/@me` answers a password change with one
@@ -152,7 +161,7 @@ impl Client {
         body: Option<&Value>,
     ) -> Result<Response, Error> {
         let (route, reason) = split_audit_reason(route);
-        let url = format!("{}{route}", pin::API_BASE);
+        let url = format!("{}{route}", self.api_base);
         let mut request = self
             .http
             .request(method.clone(), url)
@@ -226,7 +235,7 @@ impl Client {
     /// `GET` with an application's own OAuth2 access token as the bearer, for the Embedded App SDK's `AUTHENTICATE`
     /// (`GET /oauth2/@me`). The account's token is never sent: this is the activity's token, which the page handed over.
     pub async fn get_as_bearer(&self, route: &str, bearer: &str) -> Result<Value, Error> {
-        let url = format!("{}{route}", pin::API_BASE);
+        let url = format!("{}{route}", self.api_base);
         let response = self
             .http
             .get(url)
@@ -255,7 +264,7 @@ impl Client {
     /// `POST` with a form: its text fields, then one file. A rate limited attempt is sent again, so the form is rebuilt
     /// each time.
     pub async fn post_form(&self, route: &str, form: &Form) -> Result<Value, Error> {
-        let url = format!("{}{route}", pin::API_BASE);
+        let url = format!("{}{route}", self.api_base);
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let file = reqwest::multipart::Part::bytes(form.file.clone())
                 .file_name(form.file_name.clone())
@@ -313,7 +322,7 @@ impl Client {
         route: &str,
         files: &[(String, Vec<u8>)],
     ) -> Result<Value, Error> {
-        let url = format!("{}{route}", pin::API_BASE);
+        let url = format!("{}{route}", self.api_base);
         let mut body = reqwest::multipart::Form::new();
         for (name, bytes) in files {
             let part = reqwest::multipart::Part::bytes(bytes.clone())

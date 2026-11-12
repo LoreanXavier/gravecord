@@ -251,6 +251,10 @@ impl Root {
 
     /// `nonVisualMediaItemContainer_idVBIj`: 8px under the pictures, each item as wide as it needs.
     pub(super) fn files(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // A message still uploading (or failed) shows the cards of its uploads.
+        if let Some(placeholder) = self.upload_placeholder(message, cx) {
+            return Some(placeholder);
+        }
         let cards: Vec<AnyElement> = message
             .attachments
             .iter()

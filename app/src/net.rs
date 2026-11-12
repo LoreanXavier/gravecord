@@ -42,6 +42,13 @@ pub enum Update {
         nonce: String,
         outcome: crate::send_policy::Outcome,
     },
+    /// How much of file `index` of a [`Request::SendLocal`] has gone up (the placeholder row's progress bar).
+    SendProgress {
+        nonce: String,
+        index: usize,
+        sent: u64,
+        total: u64,
+    },
     Dispatch {
         name: String,
         data: Value,
@@ -482,8 +489,13 @@ impl Request {
             | Request::Sprite { .. }
             | Request::EmojiSheet
             | Request::EmojiButtonSprites => Inert::Allow,
-            Request::Rest { method, .. } => {
-                if method == reqwest::Method::GET {
+            Request::Rest { method, route, .. } => {
+                // `POST /channels/{id}/post-data` is how the official forum list reads post previews; it changes nothing.
+                if method == reqwest::Method::GET
+                    || (method == reqwest::Method::POST
+                        && route.starts_with("/channels/")
+                        && route.ends_with("/post-data"))
+                {
                     Inert::Allow
                 } else {
                     Inert::Deny
@@ -908,7 +920,7 @@ impl Upload {
 }
 
 /// One entry of the message's `attachments` (`OW` in module 292348); the description is the image's alt text.
-fn attachment_entry(
+pub(crate) fn attachment_entry(
     index: usize,
     filename: &str,
     uploaded: &str,
@@ -966,7 +978,7 @@ pub(crate) fn send_body(
 async fn send_local(
     client: &Client,
     channel: u64,
-    nonce: &str,
+    (nonce, updates): (&str, &mpsc::UnboundedSender<Update>),
     content: &str,
     files: &[Upload],
     reply: Option<(Option<u64>, u64, bool)>,
@@ -980,11 +992,31 @@ async fn send_local(
         body["sticker_ids"] = json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
     }
     if !files.is_empty() {
-        match upload_all(client, channel, files).await {
+        let cancel = crate::upload_flow::register(nonce);
+        let progress = {
+            let (updates, nonce) = (updates.clone(), nonce.to_owned());
+            Arc::new(move |index, sent, total| {
+                let _ = updates.send(Update::SendProgress {
+                    nonce: nonce.clone(),
+                    index,
+                    sent,
+                    total,
+                });
+            })
+        };
+        let uploaded =
+            crate::upload_flow::upload_files(client, channel, files, progress, cancel).await;
+        crate::upload_flow::forget(nonce);
+        match uploaded {
             Ok(attachments) => body["attachments"] = Value::Array(attachments),
-            Err(error) => {
-                warn!("upload failed: {error}");
-                return Outcome::Failed(Failure::default());
+            Err(ended) => {
+                warn!("upload ended: {ended:?}");
+                return match ended {
+                    crate::upload_flow::End::Failed(failure) if failure.code.is_some() => {
+                        Outcome::Failed(failure)
+                    }
+                    _ => Outcome::Dropped,
+                };
             }
         }
     }
@@ -1195,7 +1227,7 @@ pub async fn run(
                     let outcome = send_local(
                         &client,
                         channel,
-                        &nonce,
+                        (&nonce, &updates),
                         &content,
                         &files,
                         reply,

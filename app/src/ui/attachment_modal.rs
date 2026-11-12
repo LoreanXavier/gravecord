@@ -7,7 +7,7 @@ use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, Subscription, Window, div,
-    img, prelude::*, px,
+    hsla, img, prelude::*, px, rgba,
 };
 
 pub(super) struct ModifyAttachment {
@@ -127,27 +127,28 @@ impl Root {
                 .h(px(20.))
                 .text_size(px(16.))
                 .line_height(px(20.))
-                .font_weight(FontWeight(600.))
+                .font_weight(FontWeight(500.))
                 .text_color(color("--text-strong"))
                 .child(text)
         };
-        let field = |editor: Entity<Editor>, height: f32| {
+        // `wrapper_UcGqzv`: 12% black, a 1px border of the muted grey at 20%, 8px radius; the one-line input pads 12 by
+        // 9, the text area 10 by 12 (`input_0PLWhS`, `textArea_uI0xjn` in edit-modal).
+        let field = |editor: Entity<Editor>, height: f32, pad: (f32, f32)| {
             div()
                 .h(px(height))
-                .px(px(12.))
-                .py(px(9.))
+                .px(px(pad.0))
+                .py(px(pad.1))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(color("--border-muted"))
-                .bg(color("--input-background-default"))
+                .border_color(rgba(0x97979f33))
+                .bg(hsla(0., 0., 0., 0.12))
                 .child(editor)
         };
         let preview = pending.preview_image().map(|(image, width, height)| {
             div()
-                .mt(px(-4.))
                 .ml(px(16.))
-                .w(px(240.))
-                .h(px(150.))
+                .w(px(width))
+                .h(px(height))
                 .child(img(image).w(px(width)).h(px(height)))
         });
         let spoiler = open.spoiler;
@@ -162,12 +163,14 @@ impl Root {
                 div()
                     .size(px(20.))
                     .rounded(px(4.))
-                    .border_2()
+                    .border_1()
+                    // `checkboxIndicator_vTUVyc`: 8% black inside a 1px border of the muted grey at 64%.
                     .border_color(if spoiler {
                         color("--control-primary-background-default")
                     } else {
-                        color("--interactive-icon-default")
+                        rgba(0x97979fa3)
                     })
+                    .bg(hsla(0., 0., 0., 0.08))
                     .when(spoiler, |this| {
                         this.bg(color("--control-primary-background-default"))
                             .flex()
@@ -194,9 +197,17 @@ impl Root {
             .flex_col()
             .children(preview)
             .child(div().mt(px(16.)).child(label("Filename")))
-            .child(div().mt(px(8.)).child(field(open.name.clone(), 40.)))
+            .child(
+                div()
+                    .mt(px(8.))
+                    .child(field(open.name.clone(), 40., (12., 9.))),
+            )
             .child(div().mt(px(16.)).child(label("Description (Alt Text)")))
-            .child(div().mt(px(8.)).child(field(open.description.clone(), 89.)))
+            .child(
+                div()
+                    .mt(px(8.))
+                    .child(field(open.description.clone(), 89., (10., 12.))),
+            )
             .child(check);
         let spec = modal::Spec {
             id: "modify-attachment",
