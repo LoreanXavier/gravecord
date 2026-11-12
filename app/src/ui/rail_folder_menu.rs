@@ -645,11 +645,11 @@ impl Root {
             .child(
                 div()
                     .absolute()
-                    .left(px(saturation * 220. - 2.))
-                    .top(px((1. - value) * 150. - 2.))
-                    .size(px(4.))
+                    .left(px(saturation * 220. - 4.))
+                    .top(px((1. - value) * 150. - 4.))
+                    .size(px(8.))
                     .rounded_full()
-                    .border_1()
+                    .border_2()
                     .border_color(rgba(0xffffffff)),
             )
             .on_mouse_down(

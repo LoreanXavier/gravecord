@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 /// The store keeps at most five accounts (`splice(5)` in `CONNECTION_OPEN`); the one that would be sixth is dropped
 /// with its token.
 pub(super) const MAX_ACCOUNTS: usize = 5;
+/// The list's natural top: the "Switch Accounts" row's top edge in the avatar popout (capture).
+const SUBMENU_TOP: f32 = 589.;
 const STORAGE_KEY: &str = "MultiAccountStore";
 /// What the stand-in code on the Add Account dialog encodes: a fixed text, never a real remote-auth fingerprint.
 const ADD_QR_TEXT: &str = "https://discord.com/ra/gravecord-add-account-preview";
@@ -203,7 +205,7 @@ impl Root {
     }
 
     /// The list of the Switch Accounts submenu: a row per account (the signed in one marked), then Manage Accounts.
-    /// 220 wide at the popout's right edge (capture: left 296, bottom edge 696 of an account row of 40, a rule, a row of 34).
+    /// 220 wide at the popout's right edge (capture: left 296, top 589 of an account row of 40, a rule, a row of 34).
     pub(super) fn accounts_submenu_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let me = self.stores.current_user.as_ref().map(|user| user.id);
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -236,7 +238,7 @@ impl Root {
                                 .size(px(18.))
                                 .flex_none()
                                 .rounded_full()
-                                .bg(color("--control-brand-foreground"))
+                                .bg(color("--brand-500"))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -282,6 +284,11 @@ impl Root {
                 }))
                 .into_any_element(),
         );
+        // `Popout` (module 265872) puts the list at the row's top edge, right of it; `nudgeTopAlignment` (module
+        // 623646) then moves it up until it ends 12px above the window's bottom. 107 high with one account.
+        let height =
+            107. + 40. * self.account_switcher.accounts.users.len().saturating_sub(1) as f32;
+        let top = SUBMENU_TOP.min(self.viewport.1 - 12. - height);
         div()
             .absolute()
             .size_full()
@@ -291,7 +298,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .left(px(296.))
-                    .bottom(px(24.))
+                    .top(px(top))
                     .w(px(220.))
                     .p(px(8.))
                     .rounded(px(8.))
@@ -442,6 +449,7 @@ impl Root {
         };
         let form = div()
             .w(px(358.))
+            .pt(px(84.))
             .flex_none()
             .flex()
             .flex_col()
@@ -523,13 +531,7 @@ impl Root {
                 .child(div().w(px(256.)).p(px(8.)).flex().justify_center().child(
                     login::text_button("add-account-passkey", "Or sign in with a passkey"),
                 ));
-        let body = div()
-            .pt(px(84.))
-            .px(px(24.))
-            .flex()
-            .gap(px(32.))
-            .child(form)
-            .child(qr);
+        let body = div().px(px(24.)).flex().gap(px(32.)).child(form).child(qr);
         let back = div()
             .id("add-account-back")
             .cursor_pointer()
@@ -579,6 +581,7 @@ impl Root {
         let frame = div()
             .id("account-more-menu")
             .occlude()
+            .w(px(144.))
             .rounded(px(8.))
             .bg(color("--background-surface-higher"))
             .border_1()
@@ -691,7 +694,9 @@ impl Root {
             ["switch", id] => match id.parse::<u64>() {
                 Ok(id) => {
                     self.switch_account(id, cx);
-                    format!("accounts: switch {id} sent to the shell")
+                    format!(
+                        "accounts: would connect with account {id} (the event is emitted; the harness has no shell to receive it)"
+                    )
                 }
                 Err(_) => "usage: accounts switch <id>".into(),
             },

@@ -20,6 +20,10 @@ use std::sync::Arc;
 const AVATAR: f32 = 40.;
 const FOLDER: f32 = 48.;
 const WIDTH: f32 = 72.;
+/// Capture only: every server counts as unread without mentions (the dot beside a closed folder).
+#[cfg(feature = "capture")]
+static CAPTURE_UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `FOLDER_ITEM_ANIMATION_DURATION` (module 319060) and `--custom-folder-item-animation-duration` (150ms).
 const FOLDER_MS: f64 = 150.;
 /// The persisted `ExpandedGuildFolderStore` (`persistKey`, module 383394).
@@ -558,6 +562,10 @@ impl Root {
         for guild in folder.guilds.iter().filter_map(|id| self.stores.guild(*id)) {
             let counts = self.guild_rail_counts(guild);
             unread |= counts.unread;
+            #[cfg(feature = "capture")]
+            {
+                unread |= CAPTURE_UNREAD.load(std::sync::atomic::Ordering::Relaxed);
+            }
             mentions += counts.mentions;
             high += counts.high_mentions;
         }
@@ -958,6 +966,11 @@ impl Root {
                 };
                 self.stores.folders.set_expanded(id, words[0] == "open");
                 format!("rail: folder {id} {}", words[0])
+            }
+            ["unread", value] => {
+                CAPTURE_UNREAD.store(*value == "on", std::sync::atomic::Ordering::Relaxed);
+                cx.notify();
+                format!("rail: unread {value}")
             }
             ["state"] => format!(
                 "rail: {:?} expanded {:?}",
