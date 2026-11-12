@@ -19,6 +19,7 @@ zeroize.workspace = true
 dc-clips.workspace = true
 dc-gateway.workspace = true
 dc-hotkey.workspace = true
+dc-intl.workspace = true
 dc-auth.workspace = true
 dc-http.workspace = true
 dc-markdown.workspace = true
@@ -43,6 +44,7 @@ rasterlottie = { version = "=0.2.2", default-features = false }
 openh264.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
+sys-locale.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

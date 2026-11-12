@@ -154,7 +154,7 @@ impl Root {
             .child(
                 self.with_tip(
                     "home",
-                    Tip::rail(Body::Heading("Direct Messages".into())),
+                    Tip::rail(Body::Heading(dc_intl::tr("Direct Messages").into())),
                     self.group_stop(
                         div().id("home"),
                         "rail",
@@ -608,36 +608,41 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child("Find or start a conversation"),
+                            .child(dc_intl::tr("Find or start a conversation")),
                     ),
             )
             .child(div().flex_none().h(px(8.)))
             .child(
-                self.home_link("friends", "home_friends", "Friends", friends_selected)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.select_home(None);
-                        cx.notify();
-                    })),
+                self.home_link(
+                    "friends",
+                    "home_friends",
+                    dc_intl::tr("Friends"),
+                    friends_selected,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.select_home(None);
+                    cx.notify();
+                })),
             )
             // 596339 `Iy` sits after Friends; 309199 `SM`: it shows while the requests or the spam list is not empty.
             .children(self.stores.message_requests_entry_visible().then(|| {
                 self.home_link(
                     "message-requests",
                     "message_requests_envelope",
-                    "Message Requests",
+                    dc_intl::tr("Message Requests"),
                     requests_selected,
                 )
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
             }))
             .child(
-                self.home_link("nitro", "home_nitro", "Nitro", nitro_selected)
+                self.home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
             )
             .child(
-                self.home_link("shop", "home_shop", "Shop", shop_selected)
+                self.home_link("shop", "home_shop", dc_intl::tr("Shop"), shop_selected)
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.open_shop(cx)))
                     .relative()
@@ -658,13 +663,18 @@ impl Root {
                                 .line_height(px(16.))
                                 .font_weight(FontWeight(600.))
                                 .text_color(color("--background-surface-highest"))
-                                .child("NEW"),
+                                .child(dc_intl::tr("NEW")),
                         )
                     }),
             )
             .child(
-                self.home_link("quests", "home_quests", "Quests", quests_selected)
-                    .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
+                self.home_link(
+                    "quests",
+                    "home_quests",
+                    dc_intl::tr("Quests"),
+                    quests_selected,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
             )
             .child(
                 div()
@@ -691,7 +701,7 @@ impl Root {
                     .text_color(color("--channels-default"))
                     // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
                     .hover(|style| style.text_color(color("--interactive-text-hover")))
-                    .child("Direct Messages")
+                    .child(dc_intl::tr("Direct Messages"))
                     .child(div().flex_1())
                     .child(
                         // "Create DM": the same New Message picker as the Friends page's New Group DM.

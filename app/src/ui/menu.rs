@@ -937,7 +937,7 @@ impl Root {
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
                 .text_color(label_tint)
-                .child(label),
+                .child(dc_intl::tr(label)),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
         .when(run == Action::CopySelection, |this| {
@@ -1489,6 +1489,49 @@ mod tests {
                 "Delete Message"
             ]
         );
+    }
+
+    /// The menu's labels go through `dc_intl::tr`: each is the text of an en-US message, so every locale has it.
+    #[test]
+    fn every_label_is_an_official_message() {
+        let mut states = vec![super::SavedState::default()];
+        for link in [
+            super::LinkKind::Link,
+            super::LinkKind::ImageLink,
+            super::LinkKind::MediaLink,
+            super::LinkKind::Mail,
+        ] {
+            states.push(super::SavedState {
+                bookmarked: true,
+                reminder: true,
+                speaking: true,
+                pinned: true,
+                reacted: true,
+                manage_reactions: true,
+                poll_end: true,
+                poll: true,
+                selection: true,
+                link,
+                image: true,
+                ..Default::default()
+            });
+        }
+        states.push(super::SavedState {
+            failed: true,
+            ..Default::default()
+        });
+        for state in states {
+            for own in [true, false] {
+                for item in super::message_items_saved(own, state) {
+                    if let Item::Entry(label, ..) | Item::Danger(label, ..) = item {
+                        assert!(
+                            dc_intl::keys_of(label).next().is_some(),
+                            "{label:?} is no en-US message"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

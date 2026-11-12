@@ -119,7 +119,11 @@ pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
             Some(rest) => (rest, true),
             None => (*part, false),
         };
-        text.push_str(part);
+        text.push_str(if runs.len() == 1 {
+            dc_intl::tr(part)
+        } else {
+            part
+        });
         if *link {
             ranges.push(start..text.len());
             words.push(part);
@@ -198,7 +202,7 @@ fn label_block_capped(
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
-                        .child(label),
+                        .child(dc_intl::tr(label)),
                 )
                 .when(badge, |this| this.child(super::badge(badge_text(label)))),
         )
@@ -1579,7 +1583,7 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-default"))
-                            .child(option.label),
+                            .child(dc_intl::tr(option.label)),
                     )
                     .when(!option.description.is_empty(), |this| {
                         this.child(

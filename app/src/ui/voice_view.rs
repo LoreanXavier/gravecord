@@ -760,7 +760,12 @@ impl Root {
         // Module 699707. The strip shows while the members are open and the area is over 384px high (`Q`); with it
         // the tile keeps 140px clear above and under it (72 + 68) and sits 60px up, without it the tile takes the
         // whole area, as large as its 16:9 fits.
-        let strip_shown = !self.vv.members_hidden && height > 384. && !others.is_empty();
+        // `showParticipants: participantsOpen && (!j || N)` of module 540462, `j` being the layouts that share the
+        // column with the chat (`MINIMUM`, `NORMAL`): there the focused tile has the whole area to itself.
+        let strip_shown = !self.vv.members_hidden
+            && height > 384.
+            && !others.is_empty()
+            && self.call_layout_is_full();
         // The toggle exists outside the layouts that share the column with a chat (`et`).
         let toggle_shown = height > 384. && !others.is_empty() && self.call_layout_is_full();
         let strip_top = height - 192.;
@@ -2048,13 +2053,16 @@ impl Root {
             .gap(px(1.))
             .child(self.with_tip(
                 "call-mic-tip",
-                Tip::text(if muted { "Unmute" } else { "Mute" }, Side::Top),
+                Tip::text(
+                    dc_intl::tr(if muted { "Unmute" } else { "Mute" }),
+                    Side::Top,
+                ),
                 mic_main,
                 cx,
             ))
             .child(self.with_tip(
                 "call-mic-chevron-tip",
-                Tip::text("More Microphone Options", Side::Top),
+                Tip::text(dc_intl::tr("More Microphone Options"), Side::Top),
                 mic_nub,
                 cx,
             ));
@@ -2097,11 +2105,11 @@ impl Root {
             .child(self.with_tip(
                 "call-camera-tip",
                 Tip::text(
-                    if camera_on {
+                    dc_intl::tr(if camera_on {
                         "Turn Off Camera"
                     } else {
                         "Turn On Camera"
-                    },
+                    }),
                     Side::Top,
                 ),
                 camera_button.on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
@@ -2110,7 +2118,7 @@ impl Root {
             .child(
                 self.with_tip(
                     "call-camera-chevron-tip",
-                    Tip::text("More Camera Options", Side::Top),
+                    Tip::text(dc_intl::tr("More Camera Options"), Side::Top),
                     nub(
                         "call-camera-chevron",
                         if camera_on { active_text } else { "--white" },
@@ -2194,7 +2202,7 @@ impl Root {
                         .child(
                             self.with_tip(
                                 "call-screen-tip",
-                                Tip::text("Stop Streaming", Side::Top),
+                                Tip::text(dc_intl::tr("Stop Streaming"), Side::Top),
                                 // Module 958449: `useScreenshareLottie(streamActive ? "disable" : "enable")`.
                                 animated(
                                     "call-screen",
@@ -2234,7 +2242,7 @@ impl Root {
                 } else {
                     self.with_tip(
                         "call-screen-tip",
-                        Tip::text("Share Your Screen", Side::Top),
+                        Tip::text(dc_intl::tr("Share Your Screen"), Side::Top),
                         animated(
                             "call-screen",
                             &screen_id,
@@ -2250,7 +2258,7 @@ impl Root {
                 },
                 self.with_tip(
                     "call-activity-tip",
-                    Tip::text("Start An Activity", Side::Top),
+                    Tip::text(dc_intl::tr("Start An Activity"), Side::Top),
                     // Module 168754: the hover events, and `play()` (the `click` marker) on click.
                     animated(
                         "call-activity",
@@ -2285,14 +2293,17 @@ impl Root {
                     })
                     .child(self.with_tip(
                         "call-soundboard-tip",
-                        Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
+                        Tip::text(
+                            dc_intl::tr(soundboard_reason.unwrap_or("Open Soundboard")),
+                            Side::Top,
+                        ),
                         soundboard,
                         cx,
                     ))
                     .into_any_element(),
                 self.with_tip(
                     "call-more-tip",
-                    Tip::text("More Options", Side::Top),
+                    Tip::text(dc_intl::tr("More Options"), Side::Top),
                     more,
                     cx,
                 )
@@ -2429,11 +2440,11 @@ impl Root {
                     .child(self.with_tip(
                         "call-disconnect-tip",
                         Tip::text(
-                            if stream {
+                            dc_intl::tr(if stream {
                                 "Stop Watching"
                             } else {
                                 "Disconnect"
-                            },
+                            }),
                             Side::Top,
                         ),
                         button,
@@ -2464,7 +2475,7 @@ impl Root {
                             self.with_tip(
                                 "call-chat-tip",
                                 Tip::text(
-                                    if hidden { "Show chat" } else { "Hide chat" },
+                                    dc_intl::tr(if hidden { "Show chat" } else { "Hide chat" }),
                                     Side::Top,
                                 ),
                                 tray(
@@ -2489,7 +2500,7 @@ impl Root {
                         this.child(
                             self.with_tip(
                                 "call-invite-tip",
-                                Tip::text("Invite", Side::Top),
+                                Tip::text(dc_intl::tr("Invite"), Side::Top),
                                 tray("call-invite", "voice_view_invite")
                                     .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx))),
                                 cx,
@@ -2513,7 +2524,7 @@ impl Root {
                             self.with_tip(
                                 "call-stay-on-top-tip",
                                 Tip::text(
-                                    if on { "Remove From Top" } else { "Stay On Top" },
+                                    dc_intl::tr(if on { "Remove From Top" } else { "Stay On Top" }),
                                     Side::Top,
                                 ),
                                 tray(
@@ -2538,7 +2549,7 @@ impl Root {
                     .when(guild != 0 || self.dmc.video, |this| {
                         this.child(self.with_tip(
                             "call-popout-tip",
-                            Tip::text("Pop Out", Side::Top),
+                            Tip::text(dc_intl::tr("Pop Out"), Side::Top),
                             tray("call-popout", "voice_view_popout").on_click(
                                 cx.listener(|this, _, _, cx| this.toggle_call_popout(cx)),
                             ),
@@ -2547,11 +2558,11 @@ impl Root {
                         .child(self.with_tip(
                             "call-fullscreen-tip",
                             Tip::text(
-                                if self.vv.fullscreen {
+                                dc_intl::tr(if self.vv.fullscreen {
                                     "Exit Full Screen"
                                 } else {
                                     "Full Screen"
-                                },
+                                }),
                                 Side::Top,
                             ),
                             tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(

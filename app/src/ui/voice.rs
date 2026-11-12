@@ -43,14 +43,14 @@ impl Call {
     }
 }
 
-/// The colour of a stream source without an icon (module 118277): one of six, chosen by the name's hash.
-fn source_color(name: &str) -> u32 {
-    const COLORS: [u32; 6] = [1752220, 3066993, 3447003, 0x9b59b6, 0xe91e63, 0xf1c40f];
-    let mut hash: i32 = 5381;
-    for unit in name.encode_utf16() {
-        hash = hash.wrapping_mul(33) ^ i32::from(unit);
-    }
-    COLORS[(hash as u32 % 6) as usize]
+/// Whether a voice state of this account with the session `theirs` takes the call `(guild, channel)` of the session
+/// `own` away: another session, in the same guild (a server) or the same channel (a call).
+fn taken_elsewhere(own: &str, theirs: &str, ours: (Id, Id), state: (Id, Option<Id>)) -> bool {
+    // A state without a channel (that session left) names no guild in the official check either.
+    own != theirs
+        && state
+            .1
+            .is_some_and(|channel| (ours.0 != 0 && state.0 == ours.0) || channel == ours.1)
 }
 
 /// The first character of the source's name in capitals (`text-transform: uppercase`), or a question mark.
@@ -176,6 +176,44 @@ impl Root {
     }
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
+        self.end_voice(true, cx);
+    }
+
+    /// The account joined voice from another device (`VOICE_STATE_UPDATES` of `SelectedChannelStore`, module 309010,
+    /// and `RTCConnectionStore`, module 495867): a voice state of this user with another session, in the guild or the
+    /// channel of the call here, takes the call away from this client. Nothing is sent: the service already moved it.
+    pub(super) fn voice_state_of_other_session(
+        &mut self,
+        data: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let id =
+            |value: &serde_json::Value| value.as_str().and_then(|text| text.parse::<Id>().ok());
+        let Some(call) = &self.call else {
+            return;
+        };
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        if me.is_none() || id(&data["user_id"]) != me {
+            return;
+        }
+        let (Some(own), Some(theirs)) = (
+            self.stores.session_id.as_deref(),
+            data["session_id"].as_str(),
+        ) else {
+            return;
+        };
+        if taken_elsewhere(
+            own,
+            theirs,
+            (call.guild, call.channel),
+            (id(&data["guild_id"]).unwrap_or(0), id(&data["channel_id"])),
+        ) {
+            self.end_voice(false, cx);
+        }
+    }
+
+    /// Ends the call here; `tell` sends the voice state that leaves the channel.
+    fn end_voice(&mut self, tell: bool, cx: &mut Context<Self>) {
         self.soundboard_stop();
         self.stream_stop(cx);
         self.leave_activity_on_call_end(cx);
@@ -187,7 +225,9 @@ impl Root {
                 crate::sounds::play_event(sound);
             }
             call.controls.disconnect();
-            self.send_voice_state(call.guild, None);
+            if tell {
+                self.send_voice_state(call.guild, None);
+            }
             self.voice_call_ended();
         }
         self.sync_ptt_hook();
@@ -539,15 +579,15 @@ impl Root {
         let own_stream = self.own_stream();
         let (status, status_color) = if call.connected {
             (
-                if camera_on {
+                dc_intl::tr(if camera_on {
                     "Video Connected"
                 } else {
                     "Voice Connected"
-                },
+                }),
                 "--text-feedback-positive",
             )
         } else {
-            ("Connecting", "--text-feedback-warning")
+            (dc_intl::tr("Connecting"), "--text-feedback-warning")
         };
         let quality = call.stats.quality(call.connected);
         let last_ping = call.stats.last();
@@ -635,7 +675,7 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.toggle_panel_popout(Popout::Connection(Tab::Connection), cx);
             }))
-            .child(super::icon("voice_ping", 18., quality.text()));
+            .child(super::icon(quality.glyph(), 18., quality.text()));
         let ping: AnyElement = match last_ping {
             Some(ms) if !matches!(self.panel.popout, Some(Popout::Connection(_))) => self
                 .with_tip(
@@ -669,7 +709,7 @@ impl Root {
         };
         let disconnect = self.with_tip(
             "voice-disconnect-tip",
-            Tip::text("Disconnect", Side::Top),
+            Tip::text(dc_intl::tr("Disconnect"), Side::Top),
             // `Tn` of module 596339: `useDisconnectLottie`, its events on the button.
             round_box("voice-disconnect")
                 .child(lottie_icon::icon(
@@ -686,11 +726,11 @@ impl Root {
         let camera = self.with_tip(
             "voice-camera-tip",
             Tip::text(
-                if camera_on {
+                dc_intl::tr(if camera_on {
                     "Turn Off Camera"
                 } else {
                     "Turn On Camera"
-                },
+                }),
                 Side::Top,
             ),
             if camera_on {
@@ -705,7 +745,7 @@ impl Root {
         );
         let screen = self.with_tip(
             "voice-screen-tip",
-            Tip::text("Share Your Screen", Side::Top),
+            Tip::text(dc_intl::tr("Share Your Screen"), Side::Top),
             if own_stream.is_some() {
                 wide_active(
                     "voice-screen",
@@ -728,7 +768,7 @@ impl Root {
         );
         let activity = self.with_tip(
             "voice-activity-tip",
-            Tip::text("Start An Activity", Side::Top),
+            Tip::text(dc_intl::tr("Start An Activity"), Side::Top),
             if self.activities.running.is_some() {
                 // `greyButtonActive`: green while this session is in an activity.
                 wide_active("voice-activity", &activity_id, Anim::Activity, None)
@@ -770,7 +810,10 @@ impl Root {
         } else {
             self.with_tip(
                 "voice-soundboard-tip",
-                Tip::text(soundboard_reason.unwrap_or("Open Soundboard"), Side::Top),
+                Tip::text(
+                    dc_intl::tr(soundboard_reason.unwrap_or("Open Soundboard")),
+                    Side::Top,
+                ),
                 soundboard,
                 cx,
             )
@@ -780,7 +823,7 @@ impl Root {
             let name = info.name.clone().unwrap_or_default();
             let stop = self.with_tip(
                 "voice-stream-stop-tip",
-                Tip::text("Stop Streaming", Side::Top),
+                Tip::text(dc_intl::tr("Stop Streaming"), Side::Top),
                 div()
                     .id("voice-stream-stop")
                     .size(px(32.))
@@ -1245,5 +1288,35 @@ impl Root {
                     .into_any_element()
             })
             .collect()
+    }
+}
+
+/// The colour of a stream source without an icon (module 118277): one of six, chosen by the name's hash.
+fn source_color(name: &str) -> u32 {
+    const COLORS: [u32; 6] = [1752220, 3066993, 3447003, 0x9b59b6, 0xe91e63, 0xf1c40f];
+    let mut hash: i32 = 5381;
+    for unit in name.encode_utf16() {
+        hash = hash.wrapping_mul(33) ^ i32::from(unit);
+    }
+    COLORS[(hash as u32 % 6) as usize]
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::taken_elsewhere;
+
+    #[test]
+    fn another_session_in_the_same_call_takes_it() {
+        assert!(taken_elsewhere("a", "b", (0, 500), (0, Some(500))));
+        assert!(taken_elsewhere("a", "b", (7, 70), (7, Some(71))));
+    }
+
+    #[test]
+    fn our_own_state_and_other_places_do_not() {
+        assert!(!taken_elsewhere("a", "a", (0, 500), (0, Some(500))));
+        assert!(!taken_elsewhere("a", "b", (0, 500), (0, Some(600))));
+        assert!(!taken_elsewhere("a", "b", (7, 70), (8, Some(80))));
+        // The other device leaving voice is not a move into our call.
+        assert!(!taken_elsewhere("a", "b", (7, 70), (7, None)));
     }
 }

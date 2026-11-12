@@ -1148,6 +1148,9 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                if name == "VOICE_STATE_UPDATE" {
+                    self.voice_state_of_other_session(&data, cx);
+                }
                 self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
@@ -3355,17 +3358,17 @@ impl Root {
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
-            _ if self.in_favorites() => "Favorites".to_owned(),
+            _ if self.in_favorites() => dc_intl::tr("Favorites").to_owned(),
             (Some(guild), _) => guild.name.clone(),
-            (None, None) if self.discover_active() => "Discover".to_owned(),
-            (None, None) if self.nitro_open => "Nitro".to_owned(),
-            (None, None) if self.quests_active() => "Quests".to_owned(),
-            (None, None) if self.shop_active() => "Shop".to_owned(),
+            (None, None) if self.discover_active() => dc_intl::tr("Discover").to_owned(),
+            (None, None) if self.nitro_open => dc_intl::tr("Nitro").to_owned(),
+            (None, None) if self.quests_active() => dc_intl::tr("Quests").to_owned(),
+            (None, None) if self.shop_active() => dc_intl::tr("Shop").to_owned(),
             // The title bar of /message-requests carries no title (golden message-requests/requests-empty).
             (None, None) if self.message_requests_active() => String::new(),
-            (None, None) => "Friends".to_owned(),
+            (None, None) => dc_intl::tr("Friends").to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
-            (None, Some(_)) => "Direct Messages".to_owned(),
+            (None, Some(_)) => dc_intl::tr("Direct Messages").to_owned(),
         };
         let in_dm = self.guild.is_none() && self.channel.is_some();
         let guild_icon = self.current_guild().map(|guild| {
@@ -4603,7 +4606,9 @@ impl Root {
                                     "--interactive-text-default",
                                 ) {
                                     Some(line) => this.child(line),
-                                    None => this.child(status_label(&self.stores.status)),
+                                    None => {
+                                        this.child(dc_intl::tr(status_label(&self.stores.status)))
+                                    }
                                 }
                             })
                             .when(in_voice, |this| {
@@ -4624,7 +4629,7 @@ impl Root {
                                         12.,
                                         "--text-feedback-positive",
                                     ))
-                                    .child(if sharing {
+                                    .child(dc_intl::tr(if sharing {
                                         "Sharing their screen"
                                     } else if dm_call {
                                         "In a call"
@@ -4632,7 +4637,7 @@ impl Root {
                                         "In a stage"
                                     } else {
                                         "In voice"
-                                    })
+                                    }))
                             }),
                     ),
             )
@@ -4651,7 +4656,10 @@ impl Root {
                             .child(
                                 self.with_tip(
                                     "mic",
-                                    Tip::text(if mic_muted { "Unmute" } else { "Mute" }, Side::Top),
+                                    Tip::text(
+                                        dc_intl::tr(if mic_muted { "Unmute" } else { "Mute" }),
+                                        Side::Top,
+                                    ),
                                     toggle(
                                         lottie_icon::Anim::Microphone,
                                         if mic_muted { "unmute" } else { "mute" },
@@ -4686,7 +4694,11 @@ impl Root {
                                 self.with_tip(
                                     "deafen",
                                     Tip::text(
-                                        if self.self_deaf { "Undeafen" } else { "Deafen" },
+                                        dc_intl::tr(if self.self_deaf {
+                                            "Undeafen"
+                                        } else {
+                                            "Deafen"
+                                        }),
                                         Side::Top,
                                     ),
                                     toggle(
@@ -4715,7 +4727,7 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
                     .child(self.with_tip(
                         "user-settings",
-                        Tip::text("User Settings", Side::Top),
+                        Tip::text(dc_intl::tr("User Settings"), Side::Top),
                         button("settings"),
                         cx,
                     )),
@@ -8191,6 +8203,8 @@ impl Render for Root {
         // The name styles read the accessibility switches from here.
         name_styles::set_preferences(self.pref_on("display_name_styles", true), motion::reduced());
         name_styles::pump(cx);
+        // The interface language, set before anything below formats text (`crate::intl`).
+        crate::intl::apply(self.interface_locale(), cx);
         // The regions reuse their frame until notified: a global they read that changed without a notify of this
         // view redraws them on the next frame.
         regions::sync_look(
@@ -8206,6 +8220,7 @@ impl Render for Root {
                 settings::client_theme::previewing(),
                 settings::client_theme::generation(),
                 self.pref_index(settings::prefs::TIME_FORMAT, 0),
+                dc_intl::generation(),
             )),
             window,
         );
@@ -8898,6 +8913,11 @@ impl Render for Root {
             .flex()
             .flex_col()
             .font_family(SANS)
+            // The locale's `--font-primary` after gg sans (`crate::intl`).
+            .map(|mut root| {
+                root.text_style().font_fallbacks = Some(crate::intl::font_fallbacks());
+                root
+            })
             .font_features(kerning())
             .text_size(px(16.))
             .line_height(px(22.))

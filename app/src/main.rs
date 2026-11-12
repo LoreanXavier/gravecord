@@ -14,6 +14,7 @@ mod idle;
 mod inert;
 mod inline;
 mod instance;
+mod intl;
 mod logging;
 mod login_art;
 mod lottie;

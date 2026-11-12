@@ -393,11 +393,14 @@ impl Root {
     fn stream_identity(&self) -> Option<(u64, String)> {
         let me = self.stores.current_user.as_ref()?.id;
         let call = self.call.as_ref()?;
+        // The voice state must be this connection's own: the account may be in the call from another device, and a
+        // stream asked for with that device's session is refused.
+        let own = self.stores.session_id.as_deref();
         let session = self
             .stores
             .voice_members(call.guild, call.channel)
             .into_iter()
-            .find(|state| state.user_id == me)?
+            .find(|state| state.user_id == me && own.is_none_or(|own| own == state.session_id))?
             .session_id
             .clone();
         Some((me, session))

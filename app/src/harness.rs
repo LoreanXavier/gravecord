@@ -790,6 +790,17 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "pref: {line}");
             }
+            // Capture only: the interface language as the Language select would set it, on this run only (nothing is
+            // sent). The catalog is loaded before the step returns, so the next frame is in that language.
+            ["locale", code] => {
+                let loaded = crate::intl::load_now(code);
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_locale(code);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "locale: {line} ({loaded})");
+            }
             // Capture only: the account's `premium_type` is set locally (none, 1, 2 or 3) to see the subscriber
             // states of the Nitro screens. Nothing is sent, and a normal build has no such step.
             // The Clips page's own steps: `clips get`, `clips location <path>` (a folder dialog's answer), and the

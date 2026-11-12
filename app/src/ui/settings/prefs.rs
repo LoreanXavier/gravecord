@@ -209,6 +209,8 @@ fn raw_of(key: &str) -> Option<&'static [u64]> {
         .map(|(_, raw)| *raw)
 }
 const UI_DENSITY: &str = "appearance_ui_density";
+/// The Language select (`localization.locale`).
+pub(in crate::ui) const LANGUAGE: &str = "language_select_setting";
 
 /// Whether Time format is 24-hour, for the formatting functions that have no `Root` at hand. Set each frame.
 static CLOCK_24: AtomicBool = AtomicBool::new(false);
@@ -428,6 +430,35 @@ impl Root {
             Some(value) => format!("{key} = {value}"),
             None => format!("{key} unset"),
         }
+    }
+
+    /// The interface language (`LocaleStore.locale`, module 773669): the Language select's choice, i.e. the account's
+    /// `localization.locale`, else the locale shown before the account's arrived.
+    pub(in crate::ui) fn interface_locale(&self) -> &'static str {
+        let index = self.pref_index(LANGUAGE, usize::MAX);
+        match dc_proto::settings::LOCALES.get(index) {
+            Some(code) => {
+                if self.stores.prefs.contains_key(LANGUAGE) {
+                    crate::intl::remember(code);
+                }
+                code
+            }
+            None => crate::intl::startup_locale(),
+        }
+    }
+
+    /// The harness's `locale <code>`: shows the interface in a locale as a choice in the Language select would, on
+    /// this capture only (nothing is sent).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_locale(&mut self, code: &str) -> String {
+        let Some(index) = dc_proto::settings::LOCALES
+            .iter()
+            .position(|known| *known == code)
+        else {
+            return format!("{code} is not a locale of the Language select");
+        };
+        self.setting_choices.insert(LANGUAGE, Choice::Index(index));
+        format!("locale {code} (loaded {})", dc_intl::is_loaded(code))
     }
 
     /// The links of messages are underlined at rest (`underline_links`, the accessibility setting).

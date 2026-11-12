@@ -809,7 +809,7 @@ fn category_header(
                         .line_height(px(32.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
-                        .child(title),
+                        .child(dc_intl::tr(title)),
                 )
                 .when(!description.is_empty(), |this| {
                     // `runs_text` takes the link presses for the category `link_owner` named (Profile Privacy's
@@ -1162,7 +1162,7 @@ impl Root {
                         .text_size(px(16.))
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
-                        .child(entry.label),
+                        .child(dc_intl::tr(entry.label)),
                 ),
         )
         .when(new_badge_after, |this| this.child(new_badge()))
@@ -1224,7 +1224,9 @@ impl Root {
         let seen = ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed);
         let rows: f32 = anchors
             .iter()
-            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge && !seen) as f32)
+            .map(|anchor| {
+                20. * wrapped_lines(window, dc_intl::tr(anchor.label), anchor.badge && !seen) as f32
+            })
             .sum();
         rows + 16. * anchors.len().saturating_sub(1) as f32 + 16.
     }
@@ -1250,7 +1252,9 @@ impl Root {
         let seen = ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed);
         let heights: Vec<f32> = anchors
             .iter()
-            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge && !seen) as f32)
+            .map(|anchor| {
+                20. * wrapped_lines(window, dc_intl::tr(anchor.label), anchor.badge && !seen) as f32
+            })
             .collect();
         let total = heights.iter().sum::<f32>() + 16. * heights.len().saturating_sub(1) as f32;
         let thumb_top: f32 = heights
@@ -1335,7 +1339,7 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .child(div().min_w(px(0.)).child(anchor.label))
+                    .child(div().min_w(px(0.)).child(dc_intl::tr(anchor.label)))
                     .when(anchor.badge && !seen, |this| this.child(new_badge()))
                     .into_any_element()
             })
@@ -1408,7 +1412,7 @@ impl Root {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_profile_editor(cx);
                             }))
-                            .child("Edit Profiles")
+                            .child(dc_intl::tr("Edit Profiles"))
                             .child(mask_icon("settings_edit_pencil", 12., "--text-muted")),
                     ),
             )
@@ -1605,7 +1609,7 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-muted"))
-                        .child(label)
+                        .child(dc_intl::tr(label))
                 }))
                 .child(
                     div().flex().flex_col().gap(px(4.)).children(
@@ -2105,7 +2109,7 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child(label_of(open.page))
+                            .child(dc_intl::tr(label_of(open.page)))
                             .into_any_element(),
                     })
                     .child(
@@ -2558,6 +2562,46 @@ mod tests {
     fn page_slugs_match_the_capture_names() {
         assert_eq!(super::page_slug("Voice & Video"), "voice-video");
         assert_eq!(super::page_slug("Data & Privacy"), "data-privacy");
+    }
+
+    /// The sidebar, its subnav and the Language page go through `dc_intl::tr`: every label is an en-US message.
+    #[test]
+    fn sidebar_and_language_labels_are_official_messages() {
+        let known = |text: &str| dc_intl::keys_of(text).next().is_some();
+        for (section, entries) in super::SECTIONS {
+            if let Some(section) = section {
+                assert!(known(section), "{section:?}");
+            }
+            for entry in entries.iter() {
+                assert!(known(entry.label), "{:?}", entry.label);
+                for anchor in super::anchors_of(entry) {
+                    assert!(known(anchor.label), "{:?}", anchor.label);
+                }
+            }
+        }
+        assert!(known("Edit Profiles") && known("Search"));
+        for node in super::pages::nodes(super::Page::LanguageTime) {
+            let super::model::Node::Category { children, .. } = node else {
+                continue;
+            };
+            for child in children.iter() {
+                match child {
+                    super::model::Node::Select {
+                        label, description, ..
+                    } => {
+                        assert!(known(label), "{label:?}");
+                        assert!(known(description[0].0), "{:?}", description[0].0);
+                    }
+                    super::model::Node::Radio { label, options, .. } => {
+                        assert!(known(label), "{label:?}");
+                        for option in options.iter() {
+                            assert!(known(option.label), "{:?}", option.label);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     #[test]

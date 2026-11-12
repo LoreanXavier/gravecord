@@ -29,6 +29,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
+# CLDR plural categories and number formatting for the message formatter (crates/dc-intl): what the official client
+# gets from the browser's Intl.PluralRules and Intl.NumberFormat (ICU/CLDR), here from ICU4X's compiled CLDR data.
+icu_plurals = "2"
+icu_decimal = "2"
+icu_locale_core = "2"
+icu_provider = { version = "2", features = ["sync"] }
+fixed_decimal = { version = "0.7", features = ["ryu"] }
 # Voice, at Serein's pins (vendor/serein/crates/discord-voice/Cargo.toml); aes-gcm at the version Serein's lockfile resolves.
 aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "alloc"] }
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
@@ -64,6 +71,7 @@ dc-detect = { path = "crates/dc-detect" }
 dc-gateway = { path = "crates/dc-gateway" }
 dc-clips = { path = "crates/dc-clips" }
 dc-hotkey = { path = "crates/dc-hotkey" }
+dc-intl = { path = "crates/dc-intl" }
 dc-markdown = { path = "crates/dc-markdown" }
 dc-state = { path = "crates/dc-state" }
 dc-tokens = { path = "crates/dc-tokens" }

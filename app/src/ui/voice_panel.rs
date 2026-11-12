@@ -105,6 +105,16 @@ impl Quality {
             Quality::Bad => "--background-feedback-mod-critical",
         }
     }
+    /// The icon of module 382404 (`D`): three arcs when fine, two when average, one when bad, and the arcs with a
+    /// warning sign while nothing is known.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Quality::Fine => "voice_ping",
+            Quality::Average => "voice_ping_average",
+            Quality::Bad => "voice_ping_bad",
+            Quality::Unknown => "voice_ping_unknown",
+        }
+    }
     pub fn text(self) -> &'static str {
         match self {
             Quality::Unknown | Quality::Fine => "--text-feedback-positive",
