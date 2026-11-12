@@ -493,6 +493,11 @@ pub async fn run(
                     });
                 }
             }
+            // The autoscroll mode and panning cursor, which a frame does not show.
+            ["autoscroll", "state"] => {
+                let line = root.read_with(cx, |root, _| root.autoscroll_state_line());
+                let _ = writeln!(output, "{line}");
+            }
             // The primary button goes down and stays down, so a frame can show the `:active` look; `release` lets go.
             ["hold", x, y] => {
                 if let Some(position) = at(x, y) {
@@ -531,6 +536,25 @@ pub async fn run(
                 if let Ok(parsed) = Keystroke::parse(stroke) {
                     cx.update(|cx| key(cx, window, parsed));
                 }
+            }
+            // `modifiers shift` / `modifiers none`: the modifier keys now held, as the system reports a change.
+            ["modifiers", held] => {
+                let modifiers = gpui::Modifiers {
+                    shift: held.contains("shift"),
+                    control: held.contains("ctrl"),
+                    alt: held.contains("alt"),
+                    ..gpui::Modifiers::default()
+                };
+                cx.update(|cx| {
+                    dispatch(
+                        cx,
+                        window,
+                        PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent {
+                            modifiers,
+                            capslock: gpui::Capslock::default(),
+                        }),
+                    )
+                });
             }
             // Lets a key go, for push to talk.
             ["keyup", stroke] => {

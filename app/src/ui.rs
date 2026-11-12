@@ -145,6 +145,7 @@ mod gif_tiles;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
+mod hover_bar;
 pub(crate) mod image_cache;
 pub(crate) mod image_fit;
 mod image_retry;
@@ -6582,7 +6583,11 @@ impl Root {
                 // The row whose context menu is open keeps its hover tint and toolbar (the `contextMenuOpen` message
                 // state; frames message-menu/*, audio-attachment/context-menu).
                 let menu_open = self.menu.is_some_and(|open| open.message == id);
-                let hovered = self.hovered == Some(id) || menu_open;
+                // The bar's reaction picker selects the row too (frame pickers/emoji-reaction: `selected_SY_P2T`).
+                let selected = menu_open || self.reaction_picker_on(message);
+                let pointer = self.hovered == Some(id);
+                let hovered = pointer || selected;
+                let compact = self.compact_messages();
                 // `.replying` and `.highlighted` (524434): the highlight tint with a 2px brand bar; `.mentioned`: the
                 // warning tint with a 2px warning bar. The hover tints differ per state.
                 let replying = self.replying.as_ref().is_some_and(|reply| reply.id == id);
@@ -6643,7 +6648,7 @@ impl Root {
                             ..color("--brand-500")
                         })
                     })
-                    .when(menu_open, |this| this.bg(over))
+                    .when(selected, |this| this.bg(over))
                     .children(bar.map(|token| {
                         div()
                             .absolute()
@@ -6657,14 +6662,19 @@ impl Root {
                     .pr(px(24.))
                     .pt(px(2.))
                     .pb(px(2.))
-                    // `.mouse-mode.full-motion .message_SY_P2T:hover` (stylesheet 524434).
-                    .hover(move |style| style.bg(over))
-                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                        if *inside {
-                            this.hovered = Some(id);
-                        } else if this.hovered == Some(id) {
-                            this.hovered = None;
-                        }
+                    // `.mouse-mode.full-motion .message_SY_P2T:hover` (stylesheet 524434): no transition, and none with
+                    // reduced motion. The hover bar is inside the message, so the pointer on it keeps the tint.
+                    .when(!motion::reduced(), |this| {
+                        this.hover(move |style| style.bg(over))
+                            .when(pointer, |this| this.bg(over))
+                    })
+                    .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                        this.hovered = hover_bar::hover_after(
+                            id,
+                            *inside,
+                            this.hovered,
+                            window.mouse_position(),
+                        );
                         cx.notify();
                     }))
                     .when(!is_starter, |this| {
@@ -6675,6 +6685,7 @@ impl Root {
                             }),
                         )
                     })
+                    .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered && editing.is_none() && !is_starter, |this| {
                         // No bar while a message is sending, Retry and Delete once it failed, and none on a private
                         // message (module 891522).
@@ -6687,7 +6698,12 @@ impl Root {
                             None => this.child(self.message_toolbar_at(
                                 message,
                                 own,
-                                if *head { -16. } else { -25. },
+                                hover_bar::bar_top(
+                                    *head,
+                                    compact,
+                                    message.kind,
+                                    message.reference_id.is_some(),
+                                ),
                                 cx,
                             )),
                         }
@@ -6728,14 +6744,43 @@ impl Root {
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
-                let compact = self.compact_messages();
                 if !*head && !compact {
-                    return row.child(body.child(content)).into_any_element();
+                    // `.timestamp.alt` with `timestampVisibleOnHover` (stylesheet 738015): the short time in the
+                    // 56px gutter, right-aligned, 11px `--text-muted`, shown while the pointer is on the message.
+                    let time = pointer.then(|| {
+                        self.with_tip(
+                            format!("message-alt-time-{id}"),
+                            Tip::body(
+                                Body::Text(timestamps::full_time(message.local_time()).into()),
+                                Side::Top,
+                            )
+                            .after(timestamps::DELAY_MS),
+                            div()
+                                .w(px(56.))
+                                .h(px(22.))
+                                .flex()
+                                .justify_end()
+                                .text_size(px(11.))
+                                .line_height(px(22.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(settings::prefs::clock(&message.local_time())),
+                            cx,
+                        )
+                        .absolute()
+                        .left_0()
+                        .top(px(2.))
+                    });
+                    return row
+                        .child(body.children(time).child(content))
+                        .into_any_element();
                 }
                 let avatar = self
                     .images
                     .get(&self.guild_avatar_source(&message.author).0)
                     .cloned();
+                // The group's avatar plays while any of its messages is hovered (module 21299 `F`).
+                let playing = hovered || self.group_hovered(row_ix);
                 // A command's reply has the "used /command" bar where a reply has its preview.
                 let command_bar = if message.referenced.is_none() {
                     self.interaction_bar(message)
@@ -6809,7 +6854,7 @@ impl Root {
                                                         self.live_avatar(
                                                             &message.author,
                                                             size,
-                                                            hovered,
+                                                            playing,
                                                             cx,
                                                         )
                                                         .or_else(|| {
@@ -6874,7 +6919,7 @@ impl Root {
                                             format!("avatar-{id}"),
                                             message.author.id,
                                             div().size(px(40.)).children(
-                                                self.live_avatar(&message.author, 40., hovered, cx)
+                                                self.live_avatar(&message.author, 40., playing, cx)
                                                     .or_else(|| {
                                                         avatar.map(|image| {
                                                             img(image)
@@ -6983,7 +7028,9 @@ impl Root {
             .as_ref()
             .is_some_and(|user| user.id == message.author.id);
         let menu_open = self.menu.is_some_and(|open| open.message == id);
-        let hovered = self.hovered == Some(id) || menu_open;
+        let selected = menu_open || self.reaction_picker_on(message);
+        let pointer = self.hovered == Some(id);
+        let hovered = pointer || selected;
         let over = color("--message-background-hover");
         div()
             .pt(px(if head { 17. } else { 0. }))
@@ -6992,14 +7039,18 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("system-row-{id}")))
                     .relative()
-                    .when(menu_open, |this| this.bg(over))
-                    .hover(move |style| style.bg(over))
-                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                        if *inside {
-                            this.hovered = Some(id);
-                        } else if this.hovered == Some(id) {
-                            this.hovered = None;
-                        }
+                    .when(selected, |this| this.bg(over))
+                    .when(!motion::reduced(), |this| {
+                        this.hover(move |style| style.bg(over))
+                            .when(pointer, |this| this.bg(over))
+                    })
+                    .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                        this.hovered = hover_bar::hover_after(
+                            id,
+                            *inside,
+                            this.hovered,
+                            window.mouse_position(),
+                        );
                         cx.notify();
                     }))
                     .on_mouse_down(
@@ -7009,11 +7060,18 @@ impl Root {
                         }),
                     )
                     .child(line)
+                    .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered, |this| {
+                        // A system line is never `isHeader` (module 143413), so its bar is 25px up.
                         this.child(self.message_toolbar_at(
                             message,
                             own,
-                            if head { -16. } else { -25. },
+                            hover_bar::bar_top(
+                                head,
+                                self.compact_messages(),
+                                message.kind,
+                                message.reference_id.is_some(),
+                            ),
                             cx,
                         ))
                     }),
@@ -7021,9 +7079,9 @@ impl Root {
             .into_any_element()
     }
 
-    /// Own messages offer Edit; the official bar is at -25px, 14px in from the row's right edge.
-    /// The bar `top` px from its message's box: `.container_V_VY9Q` is 25px above it, `.isHeader` (the first message
-    /// of a group) 16px (captures stage-ann/ann-message-hover and audio-attachment/card-hover: box 82.4, bar 66.4).
+    /// The hover bar of a message (`nA` in module 891522), `top` px from its message's box (`hover_bar::bar_top`).
+    /// `.container_V_VY9Q` is 14px in from the row's right edge; `.popover_DpHsW6` is a 1px `--border-muted` box with
+    /// `--shadow-low`, turning `--border-subtle` with `--shadow-medium` while the pointer is over it.
     fn message_toolbar_at(
         &self,
         message: &Message,
@@ -7031,25 +7089,32 @@ impl Root {
         top: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        use hover_bar::Button;
         let id = message.id;
         let text = message.content.clone();
-        // Module 448761: the message types a person writes (`USER_MESSAGE`, the ones that can be edited), the ones
-        // that take a reply (`REPLYABLE`) and the ones that can be forwarded (`FORWARDABLE`). A call or a pin line
-        // is in none of them: its bar holds the reactions and More.
-        const USER_MESSAGE: [u64; 9] = [0, 19, 20, 23, 26, 41, 45, 47, 68];
-        const REPLYABLE: [u64; 21] = [
-            0, 7, 19, 20, 23, 24, 25, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 45, 46, 69,
-        ];
-        const FORWARDABLE: [u64; 5] = [0, 19, 20, 23, 35];
-        let kind = message.kind;
-        let edits = own && USER_MESSAGE.contains(&kind);
-        let replies = !edits && REPLYABLE.contains(&kind);
-        let forwards = FORWARDABLE.contains(&kind);
+        let mut caps = self.bar_caps(message, own);
+        let picker_open = self.reaction_picker_on(message);
+        let more_open = self.menu.is_some_and(|open| {
+            open.message == id && matches!(open.anchor, menu::Anchor::MoreButton(_))
+        });
+        // `isExpanded`: Shift held, not in keyboard mode, and no picker or menu of the bar open.
+        caps.expanded =
+            hover_bar::shift_held() && !self.keyboard_mode() && !picker_open && !more_open;
         let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
             self.quick_reactions().into_iter().take(3).collect();
-        let has_quick = !quick.is_empty();
-        // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636).
+        // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636); the button's
+        // colour is `--interactive-text-default`, `-hover` under the pointer, `-active` when selected (319714).
         let button = |name: &str| {
+            let over = motion::hovered(motion::messages::hover_key(name));
+            let selected = name == "msg_more" && more_open;
+            let dangerous = name == "msg_trash";
+            let tint = match (dangerous, over || selected) {
+                (true, false) => "--control-critical-secondary-text-default",
+                (true, true) => "--control-critical-secondary-text-hover",
+                (false, false) => "--interactive-text-default",
+                (false, true) if selected => "--interactive-text-active",
+                (false, true) => "--interactive-text-hover",
+            };
             div()
                 .id(SharedString::from(format!("toolbar-button-{name}")))
                 .relative()
@@ -7059,25 +7124,32 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
+                .when(selected, |this| {
+                    this.bg(color("--interactive-background-selected"))
+                })
                 .hover(|style| style.bg(color("--interactive-background-hover")))
                 // `.hoverBarButton:active:not([aria-disabled=true])` (28636).
                 .active(|style| style.bg(color("--interactive-background-active")))
-                .child(motion::messages::icon_box(
-                    name,
-                    icon(name, 20., "--interactive-text-default"),
-                ))
+                .child(motion::messages::icon_box(name, icon(name, 20., tint)))
                 .child(motion::hover_probe(motion::messages::hover_key(name)))
                 .child(motion::messages::press_probe(name))
         };
-        div()
+        let popover = motion::key(&("hover-bar-popover", id));
+        let lift = motion::hover_value(popover, motion::css(100., motion::Ease::EaseOut));
+        let mut bar = div()
             .id(SharedString::from(format!("toolbar-{id}")))
             .occlude()
-            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                // The bar reaches above its row, so it has to keep the row's hover alive.
+            .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                // The bar reaches above its row, so it keeps the row's hover alive; leaving it for somewhere outside
+                // its message ends it.
                 if *inside {
                     this.hovered = Some(id);
-                    cx.notify();
+                } else if this.hovered == Some(id)
+                    && !hover_bar::row_contains(id, window.mouse_position())
+                {
+                    this.hovered = None;
                 }
+                cx.notify();
             }))
             .absolute()
             .top(px(top))
@@ -7087,157 +7159,206 @@ impl Root {
             .rounded(px(8.))
             .bg(color("--background-surface-high"))
             .border_1()
-            .border_color(color("--background-mod-subtle"))
+            .border_color(color(if motion::hovered(popover) {
+                "--border-subtle"
+            } else {
+                "--border-muted"
+            }))
+            .shadow(vec![hover_bar::popover_shadow(lift)])
             .flex()
             .items_center()
-            // The three most frecent reactions, then a separator (`separator_DpHsW6`).
-            .children(quick.into_iter().enumerate().map(|(index, emoji)| {
-                let picture = self
-                    .images
-                    .get(&format!("emoji:{}", emoji.surrogates))
-                    .cloned();
-                let channel = message.channel_id;
-                div()
-                    .id(SharedString::from(format!("toolbar-quick-{index}")))
-                    .relative()
-                    .size(px(28.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(color("--interactive-background-hover")))
-                    .active(|style| style.bg(color("--interactive-background-active")))
-                    .children(picture.map(|picture| {
-                        motion::messages::icon_box(
-                            &format!("quick-{index}"),
-                            img(picture).size(px(20.)),
-                        )
-                    }))
-                    .child(motion::hover_probe(motion::messages::hover_key(&format!(
-                        "quick-{index}"
-                    ))))
-                    .child(motion::messages::press_probe(&format!("quick-{index}")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.track_reaction(emoji.surrogates);
-                        let _ = this.requests.send(Request::React {
-                            channel,
-                            message: id,
-                            emoji: emoji.surrogates.to_owned(),
-                            add: true,
-                            location: "Message Hover Bar",
-                            burst: false,
-                        });
-                        cx.notify();
-                    }))
-            }))
-            .when(has_quick, |this| {
-                this.child(
-                    div()
-                        .mx(px(4.))
-                        .w(px(1.))
-                        .h(px(24.))
-                        .rounded_full()
-                        .bg(color("--border-subtle")),
-                )
-            })
-            .child(
+            .child(hover_bar::probe(id, true))
+            .child(motion::hover_probe(popover));
+        for which in hover_bar::buttons(caps) {
+            let (label, name) = hover_bar::label_icon(which, caps);
+            let tip_key = format!("toolbar-{name}");
+            let tipped = |cx: &mut Context<Self>| {
                 self.with_tip(
-                    "toolbar-react",
-                    Tip::text("Add Reaction", Side::Top),
-                    button("msg_react"),
+                    tip_key.clone(),
+                    Tip::text(label, Side::Top),
+                    button(name),
                     cx,
                 )
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let anchor = this.tip_anchors.borrow().get("toolbar-react").copied();
-                    if let (Some(bounds), Some(channel)) = (anchor, this.channel) {
-                        this.tip = None;
-                        this.open_picker(
-                            picker::Target::Reaction {
+            };
+            bar = match which {
+                // The three most frecent reactions, then a separator (`np`, `separator_DpHsW6`).
+                Button::Quick => bar
+                    .children(quick.iter().enumerate().map(|(index, emoji)| {
+                        let emoji = *emoji;
+                        let picture = self
+                            .images
+                            .get(&format!("emoji:{}", emoji.surrogates))
+                            .cloned();
+                        let channel = message.channel_id;
+                        let reacted = message
+                            .reactions
+                            .iter()
+                            .any(|reaction| reaction.me && reaction.name == emoji.surrogates);
+                        let key = format!("quick-{index}");
+                        let target = div()
+                            .id(SharedString::from(format!("toolbar-quick-{index}")))
+                            .relative()
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(color("--interactive-background-hover")))
+                            .active(|style| style.bg(color("--interactive-background-active")))
+                            .children(picture.map(|picture| {
+                                motion::messages::icon_box(&key, img(picture).size(px(20.)))
+                            }))
+                            .child(motion::hover_probe(motion::messages::hover_key(&key)))
+                            .child(motion::messages::press_probe(&key));
+                        self.with_tip(
+                            format!("toolbar-quick-tip-{index}"),
+                            Tip::body(
+                                Body::Emoji(
+                                    format!(":{}:", emoji.names[0]).into(),
+                                    hover_bar::quick_hint(reacted).into(),
+                                ),
+                                Side::Top,
+                            ),
+                            target,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // `nC`: a reaction of your own is taken back.
+                            if !reacted {
+                                this.track_reaction(emoji.surrogates);
+                            }
+                            let _ = this.requests.send(Request::React {
                                 channel,
                                 message: id,
-                            },
-                            gpui::point(bounds.left(), bounds.top()),
-                            window,
-                            cx,
-                        );
-                    }
-                })),
-            )
-            .when(edits, |this| {
-                this.child(
-                    div()
-                        .id("toolbar-edit")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.begin_edit(id, &text, window, cx);
+                                emoji: emoji.surrogates.to_owned(),
+                                add: !reacted,
+                                location: "Message Hover Bar",
+                                burst: false,
+                            });
+                            cx.notify();
                         }))
-                        .child(self.with_tip(
-                            "toolbar-edit-tip",
-                            Tip::text("Edit", Side::Top),
-                            button("msg_edit"),
-                            cx,
-                        )),
-                )
-            })
-            // Others' messages offer Reply where your own offer Edit.
-            .when(replies, |this| {
-                let found = message.clone();
-                this.child(
-                    self.with_tip(
-                        "toolbar-reply",
-                        Tip::text("Reply", Side::Top),
-                        button("menu_reply"),
-                        cx,
-                    )
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    }))
+                    .when(!quick.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .mx(px(4.))
+                                .w(px(1.))
+                                .h(px(24.))
+                                .rounded_full()
+                                .bg(color("--border-subtle")),
+                        )
+                    }),
+                Button::AddReaction => {
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, window, cx| {
+                        let anchor = this.tip_anchors.borrow().get("toolbar-msg_react").copied();
+                        if let (Some(bounds), Some(channel)) = (anchor, this.channel) {
+                            this.tip = None;
+                            this.open_picker(
+                                picker::Target::Reaction {
+                                    channel,
+                                    message: id,
+                                },
+                                gpui::point(bounds.left(), bounds.top()),
+                                window,
+                                cx,
+                            );
+                        }
+                    })))
+                }
+                Button::Edit => {
+                    let text = text.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, window, cx| {
+                        this.tip = None;
+                        this.begin_edit(id, &text, window, cx);
+                    })))
+                }
+                Button::Reply => {
+                    let found = message.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, window, cx| {
                         this.tip = None;
                         this.begin_reply(found.clone(), window, cx);
-                    })),
-                )
-            })
-            .when(forwards, |this| {
-                this.child(
-                    self.with_tip(
-                        "toolbar-forward",
-                        Tip::text("Forward", Side::Top),
-                        button("msg_forward"),
-                        cx,
-                    )
-                    .cursor_pointer()
-                    .on_click({
-                        let found = message.clone();
-                        cx.listener(move |this, _, window, cx| {
-                            this.tip = None;
-                            this.open_forward(found.clone(), window, cx);
-                        })
-                    }),
-                )
-            })
-            .children(self.publish_button(message, &button, cx))
-            .child(
-                self.with_tip(
-                    "toolbar-more",
-                    Tip::text("More", Side::Top),
-                    button("msg_more"),
-                    cx,
-                )
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let anchor = this.tip_anchors.borrow().get("toolbar-more").copied();
-                    if let Some(bounds) = anchor {
+                        // `$b` of module 519222: a Shift click replies without the mention.
+                        if hover_bar::shift_held() {
+                            this.reply_ping = false;
+                        }
+                    })))
+                }
+                Button::Forward => {
+                    let found = message.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, window, cx| {
                         this.tip = None;
-                        this.open_menu(
-                            menu::Anchor::MoreButton(gpui::point(bounds.left(), bounds.top())),
-                            id,
-                            own,
-                            cx,
-                        );
-                    }
-                })),
-            )
+                        this.open_forward(found.clone(), window, cx);
+                    })))
+                }
+                Button::Publish => bar.children(self.publish_button(message, &button, cx)),
+                Button::ViewThread => {
+                    let guild = self.guild;
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        if let Some(guild) = guild {
+                            this.select(guild, Some(id));
+                        }
+                        cx.notify();
+                    })))
+                }
+                Button::CopyId => {
+                    let channel = message.channel_id;
+                    bar.child(tipped(cx).on_click(cx.listener(move |_, _, _, cx| {
+                        // `DT` of module 519222: with Shift, `<channel>-<message>`.
+                        let value = if hover_bar::shift_held() {
+                            format!("{channel}-{id}")
+                        } else {
+                            id.to_string()
+                        };
+                        actions::log_effect("Copy Message ID", "clipboard text", value.len());
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
+                    })))
+                }
+                Button::CopyLink
+                | Button::MarkUnread
+                | Button::Bookmark
+                | Button::Pin
+                | Button::Thread
+                | Button::Delete => {
+                    let action = match which {
+                        Button::CopyLink => menu::Action::CopyLink,
+                        Button::MarkUnread => menu::Action::MarkUnread,
+                        Button::Bookmark => menu::Action::Bookmark,
+                        Button::Pin => menu::Action::Pin,
+                        Button::Thread => menu::Action::Thread,
+                        _ => menu::Action::Delete,
+                    };
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, window, cx| {
+                        this.tip = None;
+                        // `rS` and `RC` of module 519222: with Shift, pin and delete ask nothing.
+                        if matches!(action, menu::Action::Pin | menu::Action::Delete)
+                            && hover_bar::shift_held()
+                        {
+                            this.run_unconfirmed(action, id, cx);
+                        } else {
+                            this.run_action(action, id, window, cx);
+                        }
+                    })))
+                }
+                Button::More => {
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        let anchor = this.tip_anchors.borrow().get("toolbar-msg_more").copied();
+                        if let Some(bounds) = anchor {
+                            this.tip = None;
+                            this.open_menu(
+                                menu::Anchor::MoreButton(gpui::point(bounds.left(), bounds.top())),
+                                id,
+                                own,
+                                cx,
+                            );
+                        }
+                    })))
+                }
+            };
+        }
+        bar
     }
 
     fn edit_box(&self, editor: Entity<Editor>) -> impl IntoElement {
@@ -8178,12 +8299,19 @@ impl Render for Root {
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
+                if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
+                    cx.notify();
+                }
             }))
             .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
                 this.voice_key_up(&event.keystroke, cx);
             }))
             .on_modifiers_changed(cx.listener(
                 |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    // The message hover bar expands while Shift is held (module 311283).
+                    if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
+                        cx.notify();
+                    }
                     this.voice_modifiers(event.modifiers, cx);
                 },
             ))
@@ -8853,7 +8981,7 @@ impl Render for Root {
                 self.call_fullscreen_layer(window, cx)
             })
             .children(self.boost_page_overlay(cx))
-            .children(self.boost_apply_layer(cx))
+            .children(self.boost_apply_layer(window, cx))
             .children(self.overview_confirm_modal(cx))
             .children(self.access_menu_layer(cx))
             .children(self.discovery_select_layer(cx))

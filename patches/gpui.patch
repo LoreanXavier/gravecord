@@ -433,10 +433,53 @@ index 176072f..caf1731 100644
                          .paint_svg(bounds, path.clone(), None, transformation, color, cx)
                          .log_err();
 diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
-index b84bcc5..7626033 100644
+index b84bcc5..2e58cab 100644
 --- a/crates/gpui/src/platform.rs
 +++ b/crates/gpui/src/platform.rs
-@@ -3703,6 +3703,7 @@ mod atlas_tests {
+@@ -3095,6 +3095,42 @@ pub enum CursorStyle {
+     /// A cursor indicating that the operation will result in a context menu
+     /// corresponds to the CSS cursor value `context-menu`
+     ContextualMenu,
++
++    /// Middle-button autoscroll, pointer at rest in a box that scrolls both ways
++    /// (Chromium's `kMiddlePanning`)
++    PanMiddle,
++
++    /// Middle-button autoscroll, pointer at rest in a box that scrolls vertically only
++    /// (Chromium's `kMiddlePanningVertical`)
++    PanMiddleVertical,
++
++    /// Middle-button autoscroll, pointer at rest in a box that scrolls horizontally only
++    /// (Chromium's `kMiddlePanningHorizontal`)
++    PanMiddleHorizontal,
++
++    /// Middle-button autoscroll toward the top (Chromium's `kNorthPanning`)
++    PanNorth,
++
++    /// Middle-button autoscroll toward the bottom (Chromium's `kSouthPanning`)
++    PanSouth,
++
++    /// Middle-button autoscroll toward the right (Chromium's `kEastPanning`)
++    PanEast,
++
++    /// Middle-button autoscroll toward the left (Chromium's `kWestPanning`)
++    PanWest,
++
++    /// Middle-button autoscroll toward the top right (Chromium's `kNorthEastPanning`)
++    PanNorthEast,
++
++    /// Middle-button autoscroll toward the top left (Chromium's `kNorthWestPanning`)
++    PanNorthWest,
++
++    /// Middle-button autoscroll toward the bottom right (Chromium's `kSouthEastPanning`)
++    PanSouthEast,
++
++    /// Middle-button autoscroll toward the bottom left (Chromium's `kSouthWestPanning`)
++    PanSouthWest,
+ }
+ 
+ /// A clipboard item that should be copied to the clipboard
+@@ -3703,6 +3739,7 @@ mod atlas_tests {
          AtlasKey::Image(RenderImageParams {
              image_id: crate::ImageId(image_id),
              frame_index: 0,
@@ -2228,6 +2271,72 @@ index 8bb14d6..5e98288 100644
          })
      }
  
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index b24300b..a8ff6de 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -1386,6 +1386,17 @@ pub(super) fn cursor_style_to_icon_names(style: CursorStyle) -> &'static [&'stat
+         CursorStyle::DragLink => &["alias"],
+         CursorStyle::DragCopy => &["copy"],
+         CursorStyle::ContextualMenu => &["context-menu"],
++        CursorStyle::PanMiddle
++        | CursorStyle::PanMiddleVertical
++        | CursorStyle::PanMiddleHorizontal => &["all-scroll", "fleur"],
++        CursorStyle::PanNorth => &["n-resize", "top_side"],
++        CursorStyle::PanSouth => &["s-resize", "bottom_side"],
++        CursorStyle::PanEast => &["e-resize", "right_side"],
++        CursorStyle::PanWest => &["w-resize", "left_side"],
++        CursorStyle::PanNorthEast => &["ne-resize", "top_right_corner"],
++        CursorStyle::PanNorthWest => &["nw-resize", "top_left_corner"],
++        CursorStyle::PanSouthEast => &["se-resize", "bottom_right_corner"],
++        CursorStyle::PanSouthWest => &["sw-resize", "bottom_left_corner"],
+     }
+ }
+ 
+diff --git a/crates/gpui_linux/src/linux/wayland.rs b/crates/gpui_linux/src/linux/wayland.rs
+index cbc962b..ba36bd6 100644
+--- a/crates/gpui_linux/src/linux/wayland.rs
++++ b/crates/gpui_linux/src/linux/wayland.rs
+@@ -38,5 +38,16 @@ pub(super) fn to_shape(style: CursorStyle) -> Shape {
+         CursorStyle::DragLink => Shape::Alias,
+         CursorStyle::DragCopy => Shape::Copy,
+         CursorStyle::ContextualMenu => Shape::ContextMenu,
++        CursorStyle::PanMiddle
++        | CursorStyle::PanMiddleVertical
++        | CursorStyle::PanMiddleHorizontal => Shape::AllScroll,
++        CursorStyle::PanNorth => Shape::NResize,
++        CursorStyle::PanSouth => Shape::SResize,
++        CursorStyle::PanEast => Shape::EResize,
++        CursorStyle::PanWest => Shape::WResize,
++        CursorStyle::PanNorthEast => Shape::NeResize,
++        CursorStyle::PanNorthWest => Shape::NwResize,
++        CursorStyle::PanSouthEast => Shape::SeResize,
++        CursorStyle::PanSouthWest => Shape::SwResize,
+     }
+ }
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index 32a6a54..b0addd5 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -2609,6 +2609,18 @@ extern "C" fn reset_cursor_rects(this: &AnyObject, _: Sel) {
+             CursorStyle::DragLink => msg_send![class!(NSCursor), dragLinkCursor],
+             CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
+             CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
++            // AppKit has no panning cursors.
++            CursorStyle::PanMiddle
++            | CursorStyle::PanMiddleVertical
++            | CursorStyle::PanMiddleHorizontal
++            | CursorStyle::PanNorth
++            | CursorStyle::PanSouth
++            | CursorStyle::PanEast
++            | CursorStyle::PanWest
++            | CursorStyle::PanNorthEast
++            | CursorStyle::PanNorthWest
++            | CursorStyle::PanSouthEast
++            | CursorStyle::PanSouthWest => msg_send![class!(NSCursor), arrowCursor],
+         };
+ 
+         let bounds: NSRect = msg_send![this, bounds];
 diff --git a/crates/gpui_platform/benches/atlas_upload.rs b/crates/gpui_platform/benches/atlas_upload.rs
 index 8ede1a5..44b256d 100644
 --- a/crates/gpui_platform/benches/atlas_upload.rs
@@ -2240,6 +2349,28 @@ index 8ede1a5..44b256d 100644
          }),
          AtlasTextureKind::Subpixel => unreachable!(),
      };
+diff --git a/crates/gpui_web/src/platform.rs b/crates/gpui_web/src/platform.rs
+index b496aa4..30f7757 100644
+--- a/crates/gpui_web/src/platform.rs
++++ b/crates/gpui_web/src/platform.rs
+@@ -590,6 +590,17 @@ impl Platform for WebPlatform {
+             CursorStyle::DragLink => "alias",
+             CursorStyle::DragCopy => "copy",
+             CursorStyle::ContextualMenu => "context-menu",
++            CursorStyle::PanMiddle
++            | CursorStyle::PanMiddleVertical
++            | CursorStyle::PanMiddleHorizontal => "all-scroll",
++            CursorStyle::PanNorth => "n-resize",
++            CursorStyle::PanSouth => "s-resize",
++            CursorStyle::PanEast => "e-resize",
++            CursorStyle::PanWest => "w-resize",
++            CursorStyle::PanNorthEast => "ne-resize",
++            CursorStyle::PanNorthWest => "nw-resize",
++            CursorStyle::PanSouthEast => "se-resize",
++            CursorStyle::PanSouthWest => "sw-resize",
+         };
+ 
+         self.last_cursor_css.set(css_cursor);
 diff --git a/crates/gpui_wgpu/src/wgpu_atlas.rs b/crates/gpui_wgpu/src/wgpu_atlas.rs
 index b2a7bfe..7c81842 100644
 --- a/crates/gpui_wgpu/src/wgpu_atlas.rs
@@ -2328,3 +2459,540 @@ index 55f18b5..9fe3928 100644
          runnable.run();
          gpui::profiler::save_task_timing();
      }
+diff --git a/crates/gpui_windows/src/util.rs b/crates/gpui_windows/src/util.rs
+index b3badd8..f3f9621 100644
+--- a/crates/gpui_windows/src/util.rs
++++ b/crates/gpui_windows/src/util.rs
+@@ -90,7 +90,93 @@ pub(crate) fn windows_credentials_target_name(url: &str) -> String {
+     format!("zed:url={}", url)
+ }
+ 
++/// One of Chromium's panning cursors, which Blink shows during middle-button autoscroll and which Chromium loads on
++/// Windows from its own resources (`ui/resources/cursors/pan_*.cur`), copied here pixel for pixel: 32 x 32, hot spot
++/// at 16,16, rows top first, `.` transparent and any other symbol the `palette` entry (ARGB, straight alpha) at that
++/// symbol's place in `PAN_SYMBOLS`.
++struct PanCursor {
++    palette: &'static [u32],
++    rows: [&'static str; 32],
++}
++
++const PAN_SYMBOLS: &str = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ";
++
++/// The cursor as `CreateIconFromResourceEx` reads a cursor resource: the hot spot, then a 32-bit DIB whose height
++/// counts the colour image and the AND mask, both bottom row first.
++fn pan_cursor_resource(cursor: &PanCursor) -> Vec<u8> {
++    const SIZE: u32 = 32;
++    let mut bytes = Vec::with_capacity(4 + 40 + 4 * 32 * 32 + 4 * 32);
++    bytes.extend_from_slice(&16u16.to_le_bytes());
++    bytes.extend_from_slice(&16u16.to_le_bytes());
++    for field in [40, SIZE, SIZE * 2] {
++        bytes.extend_from_slice(&field.to_le_bytes());
++    }
++    bytes.extend_from_slice(&1u16.to_le_bytes());
++    bytes.extend_from_slice(&32u16.to_le_bytes());
++    for field in [0u32, 4 * SIZE * SIZE + 4 * SIZE, 0, 0, 0, 0] {
++        bytes.extend_from_slice(&field.to_le_bytes());
++    }
++    for row in cursor.rows.iter().rev() {
++        for symbol in row.chars() {
++            let argb = PAN_SYMBOLS
++                .find(symbol)
++                .and_then(|index| cursor.palette.get(index))
++                .copied()
++                .unwrap_or(0);
++            let [a, r, g, b] = argb.to_be_bytes();
++            bytes.extend_from_slice(&[b, g, r, a]);
++        }
++    }
++    for row in cursor.rows.iter().rev() {
++        let mut mask = 0u32;
++        for (column, symbol) in row.chars().enumerate() {
++            if symbol == '.' {
++                mask |= 1 << (31 - column);
++            }
++        }
++        bytes.extend_from_slice(&mask.to_be_bytes());
++    }
++    bytes
++}
++
++fn load_pan_cursor(lock: &OnceLock<SafeCursor>, cursor: &PanCursor) -> Option<HCURSOR> {
++    Some(
++        *(*lock.get_or_init(|| {
++            // Version 0x00030000 is the one every resource since Windows 3 uses; 0 x 0 with LR_DEFAULTSIZE takes the
++            // system cursor size, as Chromium's `LoadCursor` of the same resource does.
++            let resource = pan_cursor_resource(cursor);
++            HCURSOR(
++                unsafe {
++                    CreateIconFromResourceEx(&resource, false, 0x0003_0000, 0, 0, LR_DEFAULTSIZE)
++                }
++                .log_err()
++                .unwrap_or_default()
++                .0,
++            )
++            .into()
++        })),
++    )
++}
++
+ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
++    static PAN: [OnceLock<SafeCursor>; 11] = [const { OnceLock::new() }; 11];
++    let pan = match style {
++        CursorStyle::PanMiddle => Some((0, &PAN_MIDDLE)),
++        CursorStyle::PanMiddleVertical => Some((1, &PAN_MIDDLE_VERTICAL)),
++        CursorStyle::PanMiddleHorizontal => Some((2, &PAN_MIDDLE_HORIZONTAL)),
++        CursorStyle::PanNorth => Some((3, &PAN_NORTH)),
++        CursorStyle::PanSouth => Some((4, &PAN_SOUTH)),
++        CursorStyle::PanEast => Some((5, &PAN_EAST)),
++        CursorStyle::PanWest => Some((6, &PAN_WEST)),
++        CursorStyle::PanNorthEast => Some((7, &PAN_NORTH_EAST)),
++        CursorStyle::PanNorthWest => Some((8, &PAN_NORTH_WEST)),
++        CursorStyle::PanSouthEast => Some((9, &PAN_SOUTH_EAST)),
++        CursorStyle::PanSouthWest => Some((10, &PAN_SOUTH_WEST)),
++        _ => None,
++    };
++    if let Some((index, cursor)) = pan {
++        return load_pan_cursor(&PAN[index], cursor);
++    }
+     static ARROW: OnceLock<SafeCursor> = OnceLock::new();
+     static IBEAM: OnceLock<SafeCursor> = OnceLock::new();
+     static CROSS: OnceLock<SafeCursor> = OnceLock::new();
+@@ -189,3 +275,438 @@ where
+     }
+     result
+ }
++
++/// `pan_middle.cur`.
++const PAN_MIDDLE: PanCursor = PanCursor {
++    palette: &[
++        0x02808080, 0x6d6e6e6e, 0xd54b4b4b, 0xfa212121, 0xff050505, 0x93656565, 0xff848484,
++        0xffdcdcdc, 0xfffbfbfb, 0xffffffff, 0x10808080, 0xec383838, 0xffc2c2c2, 0xff000003,
++        0xffededed, 0xff000000, 0xff464646,
++    ],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "...........#ABCDDCBA#...........",
++        "..........EDFGHIIHGFDE..........",
++        "........JKFHIIIIIIIIHFKJ........",
++        ".......JCLIIIIIMMIIIIILCJ.......",
++        ".......KLIIIIIMMMMIIIIILK.......",
++        "......EFIIIIIMMMMMMIIIIIFE......",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....BGIIIMIINIIIIIIIMIIIGB.....",
++        ".....CHIIMMIIIIOOIIIIMMIIHC.....",
++        ".....DIIMMMIIIOOOOIIIMMMIID.....",
++        ".....DIIMMMIIIOOOOIIIMMMIID.....",
++        ".....CHIIMMIIIIOOIIIIMMIIHC.....",
++        ".....BGIIIMIIIIIIIIIIMIIIGB.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        "......EFIIIIIMMMMMMIIIIIFE......",
++        ".......PLIIIIIMMMMIIIIILK.......",
++        ".......JCLIIIIIMMIIIIILCJ.......",
++        "........JKFHIIIIIIIIHFKJ........",
++        "..........EDFGHIIHGFDE..........",
++        "...........#ABCDDCBA#...........",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_middle_vertical.cur`.
++const PAN_MIDDLE_VERTICAL: PanCursor = PanCursor {
++    palette: &[
++        0x02808080, 0x6d6e6e6e, 0xd54b4b4b, 0xfa212121, 0xff050505, 0x93656565, 0xff848484,
++        0xffdcdcdc, 0xfffbfbfb, 0xffffffff, 0x10808080, 0xec383838, 0xffc2c2c2, 0xff000003,
++        0xffededed, 0xff000000, 0xff464646,
++    ],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "...........#ABCDDCBA#...........",
++        "..........EDFGHIIHGFDE..........",
++        "........JKFHIIIIIIIIHFKJ........",
++        ".......JCLIIIIIMMIIIIILCJ.......",
++        ".......KLIIIIIMMMMIIIIILK.......",
++        "......EFIIIIIMMMMMMIIIIIFE......",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....BGIIIIIINIIIIIIIIIIIGB.....",
++        ".....CHIIIIIIIIOOIIIIIIIIHC.....",
++        ".....DIIIIIIIIOOOOIIIIIIIID.....",
++        ".....DIIIIIIIIOOOOIIIIIIIID.....",
++        ".....CHIIIIIIIIOOIIIIIIIIHC.....",
++        ".....BGIIIIIIIIIIIIIIIIIIGB.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        "......EFIIIIIMMMMMMIIIIIFE......",
++        ".......PLIIIIIMMMMIIIIILK.......",
++        ".......JCLIIIIIMMIIIIILCJ.......",
++        "........JKFHIIIIIIIIHFKJ........",
++        "..........EDFGHIIHGFDE..........",
++        "...........#ABCDDCBA#...........",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_middle_horizontal.cur`.
++const PAN_MIDDLE_HORIZONTAL: PanCursor = PanCursor {
++    palette: &[
++        0x02808080, 0x6d6e6e6e, 0xd54b4b4b, 0xfa212121, 0xff050505, 0x93656565, 0xff848484,
++        0xffdcdcdc, 0xfffbfbfb, 0xffffffff, 0x10808080, 0xec383838, 0xffc2c2c2, 0xff000003,
++        0xffededed, 0xff000000, 0xff464646,
++    ],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "...........#ABCDDCBA#...........",
++        "..........EDFGHIIHGFDE..........",
++        "........JKFHIIIIIIIIHFKJ........",
++        ".......JCLIIIIIIIIIIIILCJ.......",
++        ".......KLIIIIIIIIIIIIIILK.......",
++        "......EFIIIIIIIIIIIIIIIIFE......",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....BGIIIMIINIIIIIIIMIIIGB.....",
++        ".....CHIIMMIIIIOOIIIIMMIIHC.....",
++        ".....DIIMMMIIIOOOOIIIMMMIID.....",
++        ".....DIIMMMIIIOOOOIIIMMMIID.....",
++        ".....CHIIMMIIIIOOIIIIMMIIHC.....",
++        ".....BGIIIMIIIIIIIIIIMIIIGB.....",
++        ".....AFIIIIIIIIIIIIIIIIIIFA.....",
++        ".....#DHIIIIIIIIIIIIIIIIHD#.....",
++        "......EFIIIIIIIIIIIIIIIIFE......",
++        ".......PLIIIIIIIIIIIIIILK.......",
++        ".......JCLIIIIIIIIIIIILCJ.......",
++        "........JKFHIIIIIIIIHFKJ........",
++        "..........EDFGHIIHGFDE..........",
++        "...........#ABCDDCBA#...........",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_north.cur`.
++const PAN_NORTH: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xff2b2b2b, 0xffdadada],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "..............#AA#..............",
++        ".............#ABBA#.............",
++        "............#ABBBBA#............",
++        "...........#ABBBBBBA#...........",
++        "...........ABBBBBBBBA...........",
++        "...........#AAAAAAAA#...........",
++        "................................",
++        "..............#AA#..............",
++        ".............#CBBC#.............",
++        ".............ABBBBA.............",
++        ".............ABBBBA.............",
++        ".............#CBBC#.............",
++        "..............#AA#..............",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_south.cur`.
++const PAN_SOUTH: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xffdadada, 0xff2b2b2b],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "..............#AA#..............",
++        ".............#BCCB#.............",
++        ".............ACCCCA.............",
++        ".............ACCCCA.............",
++        ".............#BCCB#.............",
++        "..............#AA#..............",
++        "................................",
++        "...........#AAAAAAAA#...........",
++        "...........ACCCCCCCCA...........",
++        "...........#ACCCCCCA#...........",
++        "............#ACCCCA#............",
++        ".............#ACCA#.............",
++        "..............#AA#..............",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_east.cur`.
++const PAN_EAST: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xff2b2b2b, 0xffdadada],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "....................#A#.........",
++        "....................ABA#........",
++        "..............#AA#..ABBA#.......",
++        ".............#CBBC#.ABBBA#......",
++        ".............ABBBBA.ABBBBA......",
++        ".............ABBBBA.ABBBBA......",
++        ".............#CBBC#.ABBBA#......",
++        "..............#AA#..ABBA#.......",
++        "....................ABA#........",
++        "....................#A#.........",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_west.cur`.
++const PAN_WEST: PanCursor = PanCursor {
++    palette: &[
++        0x94ffffff, 0xfdffffff, 0x89ffffff, 0xff2d2d2d, 0xfff4f4f4, 0x0dffffff, 0xf2ffffff,
++        0xff363636, 0xff2b2b2b, 0x8effffff, 0xf7ffffff, 0xffffffff, 0x96ffffff, 0xffe0e0e0,
++        0xff2a2a2a, 0xffd1d1d1, 0xffe2e2e2, 0xff343434, 0x8cffffff, 0xf5ffffff,
++    ],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        ".........#A#....................",
++        "........BACDE...................",
++        ".......BFGHDE.IJKL..............",
++        "......BFGHHDEBMGNOL.............",
++        "......FGHHHDEFGHHHK.............",
++        "......FGHHHDEFGHHHK.............",
++        "......BFGHHDEBPQNOL.............",
++        ".......BFGHDE.RSKL..............",
++        "........BACDE...................",
++        ".........#A#....................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_north_east.cur`.
++const PAN_NORTH_EAST: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xff2b2b2b, 0xff303030, 0xffd5d5d5],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................#AAAAAA#........",
++        "................ABBBBBBA........",
++        "................#ABBBBBA........",
++        ".................#ABBBBA........",
++        "..................#ABCBA........",
++        "..............#AA#.#ABBA........",
++        ".............#DBBD#.#ABA........",
++        ".............ABBBBA..#A#........",
++        ".............ABBBBA.............",
++        ".............#DBBD#.............",
++        "..............#AA#..............",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_north_west.cur`.
++const PAN_NORTH_WEST: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xff2b2b2b, 0xff303030, 0xffd5d5d5],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "........#AAAAAA#................",
++        "........ABBBBBBA................",
++        "........ABBBBBA#................",
++        "........ABBBBA#.................",
++        "........ABCBA#..................",
++        "........ABBA#.#AA#..............",
++        "........ABA#.#DBBD#.............",
++        "........#A#..ABBBBA.............",
++        ".............ABBBBA.............",
++        ".............#DBBD#.............",
++        "..............#AA#..............",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_south_east.cur`.
++const PAN_SOUTH_EAST: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xffd5d5d5, 0xff2b2b2b, 0xff303030],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "..............#AA#..............",
++        ".............#BCCB#.............",
++        ".............ACCCCA.............",
++        ".............ACCCCA..#A#........",
++        ".............#BCCB#.#ACA........",
++        "..............#AA#.#ACCA........",
++        "..................#ACDCA........",
++        ".................#ACCCCA........",
++        "................#ACCCCCA........",
++        "................ACCCCCCA........",
++        "................#AAAAAA#........",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};
++/// `pan_south_west.cur`.
++const PAN_SOUTH_WEST: PanCursor = PanCursor {
++    palette: &[0x96ffffff, 0xffffffff, 0xffd5d5d5, 0xff2b2b2b, 0xff303030],
++    rows: [
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "..............#AA#..............",
++        ".............#BCCB#.............",
++        ".............ACCCCA.............",
++        "........#A#..ACCCCA.............",
++        "........ACA#.#BCCB#.............",
++        "........ACCA#.#AA#..............",
++        "........ACDCA#..................",
++        "........ACCCCA#.................",
++        "........ACCCCCA#................",
++        "........ACCCCCCA................",
++        "........#AAAAAA#................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++        "................................",
++    ],
++};

@@ -250,6 +250,9 @@ struct Anchor {
     key: Option<&'static str>,
 }
 
+/// The subnav thumb's spring (module 276530).
+const SUBNAV_THUMB_SPRING: motion::SpringConfig = motion::SpringConfig::new(300., 20.).mass(0.1);
+
 thread_local! {
     /// The category the content scrolls to once its marker has a place on screen (a click on the subnav, or a deep link).
     static PENDING_SCROLL: Cell<Option<&'static str>> = const { Cell::new(None) };
@@ -1256,6 +1259,27 @@ impl Root {
             .map(|height| height + 16.)
             .sum();
         let thumb_height = heights.get(current).copied().unwrap_or(20.);
+        // Module 276530: the thumb's `y` and `height` are react-spring values (`{mass: .1, friction: 20, tension:
+        // 300}`) that move to the lit row's anchor; the first layout of a list and reduced motion set them at once.
+        // Each page that opens gets a new `Open`, so its `anchor` cell names this mount of the list.
+        let (thumb_top, thumb_height) = match self.settings.as_ref().filter(|_| open_page) {
+            Some(open) if !motion::reduced() => {
+                let mount = Rc::as_ptr(&open.anchor) as usize;
+                (
+                    motion::spring_value(
+                        motion::key(&("settings-subnav-thumb-y", mount)),
+                        thumb_top,
+                        SUBNAV_THUMB_SPRING,
+                    ),
+                    motion::spring_value(
+                        motion::key(&("settings-subnav-thumb-height", mount)),
+                        thumb_height,
+                        SUBNAV_THUMB_SPRING,
+                    ),
+                )
+            }
+            _ => (thumb_top, thumb_height),
+        };
         let track = div()
             .absolute()
             .left(px(0.))
@@ -1291,12 +1315,16 @@ impl Root {
                     .cursor_pointer()
                     .text_size(px(16.))
                     .line_height(px(20.))
+                    // `.subnav .item:hover` and `.subnav .item.active` weigh the same and the active rule comes
+                    // later: the lit row keeps its colour under the pointer.
                     .text_color(color(if active {
                         "--interactive-text-active"
                     } else {
                         "--text-muted"
                     }))
-                    .hover(|style| style.text_color(color("--interactive-text-hover")))
+                    .when(!active, |this| {
+                        this.hover(|style| style.text_color(color("--interactive-text-hover")))
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(open) = this.settings.as_mut() {
                             open.anchor.set(index);
@@ -2481,6 +2509,23 @@ fn mask_phone(phone: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{age_gated_article, devices, mask_email, mask_phone, run_ranges};
+
+    /// The subnav thumb (module 276530's `{mass: .1, friction: 20, tension: 300}`) glides one 36px row: a third of
+    /// the way in 30 ms, never overshoots (the spring is overdamped), and is within half a pixel by 300 ms.
+    #[test]
+    fn the_subnav_thumb_glides_to_the_next_row() {
+        let mut spring = super::motion::Spring::new(super::SUBNAV_THUMB_SPRING, 0., 0.);
+        spring.retarget(36., 0.);
+        spring.step_to(30.);
+        assert!(spring.position() > 9. && spring.position() < 18.);
+        let mut highest: f64 = 0.;
+        for now in 31..=300 {
+            spring.step_to(f64::from(now));
+            highest = highest.max(spring.position());
+        }
+        assert!(highest <= 36.);
+        assert!((spring.position() - 36.).abs() < 0.5);
+    }
 
     #[test]
     fn age_group_links_go_where_the_bundle_sends_them() {

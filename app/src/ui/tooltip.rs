@@ -39,6 +39,9 @@ pub(super) enum Body {
     Guild(Id),
     /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
     Rich(SharedString, SharedString),
+    /// A quick reaction of the message hover bar (`np` in module 891522): `:name:` in `body-sm/medium` `text-strong`
+    /// over the hint in `body-xs/normal` `text-default`, both centred (`emojiTooltipText_V_VY9Q`).
+    Emoji(SharedString, SharedString),
     /// A profile badge (`ed.A` in module 328464): the art over the eyebrow, the title in the display face and a line
     /// of text, centred in a 200px card. `image` is the key of the art in `Root::images`.
     Badge {
@@ -549,6 +552,27 @@ impl Root {
                         .max_w(px(MAX_WIDTH - 24.))
                         .text_color(color("--text-subtle"))
                         .child(body.clone()),
+                )
+                .into_any_element(),
+            Body::Emoji(name, hint) => frame()
+                .flex_col()
+                .text_center()
+                .child(
+                    div()
+                        .max_w(px(MAX_WIDTH - 24.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(name.clone()),
+                )
+                .child(
+                    div()
+                        .max_w(px(MAX_WIDTH - 24.))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-default"))
+                        .child(hint.clone()),
                 )
                 .into_any_element(),
             Body::Badge {
