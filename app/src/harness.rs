@@ -1256,6 +1256,16 @@ pub async fn run(
                     .unwrap_or_else(|_| "focus=unknown".to_owned());
                 let _ = writeln!(output, "{}: {report}", label.join(" "));
             }
+            ["unread", "posts", forum] => {
+                // Every active post of the forum gets a message newer than anything acked.
+                if let Ok(forum) = forum.parse::<u64>() {
+                    cx.update(|cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_unread_posts(forum, cx);
+                        })
+                    });
+                }
+            }
             ["unread", channel] => {
                 // A message newer than anything acked arrived in `channel`.
                 if let Ok(channel) = channel.parse::<u64>() {

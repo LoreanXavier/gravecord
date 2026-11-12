@@ -396,11 +396,13 @@ fn render_sized_at(
                 .gap(px(8.))
                 .child(
                     div()
-                        .h(px(24.))
+                        // A title longer than the row wraps and grows it (stage-ann/stage-end-confirm).
+                        .min_h(px(24.))
                         .flex()
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
                                 .text_size(px(20.))
                                 .line_height(px(24.))
                                 .font_weight(FontWeight(600.))

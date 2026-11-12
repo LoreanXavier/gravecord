@@ -174,6 +174,7 @@ mod profile_editor;
 mod profile_effects;
 mod profile_menu;
 mod profile_other;
+mod profile_voice;
 mod quests;
 mod quickswitcher;
 mod rail_folder_menu;
@@ -512,6 +513,18 @@ pub struct Root {
     channel_status: Option<channel_status::StatusModal>,
     follow: Option<announcements::FollowModal>,
     start_stage: Option<stage::StartStage>,
+    /// The Stage's age coachmark was closed with its X.
+    stage_coach_closed: bool,
+    /// The "Welcome to Stages!" modal is open for this Stage channel, and it was already shown once (assumed: not kept
+    /// across runs).
+    stage_welcome: Option<Id>,
+    stage_welcome_seen: bool,
+    /// The caret of the Stage's leave button is open (its "End Stage for Everyone" menu), and the confirm question
+    /// for that Stage channel.
+    stage_leave_menu: bool,
+    stage_end_confirm: Option<Id>,
+    /// Stage instances whose Live Now card was closed with its X.
+    live_now_closed: Vec<Id>,
     publish_confirm: Option<(Id, Id)>,
     follower_stats: announcements::StatsMap,
     /// Capture only (`ch blocker on`): the Follow bar as a member without Send Messages sees it.
@@ -882,6 +895,12 @@ impl Root {
             channel_status: None,
             follow: None,
             start_stage: None,
+            stage_coach_closed: false,
+            stage_welcome: None,
+            stage_welcome_seen: false,
+            stage_leave_menu: false,
+            stage_end_confirm: None,
+            live_now_closed: Vec::new(),
             publish_confirm: None,
             follower_stats: Default::default(),
             follow_blocker_forced: false,
@@ -1138,11 +1157,13 @@ impl Root {
                 if name == "CHANNEL_PINS_UPDATE" {
                     self.ack_open_pins();
                 }
+                if name == "PRESENCE_UPDATE" {
+                    self.request_presence_image_of(&data);
+                }
                 if matches!(
                     name.as_str(),
                     "READY"
                         | "READY_SUPPLEMENTAL"
-                        | "PRESENCE_UPDATE"
                         | "GUILD_MEMBER_LIST_UPDATE"
                         | "GUILD_MEMBERS_CHUNK"
                         | "GUILD_CREATE"
@@ -1259,6 +1280,11 @@ impl Root {
             Update::MessagesLoaded { spec, page } => self.window_loaded(spec, page, cx),
             Update::MessagesFailed { channel } => {
                 self.stores.messages_failed(channel);
+                // The open channel's first page failed: the first content is as in as it will get, so the
+                // connecting screen ends (`splash_check` runs after every update).
+                if Some(channel) == self.channel {
+                    self.ready = true;
+                }
                 cx.notify();
             }
             Update::Voice(event) => self.on_voice_event(event, cx),
@@ -1902,6 +1928,7 @@ impl Root {
 
     fn request_images(&mut self) {
         self.request_role_icon_images();
+        self.request_stage_art();
         let guilds: Vec<(Id, String)> = self
             .stores
             .guilds
@@ -3395,6 +3422,16 @@ impl Root {
                                 icon("rail_stream_badge", 10., "--white").into_any_element()
                             } else if self.call.as_ref().is_some_and(|call| call.camera) {
                                 icon("rail_camera_badge", 10., "--white").into_any_element()
+                            } else if self.call.as_ref().is_some_and(|call| {
+                                self.stores.guild(call.guild).is_some_and(|guild| {
+                                    guild.channels.iter().any(|channel| {
+                                        channel.id == call.channel
+                                            && channel.kind == ChannelKind::Other(13)
+                                    })
+                                })
+                            }) {
+                                // A Stage's badge carries its own glyph (stage-ann/stage-live).
+                                icon("stage_channel", 10., "--white").into_any_element()
                             } else {
                                 icon("voice_channel", 10., "--white").into_any_element()
                             }),
@@ -3654,6 +3691,14 @@ impl Root {
         let unread =
             !muted && channel.kind == ChannelKind::Text && self.stores.is_unread(channel.id);
         let dim = muted && !selected && !in_call;
+        // A live Stage this client is connected to: green glyph and the three row actions, like a voice row
+        // (stage-ann/stage-live).
+        let in_stage = channel.kind == ChannelKind::Other(13)
+            && self.stores.stage_instances.is_live(channel.id)
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|call| call.channel == channel.id);
         let tint = if selected || in_call || unread {
             "--text-strong"
         } else if dim {
@@ -3671,7 +3716,7 @@ impl Root {
         let voice = channel.kind == ChannelKind::Voice;
         // The status line under the name (`linkBottom_TNyK-N`) makes the row 50 tall.
         let two_line = self.voice_row_has_line(channel);
-        let actions: &[&str] = if voice {
+        let actions: &[&str] = if voice || in_stage {
             &["voice_action_1", "voice_action_2", "voice_action_3"]
         } else {
             &["invite_small", "settings_small"]
@@ -3701,7 +3746,7 @@ impl Root {
         let glyph = div().when(dim, |this| this.opacity(0.5)).child(icon(
             name,
             20.,
-            if in_call {
+            if in_call || in_stage {
                 "--icon-voice-connected"
             } else if dim {
                 "--icon-muted"
@@ -3863,8 +3908,8 @@ impl Root {
                             div()
                                 .flex()
                                 .gap(px(4.))
-                                .when(!selected || in_call || voice, |this| {
-                                    if in_call && self.vv.row_focus {
+                                .when(!selected || in_call || voice || in_stage, |this| {
+                                    if (in_call && self.vv.row_focus) || in_stage {
                                         this
                                     } else {
                                         this.opacity(0.)
@@ -4076,6 +4121,9 @@ impl Root {
                                 // `--background-mod-subtle` while hovered, with no transition.
                                 div()
                                     .id("guild-name")
+                                    // `.headerContent_XH4OpX` `gap: 4px` between the dropdown and the invite button, which
+                                    // a long name closes up to (boost/boosted-guild-dropdown: chevron right edge 323.7).
+                                    .mr(px(4.))
                                     .flex()
                                     .items_center()
                                     // A long name is cut with an ellipsis before the chevron; the invite button stays whole.
@@ -4136,6 +4184,7 @@ impl Root {
                             ),
                     ),
             )
+            .children(self.live_now_card(cx))
             .child(div().flex_none().h(px(12.)))
             .children(self.guild_guide_rows(cx))
             .children(self.boost_progress_row(cx))
@@ -4232,6 +4281,18 @@ impl Root {
         let in_voice = self.call.as_ref().is_some_and(|call| call.connected);
         // `9FaEzi` "In a call" with the phone glyph while the call is a DM's.
         let dm_call = self.call.as_ref().is_some_and(|call| call.guild == 0);
+        // `QygGCN` "In a stage" while the call is a Stage's (module 342312).
+        let stage_call = self.call.as_ref().is_some_and(|call| {
+            self.stores
+                .guild(call.guild)
+                .and_then(|guild| {
+                    guild
+                        .channels
+                        .iter()
+                        .find(|channel| channel.id == call.channel)
+                })
+                .is_some_and(|channel| channel.kind == ChannelKind::Other(13))
+        });
         // Muted and deafened buttons turn red with their chevron: `redGlow_Y-8oZW`.
         let tint = |muted: bool| {
             if muted {
@@ -4412,6 +4473,8 @@ impl Root {
                                             "voice_status_sharing"
                                         } else if dm_call {
                                             "status_in_call"
+                                        } else if stage_call {
+                                            "stage_channel"
                                         } else {
                                             "voice_status_in_voice"
                                         },
@@ -4422,6 +4485,8 @@ impl Root {
                                         "Sharing their screen"
                                     } else if dm_call {
                                         "In a call"
+                                    } else if stage_call {
+                                        "In a stage"
                                     } else {
                                         "In voice"
                                     })
@@ -4647,6 +4712,12 @@ impl Root {
                     )
                 })
         };
+        // `children_ybUK7Z`: a server channel's icon and title are one clipped box (chat-200 dump: 10 device px wide
+        // after the search box has shrunk to its 64px minimum, the icon cut to a sliver and the title gone).
+        let one_box = self.guild.is_some()
+            && post_forum.is_none()
+            && dm_user.is_none()
+            && group_channel.is_none();
         div()
             .parity_below("chat-header", 1.)
             .flex_none()
@@ -4684,11 +4755,50 @@ impl Root {
                 // The icon sits inside the title wrapper of the official header, so it clips with the title.
                 let mut lead = div();
                 lead.style().flex_shrink = Some(0.001);
-                this.child(lead.min_w(px(0.)).overflow_hidden().child(icon(
+                let lead = lead.min_w(px(0.)).overflow_hidden().child(icon(
                     name,
                     20.,
                     "--channels-default",
-                )))
+                ));
+                if one_box {
+                    // Icon, 9px, then the nowrap title, all inside the box that clips (`children_ybUK7Z`).
+                    let mut boxed = div();
+                    boxed.style().flex_shrink = Some(0.001);
+                    return this.child(
+                        boxed
+                            // The toolbar's own 8px of padding stays when this box has shrunk (chat-200 dump).
+                            .mr(px(8.))
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .child(icon(name, 20., "--channels-default")),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .ml(px(9.))
+                                    .whitespace_nowrap()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(
+                                        name_styles::name(
+                                            "dm-title",
+                                            self.channel_title(),
+                                            None,
+                                            name_styles::Display::FontOnHover,
+                                        )
+                                        .bold_opacity(0.9),
+                                    ),
+                            ),
+                    );
+                }
+                this.child(lead)
             })
             // `.breadcrumb_z_gUBg` of a forum post (`forum-fixture-posted`): the forum's name, then a chevron.
             .when_some(post_forum.clone(), |this, (forum_name, _)| {
@@ -4725,7 +4835,7 @@ impl Root {
             .when_some(group_channel.clone(), |this, channel| {
                 this.child(self.group_header_name(&channel, cx))
             })
-            .when(group_channel.is_none(), |this| {
+            .when(group_channel.is_none() && !one_box, |this| {
                 // At a high zoom the search box gives its width up first (down to 64px, chat-200 and chat-150
                 // dumps), and only then the nowrap title clips: its shrink is near zero, so the search takes
                 // the deficit until its minimum freezes it.
@@ -5089,7 +5199,9 @@ impl Root {
                         // The Mod View panel leaves 80px (menus2/mod-view-self: the box at x 711 to 791).
                         80.
                     } else {
-                        244.
+                        // `.search_bWCaDq`: `clamp(64px, 100cqi - 320px, 244px)`, the container being the header
+                        // (chat-150 dump: 134.7px of a 478.7px header with its 24px of padding).
+                        (self.viewport.0 - 375. - 24. - 320.).clamp(64., 244.)
                     }))
                     .min_w(px(64.))
                     .h(px(32.))
@@ -8549,6 +8661,8 @@ impl Render for Root {
             .children(self.channel_status_modal(window, cx))
             .children(self.follow_modal(cx))
             .children(self.start_stage_modal(window, cx))
+            .children(self.stage_welcome_modal(cx))
+            .children(self.stage_end_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))

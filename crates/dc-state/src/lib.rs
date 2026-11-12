@@ -1536,6 +1536,10 @@ pub struct Stores {
     channel_guilds: HashMap<Id, Id>,
     /// Guilds the account only lurks in: their `joined_at` is null (260509 `DG`, 857071 `isLurking`).
     pub lurking_guilds: HashSet<Id>,
+    /// Guilds READY listed as `{id, unavailable: true}` (an outage) and no GUILD_CREATE has filled in yet. They keep
+    /// their place in the folders: `SortedGuildStore` (711014 `N`) drops a guild only when it is neither known nor
+    /// unavailable, so a reorder during an outage must not write them out of the account's settings.
+    pub unavailable_guilds: HashSet<Id>,
     /// Per guild, the last `unread::guild_counts` answer; cleared by every event that can change one.
     counts_cache: std::sync::Mutex<HashMap<Id, unread::CountsEntry>>,
 }
@@ -1688,6 +1692,7 @@ impl Stores {
                     for thread in &guild.threads {
                         self.note_thread_latest(thread);
                     }
+                    self.unavailable_guilds.remove(&guild.id);
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
                     self.sort_guilds();
@@ -1699,6 +1704,7 @@ impl Stores {
                     && let Some(guild) = id(&data["id"])
                 {
                     self.guilds.retain(|known| known.id != guild);
+                    self.unavailable_guilds.remove(&guild);
                     self.voice_states.remove(&guild);
                     self.afk_channels.remove(&guild);
                     self.lurking_guilds.remove(&guild);
@@ -2548,6 +2554,15 @@ impl Stores {
             .filter(|guild| guild.get("joined_at").is_some_and(Value::is_null))
             .filter_map(|guild| id(&guild["id"]))
             .collect();
+        // A stub has no channels, so `Guild::from_value` skipped it; GUILD_CREATE fills it in later.
+        self.unavailable_guilds = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|guild| guild["unavailable"] == true)
+            .filter_map(|guild| id(&guild["id"]))
+            .filter(|guild| self.guilds.iter().all(|known| known.id != *guild))
+            .collect();
         self.sort_guilds();
     }
 
@@ -2610,7 +2625,8 @@ impl Stores {
                 .flat_map(|entry| entry.guild_ids.iter().copied())
                 .collect()
         };
-        let known: Vec<Id> = self.guilds.iter().map(|guild| guild.id).collect();
+        let mut known: Vec<Id> = self.guilds.iter().map(|guild| guild.id).collect();
+        known.extend(self.unavailable_guilds.iter().copied());
         let unlisted: Vec<Id> = known
             .iter()
             .copied()
@@ -2855,12 +2871,29 @@ impl Stores {
             .filter(|(_, kind)| **kind == RELATIONSHIP_FRIEND)
             .filter_map(|(user, _)| self.users.get(user))
             .collect();
-        friends.sort_by_key(|user| {
+        // The key is built once per friend, not once per comparison: the friends page asks on every frame.
+        friends.sort_by_cached_key(|user| {
             self.friend_nickname(user.id)
                 .unwrap_or(user.display_name())
                 .to_lowercase()
         });
         friends
+    }
+
+    /// Whether any friend is known, without sorting the list (`friends().is_empty()`, drawn every frame).
+    pub fn has_friends(&self) -> bool {
+        self.relationships
+            .iter()
+            .any(|(user, kind)| *kind == RELATIONSHIP_FRIEND && self.users.contains_key(user))
+    }
+
+    /// Whether any friend is not offline, without sorting the list.
+    pub fn has_online_friends(&self) -> bool {
+        self.relationships.iter().any(|(user, kind)| {
+            *kind == RELATIONSHIP_FRIEND
+                && self.users.contains_key(user)
+                && self.status(*user) != "offline"
+        })
     }
 
     pub fn online_friends(&self) -> Vec<&User> {
