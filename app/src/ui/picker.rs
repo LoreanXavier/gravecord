@@ -28,6 +28,7 @@ pub(super) const PICKER_WIDTH: f32 = 498.;
 pub(super) const PICKER_HEIGHT: f32 = 486.;
 /// The reaction picker has no tabs but a taller list (`design/dom/pickers/emoji-reaction-darker-cozy.json`).
 const REACTION_HEIGHT: f32 = 509.;
+const GIFT_HEIGHT: f32 = 557.;
 /// Popouts keep this far from the window's edges when nudged (`nudgeTopAlignment`, module 623646).
 const EDGE: f32 = 12.;
 
@@ -67,6 +68,8 @@ pub(crate) enum Target {
     OnboardingEmoji,
     /// Server Web Page's reason to join, by position.
     ReasonEmoji(u8),
+    /// "Add emoji confetti" of Gift Nitro (module 354972, `EmojiIntention.GIFT`).
+    GiftConfetti,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -452,6 +455,7 @@ impl Root {
                     | Target::SoundEmoji
                     | Target::StickerEmoji
                     | Target::OnboardingEmoji
+                    | Target::GiftConfetti
                     | Target::ReasonEmoji(_) => "Find the perfect emoji",
                     Target::Reaction { .. } | Target::InventoryReply(_) => {
                         "Find the perfect reaction"
@@ -753,6 +757,20 @@ impl Root {
                     },
                 };
                 self.set_trait_emoji(usize::from(index), emoji, cx);
+            }
+            Target::GiftConfetti => {
+                // Module 354972 keeps the emoji (its characters or its custom id) and shows the name with its
+                // underscores as spaces.
+                self.emoji_used.push((usage_key, now_ms()));
+                let (glyph, name, id) = match &item {
+                    Item::Unicode(index) => (
+                        Some(reaction.clone()),
+                        EMOJIS[usize::from(*index)].names[0].to_owned(),
+                        None,
+                    ),
+                    Item::Custom { id, name, .. } => (None, name.clone(), Some(*id)),
+                };
+                self.set_gift_confetti(glyph, name, id);
             }
             Target::Reaction { channel, message } => {
                 self.reactions_used.push((usage_key, now_ms()));
@@ -1109,11 +1127,17 @@ impl Root {
                 | Target::SoundEmoji
                 | Target::StickerEmoji
                 | Target::OnboardingEmoji
+                | Target::GiftConfetti
                 | Target::ReasonEmoji(_)
         );
+        // Gift Nitro's confetti picker: a title block over the search field, 117 down to the list, 392 of list and
+        // the 48px inspector (design/dom/dm/gift-step2-confetti-picker-darker-cozy.json: 408 to 908, 0 to 557).
+        let gift_confetti = matches!(picker.target, Target::GiftConfetti);
         // Neither the reaction picker nor a trait's has the tab bar (`design/dom/popouts/trait-emoji-darker-cozy.json`).
         let tabless = reaction || trait_target;
-        let height = if tabless {
+        let height = if gift_confetti {
+            GIFT_HEIGHT
+        } else if tabless {
             REACTION_HEIGHT
         } else {
             PICKER_HEIGHT
@@ -1160,7 +1184,15 @@ impl Root {
             EDGE,
             (f32::from(viewport.width) - PICKER_WIDTH - EDGE).max(EDGE),
         );
-        let top = if trait_target { top } else { top.max(EDGE) };
+        // The gift picker's box (border included) starts one pixel above the window in the capture: its content
+        // is at 0 and the clamp is on the content.
+        let top = if gift_confetti {
+            top - 1.
+        } else if trait_target {
+            top
+        } else {
+            top.max(EDGE)
+        };
         let rows = self.picker_rows(cx);
         let current = self
             .picker
@@ -1249,7 +1281,13 @@ impl Root {
                                     .text_color(color("--input-text-default")),
                             ),
                     )
-                    .child(div().flex_1().min_w(px(0.)).pr(px(12.)).child(search)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .pr(px(12.))
+                            .child(search.clone()),
+                    ),
             )
             .when(reaction, |this| {
                 // `label_pfW0SY`: the Super Reactions toggle, a 32px circle.
@@ -1405,6 +1443,75 @@ impl Root {
                         .child("Add Emoji"),
                 )
             });
+        // `customGiftContent_gYY06b`: the title (body-md/semibold) and its line (body-sm/normal, 38px together), 10px
+        // above the 468px search field, which has no tone selector or Add Emoji button beside it.
+        let header = if gift_confetti {
+            div()
+                .flex_none()
+                .px(px(16.))
+                .pb(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .text_color(color("--text-default"))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .child("Add emoji confetti"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .child("This will play when your friend opens their gift"),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(if focused {
+                            color("--input-border-active")
+                        } else {
+                            color("--input-border-default")
+                        })
+                        .rule(crate::ui::motion::Rule::TextField)
+                        .bg(color("--input-background-default"))
+                        .pl(px(4.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .size(px(30.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    svg()
+                                        .path("icons/picker_search.svg")
+                                        .size(px(16.))
+                                        .text_color(color("--input-text-default")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .pr(px(12.))
+                                .child(search.clone()),
+                        ),
+                )
+        } else {
+            header
+        };
         let sticky = picker
             .rows
             .get(picker.list.logical_scroll_top().item_ix)

@@ -52,6 +52,13 @@ const PICKER_BOTTOM: f32 = 78.;
 const PICKER_WIDTH: f32 = 531.;
 const PICKER_HEIGHT: f32 = 520.;
 const HEADER_HEIGHT: f32 = 64.;
+/// Gift Nitro's picker: its header holds a title and a line above the search field (`customGiftHeader_0dhArF`).
+const GIFT_HEADER_HEIGHT: f32 = 112.;
+/// The keybind tip at the foot of that picker: 52 high, 64 in from the picker's left, 16 above its bottom, 451 wide.
+const GIFT_TIP_LEFT: f32 = 64.;
+const GIFT_TIP_BOTTOM: f32 = 16.;
+const GIFT_TIP_WIDTH: f32 = 451.;
+const GIFT_TIP_HEIGHT: f32 = 52.;
 const RAIL_WIDTH: f32 = 48.;
 const NOTICE_HEIGHT: f32 = 154.;
 const LIST_WIDTH: f32 = 483.;
@@ -486,6 +493,11 @@ pub(crate) struct Board {
     defaults_requested: bool,
     requested: HashSet<Id>,
     pub(super) picker: Option<Picker>,
+    /// The picker "Add sound effect" of Gift Nitro opens (module 650588): the same picker over the default sounds
+    /// only, its window position (the left and top of the button that opened it), and whether its keybind tip was
+    /// closed.
+    pub(super) gift_picker: Option<(Picker, gpui::Point<gpui::Pixels>)>,
+    gift_tip_closed: bool,
     upsell_dismissed: bool,
     favorites: Vec<String>,
     collapsed: HashSet<String>,
@@ -944,7 +956,14 @@ impl Root {
                     .flex()
                     .gap(px(8.))
                     .children(chunk.iter().map(|sound| {
-                        self.soundboard_button(&format!("suggest{row}"), sound, &ctx, Side::Top, cx)
+                        self.soundboard_button(
+                            &format!("suggest{row}"),
+                            sound,
+                            &ctx,
+                            Side::Top,
+                            false,
+                            cx,
+                        )
                     }))
                     .into_any_element()
             })
@@ -1064,7 +1083,132 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let picker = self.soundboard.picker.as_ref()?;
+        self.soundboard_picker_in(false, window, cx)
+    }
+
+    /// "Add sound effect" of Gift Nitro opens the picker over the button's left and top corner.
+    pub(super) fn soundboard_gift_open(
+        &mut self,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.soundboard.gift_picker.is_some() {
+            self.soundboard_gift_close(window, cx);
+            return;
+        }
+        let search = cx.new(|cx| {
+            let mut editor = Editor::new(super::editor_style(), cx);
+            editor.set_placeholder("Find the perfect sound".to_owned());
+            editor
+        });
+        let events = cx.subscribe(&search, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Cancel => this.soundboard.gift_picker = None,
+                EditorEvent::Edited => {
+                    if let Some((picker, _)) = this.soundboard.gift_picker.as_ref() {
+                        picker.scroll.set_offset(point(px(0.), px(0.)));
+                    }
+                }
+                EditorEvent::Submit(_) => {}
+            }
+            cx.notify();
+        });
+        window.focus(&gpui::Focusable::focus_handle(search.read(cx), cx), cx);
+        self.soundboard.gift_picker = Some((
+            Picker {
+                search,
+                scroll: ScrollHandle::new(),
+                rail: ScrollHandle::new(),
+                menu: false,
+                dragging: false,
+                _events: events,
+            },
+            at,
+        ));
+        // Only the default sounds are listed (`defaultSoundsOnly`).
+        if !self.soundboard.defaults_requested {
+            self.soundboard.defaults_requested = true;
+            let _ = self.requests.send(Request::Fetch {
+                key: DEFAULTS_KEY.to_owned(),
+                route: "/soundboard-default-sounds".to_owned(),
+            });
+        }
+        let known = self.soundboard.defaults.clone();
+        self.request_sound_images(&known);
+        cx.notify();
+    }
+
+    pub(super) fn soundboard_gift_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.soundboard.gift_picker.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// A sound picked in Gift Nitro's picker: kept on the step (module 650588 `onSelect`), the picker closes.
+    fn soundboard_gift_choose(
+        &mut self,
+        sound: &Sound,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_gift_sound(
+            sound.id.clone(),
+            sound.name.clone(),
+            sound
+                .emoji_id
+                .is_none()
+                .then(|| sound.emoji_name.clone())
+                .flatten(),
+        );
+        self.soundboard_gift_close(window, cx);
+    }
+
+    /// The open picker of the call's popout, or of Gift Nitro's sound effect.
+    fn soundboard_picker_mut(&mut self, gift: bool) -> Option<&mut Picker> {
+        if gift {
+            self.soundboard
+                .gift_picker
+                .as_mut()
+                .map(|(picker, _)| picker)
+        } else {
+            self.soundboard.picker.as_mut()
+        }
+    }
+
+    pub(super) fn soundboard_gift_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.soundboard_picker_in(true, window, cx)
+    }
+
+    /// The picker of the call's soundboard popout (`gift` false) or of Gift Nitro's sound effect (module 650588:
+    /// `defaultSoundsOnly`, `listPadding` [54, 8, 8, 8], a header of its own, the sounds' "Add" overlay).
+    fn soundboard_picker_in(
+        &mut self,
+        gift: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let picker = if gift {
+            &self.soundboard.gift_picker.as_ref()?.0
+        } else {
+            self.soundboard.picker.as_ref()?
+        };
+        let gift_at = self
+            .soundboard
+            .gift_picker
+            .as_ref()
+            .map(|(_, at)| *at)
+            .filter(|_| gift);
+        let head = if gift {
+            GIFT_HEADER_HEIGHT
+        } else {
+            HEADER_HEIGHT
+        };
         let (search, scroll, rail_scroll, menu) = (
             picker.search.clone(),
             picker.scroll.clone(),
@@ -1080,24 +1224,27 @@ impl Root {
             .collect();
         let query = search.read(cx).text().trim().to_owned();
         let searching = !query.is_empty();
-        let base = sections(
+        let mut base = sections(
             &ctx,
             &guilds,
             &self.soundboard.guilds,
             &self.soundboard.defaults,
             &self.soundboard.favorites,
         );
+        if gift {
+            base.retain(|section| section.kind == Kind::Discord);
+        }
         let shown = if searching {
-            vec![search_section(&ctx, &query, &guilds, &self.soundboard)]
+            let mut found = search_section(&ctx, &query, &guilds, &self.soundboard);
+            if gift {
+                found.sounds.retain(|sound| sound.guild == DISCORD);
+            }
+            vec![found]
         } else {
             base.clone()
         };
-        let notice = self.upsell_wanted();
-        let list_top = if notice {
-            HEADER_HEIGHT + NOTICE_HEIGHT
-        } else {
-            HEADER_HEIGHT
-        };
+        let notice = !gift && self.upsell_wanted();
+        let list_top = if notice { head + NOTICE_HEIGHT } else { head };
         let list_height = PICKER_HEIGHT - list_top;
         let shown_tops = tops(&shown, &self.soundboard.collapsed);
         let scrolled = -f32::from(scroll.offset().y);
@@ -1190,7 +1337,8 @@ impl Root {
             .child(
                 div()
                     .px(px(8.))
-                    .pt(px(8.))
+                    // The gift picker's list padding is 54 at the top (`listPadding` [54, 8, 8, 8]).
+                    .pt(px(if gift { 54. } else { 8. }))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
@@ -1207,6 +1355,7 @@ impl Root {
                 scrolled,
                 &ctx,
                 searching,
+                gift,
                 cx,
             ));
         }
@@ -1260,8 +1409,13 @@ impl Root {
             .top_0()
             .left_0()
             .w_full()
-            .h(px(HEADER_HEIGHT))
-            .bg(color("--background-base-low"))
+            .h(px(head))
+            // The gift header is the surface colour (36, 36, 41 in the capture), the call picker's the base one.
+            .bg(color(if gift {
+                "--background-surface-high"
+            } else {
+                "--background-base-low"
+            }))
             .shadow(vec![
                 BoxShadow {
                     color: hsla(0., 0., 0., 0.2),
@@ -1289,7 +1443,7 @@ impl Root {
                 div()
                     .absolute()
                     .left(px(12.))
-                    .top(px(12.))
+                    .top(px(if gift { 60. } else { 12. }))
                     .w(px(471.))
                     .h(px(40.))
                     .rounded(px(8.))
@@ -1326,14 +1480,14 @@ impl Root {
                     .id("sb-volume")
                     .absolute()
                     .left(px(495.))
-                    .top(px(18.5))
+                    .top(px(if gift { 66.5 } else { 18.5 }))
                     .w(px(24.))
                     .h(px(27.))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            if let Some(picker) = this.soundboard.picker.as_mut() {
+                        cx.listener(move |this, _, window, cx| {
+                            if let Some(picker) = this.soundboard_picker_mut(gift) {
                                 picker.menu = !picker.menu;
                             }
                             // The press leaves the search field, as the official icon button takes focus.
@@ -1371,8 +1525,8 @@ impl Root {
             .occlude()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if let Some(picker) = this.soundboard.picker.as_mut()
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(picker) = this.soundboard_picker_mut(gift)
                         && picker.menu
                     {
                         picker.menu = false;
@@ -1383,43 +1537,193 @@ impl Root {
             .child(rail)
             .child(list)
             .children(notice_view)
-            .child(header);
+            .child(header)
+            .when(gift, |this| {
+                // The title and its line over the search field (`customGiftHeader_0dhArF`: 12px in, body-md/semibold
+                // and body-sm/normal).
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(12.))
+                        .top(px(12.))
+                        .w(px(507.))
+                        .flex()
+                        .flex_col()
+                        .text_color(color("--text-default"))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .child("Add sound effect"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .child("This will play when your friend opens their gift"),
+                        ),
+                )
+                .when(!self.soundboard.gift_tip_closed, |this| {
+                    this.child(self.soundboard_gift_tip(cx))
+                })
+            });
 
-        let wrapper = div()
-            .id("soundboard-popout")
-            .popout("soundboard-popout", PopKind::Fade, PopSide::Right)
-            .absolute()
-            .left(px(PICKER_LEFT))
-            .bottom(px(PICKER_BOTTOM))
-            .w(px(PICKER_WIDTH))
-            .h(px(PICKER_HEIGHT))
-            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                // The volume menu hangs outside the picker's box but is part of it.
-                let on_menu = this.soundboard.picker.as_ref().is_some_and(|picker| {
-                    let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
-                    let top =
-                        f32::from(window.viewport_size().height) - PICKER_BOTTOM - PICKER_HEIGHT
+        let wrapper = if let Some(at) = gift_at {
+            // Above the button, held inside the window (the capture's picker is clamped to the top edge).
+            let viewport = f32::from(window.viewport_size().height);
+            let top = (f32::from(at.y) - 8. - PICKER_HEIGHT)
+                .clamp(0., (viewport - PICKER_HEIGHT).max(0.));
+            // Layout snaps to whole pixels: the button's 224.5 is 225 in the capture.
+            let left = f32::from(at.x).round();
+            div()
+                .id("soundboard-gift-popout")
+                .popout("soundboard-gift-popout", PopKind::Translate, PopSide::Top)
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(PICKER_WIDTH))
+                .h(px(PICKER_HEIGHT))
+                .on_mouse_down_out(
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        let on_menu =
+                            this.soundboard
+                                .gift_picker
+                                .as_ref()
+                                .is_some_and(|(picker, _)| {
+                                    let (x, y) =
+                                        (f32::from(event.position.x), f32::from(event.position.y));
+                                    let menu_top =
+                                        top + MENU_TOP + GIFT_HEADER_HEIGHT - HEADER_HEIGHT;
+                                    picker.menu
+                                        && (left + MENU_LEFT..left + MENU_LEFT + MENU_WIDTH)
+                                            .contains(&x)
+                                        && (menu_top..menu_top + MENU_HEIGHT).contains(&y)
+                                });
+                        if !on_menu {
+                            this.soundboard_gift_close(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+                .child(picker_box)
+                .when(menu, |this| {
+                    this.child(self.soundboard_menu(Some(left), cx))
+                })
+        } else {
+            div()
+                .id("soundboard-popout")
+                .popout("soundboard-popout", PopKind::Fade, PopSide::Right)
+                .absolute()
+                .left(px(PICKER_LEFT))
+                .bottom(px(PICKER_BOTTOM))
+                .w(px(PICKER_WIDTH))
+                .h(px(PICKER_HEIGHT))
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    // The volume menu hangs outside the picker's box but is part of it.
+                    let on_menu = this.soundboard.picker.as_ref().is_some_and(|picker| {
+                        let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+                        let top = f32::from(window.viewport_size().height)
+                            - PICKER_BOTTOM
+                            - PICKER_HEIGHT
                             + MENU_TOP;
-                    picker.menu
-                        && (PICKER_LEFT + MENU_LEFT..PICKER_LEFT + MENU_LEFT + MENU_WIDTH)
-                            .contains(&x)
-                        && (top..top + MENU_HEIGHT).contains(&y)
-                });
-                if !on_menu {
-                    this.close_panel_popout(cx);
-                }
-            }))
-            .child(picker_box)
-            .when(menu, |this| this.child(self.soundboard_menu(cx)));
+                        picker.menu
+                            && (PICKER_LEFT + MENU_LEFT..PICKER_LEFT + MENU_LEFT + MENU_WIDTH)
+                                .contains(&x)
+                            && (top..top + MENU_HEIGHT).contains(&y)
+                    });
+                    if !on_menu {
+                        this.close_panel_popout(cx);
+                    }
+                }))
+                .child(picker_box)
+                .when(menu, |this| this.child(self.soundboard_menu(None, cx)))
+        };
         // Under the tooltips (priority 2), which open over its buttons.
         Some(deferred(wrapper).with_priority(1).into_any_element())
     }
 
+    /// `keybindHint_mb9pZg` at the foot of Gift Nitro's picker: a warning icon, the line with its "Edit Keybind"
+    /// link and a close button (design/dom/dm/gift-step2-sound-picker-darker-cozy.json: 451x52, 8px in, icon 20px).
+    fn soundboard_gift_tip(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .left(px(GIFT_TIP_LEFT))
+            .bottom(px(GIFT_TIP_BOTTOM))
+            .w(px(GIFT_TIP_WIDTH))
+            .h(px(GIFT_TIP_HEIGHT))
+            .px(px(8.))
+            .rounded(px(8.))
+            .bg(color("--background-base-lower"))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .mr(px(8.))
+                    .child(icon("ob_warning", 20., "--text-feedback-warning")),
+            )
+            .child(
+                // The line wraps like the capture's (391px wide): the words flow, "Edit Keybind." is the link.
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_wrap()
+                    .gap_x(px(3.5))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-default"))
+                    .child(div().font_weight(FontWeight(700.)).child("TIP:"))
+                    .children(
+                        "Hold CTRL + \" to use Soundboard in a game overlay."
+                            .split(' ')
+                            .map(|word| div().child(word)),
+                    )
+                    .children(
+                        ["Edit", "Keybind."]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, word)| {
+                                div()
+                                    .id(("sb-gift-edit-keybind", index))
+                                    .cursor_pointer()
+                                    .text_color(color("--text-link"))
+                                    .hover(|style| style.underline())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.soundboard_gift_close(window, cx);
+                                        this.nitro.purchase = None;
+                                        this.open_settings_page("keybinds", cx);
+                                    }))
+                                    .child(word)
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("sb-gift-tip-close")
+                    .size(px(16.))
+                    .flex_none()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.soundboard.gift_tip_closed = true;
+                        cx.notify();
+                    }))
+                    .child(icon("sb_close", 16., "--interactive-text-default")),
+            )
+            .into_any_element()
+    }
+
     /// "Soundboard Volume": a context menu holding the slider.
-    fn soundboard_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// `gift` is the window x of the gift picker's left edge when the menu hangs from that picker, whose header is
+    /// 48px taller.
+    fn soundboard_menu(&self, gift: Option<f32>, cx: &mut Context<Self>) -> AnyElement {
         let fraction = slider_gain(super::settings::soundboard_volume()).clamp(0., 1.);
-        let set = |this: &mut Self, x: gpui::Pixels, cx: &mut Context<Self>| {
-            let fraction = ((f32::from(x) - TRACK_LEFT) / TRACK_WIDTH).clamp(0., 1.);
+        let track_left = gift.map_or(TRACK_LEFT, |left| left + MENU_LEFT + 1. + 8. + 8. + 5.);
+        let is_gift = gift.is_some();
+        let set = move |this: &mut Self, x: gpui::Pixels, cx: &mut Context<Self>| {
+            let fraction = ((f32::from(x) - track_left) / TRACK_WIDTH).clamp(0., 1.);
             let volume = slider_to_volume((fraction * 100.).round())
                 .round()
                 .clamp(0., 100.);
@@ -1431,7 +1735,11 @@ impl Root {
             .id("soundboard-menu")
             .absolute()
             .left(px(MENU_LEFT))
-            .top(px(MENU_TOP))
+            .top(px(if is_gift {
+                MENU_TOP + GIFT_HEADER_HEIGHT - HEADER_HEIGHT
+            } else {
+                MENU_TOP
+            }))
             .w(px(MENU_WIDTH))
             .h(px(MENU_HEIGHT))
             .p(px(1.))
@@ -1470,7 +1778,7 @@ impl Root {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    if let Some(picker) = this.soundboard.picker.as_mut() {
+                                    if let Some(picker) = this.soundboard_picker_mut(is_gift) {
                                         picker.dragging = true;
                                     }
                                     set(this, event.position.x, cx);
@@ -1480,9 +1788,7 @@ impl Root {
                             .on_mouse_move(cx.listener(
                                 move |this, event: &MouseMoveEvent, _, cx| {
                                     if this
-                                        .soundboard
-                                        .picker
-                                        .as_ref()
+                                        .soundboard_picker_mut(is_gift)
                                         .is_some_and(|picker| picker.dragging)
                                         && event.dragging()
                                     {
@@ -1492,8 +1798,8 @@ impl Root {
                             ))
                             .on_mouse_up(
                                 MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    if let Some(picker) = this.soundboard.picker.as_mut() {
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(picker) = this.soundboard_picker_mut(is_gift) {
                                         picker.dragging = false;
                                     }
                                     cx.notify();
@@ -1706,6 +2012,7 @@ impl Root {
         scrolled: f32,
         ctx: &Ctx,
         searching: bool,
+        gift: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = section.key();
@@ -1795,7 +2102,7 @@ impl Root {
                     .iter()
                     .enumerate()
                     .map(|(column, item)| match item {
-                        Some(sound) => self.soundboard_button(&key, sound, ctx, side, cx),
+                        Some(sound) => self.soundboard_button(&key, sound, ctx, side, gift, cx),
                         None => self.soundboard_add_button(
                             guild,
                             section.add.unwrap_or(false),
@@ -1889,6 +2196,7 @@ impl Root {
         sound: &Sound,
         ctx: &Ctx,
         side: Side,
+        gift: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = access(sound, ctx);
@@ -1946,11 +2254,21 @@ impl Root {
                             }))
                             .child(icon("sb_speaker", 16., "--interactive-text-default")),
                     )
-                    .child(div().flex_1().flex().justify_center().child(icon(
-                        "sb_play",
-                        20.,
-                        "--text-strong",
-                    )))
+                    .child(div().flex_1().flex().justify_center().map(|this| {
+                        if gift {
+                            // `soundButtonOverlay: ADD`: a plus and "Add" (`addButton_N99eHz`).
+                            this.items_center()
+                                .gap(px(4.))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(icon("sb_plus", 18., "--text-strong"))
+                                .child("Add")
+                        } else {
+                            this.child(icon("sb_play", 20., "--text-strong"))
+                        }
+                    }))
                     .child(
                         secondary(format!("sb-star-{key}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1993,8 +2311,13 @@ impl Root {
                             style.border_color(color("--border-subtle"))
                         }
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.soundboard_click(&pressed, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if gift {
+                            // `suppressPlaySound`: a press picks the sound for the gift and plays nothing.
+                            this.soundboard_gift_choose(&pressed, window, cx);
+                        } else {
+                            this.soundboard_click(&pressed, cx);
+                        }
                     }))
             })
             .child(

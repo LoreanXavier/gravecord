@@ -276,6 +276,8 @@ impl Root {
                 self.view_reactions.is_some(),
                 self.badge_modal.is_some(),
                 self.polls.modal_open(),
+                // Send a Gift and Select Plan: the page behind is out of the tab order.
+                self.nitro.purchase.is_some(),
                 self.search_filters.is_some(),
                 self.lightbox.is_some(),
                 self.clips_modal_open(),

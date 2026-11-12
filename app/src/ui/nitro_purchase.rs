@@ -61,6 +61,57 @@ fn gifts_away(remaining: u64, tier: &str) -> String {
     format!("{remaining} {gifts} away from the {tier} Badge!")
 }
 
+/// How far into its dip a pulsing dot is at `phase` of a cycle: 0 at the keyframes 0% and 100%, 1 at 50% (the
+/// keyframes of `spinner-pulsing-ellipsis`, each half eased by the animation's `ease-in-out`).
+fn pulse_wave(phase: f32) -> f32 {
+    use super::motion::Ease;
+    let phase = phase.rem_euclid(1.);
+    let half = Ease::EaseInOut.apply(f64::from((phase * 2.).fract())) as f32;
+    if phase < 0.5 { half } else { 1. - half }
+}
+
+/// The pulsing ellipsis a price line shows while the SKU's plans load (module 156601 renders module 289873's
+/// `PULSING_ELLIPSIS` with `priceSpinner`, css 228271: a 22px high flex row, content at the start, 18px under it).
+/// The spinner (css 193433): a 28px box centring three 6px dots 2px apart, resting at opacity .3 and pulsing
+/// opacity 1, .3, 1 with scale 1, .8, 1 in 1.4s ease-in-out, the dots .2s apart.
+fn price_spinner(key: String) -> gpui::Div {
+    use gpui::{Animation, AnimationExt as _};
+    const CYCLE_MS: u64 = 1400;
+    let dot = |index: usize| {
+        div()
+            .size(px(6.))
+            .mr(px(2.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .rounded(px(3.))
+                    .bg(color("--primary-100"))
+                    .size(px(6.))
+                    .with_animation(
+                        gpui::SharedString::from(format!("{key}-dot-{index}")),
+                        Animation::new(std::time::Duration::from_millis(CYCLE_MS)).repeat(),
+                        move |element, delta| {
+                            let wave = pulse_wave(delta - 0.2 / 1.4 * index as f32);
+                            element
+                                .size(px(6. * (1. - 0.2 * wave)))
+                                .opacity(1. - 0.7 * wave)
+                        },
+                    ),
+            )
+    };
+    div().h(px(22.)).mb(px(18.)).flex().items_center().child(
+        div()
+            .w(px(28.))
+            .flex()
+            .justify_center()
+            .child(dot(0))
+            .child(dot(1))
+            .child(dot(2)),
+    )
+}
+
 /// The open purchase dialog.
 pub(crate) struct Purchase {
     pub gift: bool,
@@ -76,6 +127,26 @@ pub(crate) struct Purchase {
     /// The gift message field of "Gift Nitro", created when a card is chosen and kept while the dialog is open.
     pub message: Option<Entity<Editor>>,
     pub message_subscription: Option<gpui::Subscription>,
+    /// "Add sound effect": the sound the gift plays when it is opened (module 418200 `soundEffect`).
+    pub sound: Option<GiftSound>,
+    /// "Add emoji confetti" (module 418200 `emojiConfetti`).
+    pub confetti: Option<GiftConfetti>,
+}
+
+/// The sound a gift carries: its id and name, and the emoji characters shown before the name (`emojiName`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GiftSound {
+    pub id: String,
+    pub name: String,
+    pub emoji: Option<String>,
+}
+
+/// The emoji a gift's confetti is made of: its characters (none for a custom emoji), its name and its id.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GiftConfetti {
+    pub glyph: Option<String>,
+    pub name: String,
+    pub id: Option<dc_state::Id>,
 }
 
 #[cfg(not(feature = "capture"))]
@@ -90,10 +161,11 @@ impl Root {
             .current_dm()
             .filter(|dm| gift && dm.kind == 1)
             .and_then(|dm| dm.recipients.first().copied());
-        if recipient_user.is_some() {
-            self.request_image(super::nitro::art_key("gift-box"), GIFT_BOX_ART.to_owned());
-        }
         if gift {
+            self.request_image(
+                super::nitro::art_key("gift-box-lottie"),
+                GIFT_BOX_ART.to_owned(),
+            );
             // The Gifting badge progress banner reads the signed-in user's badge catalog (module 806677 `z`).
             if let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) {
                 self.request_badge_catalog(me);
@@ -110,6 +182,8 @@ impl Root {
             recipient_user,
             message: None,
             message_subscription: None,
+            sound: None,
+            confetti: None,
         });
         cx.notify();
     }
@@ -120,13 +194,16 @@ impl Root {
         let Some(purchase) = self.nitro.purchase.as_mut() else {
             return;
         };
-        if purchase.recipient_user.is_none() {
-            return;
-        }
         purchase.sku = plan_sku;
         purchase.yearly = true;
         purchase.step = Step::GiftSelect;
         purchase.scroll = ScrollHandle::new();
+        // Without a recipient (server channel, Nitro page) the step has no message field or effect buttons
+        // (captured in `design/dom/channel/gift-step2-server-darker-cozy.json`).
+        if purchase.recipient_user.is_none() {
+            cx.notify();
+            return;
+        }
         if purchase.message.is_none() {
             let editor = cx.new(|cx| {
                 let mut style = super::editor_style();
@@ -177,18 +254,61 @@ impl Root {
             recipient_user: None,
             message: None,
             message_subscription: None,
+            sound: None,
+            confetti: None,
         });
         cx.notify();
     }
 
     fn close_purchase(&mut self) {
         self.nitro.purchase = None;
+        self.soundboard.gift_picker = None;
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.target == super::picker::Target::GiftConfetti)
+        {
+            self.picker = None;
+        }
     }
 
-    /// Escape closes the open purchase dialog, whichever step it is on (the modal's `onClose`). True when it did.
+    /// The sound chosen in "Add sound effect" (module 650588 `onSelect` into module 418200 `setSoundEffect`).
+    pub(super) fn set_gift_sound(&mut self, id: String, name: String, emoji: Option<String>) {
+        if let Some(purchase) = self.nitro.purchase.as_mut() {
+            purchase.sound = Some(GiftSound { id, name, emoji });
+        }
+    }
+
+    /// The emoji chosen in "Add emoji confetti" (module 354972 `setEmojiConfetti`).
+    pub(super) fn set_gift_confetti(
+        &mut self,
+        glyph: Option<String>,
+        name: String,
+        id: Option<dc_state::Id>,
+    ) {
+        if let Some(purchase) = self.nitro.purchase.as_mut() {
+            purchase.confetti = Some(GiftConfetti { glyph, name, id });
+        }
+    }
+
+    /// Escape closes the open purchase dialog, whichever step it is on (the modal's `onClose`), after the picker
+    /// laid over it, which is a layer of its own. True when it did something.
     pub(super) fn escape_purchase(&mut self, cx: &mut Context<Self>) -> bool {
         if self.nitro.purchase.is_none() {
             return false;
+        }
+        if self.soundboard.gift_picker.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.target == super::picker::Target::GiftConfetti)
+        {
+            self.picker = None;
+            cx.notify();
+            return true;
         }
         self.close_purchase();
         cx.notify();
@@ -329,11 +449,6 @@ impl Root {
     /// One plan card of Select Plan and Send a Gift: title, month and year prices, the divider and the feature list.
     fn modal_plan_card(&self, nitro: bool, gift: bool, cx: &mut Context<Self>) -> AnyElement {
         let plan_sku = if nitro { sku::TIER_2 } else { sku::TIER_0 };
-        let has_recipient = self
-            .nitro
-            .purchase
-            .as_ref()
-            .is_some_and(|purchase| purchase.recipient_user.is_some());
         let monthly = self.plan_price_for(plan_sku, false, gift);
         let yearly = self.plan_price_for(plan_sku, true, gift);
         let features: &[(&str, &str)] = if nitro {
@@ -341,8 +456,14 @@ impl Root {
         } else {
             &BASIC_FEATURES
         };
+        // Module 156601: until the store holds the SKU's plans (`isLoadedForSKUs`) each price line is a pulsing
+        // ellipsis spinner, with no unit after it.
+        let loaded = self.nitro.plans.iter().any(|plan| plan.sku_id == plan_sku);
         let amount =
             |price: Option<Price>, size: f32, line: f32, unit: &'static str, tint: &'static str| {
+                if !loaded {
+                    return price_spinner(format!("price-spinner-{nitro}-{unit}"));
+                }
                 div()
                     .flex()
                     .items_end()
@@ -377,7 +498,7 @@ impl Root {
                         this.open_checkout(plan_sku, true, cx);
                     }))
             })
-            .when(gift && has_recipient, |this| {
+            .when(gift, |this| {
                 this.cursor_pointer()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.choose_gift(plan_sku, window, cx);
@@ -710,55 +831,115 @@ impl Root {
             .map(|percent| format!("SAVE {percent}%"));
 
         // The left column: the gift box 102px down, the two effect buttons 12px under its 312px box.
-        let effect_button = |id: &'static str, glyph: &'static str, label: &'static str| {
+        let (sound, confetti) = self
+            .nitro
+            .purchase
+            .as_ref()
+            .map(|purchase| (purchase.sound.clone(), purchase.confetti.clone()))
+            .unwrap_or_default();
+        // The chosen state (modules 650588 and 354972): the emoji and the name in place of the icon and the label.
+        let sound_texts: Option<Vec<String>> = sound.map(|sound| {
+            sound
+                .emoji
+                .into_iter()
+                .chain(std::iter::once(sound.name))
+                .collect()
+        });
+        let confetti_texts: Option<Vec<String>> = confetti.map(|emoji| {
+            emoji
+                .glyph
+                .into_iter()
+                .chain(std::iter::once(emoji.name.replace('_', " ")))
+                .collect()
+        });
+        let effect_button = |id: &'static str,
+                             glyph: &'static str,
+                             label: &'static str,
+                             chosen: Option<Vec<String>>,
+                             cx: &mut Context<Self>| {
             div()
                 .id(id)
+                .relative()
                 .flex_none()
                 .w(px(172.))
                 .h(px(32.))
                 .rounded(px(8.))
                 .bg(rgba(0x97979f1f))
+                .cursor_pointer()
                 .flex()
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
-                .child(icon(glyph, 14., "--icon-strong"))
-                .child(Self::nitro_text(label, 14., 18., 600., "--text-strong"))
+                .map(|this| match chosen {
+                    Some(texts) => this.children(
+                        texts
+                            .into_iter()
+                            .map(|text| Self::nitro_text(text, 14., 18., 600., "--text-strong")),
+                    ),
+                    None => this
+                        .child(icon(glyph, 14., "--icon-strong"))
+                        .child(Self::nitro_text(label, 14., 18., 600., "--text-strong")),
+                })
+                .child(self.anchor_probe(id))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let anchor = this.tip_anchors.borrow().get(id).copied();
+                    let Some(anchor) = anchor else {
+                        return;
+                    };
+                    let at = gpui::point(anchor.left(), anchor.top());
+                    if id == "gift-sound-effect" {
+                        this.picker = None;
+                        this.soundboard_gift_open(at, window, cx);
+                    } else {
+                        this.soundboard_gift_close(window, cx);
+                        this.open_picker(super::picker::Target::GiftConfetti, at, window, cx);
+                    }
+                    cx.notify();
+                }))
         };
-        let left = div()
-            .flex_none()
-            .w(px(435.))
-            .h(px(516.))
-            .pt(px(102.))
-            .flex()
-            .flex_col()
-            .child(
-                div().relative().flex_none().h(px(312.)).child(
-                    // The 435x338.3 picture ends 3px above its box's bottom (module 446263 renders it 900x700).
+        let has_person = purchase.recipient_user.is_some();
+        // The 435x338.3 picture ends 3px above its box's bottom (module 446263 renders it 900x700).
+        let picture = div().relative().flex_none().h(px(312.)).child(
+            div()
+                .absolute()
+                .top(px(-29.3))
+                .left_0()
+                .child(self.nitro_art("gift-box-lottie", 435., 338.3)),
+        );
+        let left = if has_person {
+            div()
+                .flex_none()
+                .w(px(435.))
+                .h(px(516.))
+                .pt(px(102.))
+                .flex()
+                .flex_col()
+                .child(picture)
+                .child(
                     div()
-                        .absolute()
-                        .top(px(-29.3))
-                        .left_0()
-                        .child(self.nitro_art("gift-box", 435., 338.3)),
-                ),
-            )
-            .child(
-                div()
-                    .mt(px(12.))
-                    .flex()
-                    .justify_center()
-                    .gap(px(12.))
-                    .child(effect_button(
-                        "gift-sound-effect",
-                        "gift_sound_effect",
-                        "Add sound effect",
-                    ))
-                    .child(effect_button(
-                        "gift-emoji-confetti",
-                        "msg_react",
-                        "Add emoji confetti",
-                    )),
-            );
+                        .mt(px(12.))
+                        .flex()
+                        .justify_center()
+                        .gap(px(12.))
+                        .child(effect_button(
+                            "gift-sound-effect",
+                            "gift_sound_effect",
+                            "Add sound effect",
+                            sound_texts,
+                            cx,
+                        ))
+                        .child(effect_button(
+                            "gift-emoji-confetti",
+                            "msg_react",
+                            "Add emoji confetti",
+                            confetti_texts,
+                            cx,
+                        )),
+                )
+        } else {
+            // No recipient: just the picture in its 312px column (`giftMainAnimation`).
+            div().flex_none().w(px(435.)).child(picture)
+        };
 
         // "Send to": the DM's person, 44px avatar, name and user tag (module 948388).
         let person = recipient.map(|user| {
@@ -867,29 +1048,31 @@ impl Root {
         let right = div()
             .flex_none()
             .w(px(435.))
-            .pt(px(24.))
+            .when(has_person, |this| this.pt(px(24.)))
             .flex()
             .flex_col()
+            .when(has_person, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(label("Send to"))
+                        .children(person),
+                )
+                .child(
+                    div()
+                        .mt(px(24.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(label("Add message (optional)"))
+                        .child(message_box),
+                )
+            })
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(label("Send to"))
-                    .children(person),
-            )
-            .child(
-                div()
-                    .mt(px(24.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(label("Add message (optional)"))
-                    .child(message_box),
-            )
-            .child(
-                div()
-                    .mt(px(16.))
+                    .when(has_person, |this| this.mt(px(16.)))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
@@ -905,7 +1088,8 @@ impl Root {
         let content = div()
             .w(px(958.))
             .px(px(24.))
-            .py(px(12.))
+            .when(has_person, |this| this.py(px(12.)))
+            .when(!has_person, |this| this.pb(px(8.)))
             .flex()
             .gap(px(30.))
             .child(left)
@@ -920,11 +1104,14 @@ impl Root {
             .flex()
             .flex_col()
             .child(
+                // The two 1px lines frame the scrolling body of a gift with a recipient; the recipient-less step
+                // fits its box and has none (`bodySpacerTop` 16px, `body` 320px, `bodySpacerBottom` 8px).
                 div()
                     .flex_none()
-                    .h(px(17.))
-                    .border_b_1()
-                    .border_color(color("--border-subtle")),
+                    .h(px(if has_person { 17. } else { 16. }))
+                    .when(has_person, |this| {
+                        this.border_b_1().border_color(color("--border-subtle"))
+                    }),
             )
             .child(
                 div()
@@ -943,9 +1130,10 @@ impl Root {
             .child(
                 div()
                     .flex_none()
-                    .h(px(9.))
-                    .border_t_1()
-                    .border_color(color("--border-subtle")),
+                    .h(px(if has_person { 9. } else { 8. }))
+                    .when(has_person, |this| {
+                        this.border_t_1().border_color(color("--border-subtle"))
+                    }),
             );
         let select = div()
             .id("gift-select")
@@ -1030,7 +1218,7 @@ impl Root {
             .when(!selected, |this| {
                 this.border_1().border_color(color("--border-normal"))
             });
-        div()
+        let row = div()
             .id(id)
             .relative()
             .flex_none()
@@ -1087,8 +1275,43 @@ impl Root {
                     purchase.yearly = yearly;
                 }
                 cx.notify();
-            }))
-            .into_any_element()
+            }));
+        // The rows are `role="radio"` with a roving tab stop on the checked one (module 813267): Tab reaches the
+        // selected row, and the arrows pick the other row and move focus to it (module 814576 `ev`'s `onKeyDown`:
+        // down and right step on, up and left step back, wrapping, selecting by a click and focusing the result).
+        let handle = self.stop(id, cx);
+        let other = self.stop(
+            if yearly {
+                "gift-option-month"
+            } else {
+                "gift-option-year"
+            },
+            cx,
+        );
+        // A row with no fill: the focus ring is a frame around it, not a shadow under it.
+        let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
+        let row = super::keyboard::tab_stop(row, &handle, selected);
+        let row = if ringed {
+            row.child(super::keyboard::hollow_ring(16.))
+        } else {
+            row
+        };
+        row.on_key_down(
+            cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(
+                    event.keystroke.key.as_str(),
+                    "up" | "down" | "left" | "right"
+                ) {
+                    if let Some(purchase) = this.nitro.purchase.as_mut() {
+                        purchase.yearly = !yearly;
+                    }
+                    window.focus(&other, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
+        .into_any_element()
     }
 
     fn back_link(&self, cx: &mut Context<Self>, to: Step) -> AnyElement {
@@ -1482,7 +1705,19 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_GIFT_MESSAGE, characters_left, gifts_away, savings_percent};
+    use super::{DEFAULT_GIFT_MESSAGE, characters_left, gifts_away, pulse_wave, savings_percent};
+
+    #[test]
+    fn the_price_spinner_dips_at_half_a_cycle_and_returns() {
+        // `spinner-pulsing-ellipsis`: opacity 1, .3, 1 and scale 1, .8, 1 at 0%, 50% and 100%.
+        assert!(pulse_wave(0.).abs() < 1e-4);
+        assert!((pulse_wave(0.5) - 1.).abs() < 1e-4);
+        assert!(pulse_wave(1.).abs() < 1e-4);
+        // The dot .2s behind (of 1.4s) is on its way down while the first is already past it.
+        assert!(pulse_wave(0.5 - 0.2 / 1.4) < pulse_wave(0.5));
+        // Symmetric: the climb back mirrors the descent.
+        assert!((pulse_wave(0.25) - pulse_wave(0.75)).abs() < 1e-4);
+    }
 
     #[test]
     fn the_yearly_gift_saves_the_captured_percentage() {

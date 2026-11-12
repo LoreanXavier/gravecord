@@ -1953,7 +1953,8 @@ pub async fn run(
                         }
                     };
                     match fetched {
-                        Ok(bytes) if key == "nitro-art:gift-box" => {
+                        // (`nitro-art:gift-box` is the Gift Inventory's PNG, a different picture.)
+                        Ok(bytes) if key == "nitro-art:gift-box-lottie" => {
                             // The Gift Nitro box (module 446263, the Standard Box loop file): one frame at twice its
                             // 435px width, drawn off the UI thread.
                             let _slot = IMAGE_DRAWS.acquire().await;
