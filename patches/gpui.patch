@@ -167,6 +167,59 @@ index 8f980bd..f6040e9 100644
      pub(crate) fn new<E>(element: E) -> Self
      where
          E: 'static + Element,
+diff --git a/crates/gpui/src/elements/anchored.rs b/crates/gpui/src/elements/anchored.rs
+index 12f3f08..79d3133 100644
+--- a/crates/gpui/src/elements/anchored.rs
++++ b/crates/gpui/src/elements/anchored.rs
+@@ -96,6 +96,12 @@ impl Anchored {
+         self
+     }
+ 
++    /// Flip to the pointer's left side when the right edge overflows, then snap and leave some margins.
++    pub fn flip_horizontal_snap_with_margin(mut self, edges: impl Into<Edges<Pixels>>) -> Self {
++        self.fit_mode = AnchoredFitMode::FlipHorizontalSnapWithMargin(edges.into());
++        self
++    }
++
+     /// Snap to window edge and leave some margins.
+     pub fn snap_to_window_with_margin(mut self, edges: impl Into<Edges<Pixels>>) -> Self {
+         self.fit_mode = AnchoredFitMode::SnapToWindowWithMargin(edges.into());
+@@ -256,9 +262,25 @@ impl Element for Anchored {
+             }
+         }
+ 
++        // A menu that runs past the window's right edge opens to the left of its pointer instead; the vertical axis
++        // only snaps.
++        if matches!(self.fit_mode, AnchoredFitMode::FlipHorizontalSnapWithMargin(_))
++            && desired.right() > limits.right()
++        {
++            let switched = Bounds::from_anchor_and_size(
++                self.anchor.other_side_along(Axis::Horizontal),
++                origin,
++                children_bounds.size,
++            );
++            if switched.left() >= limits.left() && switched.right() <= limits.right() {
++                desired = switched;
++            }
++        }
++
+         let client_inset = window.client_inset.unwrap_or(px(0.));
+         let edges = match self.fit_mode {
+-            AnchoredFitMode::SnapToWindowWithMargin(edges) => edges,
++            AnchoredFitMode::SnapToWindowWithMargin(edges)
++            | AnchoredFitMode::FlipHorizontalSnapWithMargin(edges) => edges,
+             _ => Edges::default(),
+         }
+         .map(|edge| *edge + client_inset);
+@@ -339,6 +361,8 @@ pub enum AnchoredFitMode {
+     SnapToWindow,
+     /// Snap to window edge and leave some margins.
+     SnapToWindowWithMargin(Edges<Pixels>),
++    /// Switch to the other horizontal corner when the element overflows the right edge, then snap with margins.
++    FlipHorizontalSnapWithMargin(Edges<Pixels>),
+     /// Switch which corner anchor this anchored element is attached to.
+     SwitchAnchor,
+ }
 diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
 index 9b34aa2..4216b3b 100644
 --- a/crates/gpui/src/elements/div.rs

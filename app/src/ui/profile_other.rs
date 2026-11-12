@@ -389,6 +389,7 @@ impl Root {
                     .child(format!("{display_name}'s profile is private, so some info is hidden. Add them as a friend to see more."))
             ))
             .children(self.live_activity_cards(id, false, strong, subtle, cx))
+            .children(self.popout_voice_card(id, cx))
             .children(self.profile_role_chips(id, strong))
             .into_any_element();
         let message: Option<AnyElement> = popout.message.as_ref().map(|message| {

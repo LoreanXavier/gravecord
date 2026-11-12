@@ -416,6 +416,7 @@ impl Root {
             .when(own, |this| {
                 this.child(upsell(self.premium().is_subscriber(), cx))
             })
+            .children(own.then(|| self.popout_voice_card(user.id, cx)).flatten())
             .children(
                 own.then_some(self.guild)
                     .flatten()

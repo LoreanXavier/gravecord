@@ -3282,7 +3282,9 @@ impl Root {
                     },
                 )
                 .position(open.at)
-                .snap_to_window_with_margin(px(8.))
+                // member-menu/user-guild, self-guild: a menu that would pass the right edge opens to the left of the
+                // pointer (right edge at the pointer); vertically it keeps 8px from the window.
+                .flip_horizontal_snap_with_margin(px(8.))
                 .child(
                     div()
                         .parity_with_border("context-menu", 1.)

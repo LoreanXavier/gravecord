@@ -141,6 +141,24 @@ impl Root {
         self.start_voice_tick(cx);
     }
 
+    /// Harness only: this account "in" a Stage of a guild, as above: no voice state, no media, nothing leaves the
+    /// process (`ch call <channel>`).
+    #[cfg(feature = "capture")]
+    pub(super) fn fake_guild_call(&mut self, guild: Id, channel: Id) {
+        self.call = Some(Call {
+            stats: Default::default(),
+            camera: false,
+            guild,
+            channel,
+            controls: dc_voice::Controls::new(),
+            started: true,
+            connected: true,
+            connected_at: Some(std::time::Instant::now()),
+            rtc_users: Vec::new(),
+            tracker: Default::default(),
+        });
+    }
+
     /// A guild call opens the voice view; a DM or group DM call opens its channel, whose call area shows it.
     fn show_call_channel(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
         if guild == 0 {
@@ -501,6 +519,11 @@ impl Root {
                 .unwrap_or_default()
         };
         let camera_on = call.camera;
+        let stage = guild.is_some_and(|guild| {
+            guild.channels.iter().any(|known| {
+                known.id == call.channel && known.kind == dc_state::ChannelKind::Other(13)
+            })
+        });
         let own_stream = self.own_stream();
         let (status, status_color) = if call.connected {
             (
@@ -868,15 +891,16 @@ impl Root {
                                         .child(disconnect),
                                 ),
                         )
-                        .child(
+                        // A Stage's panel has no camera, screen, activity or soundboard row (stage-ann/stage-live).
+                        .children((!stage).then(|| {
                             div()
                                 .flex()
                                 .gap(px(8.))
                                 .child(div().flex_1().child(camera))
                                 .child(div().flex_1().child(screen))
                                 .child(div().flex_1().child(activity))
-                                .child(div().flex_1().child(soundboard)),
-                        ),
+                                .child(div().flex_1().child(soundboard))
+                        })),
                 )
                 .into_any_element(),
         )
@@ -1021,6 +1045,35 @@ impl Root {
                             cx.stop_propagation();
                         }),
                     )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // A left click opens the person's profile popout to the right of the row.
+                        let anchor = this
+                            .tip_anchors
+                            .borrow()
+                            .get(&gpui::SharedString::from(format!("voice-member-{member}")))
+                            .copied();
+                        if let Some(anchor) = anchor {
+                            this.open_profile(member, anchor, false, cx);
+                        }
+                    }))
+                    .cursor_pointer()
+                    .relative()
+                    .child({
+                        let anchors = self.tip_anchors.clone();
+                        let key = gpui::SharedString::from(format!("voice-member-{member}"));
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                anchors.borrow_mut().insert(key.clone(), bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        // The row element ends 9px before the sidebar's edge (capture: row 108 to 366).
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .bottom_0()
+                        .right(px(9.))
+                    })
                     .flex_none()
                     .h(px(32.))
                     .pl(px(44.))

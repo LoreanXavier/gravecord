@@ -258,7 +258,7 @@ impl Root {
     }
 
     /// Whether this client is in the channel (`connected` of the row).
-    fn in_voice_channel(&self, channel: Id) -> bool {
+    pub(super) fn in_voice_channel(&self, channel: Id) -> bool {
         self.call
             .as_ref()
             .is_some_and(|call| call.channel == channel)
