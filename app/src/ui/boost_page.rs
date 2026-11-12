@@ -630,7 +630,11 @@ impl Root {
                                         text(42., 46.2, 700., "--text-strong")
                                             .font_family(super::nitro::NITRO_FONT)
                                             .w_full()
-                                            // Two lines of 46.2px (the line box is rounded here).
+                                            // Two lines of 46.2px (the line box is rounded here); the glyphs sit 4px
+                                            // higher in the capture's box (dropdown-boost-modal dom: 222, rows 224/270).
+                                            .relative()
+                                            .top(px(-4.))
+                                            .left(px(1.))
                                             .h(px(92.4))
                                             .flex()
                                             .flex_col()
