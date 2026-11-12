@@ -7,7 +7,7 @@ use crate::parity::Parity;
 use dc_state::{Channel, Id, Message, Thread};
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, SharedString, Subscription,
-    Task, Window, div, img, prelude::*, px,
+    Task, Window, div, img, prelude::*, px, svg,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -165,15 +165,105 @@ fn gallery_height(width: f32, media: bool) -> f32 {
     120. + ((width - 26.) * if media { 0.5625 } else { 2. / 3. }).ceil()
 }
 
+/// The reaction a post card shows: the most reacted emoji of the first message, the first of equals (`lQ`, module
+/// 435470).
+fn top_reaction(message: &Message) -> Option<&dc_state::Reaction> {
+    message.reactions.iter().rev().max_by_key(|r| r.count)
+}
+
+/// The key a reaction's picture is stored under (`emoji:` for unicode, as a message's reactions use).
+fn reaction_image_key(reaction: &dc_state::Reaction) -> String {
+    match reaction.emoji_id {
+        Some(id) => format!("custom:{id}"),
+        None => format!("emoji:{}", reaction.name),
+    }
+}
+
+/// A tag chip's outer width: the label plus `.pill_snX-u4`'s 1px border and 12px padding on both sides.
+fn tag_chip_width(label_width: f32) -> f32 {
+    label_width + 26.
+}
+
+/// How many chips of the tag list fit on its first row (`.tagList` is 32px high and clips the wrapped rows; chips are
+/// 8px apart) and where the last of them ends. The "All" button follows that end by 8px.
+fn first_tag_row(widths: &[f32], limit: f32) -> (usize, f32) {
+    let (mut shown, mut end) = (0, 0.);
+    for width in widths {
+        let next = if shown == 0 {
+            *width
+        } else {
+            end + 8. + *width
+        };
+        if shown > 0 && next > limit {
+            break;
+        }
+        end = next;
+        shown += 1;
+    }
+    (shown, end)
+}
+
+/// The width a label takes at a size and weight, as the text system shapes it.
+fn measure_label(window: &mut Window, text: &str, size: f32, weight: f32) -> f32 {
+    if text.is_empty() {
+        return 0.;
+    }
+    let mut font = gpui::font(super::SANS);
+    font.weight = FontWeight(weight);
+    font.features = super::kerning();
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None)
+            .width,
+    )
+}
+
 impl Root {
+    /// The forum on screen: the open forum channel, or the forum of the open post (the list stays beside the post).
+    pub(super) fn forum_id(&self) -> Option<Id> {
+        let channel = self.channel?;
+        let guild = self.current_guild()?;
+        if guild
+            .channels
+            .iter()
+            .any(|c| c.id == channel && c.is_forum())
+        {
+            return Some(channel);
+        }
+        let parent = guild.threads.iter().find(|t| t.id == channel)?.parent_id;
+        guild
+            .channels
+            .iter()
+            .any(|c| c.id == parent && c.is_forum())
+            .then_some(parent)
+    }
+
+    fn forum_channel(&self, id: Id) -> Option<&Channel> {
+        self.current_guild()?.channels.iter().find(|c| c.id == id)
+    }
+
+    /// The forum whose post is open beside its list.
+    pub(super) fn open_post_forum(&self) -> Option<Id> {
+        self.forum_id().filter(|forum| self.channel != Some(*forum))
+    }
+
     pub(super) fn forum_menu_is_open(&self) -> bool {
-        self.channel
+        self.forum_id()
             .and_then(|id| self.forums.get(&id))
             .is_some_and(|view| view.menu.is_some())
     }
 
     pub(super) fn close_forum_menu(&mut self) -> bool {
-        self.channel
+        self.forum_id()
             .and_then(|id| self.forums.get_mut(&id))
             .is_some_and(|view| view.menu.take().is_some())
     }
@@ -190,8 +280,9 @@ impl Root {
     }
 
     fn open_forum_post(&mut self, id: Id, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.current_channel().is_some_and(|c| {
-            c.id == id && self.can_in_channel(c, dc_state::permissions::SEND_MESSAGES)
+        if !self.forum_channel(id).is_some_and(|c| {
+            !self.screening_pending()
+                && self.can_in_channel(c, dc_state::permissions::SEND_MESSAGES)
         }) {
             return;
         }
@@ -241,7 +332,7 @@ impl Root {
     }
 
     fn submit_forum_post(&mut self, id: Id, cx: &mut Context<Self>) {
-        let Some(channel) = self.current_channel().filter(|c| c.id == id).cloned() else {
+        let Some(channel) = self.forum_channel(id).cloned() else {
             return;
         };
         if !self.can_in_channel(&channel, dc_state::permissions::SEND_MESSAGES) {
@@ -720,6 +811,16 @@ impl Root {
                     ));
                 }
             }
+            if let Some(reaction) = top_reaction(&message) {
+                let url = match reaction.emoji_id {
+                    Some(id) => Some(format!(
+                        "https://cdn.discordapp.com/emojis/{id}.webp?size=96"
+                    )),
+                    None => dc_tokens::emoji_file(&reaction.name)
+                        .map(|file| format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN)),
+                };
+                images.extend(url.map(|url| (reaction_image_key(reaction), url)));
+            }
             self.stores
                 .users
                 .insert(message.author.id, message.author.clone());
@@ -732,10 +833,50 @@ impl Root {
         true
     }
 
+    /// A post's first message as one line of text with the inline styles it keeps (`formatInline` in module 745431's
+    /// `e4`: bold, italic, underline and strikethrough; links and mentions stay plain).
+    fn post_preview_text(
+        &self,
+        content: &str,
+    ) -> (String, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>) {
+        let mut text = String::new();
+        let mut runs = Vec::new();
+        for span in dc_markdown::inline(content) {
+            let start = text.len();
+            text.push_str(&span.text.replace(['\r', '\n'], " "));
+            let style = span.style;
+            let mut run = gpui::HighlightStyle::default();
+            if style.bold {
+                run.font_weight = Some(FontWeight(700.));
+            }
+            if style.italic {
+                run.font_style = Some(gpui::FontStyle::Italic);
+            }
+            if style.strike {
+                run.strikethrough = Some(gpui::StrikethroughStyle {
+                    thickness: px(1.),
+                    color: None,
+                });
+            }
+            if style.underline {
+                run.underline = Some(gpui::UnderlineStyle {
+                    thickness: px(1.),
+                    color: None,
+                    wavy: false,
+                });
+            }
+            if run != gpui::HighlightStyle::default() && text.len() > start {
+                runs.push((start..text.len(), run));
+            }
+        }
+        (text, runs)
+    }
+
     fn forum_card(&self, channel: &Channel, thread: &Thread, cx: &mut Context<Self>) -> AnyElement {
         let view = &self.forums[&channel.id];
         let message = view.posts.get(&thread.id);
         let unread = self.stores.is_unread(thread.id);
+        let open = self.channel == Some(thread.id);
         let id = thread.id;
         let guild = self.guild;
         let tags: Vec<_> = thread
@@ -759,6 +900,43 @@ impl Root {
             .and_then(|m| m.attachments.iter().find(|a| a.is_image()))
             .and_then(|a| self.images.get(&format!("forum-thumbnail:{}", a.id)))
             .cloned();
+        // The footer's reaction button (`.reaction_UNkajC.updateReactionButton`): the most reacted emoji of the first
+        // message with its count, 28px high, read only here.
+        let chip = message.and_then(top_reaction).map(|reaction| {
+            let picture = self.images.get(&reaction_image_key(reaction)).cloned();
+            div()
+                .h(px(28.))
+                .flex_none()
+                .mr(px(4.))
+                .px(px(6.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .bg(color("--reaction-background-default"))
+                .hover(|s| {
+                    s.bg(color("--reaction-background-hover"))
+                        .border_color(color("--reaction-border-hover"))
+                })
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(20.))
+                        .children(picture.map(|picture| img(picture).size(px(20.)))),
+                )
+                .child(
+                    div()
+                        .ml(px(6.))
+                        .min_w(px(12.))
+                        .flex()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-subtle"))
+                        .child(reaction.count.to_string()),
+                )
+        });
         div()
             .id(SharedString::from(format!("forum-post-{id}")))
             .when(thread.pinned(), |row| {
@@ -770,10 +948,21 @@ impl Root {
             .px(px(10.))
             .py(px(12.))
             .border_1()
-            .border_color(color("--border-subtle"))
             .rounded(px(12.))
-            .bg(color("--background-base-low"))
-            .hover(|s| s.bg(color("--background-mod-subtle")))
+            // `.container_SOY5H6` (5aa4942e5de32d82): hover and the open post take the raised surface and the strong
+            // border; the open post one step higher.
+            .when(open, |card| {
+                card.border_color(color("--border-strong"))
+                    .bg(color("--background-surface-higher"))
+            })
+            .when(!open, |card| {
+                card.border_color(color("--border-subtle"))
+                    .bg(color("--background-base-low"))
+                    .hover(|s| {
+                        s.bg(color("--background-surface-high"))
+                            .border_color(color("--border-strong"))
+                    })
+            })
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(guild) = guild {
@@ -808,20 +997,27 @@ impl Root {
                                             .child(icon("forum_pin", 16., "--white")),
                                     )
                                 })
+                                // `.pill_snX-u4.small`: 24px, 1px subtle border, 0 8px, `body-xs/semibold`.
                                 .children(tags.iter().map(|tag| {
                                     div()
                                         .rounded_full()
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
                                         .px(px(8.))
                                         .h(px(24.))
+                                        .flex_none()
                                         .text_size(px(12.))
-                                        .line_height(px(24.))
-                                        .font_weight(FontWeight(500.))
-                                        .bg(color("--background-mod-subtle"))
-                                        .text_color(color("--text-strong"))
+                                        .line_height(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .font_weight(FontWeight(600.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .text_color(color("--control-secondary-text-default"))
                                         .child(tag.name.clone())
                                 })),
                         )
                     })
+                    // `.header_SOY5H6` pads 6px under `.headerText` (8px end margin, two lines at most).
                     .child(
                         div()
                             .text_size(px(20.))
@@ -833,67 +1029,83 @@ impl Root {
                                 "--text-muted"
                             }))
                             .mb(px(6.))
+                            .mr(px(8.))
+                            .max_h(px(48.))
+                            .overflow_hidden()
+                            .line_clamp(2)
                             .child(thread.name.clone()),
                     )
+                    // `.message_SOY5H6`: the author (`body-sm/semibold`, the role colour over the muted link
+                    // colour, strong once the post has unread messages), ":", then the content at 4px,
+                    // `font-weight: medium`, on one line.
                     .child(
                         div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
+                            .flex()
+                            .items_center()
                             .h(px(18.))
                             .overflow_hidden()
-                            .text_ellipsis()
-                            .text_color(color(if unread {
-                                "--text-default"
-                            } else {
-                                "--text-muted"
-                            }))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
                             .children(message.map(|m| {
                                 let name = self.guild_display_name(&m.author);
-                                let content = m.content.replace('\n', " ");
-                                // A name with a display name style keeps its font, so the name and the rest are
-                                // separate runs then.
-                                if let Some(styles) = self.name_styles(&m.author, self.guild) {
-                                    return div()
-                                        .flex()
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .font_weight(FontWeight(500.))
-                                                .text_color(self.guild_author_color(
-                                                    m.author.id,
-                                                    "--text-muted",
-                                                ))
-                                                .child(super::name_styles::name(
-                                                    format!("post-preview-{}", m.id),
-                                                    name,
-                                                    Some(&styles),
-                                                    super::name_styles::Display::Font,
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(0.))
-                                                .text_ellipsis()
-                                                .child(format!(": {content}")),
-                                        )
-                                        .into_any_element();
-                                }
-                                let text = format!("{name}: {content}");
-                                gpui::StyledText::new(text)
-                                    .with_highlights([(
-                                        0..name.len(),
-                                        gpui::HighlightStyle {
-                                            color: Some(
-                                                self.guild_author_color(
-                                                    m.author.id,
-                                                    "--text-muted",
-                                                )
-                                                .into(),
+                                let author_color = self.guild_author_color(
+                                    m.author.id,
+                                    if unread {
+                                        "--text-strong"
+                                    } else {
+                                        "--text-muted"
+                                    },
+                                );
+                                // A name with a display name style keeps its font.
+                                let name_element = match self.name_styles(&m.author, self.guild) {
+                                    Some(styles) => super::name_styles::name(
+                                        format!("post-preview-{}", m.id),
+                                        name,
+                                        Some(&styles),
+                                        super::name_styles::Display::Font,
+                                    )
+                                    .into_any_element(),
+                                    None => div().child(name).into_any_element(),
+                                };
+                                let (text, runs) = self.post_preview_text(&m.content);
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_none()
+                                            .font_weight(FontWeight(600.))
+                                            .child(
+                                                div().text_color(author_color).child(name_element),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(color("--text-default"))
+                                                    .child(":"),
                                             ),
-                                            font_weight: Some(FontWeight(500.)),
-                                            ..Default::default()
-                                        },
-                                    )])
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .ml(px(4.))
+                                            .h(px(18.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color(if unread {
+                                                "--text-default"
+                                            } else {
+                                                "--text-muted"
+                                            }))
+                                            .child(
+                                                gpui::StyledText::new(text).with_highlights(runs),
+                                            ),
+                                    )
                                     .into_any_element()
                             })),
                     )
@@ -907,15 +1119,36 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-default"))
+                            .children(chip)
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(4.))
                                     .child(icon("forum_reply_count", 14., "--text-default"))
-                                    .child(thread.message_count.to_string()),
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight(500.))
+                                            .child(thread.message_count.to_string()),
+                                    )
+                                    // `unreadCount`: "1+" while the number of new messages is unknown.
+                                    .when(unread, |row| {
+                                        row.child(
+                                            div()
+                                                .ml(px(4.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-brand"))
+                                                .child("(1+ New)"),
+                                        )
+                                    }),
                             )
-                            .child(div().text_color(color("--border-subtle")).child("·"))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--border-subtle"))
+                                    .child("\u{2022}"),
+                            )
                             .child(ago),
                     ),
             )
@@ -1067,17 +1300,344 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn forum_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn forum_view_in(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(channel) = self.current_channel().cloned() else {
             return div().into_any_element();
         };
+        self.forum_column(channel, None, window, cx)
+    }
+
+    /// A forum's list beside its open post (`threadSidebarOpen_z_gUBg`): the 385px list column and the 512px post
+    /// panel, 8px apart on the lowest surface. `None` when no post of a forum is open.
+    pub(super) fn forum_split_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let forum = self.open_post_forum()?;
+        let channel = self.forum_channel(forum)?.clone();
+        let list = self.forum_column(channel, Some(384.), window, cx);
+        let panel = self.forum_post_panel(forum, cx);
+        Some(
+            div()
+                .flex()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+                .child(div().flex().w(px(385.)).flex_none().h_full().child(list))
+                .child(
+                    div()
+                        .w(px(8.))
+                        .flex_none()
+                        .h_full()
+                        .bg(color("--background-base-lowest")),
+                )
+                .child(panel)
+                .into_any_element(),
+        )
+    }
+
+    /// The panel of an open post: its header (title, More, Close), the messages and the composer.
+    fn forum_post_panel(&mut self, forum: Id, cx: &mut Context<Self>) -> AnyElement {
+        let title = self.current_thread().map(|t| t.name).unwrap_or_default();
+        let thread = self.channel;
+        let guild = self.guild;
+        let button = |id: &'static str, name: &'static str| {
+            div()
+                .id(id)
+                .group(id)
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(
+                    svg()
+                        .path(format!("icons/{name}.svg"))
+                        .size(px(20.))
+                        .flex_none()
+                        .text_color(color("--text-muted")),
+                )
+        };
+        let header = div()
+            .flex_none()
+            .h(px(49.))
+            .border_b_1()
+            .border_color(color("--background-mod-subtle"))
+            .bg(color("--background-base-lower"))
+            .pl(px(16.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(title),
+            )
+            .child(
+                button("forum-post-more", "more_horizontal").on_click(cx.listener(
+                    move |this, event: &gpui::ClickEvent, _, cx| {
+                        if let Some(thread) = thread {
+                            this.open_context_menu(
+                                super::context_menu::Target::Thread(thread),
+                                event.position(),
+                                cx,
+                            );
+                        }
+                    },
+                )),
+            )
+            .child(button("forum-post-close", "close").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if let Some(guild) = guild {
+                        this.select(guild, Some(forum));
+                    }
+                    cx.notify();
+                },
+            )));
+        div()
+            .w(px(512.))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_l_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-lower"))
+            .child(header)
+            .child(self.regions.place(
+                super::regions::Kind::Messages,
+                super::regions::style_of(super::regions::Kind::Messages),
+            ))
+            .child(if self.screening_pending() {
+                self.screening_composer(cx)
+            } else if self.follow_blocker_applies() {
+                self.follow_composer(cx)
+            } else {
+                self.regions
+                    .place_composer()
+                    .unwrap_or_else(|| self.composer_bar(cx).into_any_element())
+            })
+            .into_any_element()
+    }
+
+    /// `container_Wp3SYH`: the 64px icon over the post title at 32px, 16px in from the list's edges.
+    pub(super) fn forum_post_intro(&self) -> AnyElement {
+        let title = self.current_thread().map(|t| t.name).unwrap_or_default();
+        div()
+            .px(px(16.))
+            .pt(px(16.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .size(px(64.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("forum_reply_count", 34., "--text-default")),
+            )
+            .child(
+                div()
+                    .mt(px(8.))
+                    .text_size(px(32.))
+                    .line_height(px(40.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(title),
+            )
+            .into_any_element()
+    }
+
+    /// `container_HeWz1C`: Follow and Copy Link at the right of the strip under the first message, then the 8px
+    /// rule on the lowest surface.
+    pub(super) fn forum_post_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let thread = self.current_thread();
+        let id = thread.as_ref().map_or(0, |t| t.id);
+        let following = thread.as_ref().is_some_and(|t| t.joined);
+        let guild = self.guild.unwrap_or_default();
+        let secondary = |name: &'static str| {
+            div()
+                .id(name)
+                .h(px(32.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .rounded(px(8.))
+                .bg(color("--control-secondary-background-default"))
+                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .h(px(45.))
+                    .pr(px(12.))
+                    .flex()
+                    .justify_end()
+                    .items_end()
+                    .gap(px(4.))
+                    .child(
+                        secondary("forum-follow")
+                            .px(px(11.))
+                            .gap(px(4.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child(icon("bell", 16., "--control-secondary-text-default"))
+                            .child(if following { "Following" } else { "Follow" })
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                // `joinThread` / `leaveThread`: the gateway's THREAD_MEMBER_UPDATE follows.
+                                let (method, route) = if following {
+                                    (
+                                        reqwest::Method::DELETE,
+                                        format!("/channels/{id}/thread-members/@me"),
+                                    )
+                                } else {
+                                    (
+                                        reqwest::Method::POST,
+                                        format!(
+                                            "/channels/{id}/thread-members/@me?location=Context%20Menu"
+                                        ),
+                                    )
+                                };
+                                let _ = this.requests.send(Request::Rest {
+                                    key: None,
+                                    method,
+                                    route,
+                                    body: None,
+                                });
+                            })),
+                    )
+                    .child(
+                        secondary("forum-copy-link")
+                            .w(px(32.))
+                            .child(icon("share_link", 16., "--control-secondary-text-default"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!(
+                                    "https://discord.com/channels/{guild}/{id}"
+                                )));
+                            })),
+                    ),
+            )
+            .child(div().h(px(8.)).bg(color("--background-base-lowest")))
+            .into_any_element()
+    }
+
+    /// The forum's own header while its post is open (`title_z_gUBg` with `threadSidebarOpen`): the icon and name, the
+    /// notification and member buttons and the collapsed 64px search box.
+    fn forum_column_header(&self, channel: &Channel) -> impl IntoElement {
+        let glyph = |name: &'static str| {
+            div()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(format!("icons/{name}.svg"))
+                        .size(px(20.))
+                        .flex_none()
+                        .text_color(color("--text-muted")),
+                )
+        };
+        let facts = super::channel_icon::Facts {
+            locked: false,
+            ..self.channel_icon_facts(channel, false)
+        };
+        div()
+            .flex_none()
+            .h(px(49.))
+            .border_b_1()
+            .border_color(color("--background-mod-subtle"))
+            .bg(color("--background-base-lower"))
+            .pl(px(15.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .child(icon(
+                super::channel_icon::name(&facts),
+                20.,
+                "--channels-default",
+            ))
+            .child(
+                div()
+                    .ml(px(9.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(channel.name.clone()),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(glyph("bell"))
+                    .child(glyph("members"))
+                    .child(
+                        div()
+                            .w(px(64.))
+                            .h(px(32.))
+                            .rounded(px(4.))
+                            .bg(color("--background-base-lowest"))
+                            .pl(px(9.))
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .w(px(38.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .child("Search"),
+                            )
+                            .child(icon("search", 16., "--text-muted")),
+                    ),
+            )
+    }
+
+    /// The forum's list column. `split` is its width when a post is open beside it.
+    fn forum_column(
+        &mut self,
+        channel: Channel,
+        split: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let show_members = self.show_members && split.is_none();
+        let list_width =
+            split.unwrap_or(self.viewport.0 - 375. - if self.show_members { 265. } else { 0. });
         self.ensure_forum(&channel, cx);
         let id = channel.id;
         let view = &self.forums[&id];
         let gallery = view.gallery;
-        let (_, card_width) = gallery_columns(
-            self.viewport.0 - 375. - if self.show_members { 264. } else { 0. } - 48.,
-        );
+        let (_, card_width) = gallery_columns(list_width - 48.);
         let active = active_threads(
             self.current_guild().map_or(&[], |g| &g.threads),
             id,
@@ -1133,9 +1693,23 @@ impl Root {
             }
         };
         let composing = view.new_post.is_some();
-        let can_post = self.can_in_channel(&channel, dc_state::permissions::SEND_MESSAGES);
+        // `canCreatePost`: `canChatInGuild` (false while membership screening is pending) and the permission.
+        let can_post = !self.screening_pending()
+            && self.can_in_channel(&channel, dc_state::permissions::SEND_MESSAGES);
         let guidelines = view.guidelines;
         let tags = view.tags.clone();
+        // The tag list (`.tagList_BkGrJJ`) is what is left of the row after the sort button, the divider (16px
+        // margins) and the hidden placeholder of the "All" button (62px and an 8px margin).
+        let row_width = list_width - 48.;
+        let sort_width = 70. + measure_label(window, "Sort & View", 14., 500.);
+        let tag_left = sort_width + 16. + 0.8 + 16.;
+        let tag_limit = row_width - tag_left - 8. - 62.;
+        let tag_widths: Vec<f32> = channel
+            .available_tags
+            .iter()
+            .map(|tag| tag_chip_width(measure_label(window, &tag.name, 14., 600.)))
+            .collect();
+        let (_, tags_end) = first_tag_row(&tag_widths, tag_limit);
         let scroll = view.scroll.clone();
         let list = div()
             .id("forum-scroll")
@@ -1164,7 +1738,8 @@ impl Root {
                 div()
                     .parity_with_border("forum-search", 1.)
                     .h(px(50.))
-                    .px(px(12.))
+                    .pl(px(12.))
+                    .pr(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .rounded(px(12.))
@@ -1186,7 +1761,7 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon("forum_guidelines_btn", 20., "--text-default"))
+                            .child(icon("forum_guidelines_btn", 16., "--text-default"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(v) = this.forums.get_mut(&id) {
                                     v.guidelines = !v.guidelines;
@@ -1278,6 +1853,7 @@ impl Root {
                 div()
                     .h(px(68.))
                     .pt(px(16.))
+                    .relative()
                     .flex()
                     .items_start()
                     .gap(px(8.))
@@ -1320,14 +1896,14 @@ impl Root {
                                 .mx(px(8.))
                                 .mt(px(4.))
                                 .h(px(24.))
-                                .w(px(1.))
+                                .w(px(0.8))
                                 .flex_none()
                                 .bg(color("--border-subtle")),
                         )
                         .child(
                             div()
-                                .flex_1()
-                                .min_w(px(0.))
+                                .w(px(tag_limit.max(0.)))
+                                .flex_none()
                                 .flex()
                                 .flex_wrap()
                                 .h(px(32.))
@@ -1338,19 +1914,38 @@ impl Root {
                                     div()
                                         .id(SharedString::from(format!("forum-tag-{tag_id}")))
                                         .flex_none()
+                                        .max_w(px(tag_limit.max(0.)))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
                                         .h(px(32.))
                                         .px(px(12.))
                                         .rounded_full()
                                         .cursor_pointer()
-                                        .bg(color(if tags.contains(&tag_id) {
-                                            "--brand-500"
-                                        } else {
-                                            "--background-mod-subtle"
-                                        }))
+                                        // `.pill_snX-u4`: 1px border; chosen tags use the reacted colours.
+                                        .border_1()
+                                        .when(tags.contains(&tag_id), |chip| {
+                                            chip.border_color(color("--brand-500"))
+                                                .bg(color("--reaction-background-reacted-default"))
+                                                .text_color(color(
+                                                    "--reaction-text-reacted-default",
+                                                ))
+                                        })
+                                        .when(!tags.contains(&tag_id), |chip| {
+                                            chip.border_color(color("--border-subtle"))
+                                                .bg(color("--control-secondary-background-default"))
+                                                .text_color(color(
+                                                    "--control-secondary-text-default",
+                                                ))
+                                                .hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-secondary-background-hover",
+                                                    ))
+                                                })
+                                        })
                                         .text_size(px(14.))
-                                        .line_height(px(32.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--text-strong"))
+                                        .line_height(px(30.))
+                                        .font_weight(FontWeight(600.))
                                         .child(tag.name.clone())
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             if let Some(v) = this.forums.get_mut(&id)
@@ -1366,13 +1961,20 @@ impl Root {
                         .child(
                             div()
                                 .id("forum-all-tags")
-                                .relative()
+                                // `.tagsButton_BkGrJJ` is absolute, 8px after the last chip of the first row.
+                                .absolute()
+                                .top(px(16.))
+                                .left(px(tag_left + tags_end + 8.))
                                 .child(self.anchor_probe("forum-tags-anchor"))
                                 .flex_none()
                                 .h(px(32.))
-                                .px(px(12.))
+                                .w(px(62.))
+                                .pl(px(12.))
+                                .pr(px(4.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
                                 .rounded_full()
-                                .bg(color("--background-mod-subtle"))
+                                .bg(color("--control-secondary-background-default"))
                                 .cursor_pointer()
                                 .text_size(px(14.))
                                 .text_color(color("--text-default"))
@@ -1411,7 +2013,11 @@ impl Root {
             .h_full()
             .pt(px(1.))
             .bg(color("--background-base-lower"))
-            .child(self.header(cx))
+            .child(if split.is_some() {
+                self.forum_column_header(&channel).into_any_element()
+            } else {
+                self.header(cx).into_any_element()
+            })
             .child(
                 div()
                     .relative()
@@ -1419,7 +2025,7 @@ impl Root {
                     .flex_1()
                     .min_h(px(0.))
                     .child(list)
-                    .when(self.show_members, |row| {
+                    .when(show_members, |row| {
                         row.child(
                             div()
                                 .w(px(1.))
@@ -1434,7 +2040,7 @@ impl Root {
     }
 
     pub(super) fn forum_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let channel = self.current_channel().filter(|c| c.is_forum())?;
+        let channel = self.forum_channel(self.forum_id()?)?;
         let id = channel.id;
         let view = self.forums.get(&id)?;
         let menu = view.menu?;
@@ -1679,6 +2285,32 @@ mod tests {
         assert_eq!(gallery_columns(300.), (1, 320.));
         assert_eq!(gallery_height(592., false), 498.);
         assert_eq!(gallery_height(592., true), 439.);
+    }
+    #[test]
+    fn the_tag_list_keeps_the_chips_of_its_first_row() {
+        // The measured row of pt-forum-bugs-current: three chips fit 348.9px, the All button follows the third.
+        let widths = [101.1, 125.4, 86.0, 84.9, 122.5];
+        let (shown, end) = first_tag_row(&widths, 348.9);
+        assert_eq!(shown, 3);
+        assert!((end - 328.5).abs() < 0.01);
+        assert_eq!(first_tag_row(&widths, 1000.).0, 5);
+        assert_eq!(first_tag_row(&[400.], 100.), (1, 400.));
+        assert_eq!(tag_chip_width(75.1), 101.1);
+    }
+    #[test]
+    fn a_post_shows_its_most_reacted_emoji() {
+        let reaction = |name: &str, count| dc_state::Reaction {
+            name: name.to_owned(),
+            emoji_id: None,
+            count,
+            me: false,
+        };
+        let mut message = Message::from_value(&json!({"id":"1","channel_id":"2","content":"",
+            "timestamp":"2026-01-01T00:00:00+00:00","author":{"id":"3","username":"a"}}))
+        .unwrap();
+        assert!(top_reaction(&message).is_none());
+        message.reactions = vec![reaction("a", 2), reaction("b", 3), reaction("c", 3)];
+        assert_eq!(top_reaction(&message).unwrap().name, "b");
     }
     #[test]
     fn a_new_post_sends_its_first_message_in_the_thread_request() {

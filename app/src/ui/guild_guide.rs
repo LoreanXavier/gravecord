@@ -100,8 +100,10 @@ impl Root {
     ) -> Option<gpui::Point<gpui::Pixels>> {
         let guild = self.current_guild()?;
         let channel = guild.channels.iter().find(|channel| channel.id == id)?;
-        if channel.kind != dc_state::ChannelKind::Text
-            || guild.rules_channel_id == Some(id)
+        if !matches!(
+            channel.kind,
+            dc_state::ChannelKind::Text | dc_state::ChannelKind::Other(15 | 16)
+        ) || guild.rules_channel_id == Some(id)
             || self.settings.is_some()
         {
             return None;
