@@ -35,6 +35,11 @@ impl Root {
         self.channel_browser_open = false;
         self.guild = None;
         self.channel = channel;
+        // A message menu and the delete question act on the channel that was open when they were asked.
+        self.menu = None;
+        self.submenu = None;
+        self.confirm_delete = None;
+        self.note_activity();
         self.unread_from = None;
         if let Some(channel) = channel {
             self.remember_channel(channel);

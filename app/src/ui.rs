@@ -64,6 +64,7 @@ mod context_menu;
 mod crawl_reset;
 mod create_channel;
 mod deep_link_route;
+mod destructive;
 mod dm;
 mod dm_profile;
 mod embed;
@@ -99,6 +100,7 @@ mod links;
 mod live_activity;
 pub mod login;
 mod logout;
+mod mark_read;
 mod member_actions;
 mod message_header;
 mod message_kinds;
@@ -612,6 +614,8 @@ pub struct Root {
     snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
     click_at: gpui::Point<gpui::Pixels>,
     leave_guild: Option<Id>,
+    /// A destructive request waiting for its confirmation (`destructive.rs`).
+    destructive: Option<destructive::Pending>,
     /// The Log Out confirmation of the settings sidebar.
     logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
@@ -957,6 +961,7 @@ impl Root {
             snooze_menu: None,
             click_at: gpui::Point::default(),
             leave_guild: None,
+            destructive: None,
             logout_confirm: false,
             poll: None,
             components: components::State::default(),
@@ -1767,23 +1772,28 @@ impl Root {
 
     fn after_ready(&mut self) {
         // The app starts where it was closed: the server last shown on the channel it was left on, or Home. A first
-        // start, and a server that is gone, open the first server.
+        // start, and a server that is gone, open Home as the official client does: opening a server marks its
+        // channel read, and nobody chose that server.
         let saved = last_channel::last();
-        if saved == Some(None) {
-            self.select_home(None);
-            self.history = history::History::default();
-            return;
-        }
-        let saved = saved
+        let guild = saved
             .flatten()
             .filter(|guild| self.stores.guild(*guild).is_some());
-        let Some(guild_id) = saved.or_else(|| self.stores.guilds.first().map(|guild| guild.id))
-        else {
-            return;
-        };
-        let channel = self.last_channel_of(guild_id);
-        self.select(guild_id, channel);
-        // Opening on the last channel is not a step back can return from.
+        // Harness scripts written before this rule expect a profile with no saved place to open the first server.
+        #[cfg(feature = "capture")]
+        let guild = guild.or_else(|| {
+            saved
+                .is_none()
+                .then(|| self.stores.guilds.first().map(|guild| guild.id))
+                .flatten()
+        });
+        match guild {
+            Some(guild_id) => {
+                let channel = self.last_channel_of(guild_id);
+                self.select(guild_id, channel);
+            }
+            None => self.select_home(None),
+        }
+        // Opening on the last place is not a step back can return from.
         self.history = history::History::default();
         self.request_images();
         self.request_emoji_button();
@@ -1823,6 +1833,12 @@ impl Root {
         self.channel_browser_open = false;
         self.guild = Some(guild);
         self.channel = channel;
+        // A message menu and the delete question act on the channel that was open when they were asked.
+        self.menu = None;
+        self.submenu = None;
+        self.confirm_delete = None;
+        // `CHANNEL_SELECT` is activity to `IdleStore` (module 885576).
+        self.note_activity();
         last_channel::remember(guild, channel);
         self.member_view = None;
         self.unread_from = None;
@@ -2425,10 +2441,14 @@ impl Root {
                 .get(&channel)
                 .is_some_and(|window| window.has_fetched && !window.has_more_before)
         });
-        if complete && (self.current_dm().is_some() || self.voice_view_open()) {
+        let in_post = self.open_post_forum().is_some();
+        let text_start = !in_post
+            && self.current_channel().is_some_and(|channel| {
+                matches!(channel.kind, ChannelKind::Text | ChannelKind::Other(5))
+            });
+        if complete && (self.current_dm().is_some() || self.voice_view_open() || text_start) {
             self.rows.push(Row::Welcome);
         }
-        let in_post = self.open_post_forum().is_some();
         if complete && in_post {
             self.rows.push(Row::PostIntro);
         }
@@ -3663,6 +3683,7 @@ impl Root {
         };
         let action_group = group.clone();
         let name_group = group.clone();
+        let pill_group = group.clone();
         // `channelInfo_Wx6SnQ`: the call's timer takes the action icons' place until the row is hovered.
         let timer = in_call.then(|| self.call_timer()).flatten().map(|text| {
             div()
@@ -3800,6 +3821,7 @@ impl Root {
                             32. + self.name_line_extra()
                         }))
                         .flex_none()
+                        .relative()
                         .flex()
                         .items_center()
                         .gap(px(8.))
@@ -3817,6 +3839,25 @@ impl Root {
                                 })
                                 .child(channel.name.clone()),
                         )
+                        // `channelInfo_Wx6SnQ` with the primary badge (module 616740 `isNewChannel`): right edge of the
+                        // row's content, hidden while the row is hovered for the action icons (stage-ann/ann-view).
+                        .when(self.is_new_channel(channel), |row| {
+                            row.child(
+                                div()
+                                    .absolute()
+                                    .right(px(0.))
+                                    .h(px(16.))
+                                    .px(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(color("--brand-500"))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .group_hover(pill_group, |style| style.opacity(0.))
+                                    .child("NEW"),
+                            )
+                        })
                         .children(timer)
                         .child(
                             div()
@@ -4132,7 +4173,22 @@ impl Root {
                     // 2px of room above the list for the drop line of its first row (`top: -2px`), taken back
                     // from the margin so nothing moves.
                     .mt(px(-2.))
-                    .pt(px(if self.has_channel_browser() { 14. } else { 2. }))
+                    // 12px more above uncategorized channels (stage-ann/ann-view: divider at 207, spacer 208 to 220,
+                    // first row at 220).
+                    .pt(px(
+                        if self.has_channel_browser()
+                            || self.current_guild().is_some_and(|guild| {
+                                guild
+                                    .sidebar_rows()
+                                    .first()
+                                    .is_some_and(|first| first.kind != ChannelKind::Category)
+                            })
+                        {
+                            14.
+                        } else {
+                            2.
+                        },
+                    ))
                     .flex_1()
                     .min_h(px(0.))
                     .mb(px(4.))
@@ -4499,6 +4555,17 @@ impl Root {
         in_call_area: bool,
     ) -> impl IntoElement {
         let name = self.channel_title();
+        // The forum of an open post: its name and icon for the breadcrumb.
+        let post_forum: Option<(String, &'static str)> = self
+            .open_post_forum()
+            .and_then(|forum| self.forum_channel(forum))
+            .map(|forum| {
+                let facts = channel_icon::Facts {
+                    locked: false,
+                    ..self.channel_icon_facts(forum, false)
+                };
+                (forum.name.clone(), channel_icon::name(&facts))
+            });
         let dm_user = self
             .current_dm()
             .and_then(|channel| self.stores.dm_recipient(channel))
@@ -4607,10 +4674,40 @@ impl Root {
                             ..self.channel_icon_facts(channel, rules)
                         })
                     }
+                    // A forum post: the forum's own icon, its name and the post's title follow it.
+                    None if post_forum.is_some() => {
+                        post_forum.as_ref().map_or("header_hash", |f| f.1)
+                    }
                     // A thread: its own title row draws the rest.
                     None => "header_hash",
                 };
-                this.child(icon(name, 20., "--channels-default"))
+                // The icon sits inside the title wrapper of the official header, so it clips with the title.
+                let mut lead = div();
+                lead.style().flex_shrink = Some(0.001);
+                this.child(lead.min_w(px(0.)).overflow_hidden().child(icon(
+                    name,
+                    20.,
+                    "--channels-default",
+                )))
+            })
+            // `.breadcrumb_z_gUBg` of a forum post (`forum-fixture-posted`): the forum's name, then a chevron.
+            .when_some(post_forum.clone(), |this, (forum_name, _)| {
+                this.child(
+                    div()
+                        .ml(px(9.))
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(forum_name),
+                )
+                .child(
+                    div().ml(px(7.)).child(
+                        icon("chevron_down", 12., "--text-muted").with_transformation(
+                            gpui::Transformation::rotate(gpui::percentage(0.75)),
+                        ),
+                    ),
+                )
             })
             .when_some(dm_user.clone(), |this, user| {
                 // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
@@ -4629,9 +4726,17 @@ impl Root {
                 this.child(self.group_header_name(&channel, cx))
             })
             .when(group_channel.is_none(), |this| {
+                // At a high zoom the search box gives its width up first (down to 64px, chat-200 and chat-150
+                // dumps), and only then the nowrap title clips: its shrink is near zero, so the search takes
+                // the deficit until its minimum freezes it.
+                let mut title = div();
+                title.style().flex_shrink = Some(0.001);
                 this.child(
-                    div()
+                    title
                         .ml(px(if dm_user.is_some() { 8. } else { 9. }))
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
                         .text_size(px(16.))
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
@@ -4869,7 +4974,8 @@ impl Root {
                                 cx,
                             )
                             .when(
-                                self.current_channel().is_some_and(Channel::is_forum),
+                                self.current_channel().is_some_and(Channel::is_forum)
+                                    || self.open_post_forum().is_some(),
                                 |this| this.hidden(),
                             )
                             .cursor_pointer()
@@ -4943,7 +5049,33 @@ impl Root {
                                             },
                                         )),
                                 ),
-                        ),
+                        )
+                        // A forum post's header ends its tools with More (`forum-fixture-posted`, aria "More"):
+                        // the thread's own menu.
+                        .children(self.open_post_forum().and(self.channel).map(|thread| {
+                            self.header_stop(
+                                div().id("forum-post-more-header"),
+                                "forum-post-more",
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                                this.tip = None;
+                                this.open_context_menu(
+                                    context_menu::Target::Thread(thread),
+                                    event.position(),
+                                    cx,
+                                );
+                            }))
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("more_horizontal", 20., "--text-muted")),
+                            )
+                        })),
                 )
             })
             .child(
@@ -4951,7 +5083,15 @@ impl Root {
                     .ml(px(12.))
                     .parity_with_border("search", 1.)
                     // Narrowed by the New Thread panel, the search keeps 72px (`Se…` in the capture).
-                    .w(px(if self.new_thread.is_some() { 72. } else { 244. }))
+                    .w(px(if self.new_thread.is_some() {
+                        72.
+                    } else if self.mod_view.is_some() {
+                        // The Mod View panel leaves 80px (menus2/mod-view-self: the box at x 711 to 791).
+                        80.
+                    } else {
+                        244.
+                    }))
+                    .min_w(px(64.))
                     .h(px(32.))
                     .rounded(px(8.))
                     .bg(color("--input-background-default"))
@@ -5910,11 +6050,19 @@ impl Root {
     }
 
     fn content(&self, message: &Message) -> impl IntoElement {
-        let text = hsla(if self.failed_tint.get() {
-            "--text-feedback-critical"
-        } else {
-            "--text-default"
-        });
+        self.content_tinted(
+            message,
+            if self.failed_tint.get() {
+                "--text-feedback-critical"
+            } else {
+                "--text-default"
+            },
+        )
+    }
+
+    /// `content` in another text colour token (a forum gallery card's read preview is muted).
+    fn content_tinted(&self, message: &Message, token: &str) -> impl IntoElement {
+        let text = hsla(token);
         let blocks = parse(&message.content);
         let gaps = block_gaps(&blocks);
         // The last item's bottom margin stays inside the message.
@@ -6032,6 +6180,8 @@ impl Root {
             } => self.blocked_row(*first, *count, *ignored, cx),
             Row::Welcome => if self.voice_view_open() {
                 self.voice_welcome()
+            } else if self.current_dm().is_none() {
+                self.channel_welcome(cx)
             } else {
                 self.dm_welcome(cx)
             }
@@ -6212,7 +6362,12 @@ impl Root {
                                 this.child(self.failed_toolbar(id, cx))
                             }
                             None if message.flags & 64 != 0 => this,
-                            None => this.child(self.message_toolbar(message, own, cx)),
+                            None => this.child(self.message_toolbar_at(
+                                message,
+                                own,
+                                if *head { -16. } else { -25. },
+                                cx,
+                            )),
                         }
                     });
                 let content = match editing {
@@ -6488,10 +6643,13 @@ impl Root {
     }
 
     /// Own messages offer Edit; the official bar is at -25px, 14px in from the row's right edge.
-    fn message_toolbar(
+    /// The bar `top` px from its message's box: `.container_V_VY9Q` is 25px above it, `.isHeader` (the first message
+    /// of a group) 16px (captures stage-ann/ann-message-hover and audio-attachment/card-hover: box 82.4, bar 66.4).
+    fn message_toolbar_at(
         &self,
         message: &Message,
         own: bool,
+        top: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = message.id;
@@ -6531,7 +6689,7 @@ impl Root {
                 }
             }))
             .absolute()
-            .top(px(-25.))
+            .top(px(top))
             .right(px(14.))
             .h(px(34.))
             .p(px(2.))
@@ -6928,7 +7086,9 @@ impl Root {
             }
         }));
         let docked = self.voice_chat_docked();
-        let gift_button = tool("gift", cx);
+        // The gift button opens the gift purchase modal (`openGiftModal`, module 194509, location "gift-button").
+        let gift_button = tool("gift", cx)
+            .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(true, cx)));
         let sticker_button =
             tool("sticker", cx).on_click(cx.listener(move |this, _, window, cx| {
                 let composer = this.tip_anchors.borrow().get("composer-box").copied();
@@ -7541,7 +7701,14 @@ impl Render for Root {
         self.search_field(format!("Search {place}"), cx);
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
         // The member list in a guild, the profile beside a DM.
-        let members = if self.new_thread.is_some() || self.mod_view.is_some() {
+        let members = if self.mod_view.is_some() {
+            // The Mod View panel (480) opens beside the member list, which stays (menus2/mod-view-self).
+            480. + if self.show_members && self.guild.is_some() {
+                self.member_list_width() + 1.
+            } else {
+                0.
+            }
+        } else if self.new_thread.is_some() {
             // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
             480.
         } else if self.current_dm().is_some() && self.show_dm_profile && !self.dm_call_shown() {
@@ -7671,6 +7838,13 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // The server header dropdown is a menu like the others: Escape closes it.
+                if keys.key == "escape" && this.picker.is_none() && this.guild_menu {
+                    this.guild_menu = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.incoming_escape(cx) {
                     cx.stop_propagation();
                     return;
@@ -7765,6 +7939,12 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.folder_settings_escape(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.destructive.is_some() {
+                    this.close_destructive();
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -8222,7 +8402,7 @@ impl Render for Root {
                     self.channel_browser_view(window, cx, rows.into_any_element())
                 } else if self.current_channel().is_some_and(Channel::is_forum) {
                     self.forum_view_in(window, cx)
-                } else if self.open_post_forum().is_some() {
+                } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
                     self.forum_split_view(window, cx)
                         .unwrap_or_else(|| div().into_any_element())
                 } else {
@@ -8309,7 +8489,6 @@ impl Render for Root {
                                             self.show_members
                                                 && self.guild.is_some()
                                                 && self.new_thread.is_none()
-                                                && self.mod_view.is_none()
                                                 && self
                                                     .search
                                                     .as_ref()
@@ -8409,6 +8588,7 @@ impl Render for Root {
             .children(self.custom_status_modal(cx))
             .children(self.plus_menu_layer(window, cx))
             .children(self.leave_modal(cx))
+            .children(self.destructive_modal(cx))
             .children(self.logout_modal(cx))
             .children(self.manage_accounts_modal(cx))
             .children(self.add_account_modal(cx))

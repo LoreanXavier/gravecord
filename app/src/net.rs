@@ -112,6 +112,9 @@ pub enum Request {
     Presence {
         status: String,
         activities: Vec<Value>,
+        /// When the account's idle began, zero while it is active (`getIdleSince`, module 885576).
+        since: u64,
+        afk: bool,
     },
     /// Op 4 `VOICE_STATE_UPDATE`, as the bundle's `voiceStateUpdate` writes it. No channel leaves voice.
     VoiceState {
@@ -198,14 +201,6 @@ pub enum Request {
     FetchMessages {
         spec: dc_state::message_window::FetchSpec,
     },
-    /// A message with stickers (`sticker_ids`), from the picker or a staged sticker.
-    SendSticker {
-        channel: u64,
-        content: String,
-        files: Vec<Upload>,
-        reply: Option<(Option<u64>, u64, bool)>,
-        sticker_ids: Vec<u64>,
-    },
     Send {
         channel: u64,
         content: String,
@@ -224,6 +219,8 @@ pub enum Request {
         files: Vec<Upload>,
         reply: Option<(Option<u64>, u64, bool)>,
         sticker_ids: Vec<u64>,
+        /// Guild, channel and id of the message a forward points at.
+        forward: Option<ForwardRef>,
     },
     /// A voice message: the recording is uploaded, then a message with an empty content, the voice flag (8192) and the
     /// attachment's `duration_secs` and `waveform` is created (`em` in module 841817). The outcome is
@@ -260,14 +257,6 @@ pub enum Request {
         message: u64,
         due_at: Option<String>,
         save: bool,
-    },
-    /// Forward: an empty message whose `message_reference` is the source with `type: 1`, then the note on its own.
-    Forward {
-        destination: u64,
-        guild: Option<u64>,
-        channel: u64,
-        message: u64,
-        note: Option<String>,
     },
     /// `PATCH /users/@me/guilds/settings`: notification levels and mutes.
     GuildSettings {
@@ -322,6 +311,13 @@ pub enum Request {
     Subscribe {
         guild: u64,
         channel: u64,
+    },
+    /// Op 28 `REQUEST_FORUM_UNREADS` (module 868 `requestForumUnreads`): the unread counts of a forum's posts, as
+    /// (thread, acked message) pairs. The answer is the `FORUM_UNREADS` dispatch.
+    ForumUnreads {
+        guild: u64,
+        channel: u64,
+        threads: Vec<(u64, u64)>,
     },
     Image {
         key: String,
@@ -449,7 +445,6 @@ impl Request {
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
             Request::FetchMessages { .. } => "FetchMessages",
-            Request::SendSticker { .. } => "SendSticker",
             Request::Send { .. } => "Send",
             Request::SendLocal { .. } => "SendLocal",
             Request::SendVoice { .. } => "SendVoice",
@@ -457,7 +452,6 @@ impl Request {
             Request::Delete { .. } => "Delete",
             Request::Ack { .. } => "Ack",
             Request::Save { .. } => "Save",
-            Request::Forward { .. } => "Forward",
             Request::GuildSettings { .. } => "GuildSettings",
             Request::Rest { .. } => "Rest",
             Request::SoundboardSounds { .. } => "SoundboardSounds",
@@ -467,6 +461,7 @@ impl Request {
             Request::Interaction { .. } => "Interaction",
             Request::Pin { .. } => "Pin",
             Request::Subscribe { .. } => "Subscribe",
+            Request::ForumUnreads { .. } => "ForumUnreads",
             Request::Image { .. } => "Image",
             Request::Sprite { .. } => "Sprite",
             Request::EmojiSheet => "EmojiSheet",
@@ -485,6 +480,7 @@ impl Request {
             | Request::GuildMembers { .. }
             | Request::BearerGet { .. }
             | Request::Subscribe { .. }
+            | Request::ForumUnreads { .. }
             | Request::Image { .. }
             | Request::Sprite { .. }
             | Request::EmojiSheet
@@ -511,7 +507,6 @@ impl Request {
             | Request::Schedule { .. }
             | Request::Typing { .. }
             | Request::React { .. }
-            | Request::SendSticker { .. }
             | Request::Send { .. }
             | Request::SendLocal { .. }
             | Request::SendVoice { .. }
@@ -519,7 +514,6 @@ impl Request {
             | Request::Delete { .. }
             | Request::Ack { .. }
             | Request::Save { .. }
-            | Request::Forward { .. }
             | Request::GuildSettings { .. }
             | Request::Download { .. }
             | Request::Interaction { .. }
@@ -973,6 +967,9 @@ pub(crate) fn send_body(
     body
 }
 
+/// The guild (if any), channel and id of the message a forward points at.
+pub(crate) type ForwardRef = (Option<u64>, u64, u64);
+
 /// The request of [`Request::SendLocal`]: the uploads, then the create, which is sent again after a gateway error or
 /// a transport failure (`send_policy`: three more tries, a jittered wait before each, 60 seconds for an attempt).
 async fn send_local(
@@ -982,7 +979,7 @@ async fn send_local(
     content: &str,
     files: &[Upload],
     reply: Option<(Option<u64>, u64, bool)>,
-    sticker_ids: &[u64],
+    (sticker_ids, forward): (&[u64], Option<ForwardRef>),
 ) -> crate::send_policy::Outcome {
     use crate::send_policy::{Backoff, Failure, Outcome, RETRIES, TIMEOUT, status_is_retried};
     let mut body = send_body(channel, content, reply);
@@ -990,6 +987,16 @@ async fn send_local(
     if !sticker_ids.is_empty() {
         // `sticker_ids` beside the content, as module 989161 builds the request.
         body["sticker_ids"] = json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
+    }
+    if let Some((guild, source, message)) = forward {
+        // `message_reference` of type 1 and no flags: the forward of module 138399.
+        body["message_reference"] = json!({
+            "guild_id": guild.map(|guild| guild.to_string()),
+            "channel_id": source.to_string(),
+            "message_id": message.to_string(),
+            "type": 1,
+        });
+        body["flags"] = json!(0);
     }
     if !files.is_empty() {
         let cancel = crate::upload_flow::register(nonce);
@@ -1222,6 +1229,7 @@ pub async fn run(
                 files,
                 reply,
                 sticker_ids,
+                forward,
             } => {
                 tokio::spawn(async move {
                     let outcome = send_local(
@@ -1231,7 +1239,7 @@ pub async fn run(
                         &content,
                         &files,
                         reply,
-                        &sticker_ids,
+                        (&sticker_ids, forward),
                     )
                     .await;
                     let _ = updates.send(Update::SendResult {
@@ -1241,30 +1249,14 @@ pub async fn run(
                     });
                 });
             }
-            request @ (Request::Send { .. } | Request::SendSticker { .. }) => {
-                let (channel, content, files, reply, sticker_ids) = match request {
-                    Request::Send {
-                        channel,
-                        content,
-                        files,
-                        reply,
-                    } => (channel, content, files, reply, Vec::new()),
-                    Request::SendSticker {
-                        channel,
-                        content,
-                        files,
-                        reply,
-                        sticker_ids,
-                    } => (channel, content, files, reply, sticker_ids),
-                    _ => continue,
-                };
+            Request::Send {
+                channel,
+                content,
+                files,
+                reply,
+            } => {
                 tokio::spawn(async move {
                     let mut body = send_body(channel, &content, reply);
-                    if !sticker_ids.is_empty() {
-                        // `sticker_ids` beside the content, as module 989161 builds the request.
-                        body["sticker_ids"] =
-                            json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
-                    }
                     if !files.is_empty() {
                         let _ = updates.send(Update::Slowmode {
                             channel,
@@ -1404,41 +1396,6 @@ pub async fn run(
                     };
                     if let Err(error) = result {
                         warn!("saving failed: {error}");
-                    }
-                });
-            }
-            Request::Forward {
-                destination,
-                guild,
-                channel,
-                message,
-                note,
-            } => {
-                tokio::spawn(async move {
-                    let route = format!("/channels/{destination}/messages");
-                    let mut body = send_body(destination, "", None);
-                    body["message_reference"] = json!({
-                        "guild_id": guild.map(|guild| guild.to_string()),
-                        "channel_id": channel.to_string(),
-                        "message_id": message.to_string(),
-                        "type": 1,
-                    });
-                    body["flags"] = json!(0);
-                    if let Err(error) = client
-                        .request(reqwest::Method::POST, &route, Some(&body))
-                        .await
-                    {
-                        warn!("forwarding failed: {error}");
-                        return;
-                    }
-                    if let Some(note) = note {
-                        let body = send_body(destination, &note, None);
-                        if let Err(error) = client
-                            .request(reqwest::Method::POST, &route, Some(&body))
-                            .await
-                        {
-                            warn!("forward note failed: {error}");
-                        }
                     }
                 });
             }
@@ -1772,9 +1729,14 @@ pub async fn run(
                     data,
                 });
             }
-            Request::Presence { status, activities } => {
+            Request::Presence {
+                status,
+                activities,
+                since,
+                afk,
+            } => {
                 if !crate::games::presence_refused(crate::storage::is_capture_run()) {
-                    let data = crate::games::presence_body(&status, &activities);
+                    let data = crate::games::presence_body_idle(&status, &activities, since, afk);
                     let _ = commands.send(Command::Send {
                         op: Op::PresenceUpdate,
                         data,
@@ -1851,6 +1813,22 @@ pub async fn run(
                 let _ = commands.send(Command::Send {
                     op: Op::GuildSubscriptionsBulk,
                     data,
+                });
+            }
+            Request::ForumUnreads {
+                guild,
+                channel,
+                threads,
+            } => {
+                let threads: Vec<Value> = threads
+                    .iter()
+                    .map(|(thread, ack)| {
+                        json!({"thread_id": thread.to_string(), "ack_message_id": ack.to_string()})
+                    })
+                    .collect();
+                let _ = commands.send(Command::Send {
+                    op: Op::RequestForumUnreads,
+                    data: json!({"guild_id": guild.to_string(), "channel_id": channel.to_string(), "threads": threads}),
                 });
             }
             Request::Sprite { key, tint } => {

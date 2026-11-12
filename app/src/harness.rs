@@ -245,15 +245,52 @@ pub async fn run(
                 let Ok(id) = id.parse::<u64>() else {
                     break;
                 };
-                let target = cx.update(|cx| {
-                    window
-                        .update(cx, |_, window, cx| {
-                            root.read(cx)
-                                .capture_channel_target(id, window.viewport_size())
-                        })
-                        .ok()
-                        .flatten()
-                });
+                // A row outside the list's visible band is scrolled into view first, as a person would.
+                let mut target = None;
+                for _ in 0..8 {
+                    target = cx.update(|cx| {
+                        window
+                            .update(cx, |_, window, cx| {
+                                root.read(cx)
+                                    .capture_channel_target(id, window.viewport_size())
+                            })
+                            .ok()
+                            .flatten()
+                    });
+                    if target.is_some() {
+                        break;
+                    }
+                    let delta = cx.update(|cx| {
+                        window
+                            .update(cx, |_, window, cx| {
+                                root.read(cx)
+                                    .capture_channel_scroll(id, window.viewport_size())
+                            })
+                            .ok()
+                            .flatten()
+                    });
+                    let Some(delta) = delta else {
+                        break;
+                    };
+                    let position = point(px(220.), px(400.));
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::Scroll(ScrollEvent {
+                                position,
+                                delta: ScrollDelta::Pixels(point(px(0.), px(-delta))),
+                                modifiers: Modifiers::default(),
+                                touch_phase: TouchPhase::Moved,
+                                source: ScrollSource::Pointer,
+                            }),
+                        );
+                    });
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                }
                 let Some(position) = target else {
                     let _ = writeln!(
                         output,
@@ -714,6 +751,13 @@ pub async fn run(
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
             }
+            // Capture only: the body the subscriptions read would return, for one Nitro plan (a plan id, or `none`)
+            // and a state (`ok`, `past_due`, `trial`, `pending`); nothing is sent.
+            ["subscription", plan, state] => {
+                let plan = plan.parse::<u64>().ok();
+                let state = (*state).to_owned();
+                root.update(cx, |root, cx| root.script_subscription(plan, &state, cx));
+            }
             // Local cooldown only; no request or channel setting is sent.
             ["slowmode", "reject"] => {
                 root.update(cx, |root, cx| root.script_slowmode_rejection(cx));
@@ -870,7 +914,7 @@ pub async fn run(
             // Capture only: `threads facts` logs what decides each thread's row in the channel list.
             ["threads", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
-                    let line = root.script_threads(rest);
+                    let line = root.script_threads_with(rest, cx);
                     cx.notify();
                     line
                 });

@@ -10,6 +10,7 @@ mod fonts;
 mod games;
 #[cfg(feature = "capture")]
 mod harness;
+mod idle;
 mod inert;
 mod inline;
 mod instance;

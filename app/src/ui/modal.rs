@@ -312,12 +312,29 @@ pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyEle
     render_sized(spec, 400., true, None, None, cx)
 }
 
+/// The small dialog above a popout that is still open under it (the inbox's Mark All as Read question).
+pub(super) fn render_small_over_popouts(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized_at(spec, 400., false, None, None, 4, cx)
+}
+
 fn render_sized(
     spec: Spec,
     width: f32,
     stacked: bool,
     input: Option<AnyElement>,
     pinned: Option<(f32, f32)>,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized_at(spec, width, stacked, input, pinned, 1, cx)
+}
+
+fn render_sized_at(
+    spec: Spec,
+    width: f32,
+    stacked: bool,
+    input: Option<AnyElement>,
+    pinned: Option<(f32, f32)>,
+    priority: usize,
     cx: &mut Context<Root>,
 ) -> AnyElement {
     let fill = input.is_none();
@@ -467,7 +484,7 @@ fn render_sized(
             }))
             .child(modal),
     )
-    .with_priority(1)
+    .with_priority(priority)
     .into_any_element()
 }
 

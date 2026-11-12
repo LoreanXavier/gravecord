@@ -1489,6 +1489,9 @@ pub struct Stores {
     pub status: String,
     /// READY's `session_id`, which interactions carry.
     pub session_id: Option<String>,
+    /// READY's `auth_session_id_hash`: which of the account's logged-in devices this client is (module 158935 `NF`,
+    /// `getAuthSessionIdHash`). Unknown until READY says.
+    pub auth_session_id_hash: Option<String>,
     /// The account's sessions (`SessionsStore`, module 528767): READY's `sessions`, then `SESSIONS_REPLACE`.
     pub sessions: Vec<Session>,
     pub guild_order: Vec<Id>,
@@ -2310,6 +2313,17 @@ impl Stores {
         settings::read_status(&self.settings_raw)
     }
 
+    /// The status to show and send at `now_ms`: the saved one, or `online` once a status that was set for a time has
+    /// lapsed (`status_expires_at_ms`), even when the server's settings update that clears it was missed.
+    pub fn status_at(&self, now_ms: u64) -> String {
+        match self.status_state() {
+            Some(state) if state.expires_at_ms > 0 && state.expires_at_ms <= now_ms => {
+                "online".to_owned()
+            }
+            _ => self.status.clone(),
+        }
+    }
+
     /// Chooses a status (`online`, `idle`, `dnd`, `invisible`) until `expires_at_ms` (zero: until changed). The new
     /// status shows at once; the PATCH body value comes back.
     pub fn set_status(&mut self, status: &str, expires_at_ms: u64, now_ms: u64) -> String {
@@ -2386,8 +2400,15 @@ impl Stores {
             self.read_prefs(proto, false);
         }
         self.session_id = text(&data["session_id"]);
+        self.auth_session_id_hash = text(&data["auth_session_id_hash"]);
         self.sessions = Session::list(&data["sessions"]);
-        self.status = text(&data["sessions"][0]["status"]).unwrap_or_else(|| "online".to_owned());
+        // Module 894768: the account's own status is the one saved in its settings (`online` when none is saved),
+        // never the status this session happened to connect with.
+        self.status = self
+            .status_state()
+            .and_then(|state| state.status)
+            .filter(|status| !status.is_empty() && status != "unknown")
+            .unwrap_or_else(|| "online".to_owned());
         for user in data["users"].as_array().into_iter().flatten() {
             if let Some(user) = User::from_value(user) {
                 self.users.insert(user.id, user);
@@ -2620,7 +2641,32 @@ impl Stores {
     /// (`updateAsync("guildFolders", ...)`, module 817281 `um`); empty until the settings have arrived, and the tree
     /// still changes locally then.
     pub fn commit_guild_folders(&mut self) -> String {
-        let entries = self.folders.to_entries();
+        let mut entries = self.folders.to_entries();
+        // The tree holds only the servers this client knows. A server that is in the saved order but has not
+        // arrived (an outage, a slow start) keeps its place in its folder, or goes to the end, so that a drag
+        // can never write it out of the account's folders.
+        let (stored, _) = settings::guild_folders(&self.settings_raw);
+        let written: HashSet<Id> = entries
+            .iter()
+            .flat_map(|entry| entry.guild_ids.iter().copied())
+            .collect();
+        for old in stored {
+            for guild in old.guild_ids {
+                if written.contains(&guild) || self.guilds.iter().any(|known| known.id == guild) {
+                    continue;
+                }
+                match entries
+                    .iter_mut()
+                    .find(|entry| old.id.is_some() && entry.id == old.id)
+                {
+                    Some(folder) => folder.guild_ids.push(guild),
+                    None => entries.push(settings::GuildFolderEntry {
+                        guild_ids: vec![guild],
+                        ..Default::default()
+                    }),
+                }
+            }
+        }
         self.guild_order = self.folders.flattened();
         let flat = self.guild_order.clone();
         self.guilds
@@ -3780,6 +3826,44 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_keeps_the_servers_that_have_not_arrived() {
+        use dc_proto::settings::{GuildFolderEntry, guild_folders, set_guild_folders};
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &ready());
+        let mut second = stores.guilds[0].clone();
+        second.id = 2;
+        stores.guilds.push(second);
+        stores.settings_loaded = true;
+        // 98 and 99 are in the account's saved order but unknown to this client (an outage, a slow start).
+        let entries = [
+            GuildFolderEntry {
+                id: Some(5),
+                guild_ids: vec![1, 99],
+                ..GuildFolderEntry::default()
+            },
+            GuildFolderEntry {
+                guild_ids: vec![2],
+                ..GuildFolderEntry::default()
+            },
+            GuildFolderEntry {
+                guild_ids: vec![98],
+                ..GuildFolderEntry::default()
+            },
+        ];
+        stores.settings_raw = set_guild_folders(&[], &entries).1;
+        stores.refresh_guild_order();
+        let patch = stores.commit_guild_folders();
+        let (written, _) = guild_folders(&settings::decode(&patch));
+        let all: Vec<u64> = written
+            .iter()
+            .flat_map(|entry| entry.guild_ids.iter().copied())
+            .collect();
+        assert!(all.contains(&99) && all.contains(&98), "{all:?}");
+        assert!(all.contains(&1) && all.contains(&2), "{all:?}");
+        assert_eq!(all.len(), 4, "{all:?}");
+    }
+
+    #[test]
     fn sidebar_groups_channels_under_their_category() {
         let mut stores = Stores::default();
         stores.dispatch("READY", &ready());
@@ -4124,11 +4208,50 @@ mod tests {
     }
 
     #[test]
-    fn a_status_choice_shows_at_once_and_follows_other_sessions() {
+    fn ready_names_which_of_the_sessions_this_client_is() {
         let mut stores = Stores::default();
+        assert_eq!(stores.auth_session_id_hash, None);
         stores.dispatch(
             "READY",
-            &json!({"sessions": [{"status": "dnd"}], "user_settings_proto": ""}),
+            &json!({"sessions": [], "user_settings_proto": "", "auth_session_id_hash": "abc"}),
+        );
+        assert_eq!(stores.auth_session_id_hash.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_timed_status_that_lapsed_is_online_again() {
+        let mut stores = Stores::default();
+        let (saved, _) = settings::set_status(&[], "dnd", 5_000, 1);
+        stores.dispatch(
+            "READY",
+            &json!({"sessions": [], "user_settings_proto": saved}),
+        );
+        assert_eq!(stores.status_at(4_999), "dnd");
+        assert_eq!(stores.status_at(5_000), "online");
+        assert_eq!(stores.status_at(9_999_999), "online");
+        // A status without an end never lapses.
+        let (forever, _) = settings::set_status(&[], "dnd", 0, 1);
+        stores.dispatch(
+            "READY",
+            &json!({"sessions": [], "user_settings_proto": forever}),
+        );
+        assert_eq!(stores.status_at(9_999_999), "dnd");
+    }
+
+    #[test]
+    fn a_status_choice_shows_at_once_and_follows_other_sessions() {
+        let mut stores = Stores::default();
+        // No saved status: online, whatever another session of the account reports.
+        stores.dispatch(
+            "READY",
+            &json!({"sessions": [{"status": "idle"}], "user_settings_proto": ""}),
+        );
+        assert_eq!(stores.status, "online");
+        // The saved status is the account's status.
+        let (saved, _) = settings::set_status(&[], "dnd", 0, 1);
+        stores.dispatch(
+            "READY",
+            &json!({"sessions": [{"status": "online"}], "user_settings_proto": saved}),
         );
         assert_eq!(stores.status, "dnd");
         let patch = stores.set_status("idle", 5_000, 1);
