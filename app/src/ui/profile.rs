@@ -676,6 +676,7 @@ fn status_text() -> impl IntoElement {
             image,
             hover: None,
             hover_underline: false,
+            gradient: None,
         };
     div().w(px(155.)).child(crate::inline::inline(
         vec![

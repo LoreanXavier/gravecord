@@ -319,12 +319,56 @@ impl Root {
         tag.into_any_element()
     }
 
-    /// The role icons the open channel's authors show.
+    /// A role's picture at `size` px when the server shows role icons (or the role is a subscription's) and the
+    /// image has arrived: the icon in a profile's role chip (module 166005 `Xx({roleId, size: 12})`).
+    pub(super) fn role_icon_art(
+        &self,
+        guild: &dc_state::Guild,
+        role: Id,
+        size: f32,
+    ) -> Option<AnyElement> {
+        let picture = guild.role_icons.get(&role)?;
+        let shown = guild.features.iter().any(|feature| feature == "ROLE_ICONS");
+        if !shown && !picture.subscription {
+            return None;
+        }
+        let image = match (picture.icon_url(role, 40), picture.unicode_emoji.as_deref()) {
+            (Some(url), _) => self.images.get(&role_icon_key(role, &url))?.clone(),
+            (None, Some(emoji)) => self.images.get(&format!("emoji:{emoji}"))?.clone(),
+            (None, None) => return None,
+        };
+        Some(img(image).size(px(size)).into_any_element())
+    }
+
+    /// The role icons the open channel's authors show, and those of the server's roles that the profile chips show.
     pub(super) fn request_role_icon_images(&mut self) {
         let Some(guild) = self.current_guild() else {
             return;
         };
         let guild_id = guild.id;
+        let guild_shows = guild.features.iter().any(|feature| feature == "ROLE_ICONS");
+        let mut chips: Vec<(Id, RoleIcon)> = guild
+            .role_icons
+            .iter()
+            .filter(|(_, picture)| guild_shows || picture.subscription)
+            .map(|(role, picture)| (*role, picture.clone()))
+            .collect();
+        chips.sort_by_key(|(role, _)| *role);
+        for (role, picture) in chips {
+            if let Some(url) = picture.icon_url(role, 40) {
+                self.request_image(role_icon_key(role, &url), url);
+            } else if let Some(glyph) = picture.unicode_emoji
+                && let Some(file) = dc_tokens::emoji_file(&glyph)
+            {
+                self.request_image(
+                    format!("emoji:{glyph}"),
+                    format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+                );
+            }
+        }
+        let Some(guild) = self.current_guild() else {
+            return;
+        };
         let Some(messages) = self
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))

@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 const MODS: Id = 900_100;
 const LEADS: Id = 900_101;
 const ICON_ROLE: Id = 900_102;
+const GRAD2: Id = 900_103;
+const GRAD3: Id = 900_104;
+const GRAD_PLAIN: Id = 900_105;
 
 impl Root {
     pub(crate) fn script_content(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
@@ -154,6 +157,22 @@ impl Root {
                     push(person(905, "Booster"), "a role with an icon", json!({}));
                 }
             }
+            // The enhanced role styles: a two-colour role, a holographic one, and the signed-in account on the
+            // first so the member list shows it too.
+            "gradient" => {
+                let Some(guild) = guild else {
+                    return "content: open a server first".to_owned();
+                };
+                self.demo_gradient_roles(guild);
+                push(person(906, "Fiery"), "two colours", json!({}));
+                push(person(907, "Magical"), "three colours", json!({}));
+                push(person(908, "Plain"), "no gradient role", json!({}));
+                push(
+                    person(908, "Plain"),
+                    "role mentions <@&900103> <@&900104> <@&900105>",
+                    json!({}),
+                );
+            }
             "files" => {
                 push(
                     person(900, "ada"),
@@ -234,6 +253,96 @@ impl Root {
         );
     }
 
+    /// Module 178758's `fire` pair and module 989433's holographic triple (`a9c9ff`, `ffbbec`, `ffc3a0`) as roles of
+    /// a server with `ENHANCED_ROLE_COLORS`.
+    fn demo_gradient_roles(&mut self, guild: Id) {
+        let me = self.stores.me().map(|me| me.id);
+        if let Some(one) = self.stores.guilds.iter_mut().find(|one| one.id == guild) {
+            for feature in ["ENHANCED_ROLE_COLORS", "ROLE_ICONS"] {
+                if !one.features.iter().any(|f| f == feature) {
+                    one.features.push(feature.to_owned());
+                }
+            }
+            one.role_icons.insert(
+                GRAD3,
+                dc_state::RoleIcon {
+                    icon: None,
+                    unicode_emoji: char::from_u32(0x1f525).map(String::from),
+                    subscription: false,
+                },
+            );
+            for (role, name, color, second, third) in [
+                (GRAD2, "Fiery", 0xaa3b3b, Some(0xff4848), None),
+                (GRAD3, "Magical", 0xa9c9ff, Some(0xffbbec), Some(0xffc3a0)),
+                (GRAD_PLAIN, "Plain", 0x1abc9c, None, None),
+            ] {
+                one.roles.insert(role, name.to_owned());
+                one.role_info.insert(
+                    role,
+                    dc_state::RoleInfo {
+                        position: 7,
+                        color,
+                        secondary_color: second,
+                        tertiary_color: third,
+                        ..dc_state::RoleInfo::default()
+                    },
+                );
+            }
+        }
+        for (id, name, role) in [
+            (906, "Fiery", GRAD2),
+            (907, "Magical", GRAD3),
+            (908, "Plain", GRAD_PLAIN),
+        ] {
+            self.stores.members.upsert(
+                guild,
+                Member {
+                    user: User {
+                        id,
+                        username: name.to_owned(),
+                        ..User::default()
+                    },
+                    nick: None,
+                    avatar: None,
+                    avatar_decoration: None,
+                    roles: vec![role],
+                    joined_at: None,
+                    pending: false,
+                    display_name_styles: None,
+                    timeout_until: None,
+                    flags: 0,
+                },
+            );
+        }
+        if let Some(me) = me
+            && let Some(mut member) = self.stores.members.get(guild, me).cloned()
+        {
+            member.roles.push(GRAD3);
+            self.stores.members.upsert(guild, member);
+        }
+        // A hoisted role group named after the role with the icon, as the server lists it (the group header shows
+        // the icon before the name), above the online members.
+        if let Some(me) = self.stores.current_user.clone() {
+            let listed = |id: Id, name: &str| {
+                json!({"member": {"nick": null, "user": {"id": id.to_string(), "username": name, "discriminator": "0"},
+                    "presence": {"status": "online"}, "roles": [GRAD3.to_string()]}})
+            };
+            self.stores.dispatch(
+                "GUILD_MEMBER_LIST_UPDATE",
+                &json!({"guild_id": guild.to_string(),
+                    "groups": [{"id": GRAD3.to_string(), "count": 2}, {"id": "online", "count": 2}],
+                    "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+                        {"group": {"id": GRAD3.to_string()}},
+                        listed(907, "Magical"),
+                        listed(me.id, &me.username),
+                        {"group": {"id": "online"}},
+                        {"member": {"nick": null, "user": {"id": "906", "username": "Fiery", "discriminator": "0"}, "presence": {"status": "online"}}},
+                        {"member": {"nick": null, "user": {"id": "908", "username": "Plain", "discriminator": "0"}, "presence": {"status": "idle"}}},
+                    ]}]}),
+            );
+        }
+    }
+
     /// Two roles with a colour and a few members each, as the server would have answered the preloads.
     fn demo_roles(&mut self, guild: Id) {
         if let Some(one) = self.stores.guilds.iter_mut().find(|one| one.id == guild) {
@@ -247,6 +356,7 @@ impl Root {
                     mentionable: true,
                     guild_connection: false,
                     managed: false,
+                    ..dc_state::RoleInfo::default()
                 },
             );
         }

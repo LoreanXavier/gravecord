@@ -42,6 +42,9 @@ pub struct Piece {
     pub hover: Option<(Hsla, Hsla)>,
     /// The piece is underlined while the pointer is over it (`a:hover { text-decoration: underline }` of a link).
     pub hover_underline: bool,
+    /// The text is drawn in a role's gradient colours (a role mention of the enhanced role styles, module 332173:
+    /// the text sits in a `usernameGradient` span); the slide runs while the pointer is over the piece.
+    pub gradient: Option<dc_state::RoleColors>,
 }
 
 /// A place in the document: a message id, a block inside it, and a byte offset in that block.
@@ -771,11 +774,40 @@ impl Element for Inline {
                     _ => (point(left, top), self.line_height),
                 },
             };
-            let shaped = recolored.map(|text| {
-                let mut shown = piece.clone();
-                shown.color = text;
-                shape(&shown, fragment.shaped.text.as_ref(), window)
-            });
+            let shaped = if let Some(colors) = &piece.gradient {
+                // The gradient slides while the pointer is on the mention (`gradientUsernameAnimation`).
+                let sliding = piece.hover.is_some()
+                    && crate::ui::motion::hovered(hover_key(piece, fragment))
+                    && !crate::ui::motion::reduced();
+                if sliding {
+                    window.request_animation_frame();
+                }
+                let text = fragment.shaped.text.as_ref();
+                let offset = if sliding {
+                    crate::ui::role_gradient::offset_now()
+                } else {
+                    0.
+                };
+                let runs = crate::ui::role_gradient::runs_for(
+                    text,
+                    &fragment.shaped,
+                    &run_for(piece, 0),
+                    colors,
+                    offset,
+                );
+                Some(window.text_system().shape_line(
+                    SharedString::from(text.to_owned()),
+                    piece.size,
+                    &runs,
+                    None,
+                ))
+            } else {
+                recolored.map(|text| {
+                    let mut shown = piece.clone();
+                    shown.color = text;
+                    shape(&shown, fragment.shaped.text.as_ref(), window)
+                })
+            };
             let _ = shaped.as_ref().unwrap_or(&fragment.shaped).paint(
                 text_origin,
                 text_height,

@@ -931,7 +931,7 @@ impl Root {
                             .text_ellipsis()
                             .font_weight(FontWeight(600.))
                             .text_color(self.guild_author_color(owner.id, "--text-default"))
-                            .child(owner.display_name().to_owned()),
+                            .child(self.role_named(&owner, owner.display_name().to_owned())),
                     )
                     // `.bullet_yRVHqK`: `--background-mod-muted`, 8px each side.
                     .child(
@@ -972,7 +972,7 @@ impl Root {
                         .flex_none()
                         .font_weight(FontWeight(600.))
                         .text_color(self.guild_author_color(author.id, "--text-default"))
-                        .child(author.display_name().to_owned()),
+                        .child(self.role_named(&author, author.display_name().to_owned())),
                 )
                 .child(div().flex_none().child(":\u{a0}"))
                 .child(

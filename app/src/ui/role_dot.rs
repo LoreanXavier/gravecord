@@ -22,3 +22,28 @@ pub(super) fn dot(role: u32) -> Div {
         .child(circle(12., 0.).bg(rgba((role << 8) | 0x66)))
         .child(circle(10., 1.).bg(rgb(role)))
 }
+
+/// The same dot for a role with a gradient (module 545442 `u`: the two circles' fill is `url(#dotGradient-…)`, the
+/// gradient across each circle's own box).
+pub(super) fn dot_gradient(colors: &dc_state::RoleColors) -> Div {
+    let circle = |size: f32, inset: f32| {
+        div()
+            .absolute()
+            .left(px(inset))
+            .top(px(inset))
+            .size(px(size))
+            .rounded_full()
+    };
+    div()
+        .relative()
+        .size(px(12.))
+        .child(circle(12., 0.).bg(super::color("--text-strong")))
+        .child(
+            circle(12., 0.)
+                .child(gpui::img(super::role_gradient::circle(colors, 12, 0.4)).size(px(12.))),
+        )
+        .child(
+            circle(10., 1.)
+                .child(gpui::img(super::role_gradient::circle(colors, 10, 1.)).size(px(10.))),
+        )
+}

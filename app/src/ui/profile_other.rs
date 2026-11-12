@@ -77,14 +77,19 @@ impl Root {
                         .rounded(px(8.))
                         .flex()
                         .items_center()
-                        .child(
-                            div()
+                        .child(match guild.role_colors_of(id) {
+                            // `roleCircle`: the gradient on the circle's own box (module 545442 `R`).
+                            Some(colors) => div().mx(px(4.)).size(px(12.)).flex_none().child(
+                                gpui::img(super::role_gradient::circle(&colors, 12, 1.))
+                                    .size(px(12.)),
+                            ),
+                            None => div()
                                 .mx(px(4.))
                                 .size(px(12.))
                                 .flex_none()
                                 .rounded_full()
                                 .bg(tint),
-                        )
+                        })
                         .when(role.guild_connection, |this| {
                             this.child(icon("share_link", 12., "--text-default"))
                         })
@@ -96,6 +101,11 @@ impl Root {
                                 .line_height(px(16.))
                                 .text_color(strong)
                                 .child(guild.roles[&id].clone()),
+                        )
+                        // `.roleIcon_xL50-d`: 12px, 4px after the name.
+                        .children(
+                            self.role_icon_art(guild, id, 12.)
+                                .map(|art| div().flex_none().ml(px(4.)).child(art)),
                         )
                 }))
                 .into_any_element(),

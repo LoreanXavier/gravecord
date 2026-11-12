@@ -206,7 +206,6 @@ fn reaction_image_key(reaction: &dc_state::Reaction) -> String {
     }
 }
 
-/// A tag chip's outer width: the label plus `.pill_snX-u4`'s 1px border and 12px padding on both sides.
 /// Whether the post sidebar is docked at this window width: it floats over the chat when its maximum width,
 /// `width - 240 - 528 + 375` (`renderThreadSidebar`, module 289287), is at most its 450px minimum (module 743898).
 fn post_sidebar_fits(window_width: f32) -> bool {
@@ -219,8 +218,41 @@ fn post_sidebar_width(window_width: f32) -> f32 {
     ((window_width - 240.) / 2.).clamp(450., (window_width - 393.).max(450.))
 }
 
+/// A tag chip's outer width: the label plus `.pill_snX-u4`'s 1px border and 12px padding on both sides.
+/// Chromium's inline text box is the text's width rounded UP to a `LayoutUnit` (1/64 px): the capture's chips are
+/// 101.09375, 125.390625 and 86.03125 wide for labels our shaper measures 75.082, 99.386 and 60.018. gpui's own text
+/// element rounds up to a whole pixel (`TextLayout::layout`'s `.ceil()`), which is why the chip is given this width.
 fn tag_chip_width(label_width: f32) -> f32 {
-    label_width + 26.
+    layout_unit(label_width) + 26.
+}
+
+/// `divider_BkGrJJ` between the sort button and the tags: 0.797 px in the capture (51/64).
+const DIVIDER_WIDTH: f32 = 0.796875;
+
+/// A text width as Chromium's inline box has it: rounded up to 1/64 px.
+fn layout_unit(width: f32) -> f32 {
+    (width * 64.).ceil() / 64.
+}
+
+/// Chromium lays the chips out at fractional x (the list starts at `start`, chips 8px apart, a chip that does not fit
+/// wraps to the start) and paints each from the pixel its left edge rounds to up to the pixel its right edge rounds
+/// to. gpui rounds an authored width before layout, so the chips take those painted widths: with the capture's
+/// 564.125 start, 101.094, 125.391 and 86.031 become 101, 126 and 86 (`pt-forum-bugs-current`).
+fn snapped_chip_widths(start: f32, widths: &[f32], limit: f32) -> Vec<f32> {
+    // Midpoints round toward zero in gpui and away from it in Chromium; none of these edges sits on one.
+    let round = |value: f32| value.round();
+    let mut x = start;
+    widths
+        .iter()
+        .map(|width| {
+            if x > start && x + width > start + limit {
+                x = start;
+            }
+            let (left, right) = (x, x + width);
+            x = right + 8.;
+            round(right) - round(left)
+        })
+        .collect()
 }
 
 /// How many chips of the tag list fit on its first row (`.tagList` is 32px high and clips the wrapped rows; chips are
@@ -1215,7 +1247,12 @@ impl Root {
                                         super::name_styles::Display::Font,
                                     )
                                     .into_any_element(),
-                                    None => div().child(name).into_any_element(),
+                                    None => match self.role_gradient_of(&m.author) {
+                                        Some(colors) => div()
+                                            .child(super::role_gradient::name(name, colors))
+                                            .into_any_element(),
+                                        None => div().child(name).into_any_element(),
+                                    },
                                 };
                                 let (text, runs) = self.post_preview_text(&m.content);
                                 div()
@@ -1382,12 +1419,24 @@ impl Root {
                                     .text_color(
                                         self.guild_author_color(m.author.id, "--text-strong"),
                                     )
-                                    .child(super::name_styles::name(
-                                        format!("post-author-{}", m.id),
-                                        self.guild_display_name(&m.author),
-                                        self.name_styles(&m.author, self.guild).as_ref(),
-                                        super::name_styles::Display::Font,
-                                    ))
+                                    .child(
+                                        match self.role_gradient_of(&m.author).filter(|_| {
+                                            self.name_styles(&m.author, self.guild).is_none()
+                                        }) {
+                                            Some(colors) => super::role_gradient::name(
+                                                self.guild_display_name(&m.author),
+                                                colors,
+                                            )
+                                            .into_any_element(),
+                                            None => super::name_styles::name(
+                                                format!("post-author-{}", m.id),
+                                                self.guild_display_name(&m.author),
+                                                self.name_styles(&m.author, self.guild).as_ref(),
+                                                super::name_styles::Display::Font,
+                                            )
+                                            .into_any_element(),
+                                        },
+                                    )
                             }))
                             .child(
                                 div()
@@ -2006,8 +2055,10 @@ impl Root {
         // The tag list (`.tagList_BkGrJJ`) is what is left of the row after the sort button, the divider (16px
         // margins) and the hidden placeholder of the "All" button (62px and an 8px margin).
         let row_width = list_width - 48.;
-        let sort_width = 70. + measure_label(window, "Sort & View", 14., 500.);
-        let tag_left = sort_width + 16. + 0.8 + 16.;
+        // The label is 70.328125 wide in the capture (`sortDropdownText_BkGrJJ`), the divider 0.796875.
+        let sort_label = layout_unit(measure_label(window, "Sort & View", 14., 500.));
+        let sort_width = 70. + sort_label;
+        let tag_left = sort_width + 16. + DIVIDER_WIDTH + 16.;
         let tag_limit = row_width - tag_left - 8. - 62.;
         let tag_widths: Vec<f32> = channel
             .available_tags
@@ -2015,6 +2066,7 @@ impl Root {
             .map(|tag| tag_chip_width(measure_label(window, &tag.name, 14., 600.)))
             .collect();
         let (_, tags_end) = first_tag_row(&tag_widths, tag_limit);
+        let chip_pixels = snapped_chip_widths(tag_left, &tag_widths, tag_limit);
         let scroll = view.scroll.clone();
         let list = div()
             .id("forum-scroll")
@@ -2239,7 +2291,13 @@ impl Root {
                             .text_size(px(14.))
                             .text_color(color("--interactive-icon-default"))
                             .child(icon("forum_sort", 16., "--interactive-icon-default"))
-                            .child(div().ml(px(8.)).mr(px(4.)).child("Sort & View"))
+                            .child(
+                                div()
+                                    .ml(px(8.))
+                                    .mr(px(4.))
+                                    .w(px(sort_label))
+                                    .child("Sort & View"),
+                            )
                             .child(chevron(view.menu == Some("sort")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(v) = this.forums.get_mut(&id) {
@@ -2258,7 +2316,7 @@ impl Root {
                                 .mx(px(8.))
                                 .mt(px(4.))
                                 .h(px(24.))
-                                .w(px(0.8))
+                                .w(px(DIVIDER_WIDTH))
                                 .flex_none()
                                 .bg(color("--border-subtle")),
                         )
@@ -2278,9 +2336,10 @@ impl Root {
                                             .id(SharedString::from(format!("forum-tag-{tag_id}")))
                                             .flex_none()
                                             // The chip is its measured label plus 2 x (12 padding + 1 border), as
-                                            // `pill_snX-u4` is in Chromium (101.1 for a 75.1 label): the element's own text
-                                            // layout would round it up by a pixel.
-                                            .w(px(tag_widths[index]))
+                                            // `pill_snX-u4` is in Chromium (101.094 for a 75.094 label), painted
+                                            // between the pixels its fractional edges round to. gpui rounds an
+                                            // authored width before layout, so it gets that pixel width.
+                                            .w(px(chip_pixels[index]))
                                             .max_w(px(tag_limit.max(0.)))
                                             .overflow_hidden()
                                             .text_ellipsis()
@@ -2725,7 +2784,15 @@ mod tests {
         assert!((end - 328.5).abs() < 0.01);
         assert_eq!(first_tag_row(&widths, 1000.).0, 5);
         assert_eq!(first_tag_row(&[400.], 100.), (1, 100.));
-        assert_eq!(tag_chip_width(75.1), 101.1);
+        // Painted from the pixel the left edge rounds to up to the one the right edge rounds to.
+        assert_eq!(
+            snapped_chip_widths(173.125, &[101.09375, 125.390625, 86.03125], 348.9),
+            [101., 126., 86.]
+        );
+        // The capture's chip widths (`pt-forum-bugs-colors`) from the labels as measured here.
+        assert_eq!(tag_chip_width(75.082), 101.09375);
+        assert_eq!(tag_chip_width(99.386), 125.390625);
+        assert_eq!(tag_chip_width(60.018), 86.03125);
     }
 
     #[test]

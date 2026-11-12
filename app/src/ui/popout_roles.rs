@@ -191,13 +191,26 @@ impl Root {
                     .flex()
                     .items_center()
                     .child(
-                        div()
-                            .ml(px(6.))
-                            .mr(px(4.))
-                            .size(px(12.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(tint),
+                        match self
+                            .stores
+                            .guild(guild)
+                            .and_then(|known| known.role_colors_of(entry.id))
+                        {
+                            // `roleCircle`: the gradient on the circle's own box (module 545442 `R`).
+                            Some(colors) => {
+                                div().ml(px(6.)).mr(px(4.)).size(px(12.)).flex_none().child(
+                                    gpui::img(super::role_gradient::circle(&colors, 12, 1.))
+                                        .size(px(12.)),
+                                )
+                            }
+                            None => div()
+                                .ml(px(6.))
+                                .mr(px(4.))
+                                .size(px(12.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(tint),
+                        },
                     )
                     .child(
                         div()
@@ -208,6 +221,11 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child(entry.name.clone()),
                     )
+                    // `.roleIcon_xL50-d`: 12px, 4px after the name.
+                    .children(self.stores.guild(guild).and_then(|known| {
+                        self.role_icon_art(known, entry.id, 12.)
+                            .map(|art| div().flex_none().ml(px(4.)).child(art))
+                    }))
                     .when(entry.removable, |chip| {
                         chip.child(
                             div()
