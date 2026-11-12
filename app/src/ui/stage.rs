@@ -22,6 +22,35 @@ use std::sync::Arc;
 
 /// `ChannelKind::Other(13)`: `GUILD_STAGE_VOICE`.
 const STAGE: ChannelKind = ChannelKind::Other(13);
+
+/// Where a tile's menu was opened (window pixels) and for whom.
+#[derive(Clone, Copy)]
+pub(super) struct TileMenu {
+    channel: Id,
+    user: Id,
+    x: f32,
+    y: f32,
+}
+
+/// The rows a tile's menu can hold (strings of module 818418: `VK3vQy`, `6C6PJx`, `VUCWcO`, `W6c/Vf`).
+#[derive(Clone, Copy)]
+enum TileAction {
+    MoveToAudience,
+    Leave,
+    Invite,
+    Speak,
+}
+
+impl TileAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MoveToAudience => "Move to Audience",
+            Self::Leave => "Leave the Stage",
+            Self::Invite => "Invite to Speak",
+            Self::Speak => "Speak on Stage",
+        }
+    }
+}
 /// Module 973324: the modal's graphic.
 const GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/ef7fa86f8c519fe9764867c1ba473ee1939292fddb2c897885aab732e3bd31d2.svg";
 /// The age coachmark's graphic (`image_sYj23M` in stage-ann/stage-live-controls).
@@ -208,7 +237,12 @@ fn stage_header(title: String, speaking: usize, audience: usize) -> gpui::Div {
                         .line_height(px(18.))
                         .text_color(color("--text-muted"))
                         .child(icon("mic", 16., "--text-muted"))
-                        .child(div().ml(px(4.)).child(format!("{speaking} is speaking")))
+                        .child(div().ml(px(4.)).child(if speaking == 0 {
+                            // `chmM9N` (strings module 818418): "=0" -> "{count} is speaking", other -> "{count} speaking".
+                            "0 is speaking".to_owned()
+                        } else {
+                            format!("{speaking} speaking")
+                        }))
                         .child(div().ml(px(8.)).child(icon("members", 16., "--text-muted")))
                         .child(div().ml(px(4.)).child(format!("{audience} in audience"))),
                 ),
@@ -411,7 +445,10 @@ impl Root {
                                         "For mic checks. Start when you're ready.",
                                         cx.listener(move |this, _, _, cx| {
                                             // The first visit shows the welcome first; "Got it!" joins.
+                                            // Module 940518: the welcome opens while the key `HasBeenInStageChannel`
+                                            // is unset and sets it at once, not when the dialog closes.
                                             if !this.stage_welcome_seen {
+                                                this.stage_welcome_seen = true;
                                                 this.stage_welcome = Some(target);
                                             } else if let Some(guild) = guild {
                                                 this.request_join_voice(guild, target, cx);
@@ -491,10 +528,16 @@ impl Root {
         let target = channel.id;
         let mut speakers = Vec::new();
         let mut audience = Vec::new();
+        // Audience members whose hand is up (`request_to_speak_timestamp`).
+        let mut hands: Vec<Id> = Vec::new();
         let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let moderator = self.can_moderate_stage(channel);
         let mut listening = false;
         for state in self.stores.voice_members(guild, target) {
             listening |= state.suppress && Some(state.user_id) == me;
+            if state.suppress && state.request_to_speak_timestamp.is_some() {
+                hands.push(state.user_id);
+            }
             let user = self
                 .stores
                 .users
@@ -515,7 +558,10 @@ impl Root {
         }
         let tile = |user: &dc_state::User| {
             let picture = self.images.get(&super::avatar_source(user).0).cloned();
+            let person = user.id;
+            let raised = hands.contains(&person);
             div()
+                .relative()
                 .flex_none()
                 .w(px(102.))
                 .h(px(98.))
@@ -524,6 +570,22 @@ impl Root {
                 .flex()
                 .flex_col()
                 .items_center()
+                // Module 106401 and 237749 put the Stage rows in the person's context menu; a moderator or the
+                // person themselves has something to pick.
+                .when(moderator || Some(person) == me, |this| {
+                    this.on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.stage_tile_menu = Some(TileMenu {
+                                channel: target,
+                                user: person,
+                                x: f32::from(event.position.x),
+                                y: f32::from(event.position.y),
+                            });
+                            cx.notify();
+                        }),
+                    )
+                })
                 .child(
                     div()
                         .mt(px(8.))
@@ -532,6 +594,20 @@ impl Root {
                         .overflow_hidden()
                         .children(picture.map(|picture| img(picture).size(px(56.)))),
                 )
+                // The raised hand (unconfirmed look: no capture of a Stage with hands up).
+                .children(raised.then(|| {
+                    div()
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(14.))
+                        .size(px(24.))
+                        .rounded_full()
+                        .bg(color("--background-base-lowest"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("system_hand", 16., "--white"))
+                }))
                 .child(
                     div()
                         .mt(px(8.))
@@ -607,7 +683,6 @@ impl Root {
         };
         // The leave button's red is the notification red (210, 45, 57) in stage-ann/stage-leave-menu.
         let red = color("--background-feedback-notification");
-        let moderator = self.can_moderate_stage(channel);
         let menu_open = moderator && self.stage_leave_menu;
         // `End Stage for Everyone` (stage-ann/stage-leave-menu): a 202 by 53 popout above the caret, the item 37 high
         // with a red circle-x and red text.
@@ -616,8 +691,8 @@ impl Root {
                 .absolute()
                 .left(px(455.))
                 .top(px(552.))
-                .w(px(202.))
-                .h(px(53.))
+                .w(px(201.8))
+                .h(px(54.))
                 .p(px(8.))
                 .rounded(px(8.))
                 .border_1()
@@ -626,12 +701,20 @@ impl Root {
                     ..rgba(0x6c6d76ff)
                 })
                 .bg(color("--neutral-76"))
+                // `menu_M3qk4j`: 0 12px 24px rgba(0,0,0,.24).
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(12.)),
+                    blur_radius: px(24.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
                 .child(
                     div()
                         .id("stage-end-item")
-                        .h(px(35.))
+                        .h(px(36.))
                         .px(px(8.))
-                        .rounded(px(4.))
+                        .rounded(px(2.))
                         .flex()
                         .items_center()
                         .cursor_pointer()
@@ -661,13 +744,15 @@ impl Root {
             .bottom(px(16.))
             .flex()
             .justify_center()
+            // The group is 280 wide at x = 687.5; Chromium snaps that to 688, GPUI to 687.
+            .pl(px(1.))
             .child(
                 div()
                     .flex()
                     .child(
                         div()
                             .h(px(50.))
-                            .px(px(5.))
+                            .px(px(4.))
                             .rounded(px(12.))
                             .border_1()
                             .border_color(Rgba {
@@ -678,14 +763,14 @@ impl Root {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(round("stage-sound", "voice_soundboard"))
-                            .child(round("stage-hand", "system_hand"))
-                            .child(round("stage-mic", "mic_muted"))
+                            .child(round("stage-sound", "voice_soundboard_off"))
+                            .child(round("stage-hand", "stage_hand_raise"))
+                            .child(round("stage-mic", "stage_mic_off"))
                             .child(round("stage-more", "voice_view_more")),
                     )
                     .child(
                         div()
-                            .ml(px(15.))
+                            .ml(px(12.))
                             .h(px(50.))
                             .w(px(74.))
                             .rounded(px(12.))
@@ -757,12 +842,13 @@ impl Root {
                 .invisible()
                 .group_hover("stage-live", |style| style.visible())
                 .left(px(266.))
-                .top(px(371.))
+                .top(px(372.))
                 .w(px(240.))
                 .h(px(241.))
                 .rounded(px(12.))
                 .overflow_hidden()
-                .bg(color("--background-secondary-alt"))
+                // `popoverGradientWrapper_81I`: oklab(.26239 .0025 -.0089), (36, 36, 41) in the capture.
+                .bg(rgba(0x242429ff))
                 .shadow(vec![gpui::BoxShadow {
                     color: gpui::hsla(0., 0., 0., 0.24),
                     offset: gpui::point(px(0.), px(12.)),
@@ -775,6 +861,7 @@ impl Root {
                         color("--expressive-gradient-blue-start"),
                         color("--expressive-gradient-blue-end"),
                     ))
+                    .object_fit(gpui::ObjectFit::Fill)
                     .absolute()
                     .top_0()
                     .left_0()
@@ -841,6 +928,56 @@ impl Root {
                         .child("Confirm age"),
                 )
         });
+        // The menu opened with a right click on a tile, where the pointer was (the view starts at x 375, y 32).
+        let tile_menu = self
+            .stage_tile_menu
+            .filter(|menu| menu.channel == target)
+            .map(|menu| {
+                let rows = self.tile_actions(menu.channel, menu.user);
+                let (channel_id, person) = (menu.channel, menu.user);
+                div()
+                    .id("stage-tile-menu-layer")
+                    .absolute()
+                    .inset_0()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stage_tile_menu = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(menu.x - 375.))
+                            .top(px(menu.y - 32.))
+                            .min_w(px(202.))
+                            .p(px(8.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(Rgba {
+                                a: 0.12,
+                                ..rgba(0x6c6d76ff)
+                            })
+                            .bg(rgba(0x2a2a30ff))
+                            .children(rows.into_iter().map(|action| {
+                                div()
+                                    .id(action.label())
+                                    .h(px(32.))
+                                    .px(px(8.))
+                                    .rounded(px(2.))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-default"))
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stage_tile_menu = None;
+                                        this.run_tile_action(action, channel_id, person);
+                                        cx.notify();
+                                    }))
+                                    .child(action.label())
+                            })),
+                    )
+            });
         div()
             .parity("stage-view")
             .group("stage-live")
@@ -861,21 +998,126 @@ impl Root {
                     .flex_col()
                     .children((!speakers.is_empty()).then(|| {
                         section(
-                            format!("Speakers — {}", speakers.len()),
+                            format!("Speakers \u{2013} {}", speakers.len()),
                             &speakers,
                             "members",
                         )
                     }))
                     .child(section(
-                        format!("Audience — {}", audience.len()),
+                        format!("Audience \u{2013} {}", audience.len()),
                         &audience,
                         "members",
                     )),
             )
             .children(coach)
+            // `caret_uDaE_S`: 22 by 14 under the box, centred on the hand button (750, 644).
+            .children((listening && !self.stage_coach_closed).then(|| {
+                div()
+                    .absolute()
+                    .invisible()
+                    .group_hover("stage-live", |style| style.visible())
+                    .left(px(375.))
+                    .top(px(612.))
+                    .child(
+                        icon("popout_caret_down", 22., "--white")
+                            .text_color(rgba(0x242429ff))
+                            .h(px(14.)),
+                    )
+            }))
             .child(controls)
             .children(leave_menu)
+            .children(tile_menu)
             .into_any_element()
+    }
+
+    /// The people in the open Stage channel, whose pictures the tiles draw.
+    pub(super) fn stage_people(&self) -> Vec<dc_state::User> {
+        let (Some(guild), Some(channel)) = (self.guild, self.channel) else {
+            return Vec::new();
+        };
+        self.stores
+            .voice_members(guild, channel)
+            .into_iter()
+            .filter_map(|state| self.stores.users.get(&state.user_id).cloned())
+            .collect()
+    }
+
+    /// The Stage rows of a tile's menu (modules 237749 and 106401, unconfirmed against a capture): who is on the
+    /// stage may be moved to the audience by a moderator (or leave on their own), who is in the audience may be
+    /// invited by a moderator.
+    fn tile_actions(&self, channel: Id, user: Id) -> Vec<TileAction> {
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let guild = self.guild.unwrap_or_default();
+        let Some(state) = self
+            .stores
+            .voice_members(guild, channel)
+            .into_iter()
+            .find(|state| state.user_id == user)
+        else {
+            return Vec::new();
+        };
+        let moderator = self
+            .current_guild()
+            .and_then(|guild| guild.channels.iter().find(|known| known.id == channel))
+            .is_some_and(|known| self.can_moderate_stage(known));
+        let own = Some(user) == me;
+        match (state.suppress, own) {
+            (false, true) => vec![TileAction::Leave],
+            (false, false) if moderator => vec![TileAction::MoveToAudience],
+            (true, true) if moderator => vec![TileAction::Speak],
+            (true, false) if moderator => vec![TileAction::Invite],
+            _ => Vec::new(),
+        }
+    }
+
+    /// `Tf`, `gt`, `SA` and `e7` of module 849736: the voice-state patches behind the rows.
+    fn run_tile_action(&mut self, action: TileAction, channel: Id, user: Id) {
+        let Some(guild) = self.guild else { return };
+        let patch = |this: &mut Self, route: String, body: serde_json::Value| {
+            let _ = this.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route,
+                body: Some(body),
+            });
+        };
+        let own = format!("/guilds/{guild}/voice-states/@me");
+        let theirs = format!("/guilds/{guild}/voice-states/{user}");
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        match action {
+            TileAction::Leave => patch(
+                self,
+                own,
+                json!({"suppress": true, "channel_id": channel.to_string(),
+                       "self_video": false, "self_stream": false}),
+            ),
+            TileAction::Speak => patch(
+                self,
+                own,
+                json!({"suppress": false, "request_to_speak_timestamp": null,
+                       "channel_id": channel.to_string()}),
+            ),
+            TileAction::Invite => patch(
+                self,
+                theirs,
+                json!({"suppress": false, "request_to_speak_timestamp": now,
+                       "channel_id": channel.to_string()}),
+            ),
+            TileAction::MoveToAudience => {
+                // `gt` sends the plain patch (`O`) and then the one that also drops video and screen share.
+                patch(
+                    self,
+                    theirs.clone(),
+                    json!({"suppress": true, "channel_id": channel.to_string()}),
+                );
+                patch(
+                    self,
+                    theirs,
+                    json!({"suppress": true, "channel_id": channel.to_string(),
+                           "self_video": false, "self_stream": false}),
+                );
+            }
+        }
     }
 
     /// `tQ` of module 993838: the Start the Stage modal, or Change the topic when the Stage is live. For the menu
@@ -1099,7 +1341,7 @@ impl Root {
                 a: 0.08,
                 ..rgba(0xe8a838ff)
             })
-            .p(px(11.))
+            .p(px(12.))
             .flex()
             .items_start()
             .child(

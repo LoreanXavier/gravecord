@@ -229,7 +229,7 @@ impl Root {
                     other => other.parse::<Id>().ok(),
                 };
                 let Some(user) = user else {
-                    return "usage: ch vs <me|user id> <leave|selfmute|selfdeaf|mute|deaf>"
+                    return "usage: ch vs <me|user id> <leave|selfmute|selfdeaf|mute|deaf|stage|suppress|hand>"
                         .to_owned();
                 };
                 let leaving = flags.contains(&"leave");
@@ -250,6 +250,12 @@ impl Root {
                     "mute": flags.contains(&"mute"),
                     "deaf": flags.contains(&"deaf"),
                     "suppress": flags.contains(&"suppress"),
+                    // `hand` raises the person's hand (`request_to_speak_timestamp`).
+                    "request_to_speak_timestamp": if flags.contains(&"hand") {
+                        json!("2026-11-12T04:00:00.000000+00:00")
+                    } else {
+                        Value::Null
+                    },
                 });
                 self.stores.dispatch("VOICE_STATE_UPDATE", &data);
                 self.data_revision += 1;

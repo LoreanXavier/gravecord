@@ -14,13 +14,23 @@ use gpui::{
 };
 use serde_json::json;
 
-/// GUILD_TEXT, GUILD_VOICE, GUILD_CATEGORY and GUILD_FORUM.
+/// GUILD_TEXT, GUILD_VOICE, GUILD_CATEGORY, GUILD_ANNOUNCEMENT, GUILD_STAGE_VOICE and GUILD_FORUM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Text = 0,
     Voice = 2,
     Category = 4,
+    Announcement = 5,
+    Stage = 13,
     Forum = 15,
+}
+
+/// The two slides of the dialog (`slide` of module 410380): the channel's details, then, for a Stage, the people and
+/// roles that moderate it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Slide {
+    Info,
+    Moderators,
 }
 
 pub(crate) struct CreateChannel {
@@ -29,6 +39,11 @@ pub(crate) struct CreateChannel {
     _events: Subscription,
     pub private: bool,
     pub parent: Option<Id>,
+    /// The body's scroll position (the dialog scrolls once the Announcement and Stage rows are there).
+    scroll: gpui::ScrollHandle,
+    slide: Slide,
+    /// Roles picked as Stage moderators.
+    moderators: Vec<Id>,
 }
 
 /// The official name rule for text-like channels: lower case, whitespace runs become one dash.
@@ -144,8 +159,8 @@ const CONNECT: u64 = 1 << 20;
 /// server.
 pub(crate) fn private_overwrites(guild: Id, kind: Kind, creator: Option<Id>) -> serde_json::Value {
     let bits = match kind {
-        Kind::Voice | Kind::Category => VIEW_CHANNEL | CONNECT,
-        Kind::Text | Kind::Forum => VIEW_CHANNEL,
+        Kind::Voice | Kind::Category | Kind::Stage => VIEW_CHANNEL | CONNECT,
+        Kind::Text | Kind::Forum | Kind::Announcement => VIEW_CHANNEL,
     };
     let mut overwrites =
         vec![json!({"id": guild.to_string(), "type": 0, "allow": "0", "deny": bits.to_string()})];
@@ -155,6 +170,53 @@ pub(crate) fn private_overwrites(guild: Id, kind: Kind, creator: Option<Id>) -> 
         );
     }
     serde_json::Value::Array(overwrites)
+}
+
+/// `IP(guildId)` of module 147036: an Announcement channel is created with `@everyone` denied Send Messages.
+pub(crate) fn announcement_overwrites(guild: Id) -> serde_json::Value {
+    json!([{
+        "id": guild.to_string(),
+        "type": 0,
+        "allow": "0",
+        "deny": dc_state::permissions::SEND_MESSAGES.to_string(),
+    }])
+}
+
+/// `j(id, type)` of module 841811 with `QY` of module 233993 (Manage Channels, Mute Members, Move Members): the
+/// overwrite each picked role gives a Stage's moderators (role type 0).
+pub(crate) fn stage_moderator_overwrites(roles: &[Id]) -> serde_json::Value {
+    use dc_state::permissions::{MANAGE_CHANNELS, MOVE_MEMBERS, MUTE_MEMBERS};
+    let allow = (MANAGE_CHANNELS | MUTE_MEMBERS | MOVE_MEMBERS).to_string();
+    serde_json::Value::Array(
+        roles
+            .iter()
+            .map(|role| json!({"id": role.to_string(), "type": 0, "allow": allow, "deny": "0"}))
+            .collect(),
+    )
+}
+
+/// The body of `POST /guilds/{guild}/channels` (`createChannel` of module 410380): `parentId` is null for a category.
+fn create_body(
+    kind: Kind,
+    name: &str,
+    overwrites: serde_json::Value,
+    parent: Option<Id>,
+) -> serde_json::Value {
+    let mut body = json!({"type": kind as u64, "name": name, "permission_overwrites": overwrites});
+    if let Some(parent) = parent.filter(|_| kind != Kind::Category) {
+        body["parent_id"] = json!(parent.to_string());
+    }
+    body
+}
+
+/// The Announcement row shows in a server with the `NEWS` feature (`canCreateAnnouncementChannel` of module 410380).
+fn can_create_announcement(features: &[String]) -> bool {
+    features.iter().any(|feature| feature == "NEWS")
+}
+
+/// The Stage row: a Community server and both Manage Roles and Manage Channels (`m` of `td` in module 410380).
+fn can_create_stage(features: &[String], manage_roles: bool, manage_channels: bool) -> bool {
+    features.iter().any(|feature| feature == "COMMUNITY") && manage_roles && manage_channels
 }
 
 impl Root {
@@ -191,7 +253,20 @@ impl Root {
                     this.submit_create_channel(cx);
                 }
                 EditorEvent::Cancel => this.create_channel = None,
-                EditorEvent::Edited => {}
+                // `handleNameChange` through `LIMITED_CHANNEL_NAME` (modules 965805, 478437): text-like names are
+                // slugged as they are typed.
+                EditorEvent::Edited => {
+                    let limited = this.create_channel.as_ref().is_some_and(|form| {
+                        matches!(form.kind, Kind::Text | Kind::Forum | Kind::Announcement)
+                    });
+                    if limited {
+                        let text = editor.read(cx).text().to_owned();
+                        let slug = channel_slug_live(&text);
+                        if slug != text {
+                            editor.update(cx, |editor, _| editor.set_text(&slug));
+                        }
+                    }
+                }
             }
             cx.notify();
         });
@@ -202,6 +277,9 @@ impl Root {
             _events: events,
             private: false,
             parent: None,
+            scroll: gpui::ScrollHandle::new(),
+            slide: Slide::Info,
+            moderators: Vec::new(),
         });
         cx.notify();
     }
@@ -215,8 +293,8 @@ impl Root {
             return;
         }
         let name = match form.kind {
-            Kind::Text | Kind::Forum => channel_slug(&typed),
-            Kind::Voice | Kind::Category => typed,
+            Kind::Text | Kind::Forum | Kind::Announcement => channel_slug(&typed),
+            Kind::Voice | Kind::Category | Kind::Stage => typed,
         };
         let owner = self
             .current_guild()
@@ -224,17 +302,18 @@ impl Root {
             .is_some_and(|owner| {
                 Some(owner) == self.stores.current_user.as_ref().map(|user| user.id)
             });
-        let overwrites = if form.private {
-            let me = self.stores.current_user.as_ref().map(|user| user.id);
-            private_overwrites(guild, form.kind, me.filter(|_| !owner))
-        } else {
-            json!([])
+        // Module 410380 `handleSubmit`: an Announcement channel takes `IP`, a Stage only its moderators' overwrites
+        // (never private), the rest the private set when the switch is on.
+        let overwrites = match form.kind {
+            Kind::Announcement => announcement_overwrites(guild),
+            Kind::Stage => stage_moderator_overwrites(&form.moderators),
+            _ if form.private => {
+                let me = self.stores.current_user.as_ref().map(|user| user.id);
+                private_overwrites(guild, form.kind, me.filter(|_| !owner))
+            }
+            _ => json!([]),
         };
-        let mut body =
-            json!({"type": form.kind as u64, "name": name, "permission_overwrites": overwrites});
-        if let Some(parent) = form.parent {
-            body["parent_id"] = json!(parent.to_string());
-        }
+        let body = create_body(form.kind, &name, overwrites, form.parent);
         let _ = self.requests.send(Request::Rest {
             key: None,
             method: reqwest::Method::POST,
@@ -274,6 +353,24 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(form) = this.create_channel.as_mut() {
                     form.kind = kind;
+                    // `handleTypeChange`: a Stage is never private; the field's hint follows the type.
+                    if kind == Kind::Stage {
+                        form.private = false;
+                    }
+                    let hint = if kind == Kind::Forum {
+                        "forum-discussion"
+                    } else {
+                        "new-channel"
+                    };
+                    form.name
+                        .update(cx, |editor, _| editor.set_placeholder(hint.to_owned()));
+                    if matches!(kind, Kind::Text | Kind::Forum | Kind::Announcement) {
+                        let text = form.name.read(cx).text().to_owned();
+                        let slug = channel_slug_live(&text);
+                        if slug != text {
+                            form.name.update(cx, |editor, _| editor.set_text(&slug));
+                        }
+                    }
                 }
                 cx.notify();
             }))
@@ -310,7 +407,23 @@ impl Root {
             Kind::Forum => "channel_type_forum",
             Kind::Category => "",
             Kind::Text => "channel_type_text",
+            Kind::Announcement => "announcement_channel",
+            Kind::Stage => "stage_channel",
         };
+        let (news, stage) = self.current_guild().map_or((false, false), |guild| {
+            let me = self.stores.me();
+            let may = |permission| {
+                me.is_some_and(|me| dc_state::permissions::can_in_guild(guild, me, permission))
+            };
+            (
+                can_create_announcement(&guild.features),
+                can_create_stage(
+                    &guild.features,
+                    may(dc_state::permissions::MANAGE_ROLES),
+                    may(dc_state::permissions::MANAGE_CHANNELS),
+                ),
+            )
+        });
         let private = form.private;
         let body = div()
             .flex()
@@ -344,7 +457,23 @@ impl Root {
                                     "channel_type_forum",
                                     "Forum",
                                     "Create a space for organized discussions",
-                                )),
+                                ))
+                                .children(news.then(|| {
+                                    option(
+                                        Kind::Announcement,
+                                        "announcement_channel",
+                                        "Announcement",
+                                        "Important updates for people in and out of the server",
+                                    )
+                                }))
+                                .children(stage.then(|| {
+                                    option(
+                                        Kind::Stage,
+                                        "stage_channel",
+                                        "Stage",
+                                        "Host events, panels, and Q&As for an audience",
+                                    )
+                                })),
                         ),
                 )
             })
@@ -403,7 +532,18 @@ impl Root {
                             })),
                     ),
             )
-            .child(
+            // `e9` of module 410380: under the name of an Announcement channel, what following it means.
+            .children((form.kind == Kind::Announcement).then(|| {
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(
+                        "Users can Follow this channel in their own servers. Posts you \"Publish\" from this channel will appear in those servers. Learn more.",
+                    )
+            }))
+            // Neither an Announcement channel nor a Stage has the private switch (`renderPrivacyOptions`).
+            .children((!matches!(form.kind, Kind::Announcement | Kind::Stage)).then(|| {
                 super::keyboard::inset_ring_when_focused(div().id("create-channel-private"))
                     .focusable()
                     .tab_index(0)
@@ -448,19 +588,61 @@ impl Root {
                                     }),
                             ),
                     )
-                    .child(switch(private)),
-            )
+                    .child(switch(private))
+            }))
             .into_any_element();
         let create_label = if category {
             "Create Category"
         } else {
             "Create Channel"
         };
+        if form.slide == Slide::Moderators {
+            return Some(self.stage_moderators_modal(form, cx));
+        }
+        // Four or more types no longer fit: `bodyInnerShouldScroll_dvN-MP` holds the body to 416px, between two 1px
+        // rules (`bodySpacerTopBorder`, `bodyScrollingSpacerBottom`) across the whole dialog.
+        let scrolling = !category && (news || stage);
+        let body = if scrolling {
+            div()
+                .relative()
+                .mx(px(-24.))
+                .h(px(418.))
+                .border_t_1()
+                .border_b_1()
+                .border_color(color("--border-subtle"))
+                .child(
+                    div()
+                        .id("create-channel-scroll")
+                        .track_scroll(&form.scroll)
+                        .size_full()
+                        .overflow_y_scroll()
+                        .py(px(12.))
+                        .px(px(24.))
+                        .child(body),
+                )
+                .child(super::menu::menu_scrollbar(form.scroll.clone()))
+                .into_any_element()
+        } else {
+            body.into_any_element()
+        };
+        // `L1zJgb`: "in <category>" under the title when the dialog was opened from a category's plus.
+        let subtitle = form
+            .parent
+            .and_then(|parent| {
+                self.current_guild()?
+                    .channels
+                    .iter()
+                    .find(|known| known.id == parent)
+                    .map(|known| known.name.clone())
+            })
+            .map(|name| div().child(format!("in {name}")).into_any_element());
+        // A Stage goes on to pick its moderators (`g` in module 410380: "Next").
+        let stage_next = form.kind == Kind::Stage;
         Some(modal::render(
             modal::Spec {
                 id: "create-channel-modal",
                 title: create_label.into(),
-                subtitle: None,
+                subtitle,
                 body: Some(body),
                 buttons: vec![
                     modal::button(
@@ -471,13 +653,23 @@ impl Root {
                     ),
                     modal::button(
                         "create-channel-submit",
-                        create_label,
+                        if stage_next { "Next" } else { create_label },
                         if typed {
                             modal::Tone::Primary
                         } else {
                             modal::Tone::PrimaryDisabled
                         },
-                        |this, _, cx| this.submit_create_channel(cx),
+                        move |this, _, cx| {
+                            if stage_next {
+                                if let Some(form) = this.create_channel.as_mut()
+                                    && !form.name.read(cx).text().trim().is_empty()
+                                {
+                                    form.slide = Slide::Moderators;
+                                }
+                            } else {
+                                this.submit_create_channel(cx);
+                            }
+                        },
                     ),
                 ],
                 close: Box::new(|this, _, _| this.create_channel = None),
@@ -485,11 +677,184 @@ impl Root {
             cx,
         ))
     }
+
+    /// The Stage's second slide (`tr` of module 410380, "Add Stage moderators"): who moderates it, then Create, or
+    /// Skip while nobody is picked. Roles only: the member search and the typed filter are not built.
+    fn stage_moderators_modal(&self, form: &CreateChannel, cx: &mut Context<Self>) -> AnyElement {
+        let name = form.name.read(cx).text().trim().to_owned();
+        let roles: Vec<(Id, String)> = self.current_guild().map_or_else(Vec::new, |guild| {
+            let mut roles: Vec<(Id, String)> = guild
+                .roles
+                .iter()
+                .filter(|(id, _)| **id != guild.id)
+                .map(|(id, name)| (*id, name.clone()))
+                .collect();
+            roles.sort_by_key(|role| role.1.to_lowercase());
+            roles
+        });
+        let rows = roles.into_iter().map(|(role, label)| {
+            let picked = form.moderators.contains(&role);
+            div()
+                .id(("stage-moderator", role))
+                .h(px(40.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .cursor_pointer()
+                .hover(|style| style.bg(color("--background-mod-subtle")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.create_channel.as_mut() {
+                        if let Some(at) = form.moderators.iter().position(|known| *known == role) {
+                            form.moderators.remove(at);
+                        } else {
+                            form.moderators.push(role);
+                        }
+                    }
+                    cx.notify();
+                }))
+                .child(super::server_games::checkbox(picked))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_color(color("--text-default"))
+                        .child(label),
+                )
+        });
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .line_height(px(24.))
+                    .text_size(px(16.))
+                    .text_color(color("--text-default"))
+                    .child(icon("stage_channel", 16., "--text-default"))
+                    .child(name),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(
+                        "Stage moderators are Speakers who can add and remove other Speakers. They can also start the Stage event. Stage moderators don't have to be mods of the server.",
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-subtle"))
+                    .child("Add individual members by starting with @ or type a role name"),
+            )
+            .child(div().max_h(px(240.)).flex().flex_col().children(rows))
+            .into_any_element();
+        let label = if form.moderators.is_empty() {
+            "Skip"
+        } else {
+            "Create Channel"
+        };
+        modal::render(
+            modal::Spec {
+                id: "create-channel-modal",
+                title: "Add Stage moderators".into(),
+                subtitle: None,
+                body: Some(body),
+                buttons: vec![
+                    modal::button(
+                        "create-channel-back",
+                        "Back",
+                        modal::Tone::Secondary,
+                        |this, _, _| {
+                            if let Some(form) = this.create_channel.as_mut() {
+                                form.slide = Slide::Info;
+                            }
+                        },
+                    ),
+                    modal::button(
+                        "create-channel-submit",
+                        label,
+                        modal::Tone::Primary,
+                        |this, _, cx| this.submit_create_channel(cx),
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.create_channel = None),
+            },
+            cx,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, channel_slug, private_overwrites};
+    use super::{
+        Kind, announcement_overwrites, can_create_announcement, can_create_stage, channel_slug,
+        create_body, private_overwrites, stage_moderator_overwrites,
+    };
+
+    #[test]
+    fn an_announcement_channel_denies_everyone_sending() {
+        let body = create_body(
+            Kind::Announcement,
+            "news",
+            announcement_overwrites(10),
+            Some(5),
+        );
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "type": 5,
+                "name": "news",
+                "permission_overwrites": [{"id": "10", "type": 0, "allow": "0", "deny": "2048"}],
+                "parent_id": "5",
+            })
+        );
+    }
+
+    #[test]
+    fn a_stage_gives_its_picked_roles_the_moderator_set() {
+        // Manage Channels (16) + Mute Members (4194304) + Move Members (16777216).
+        let body = create_body(
+            Kind::Stage,
+            "Town Hall",
+            stage_moderator_overwrites(&[7, 8]),
+            None,
+        );
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "type": 13,
+                "name": "Town Hall",
+                "permission_overwrites": [
+                    {"id": "7", "type": 0, "allow": "20971536", "deny": "0"},
+                    {"id": "8", "type": 0, "allow": "20971536", "deny": "0"},
+                ],
+            })
+        );
+        assert_eq!(
+            create_body(Kind::Stage, "x", stage_moderator_overwrites(&[]), None)["permission_overwrites"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn the_extra_rows_need_their_server_features() {
+        let community = vec!["COMMUNITY".to_owned()];
+        let news = vec!["NEWS".to_owned()];
+        assert!(can_create_announcement(&news));
+        assert!(!can_create_announcement(&community));
+        assert!(can_create_stage(&community, true, true));
+        assert!(!can_create_stage(&community, true, false));
+        assert!(!can_create_stage(&community, false, true));
+        assert!(!can_create_stage(&news, true, true));
+    }
 
     #[test]
     fn names_take_the_channel_form() {
