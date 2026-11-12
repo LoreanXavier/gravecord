@@ -1157,6 +1157,7 @@ impl Root {
                 self.calls_after_dispatch(&name, cx);
                 self.interaction_dispatched(&name, &data, cx);
                 if name == "READY" {
+                    self.voice_after_dispatch(&name, cx);
                     self.inventory_connection_open();
                     self.detect_ready();
                     self.clips_connection_open(cx);
@@ -1277,6 +1278,7 @@ impl Root {
                     self.rebuild_rows();
                 }
                 if matches!(name.as_str(), "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") {
+                    self.voice_after_dispatch(&name, cx);
                     self.maybe_connect_voice();
                 }
                 if matches!(
@@ -2639,8 +2641,7 @@ impl Root {
             let day = (local.year(), local.ordinal());
             let new_day = last_day != Some(day);
             if new_day {
-                self.rows
-                    .push(Row::Divider(local.format("%B %-d, %Y").to_string()));
+                self.rows.push(Row::Divider(timestamps::long_date(local)));
                 last_day = Some(day);
             }
             if blocked.contains(&message.author.id) || ignored.contains(&message.author.id) {
@@ -2968,11 +2969,17 @@ impl Root {
             .filter_map(|user| self.stores.users.get(user))
             .map(|user| user.display_name().to_owned())
             .collect();
-        let (lead, tail) = match names.as_slice() {
+        // Module 620014 `X`: one, two and three names (`lJ9sZX`, `rB0CUa`, `StKThj`), else "Several people"
+        // (`Q8lUnE`); the names in bold.
+        let runs = match names.as_slice() {
             [] => return None,
-            [one] => (one.clone(), " is typing..."),
-            [one, two] => (format!("{one}, {two}"), " are typing..."),
-            _ => ("Several people".to_owned(), " are typing..."),
+            [a] => dc_intl::format_runs("lJ9sZX", &[("a", a.into())]),
+            [a, b] => dc_intl::format_runs("rB0CUa", &[("a", a.into()), ("b", b.into())]),
+            [a, b, c] => dc_intl::format_runs(
+                "StKThj",
+                &[("a", a.into()), ("b", b.into()), ("c", c.into())],
+            ),
+            _ => dc_intl::format_runs("Q8lUnE", &[]),
         };
         // `.dot_U9Tvvz`: 7px, `typing-dot-pulse` stepped, 2px apart.
         let active = motion::window_active();
@@ -3010,11 +3017,17 @@ impl Root {
                 .child(
                     div()
                         .ml(px(6.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(color("--text-default"))
-                        .child(lead),
+                        .flex()
+                        .whitespace_nowrap()
+                        .children(runs.into_iter().map(|(text, tag)| {
+                            div()
+                                .when(tag.as_deref() == Some("$b"), |this| {
+                                    this.font_weight(FontWeight(600.))
+                                        .text_color(color("--text-default"))
+                                })
+                                .child(text)
+                        })),
                 )
-                .child(tail)
                 .into_any_element(),
         )
     }
@@ -3629,7 +3642,7 @@ impl Root {
                 .child(
                     self.with_tip(
                         "add-server",
-                        Tip::rail(Body::Heading("Add a Server".into())),
+                        Tip::rail(Body::Heading(dc_intl::tr("Add a Server").into())),
                         tool("add_server", 20.),
                         cx,
                     )
@@ -4039,7 +4052,7 @@ impl Root {
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--white"))
                                     .group_hover(pill_group, |style| style.opacity(0.))
-                                    .child("NEW"),
+                                    .child(dc_intl::tr("NEW")),
                             )
                         })
                         .children(timer)
@@ -4334,11 +4347,11 @@ impl Root {
             .children(self.member_safety_row(cx))
             .when(self.sidebar_has_boosts(), |sidebar| {
                 sidebar.child(
-                    plain_row("boosts", "Server Boosts")
+                    plain_row("boosts", dc_intl::tr("Server Boosts"))
                         .id("sidebar-boosts")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_settings_section("Server Boost", cx);
+                            this.open_settings_section(dc_intl::tr("Server Boost"), cx);
                         })),
                 )
             })
@@ -4606,9 +4619,7 @@ impl Root {
                                     "--interactive-text-default",
                                 ) {
                                     Some(line) => this.child(line),
-                                    None => {
-                                        this.child(dc_intl::tr(status_label(&self.stores.status)))
-                                    }
+                                    None => this.child(status_label(&self.stores.status)),
                                 }
                             })
                             .when(in_voice, |this| {
@@ -4657,7 +4668,11 @@ impl Root {
                                 self.with_tip(
                                     "mic",
                                     Tip::text(
-                                        dc_intl::tr(if mic_muted { "Unmute" } else { "Mute" }),
+                                        dc_intl::tr(if mic_muted {
+                                            dc_intl::tr("Unmute")
+                                        } else {
+                                            dc_intl::tr("Mute")
+                                        }),
                                         Side::Top,
                                     ),
                                     toggle(
@@ -4809,9 +4824,10 @@ impl Root {
             .filter(|channel| channel.kind == 3)
             .cloned();
         let muted = self.channel_muted_now();
-        let search = format!(
-            "Search {}",
-            match &dm_user {
+        // Module 586944: "Search {name}" (`LDZtFO`) with the server's or the person's name.
+        let search = dc_intl::t!(
+            "LDZtFO",
+            name = match &dm_user {
                 Some(user) => user.username.as_str(),
                 None => self
                     .current_guild()
@@ -5086,7 +5102,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "dm-pins",
-                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Pinned Messages"), Side::Bottom),
                                     tool("pin"),
                                     cx,
                                 ),
@@ -5103,7 +5119,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "dm-add",
-                                    Tip::text("Add to DM", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Add to DM"), Side::Bottom),
                                     tool("dm_add"),
                                     cx,
                                 ),
@@ -5124,11 +5140,11 @@ impl Root {
                                     "dm-profile",
                                     Tip::text(
                                         if profile_disabled {
-                                            "Show User Profile (Unavailable)"
+                                            dc_intl::tr("Show User Profile (Unavailable)")
                                         } else if shown {
-                                            "Hide User Profile"
+                                            dc_intl::tr("Hide User Profile")
                                         } else {
-                                            "Show User Profile"
+                                            dc_intl::tr("Show User Profile")
                                         },
                                         Side::Bottom,
                                     ),
@@ -5180,7 +5196,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "dm-pins",
-                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Pinned Messages"), Side::Bottom),
                                     tool("pin"),
                                     cx,
                                 ),
@@ -5197,7 +5213,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "dm-add",
-                                    Tip::text("Invite to Group DM", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Invite to Group DM"), Side::Bottom),
                                     tool("dm_add"),
                                     cx,
                                 ),
@@ -5247,7 +5263,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "threads",
-                                    Tip::text("Threads", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Threads"), Side::Bottom),
                                     tool("threads")
                                         .relative()
                                         .child(self.anchor_probe("header-threads")),
@@ -5273,7 +5289,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "notifications",
-                                    Tip::text("Notification Settings", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Notification Settings"), Side::Bottom),
                                     tool(if muted { "bell_muted" } else { "bell" }),
                                     cx,
                                 ),
@@ -5292,7 +5308,7 @@ impl Root {
                             self.header_stop(
                                 self.with_tip(
                                     "pins",
-                                    Tip::text("Pinned Messages", Side::Bottom),
+                                    Tip::text(dc_intl::tr("Pinned Messages"), Side::Bottom),
                                     tool("pin"),
                                     cx,
                                 ),
@@ -6291,7 +6307,7 @@ impl Root {
                                         .font_weight(FontWeight(600.))
                                         .italic()
                                         .text_color(color("--text-muted"))
-                                        .child("Forwarded"),
+                                        .child(dc_intl::tr("Forwarded")),
                                 ),
                         )
                         .when(!copy.content.is_empty(), |this| {
@@ -7398,7 +7414,8 @@ impl Root {
                     .line_height(px(12.))
                     .text_color(color("--text-default"))
                     .flex()
-                    .child("escape to ")
+                    // `wDsPXs`: "escape to [cancel] • enter to [save]", its four runs in order.
+                    .child(edit_hint(0))
                     .child(
                         div()
                             .id("edit-cancel")
@@ -7413,9 +7430,9 @@ impl Root {
                                     });
                                 }
                             })
-                            .child("cancel"),
+                            .child(edit_hint(1)),
                     )
-                    .child(" \u{2022} enter to ")
+                    .child(edit_hint(2))
                     .child(
                         div()
                             .id("edit-save")
@@ -7425,15 +7442,17 @@ impl Root {
                                 let editor = editor.clone();
                                 move |_, _, cx| editor.update(cx, |editor, cx| editor.submit(cx))
                             })
-                            .child("save"),
+                            .child(edit_hint(3)),
                     ),
             )
     }
 
     fn composer_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // A thread's composer quotes its name: Message "name".
+        // Module 480870: "Message {channel}" (`8lzR/R`, a DM's `4c+CAx`) with the channel's name as module 47167
+        // writes it (`#name`, `@name`, `"thread"`).
         let placeholder = if self.current_thread().is_some() {
-            format!("Message \"{}\"", self.channel_title())
+            dc_intl::t!("8lzR/R", channel = format!("\"{}\"", self.channel_title()))
         } else {
             // A voice channel's chat names it without the hash.
             let prefix = if self.voice_view_open() {
@@ -7445,7 +7464,12 @@ impl Root {
             } else {
                 "@"
             };
-            format!("Message {prefix}{}", self.channel_title())
+            let channel = format!("{prefix}{}", self.channel_title());
+            if self.guild.is_none() && self.current_dm().is_some() {
+                dc_intl::t!("4c+CAx", channel = channel)
+            } else {
+                dc_intl::t!("8lzR/R", channel = channel)
+            }
         };
         self.composer
             .update(cx, |composer, _| composer.set_placeholder(placeholder));
@@ -7466,11 +7490,19 @@ impl Root {
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .text_color(color("--text-default"))
-                .child("Replying to ")
-                .child(
-                    div()
-                        .font_weight(FontWeight(600.))
-                        .child(message.author.display_name().to_owned()),
+                // Module 989161: "Replying to {userHook}" (`8E4GxS`), the hook the name in semibold.
+                .children(
+                    dc_intl::format_runs(
+                        "8E4GxS",
+                        &[("userHook", message.author.display_name().into())],
+                    )
+                    .into_iter()
+                    .map(|(text, tag)| {
+                        div()
+                            .whitespace_nowrap()
+                            .when(tag.is_some(), |this| this.font_weight(FontWeight(600.)))
+                            .child(text)
+                    }),
                 )
                 .child(div().flex_1())
                 .children((!own).then(|| {
@@ -7501,7 +7533,11 @@ impl Root {
                                         .line_height(px(16.))
                                         .child("@"),
                                 )
-                                .child(if ping { "ON" } else { "OFF" })
+                                .child(if ping {
+                                    dc_intl::t("p9jC2r")
+                                } else {
+                                    dc_intl::t("U7f3bK")
+                                })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.reply_ping = !this.reply_ping;
                                     cx.notify();
@@ -7955,15 +7991,19 @@ fn format_timestamp(unix: i64, style: char) -> String {
         return unix.to_string();
     };
     let local = time.with_timezone(&chrono::Local);
-    match style {
-        't' => settings::prefs::clock(&local),
-        'T' => settings::prefs::clock_seconds(&local),
-        'd' => local.format("%m/%d/%Y").to_string(),
-        'D' => local.format("%B %-d, %Y").to_string(),
-        'F' => local.format("%A, %B %-d, %Y %-I:%M %p").to_string(),
-        'R' => relative_time(chrono::Utc::now().timestamp() - unix),
-        _ => local.format("%B %-d, %Y %-I:%M %p").to_string(),
-    }
+    // Module 379418: each style is one long format of module 5377 `i$`.
+    let token = match style {
+        't' => "LT",
+        'T' => "LTS",
+        'd' => "L",
+        'D' => "LL",
+        'F' => "LLLL",
+        's' => "L LT",
+        'S' => "L LTS",
+        'R' => return relative_time(chrono::Utc::now().timestamp() - unix),
+        _ => "LLL",
+    };
+    timestamps::long(token, &local)
 }
 
 /// moment's relative time with its default thresholds, which is what `R` uses.
@@ -7975,7 +8015,7 @@ fn relative_time(seconds_ago: i64) -> String {
     let months = (days as f64 / 30.4).round() as i64;
     let years = (days as f64 / 365.).round() as i64;
     let span = match () {
-        () if seconds < 45 => "a few seconds".to_owned(),
+        () if seconds < 45 => dc_intl::tr("a few seconds").to_owned(),
         () if seconds < 90 => "a minute".to_owned(),
         () if minutes < 45 => format!("{minutes} minutes"),
         () if minutes < 90 => "an hour".to_owned(),
@@ -8197,14 +8237,22 @@ impl Render for Root {
                 && !self.pref_on("enable_legacy_chat_input", false),
         );
         // The formatting functions without a `Root` read the Time format from here.
-        settings::prefs::set_clock_24(
-            self.pref_index(settings::prefs::TIME_FORMAT, 0) == settings::prefs::HOUR_24,
-        );
+        settings::prefs::set_time_format(self.pref_index(settings::prefs::TIME_FORMAT, 0));
         // The name styles read the accessibility switches from here.
         name_styles::set_preferences(self.pref_on("display_name_styles", true), motion::reduced());
         name_styles::pump(cx);
         // The interface language, set before anything below formats text (`crate::intl`).
         crate::intl::apply(self.interface_locale(), cx);
+        // The rows keep their date dividers as text: a change of language rebuilds them.
+        {
+            static ROWS_GENERATION: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let generation = dc_intl::generation();
+            if ROWS_GENERATION.swap(generation, std::sync::atomic::Ordering::Relaxed) != generation
+            {
+                self.rebuild_rows();
+            }
+        }
         // The regions reuse their frame until notified: a global they read that changed without a notify of this
         // view redraws them on the next frame.
         regions::sync_look(
@@ -8245,7 +8293,7 @@ impl Render for Root {
                     .unwrap_or_default(),
             },
         };
-        self.search_field(format!("Search {place}"), cx);
+        self.search_field(dc_intl::t!("LDZtFO", name = place), cx);
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
         // The member list in a guild, the profile beside a DM.
         let members = if self.mod_view.is_some() {
@@ -9338,8 +9386,8 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
 /// Built-in sections; anything else is a hoisted role, named from the guild's roles.
 fn group_label(id: &str, roles: Option<&HashMap<Id, String>>) -> String {
     match id {
-        "online" => "Online".to_owned(),
-        "offline" => "Offline".to_owned(),
+        "online" => dc_intl::tr("Online").to_owned(),
+        "offline" => dc_intl::tr("Offline").to_owned(),
         other => other
             .parse::<Id>()
             .ok()
@@ -9351,11 +9399,11 @@ fn group_label(id: &str, roles: Option<&HashMap<Id, String>>) -> String {
 /// English labels of the status picker. The full catalog comes with `STRINGS/`.
 fn status_label(status: &str) -> &'static str {
     match status {
-        "dnd" => "Do Not Disturb",
-        "idle" => "Idle",
-        "invisible" => "Invisible",
-        "offline" => "Offline",
-        _ => "Online",
+        "dnd" => dc_intl::tr("Do Not Disturb"),
+        "idle" => dc_intl::tr("Idle"),
+        "invisible" => dc_intl::tr("Invisible"),
+        "offline" => dc_intl::tr("Offline"),
+        _ => dc_intl::tr("Online"),
     }
 }
 
@@ -9490,20 +9538,51 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
         })
 }
 
-/// `C(timestamp, true)` in the bundle's date helpers: today is the time alone, yesterday "Yesterday at" the time, and
-/// older days the short date and time without leading zeros.
+/// One run of the edit box's hint (`wDsPXs`): the text, the cancel link, the text, the save link.
+fn edit_hint(index: usize) -> String {
+    message_part("wDsPXs", &[], index)
+}
+
+/// The `index`th run of a message (text between and inside its tags, in order), for a line the client draws in
+/// pieces with links and hooks in between.
+pub(super) fn message_part(key: &str, values: &dc_intl::Args<'_>, index: usize) -> String {
+    dc_intl::format_runs(key, values)
+        .into_iter()
+        .nth(index)
+        .map(|(text, _)| text)
+        .unwrap_or_default()
+}
+
+/// A message whose `$b` parts are bold (the React builder's `<strong>`), as one styled text.
+pub(super) fn bold_message(
+    key: &str,
+    values: &dc_intl::Args<'_>,
+    weight: FontWeight,
+) -> gpui::StyledText {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (part, tag) in dc_intl::format_runs(key, values) {
+        let start = text.len();
+        text.push_str(&part);
+        if tag.as_deref() == Some("$b") {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(weight),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(highlights)
+}
+
+/// `C(timestamp, true)` in the bundle's date helpers (`timestamps::header_time`).
 fn header_time(
     local: chrono::DateTime<chrono::Local>,
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
-    let days = (local.date_naive() - now.date_naive()).num_days();
-    let time = settings::prefs::clock(&local);
-    match days {
-        0 => time.to_string(),
-        -1 => format!("Yesterday at {time}"),
-        // No leading zeros: the official header reads `11/8/2026 7:36 AM`.
-        _ => format!("{} {time}", local.format("%-m/%-d/%Y")),
-    }
+    timestamps::header_time(local, now)
 }
 
 /// The status of an 80px avatar (`svg-mask-avatar-status-round-80`): a 16px dot at (60, 60) in a 24px hole.
@@ -9543,25 +9622,6 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
 mod tests {
     use super::{block_gaps, relative_time};
     use dc_markdown::parse;
-
-    #[test]
-    fn header_times_follow_the_calendar_rule() {
-        use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 11, 8, 1, 0, 0)
-            .unwrap();
-        let at = |day, hour, minute| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
-                .unwrap()
-        };
-        assert_eq!(super::header_time(at(8, 0, 30), now), "12:30 AM");
-        assert_eq!(
-            super::header_time(at(7, 22, 26), now),
-            "Yesterday at 10:26 PM"
-        );
-        assert_eq!(super::header_time(at(5, 9, 5), now), "11/5/2026 9:05 AM");
-    }
 
     #[test]
     fn relative_time_follows_the_captured_wording() {

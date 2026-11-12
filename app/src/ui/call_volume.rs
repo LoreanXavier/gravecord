@@ -96,7 +96,7 @@ impl Root {
             if let Some(call) = &self.call {
                 call.controls
                     .hub()
-                    .set_stream_volume(if muted { 0. } else { percent / 100. });
+                    .set_stream_volume(user, if muted { 0. } else { percent / 100. });
             }
             return;
         }

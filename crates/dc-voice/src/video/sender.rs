@@ -16,8 +16,9 @@ use dc_media::EncodedFrame;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// A viewer's keyframe request is honoured at most this often.
-const KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
+/// A viewer's keyframe request is honoured at most this often (libwebrtc's `EncoderRtcpFeedback`,
+/// `kMinKeyframeSendInterval` of 300 ms).
+pub(crate) const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
 
 pub(crate) struct VideoSender {
     video_ssrc: u32,
@@ -28,12 +29,19 @@ pub(crate) struct VideoSender {
     history: History,
     rate: Rate,
     next_keyframe: Instant,
+    /// The server's `keyframe_interval` (voice op 4 or 14), in milliseconds; 0 leaves keyframes to the encoder and the
+    /// viewers' requests.
+    keyframe_every: Option<Duration>,
+    last_keyframe: Option<Instant>,
     /// Frames dropped because the previous one had not left yet, for the log.
     pub dropped: u64,
+    /// Retransmissions sent, for the log.
+    pub repairs: u64,
 }
 
 impl VideoSender {
-    pub fn new(video_ssrc: u32, rtx_ssrc: u32, bitrate: u32) -> Self {
+    /// `minimum` and `bitrate` bound the rate control: the official `encodingVideoMinBitRate` and the top rate.
+    pub fn new(video_ssrc: u32, rtx_ssrc: u32, minimum: u32, bitrate: u32) -> Self {
         let now = Instant::now();
         Self {
             video_ssrc,
@@ -42,14 +50,36 @@ impl VideoSender {
             rtx_sequence: rand::random(),
             pacer: Pacer::new(),
             history: History::default(),
-            rate: Rate::new(bitrate, now),
+            rate: Rate::new(minimum, bitrate, now),
             next_keyframe: now,
+            keyframe_every: None,
+            last_keyframe: None,
             dropped: 0,
+            repairs: 0,
+        }
+    }
+
+    /// The server's keyframe interval in milliseconds (`setKeyframeInterval` of module 31595 hands it to the native
+    /// engine as `keyframeInterval`, logged there as `keyFrameIntervalMs`). 0 switches periodic keyframes off.
+    pub fn set_keyframe_interval(&mut self, milliseconds: u64) {
+        self.keyframe_every = (milliseconds > 0).then(|| Duration::from_millis(milliseconds));
+    }
+
+    /// Whether the server's keyframe interval has passed since the last keyframe left.
+    pub fn periodic_keyframe_due(&self, now: Instant) -> bool {
+        match (self.keyframe_every, self.last_keyframe) {
+            (Some(every), Some(last)) => now.saturating_duration_since(last) >= every,
+            _ => false,
         }
     }
 
     pub fn video_ssrc(&self) -> u32 {
         self.video_ssrc
+    }
+
+    /// The rate control's current target, in bits per second.
+    pub fn bitrate(&self) -> u32 {
+        self.rate.target
     }
 
     /// Whether the next encoded frame can be taken (the previous one has left).
@@ -81,6 +111,9 @@ impl VideoSender {
             self.video_ssrc,
         )?;
         self.pacer.queue(packets, now);
+        if frame.keyframe {
+            self.last_keyframe = Some(now);
+        }
         Ok(true)
     }
 
@@ -89,21 +122,24 @@ impl VideoSender {
         (!self.pacer.is_empty() || self.history.has_pending()).then_some(self.pacer.deadline)
     }
 
-    /// Sends what the pacer allows now, and one repair if the history has one pending.
+    /// Sends the repairs the pacer allows now, ahead of media as libwebrtc's pacer orders them, then the media it allows.
     pub fn flush(
         &mut self,
         now: Instant,
         transport: &mut Transport,
         mut send: impl FnMut(&[u8]) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
-        if self.history.has_pending()
-            && self.pacer.allow_repair(now, self.rate.target)
-            && let Some(packet) = self
+        while self.history.has_pending() && self.pacer.allow_repair(now, self.rate.target) {
+            let Some(packet) = self
                 .history
                 .repair(self.rtx_ssrc, &mut self.rtx_sequence, now)
-        {
+            else {
+                break;
+            };
             // The original DAVE ciphertext is reused; the transport nonce is always fresh.
             send(&transport.seal(&packet.header, &packet.payload)?)?;
+            self.pacer.charge_repair(packet.payload.len());
+            self.repairs += 1;
         }
         let batch: Vec<Packet> = self.pacer.next_batch(now, self.rate.target).collect();
         for packet in batch {

@@ -85,12 +85,15 @@ impl Root {
         let open = self.profile_editor.as_ref().expect("editor is open");
         let (tab, nitro) = (open.tab, open.mode == Mode::Nitro);
         let tabs: &[(Tab, &'static str)] = if nitro {
-            &[(Tab::Activity, "Activity"), (Tab::Wishlist, "Wishlist")]
+            &[
+                (Tab::Activity, dc_intl::tr("Activity")),
+                (Tab::Wishlist, dc_intl::tr("Wishlist")),
+            ]
         } else {
             &[
-                (Tab::Board, "Board"),
-                (Tab::Activity, "Activity"),
-                (Tab::Wishlist, "Wishlist"),
+                (Tab::Board, dc_intl::tr("Board")),
+                (Tab::Activity, dc_intl::tr("Activity")),
+                (Tab::Wishlist, dc_intl::tr("Wishlist")),
             ]
         };
         let bar = div()
@@ -142,14 +145,14 @@ impl Root {
                         .flex_col()
                         .items_center()
                         .gap(px(8.))
-                        .child(text("Customize your profile with Widgets", 16., 20., 500., "--text-strong"))
+                        .child(text(dc_intl::tr("Customize your profile with Widgets"), 16., 20., 500., "--text-strong"))
                         .child(
                             div()
                                 .text_center()
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .text_color(color("--text-default"))
-                                .child("Choose from our library of Widgets to share more about yourself and your interests"),
+                                .child(dc_intl::tr("Choose from our library of Widgets to share more about yourself and your interests")),
                         ),
                 )
                 .child(
@@ -158,7 +161,7 @@ impl Root {
                         .flex_wrap()
                         .gap(px(16.))
                         .children(TILES.iter().enumerate().map(|(index, name)| {
-                            widget_tile(name, if index < 6 { "discover_link" } else { "plus_small" })
+                            widget_tile(dc_intl::tr(name), if index < 6 { "discover_link" } else { "plus_small" })
                         })),
                 )
                 .into_any_element(),

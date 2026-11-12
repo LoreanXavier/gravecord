@@ -93,8 +93,8 @@ pub(super) fn check(
 ) -> Result<(), UploadError> {
     if sizes.contains(&0) {
         return Err(UploadError::Plain {
-            title: "Upload Failed",
-            help: "File cannot be empty".to_owned(),
+            title: dc_intl::tr("Upload Failed"),
+            help: dc_intl::tr("File cannot be empty").to_owned(),
         });
     }
     let limit = limit(premium, guild_features);
@@ -103,7 +103,7 @@ pub(super) fn check(
             // Only Nitro itself sees the plain dialog (`showPremiumUpsell` is off for it); everyone else gets the
             // upsell below.
             return Err(UploadError::Plain {
-                title: "Your files are too powerful",
+                title: dc_intl::tr("Your files are too powerful"),
                 help: format!("Max file size is {}, please.", file_size(limit)),
             });
         }
@@ -111,7 +111,7 @@ pub(super) fn check(
     }
     if sizes.iter().sum::<u64>() > MESSAGE_LIMIT {
         return Err(UploadError::Plain {
-            title: "Your files are too powerful",
+            title: dc_intl::tr("Your files are too powerful"),
             help: format!(
                 "Total message size must be less than {}",
                 file_size(MESSAGE_LIMIT)
@@ -120,7 +120,7 @@ pub(super) fn check(
     }
     if existing + sizes.len() > MAX_FILES {
         return Err(UploadError::Plain {
-            title: "Too many uploads!",
+            title: dc_intl::tr("Too many uploads!"),
             help: format!("You can only upload {MAX_FILES} files at a time!"),
         });
     }
@@ -186,7 +186,7 @@ impl Root {
                     body: None,
                     buttons: vec![modal::button(
                         "upload-error-ok",
-                        "Got It",
+                        dc_intl::tr("Got It"),
                         Tone::Primary,
                         |this, _, _| this.upload_error = None,
                     )],
@@ -213,7 +213,7 @@ impl Root {
         let perks = modal::footer_button(
             modal::button(
                 "upload-upsell-perks",
-                "View All Nitro Perks",
+                dc_intl::tr("View All Nitro Perks"),
                 Tone::Secondary,
                 |this, _, cx| {
                     this.upload_error = None;
@@ -241,7 +241,7 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(rgba(0x000000ff))
             .child(icon("nitro_wheel", 20., "--black"))
-            .child("Get Nitro")
+            .child(dc_intl::tr("Get Nitro"))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.upload_error = None;
                 this.open_purchase(false, cx);
@@ -311,7 +311,7 @@ impl Root {
                                     .line_height(px(32.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Uh oh, this file exceeds the size limit."),
+                                    .child(dc_intl::tr("Uh oh, this file exceeds the size limit.")),
                             )
                             .child(
                                 div()

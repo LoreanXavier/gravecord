@@ -224,14 +224,20 @@ impl Root {
             .as_ref()
             .is_some_and(|me| me.id == message.author.id);
         let (label, detail) = if own {
-            ("You sent an invite, but", "Try sending a new invite")
+            (
+                dc_intl::tr("You sent an invite, but"),
+                dc_intl::tr("Try sending a new invite"),
+            )
         } else if banned {
             (
-                "You've been invited, but",
-                "Uh-oh. Looks like you've been banned.",
+                dc_intl::tr("You've been invited, but"),
+                dc_intl::tr("Uh-oh. Looks like you've been banned."),
             )
         } else {
-            ("You've been invited, but", "Ask for a new invite")
+            (
+                dc_intl::tr("You've been invited, but"),
+                dc_intl::tr("Ask for a new invite"),
+            )
         };
         // 679636 dD and 529200, measured in channel/dm-invalid-invite-darker-cozy.
         let info = div()
@@ -249,7 +255,7 @@ impl Root {
                     .text_color(color("--text-feedback-critical"))
                     .truncate()
                     .mb(px(4.))
-                    .child("Invalid Invite"),
+                    .child(dc_intl::tr("Invalid Invite")),
             )
             .child(
                 div()
@@ -412,11 +418,11 @@ impl Root {
             .gap(px(8.))
             .child(stat(
                 "--icon-status-online",
-                count(online, "Online", "Online"),
+                count(online, dc_intl::tr("Online"), dc_intl::tr("Online")),
             ))
             .child(stat(
                 "--icon-status-offline",
-                count(members, "Member", "Members"),
+                count(members, dc_intl::tr("Member"), dc_intl::tr("Members")),
             ))
             .into_any_element();
         let header: AnyElement = div()
@@ -459,7 +465,11 @@ impl Root {
             .line_height(px(18.))
             .font_weight(FontWeight(500.))
             .text_color(color("--white"))
-            .child(if joined { "Go to Server" } else { "Join" })
+            .child(if joined {
+                dc_intl::tr("Go to Server")
+            } else {
+                dc_intl::tr("Join")
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 if joined {
                     this.select(id, None);
@@ -648,12 +658,19 @@ impl Root {
                                 .flex()
                                 .gap(px(8.))
                                 .children(online.map(|online| {
-                                    stat("--icon-status-online", count(online, "Online", "Online"))
+                                    stat(
+                                        "--icon-status-online",
+                                        count(online, dc_intl::tr("Online"), dc_intl::tr("Online")),
+                                    )
                                 }))
                                 .children(members.map(|members| {
                                     stat(
                                         "--icon-status-offline",
-                                        count(members, "Member", "Members"),
+                                        count(
+                                            members,
+                                            dc_intl::tr("Member"),
+                                            dc_intl::tr("Members"),
+                                        ),
                                     )
                                 })),
                         )

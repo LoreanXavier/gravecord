@@ -143,43 +143,43 @@ pub(super) fn error_message(code: Option<i64>, nitro: bool) -> String {
     match code {
         // `wa9h7F`
         Some(INVALID_GIFT_SELF_REDEMPTION) => {
-            "You can't accept this gift. You need to give this gift to someone else.".to_owned()
+            dc_intl::tr("You can't accept this gift. You need to give this gift to someone else.").to_owned()
         }
         // `Iw2TUW`
         Some(INVALID_GIFT_REDEMPTION_EXHAUSTED) => {
-            "You couldn't claim this gift because someone else beat you to the punch. That's jazz baby!".to_owned()
+            dc_intl::tr("You couldn't claim this gift because someone else beat you to the punch. That's jazz baby!").to_owned()
         }
         // `mdLtb5`
         Some(INVALID_GIFT_REDEMPTION_OWNED) => {
-            "You couldn't claim this gift because you already have it.".to_owned()
+            dc_intl::tr("You couldn't claim this gift because you already have it.").to_owned()
         }
         // `roztIr`
         Some(UNKNOWN_GIFT_CODE) => {
-            "Bummer! You couldn't claim this gift because it has been revoked.".to_owned()
+            dc_intl::tr("Bummer! You couldn't claim this gift because it has been revoked.").to_owned()
         }
         // `4YTHKw` with `lG6a5x` or `FSOz78`
         Some(INVALID_GIFT_REDEMPTION_SUBSCRIPTION_INCOMPATIBLE) => format!(
             "Oops! You're unable to accept this gift because you're already subscribed to {}.",
-            if nitro { "Nitro" } else { "Nitro Classic" }
+            if nitro { dc_intl::tr("Nitro") } else { dc_intl::tr("Nitro Classic") }
         ),
         // `9i1J30`
         Some(INVALID_GIFT_REDEMPTION_SUBSCRIPTION_MANAGED) => {
-            "Unfortunately, since you have an active subscription through an external provider, you cannot accept Nitro gifts.".to_owned()
+            dc_intl::tr("Unfortunately, since you have an active subscription through an external provider, you cannot accept Nitro gifts.").to_owned()
         }
         // `U26WX+`
         Some(INVALID_GIFT_REDEMPTION_INVOICE_OPEN) => {
-            "Unfortunately, you're unable to accept this gift because your subscription has an open invoice.".to_owned()
+            dc_intl::tr("Unfortunately, you're unable to accept this gift because your subscription has an open invoice.").to_owned()
         }
         // `ypuSd8`
         Some(INVALID_GIFT_REDEMPTION_FRAUD_REJECTED) => {
-            "Sorry, seems like something's gone wrong and you can't use that code.".to_owned()
+            dc_intl::tr("Sorry, seems like something's gone wrong and you can't use that code.").to_owned()
         }
         // `mXMmWE`
         Some(BILLING_NON_REFUNDABLE_PAYMENT_SOURCE) => {
-            "Sorry, this payment source cannot be used for redemption".to_owned()
+            dc_intl::tr("Sorry, this payment source cannot be used for redemption").to_owned()
         }
         // `s9+XlB`
-        _ => "Something funky happened and we failed to secure the bag...try again?".to_owned(),
+        _ => dc_intl::tr("Something funky happened and we failed to secure the bag...try again?").to_owned(),
     }
 }
 
@@ -336,23 +336,23 @@ fn interval_phrase(plan: Plan) -> String {
 /// `UJ`: the dialog's one button.
 pub(super) fn button_text(step: Step, gift: &Gift, custom: bool) -> &'static str {
     match step {
-        Step::Error => "Oh ok.",
-        Step::Success if gift.is_subscription() => "Sweet!",
-        Step::Success => "Go to my Library",
-        Step::Open => "Open gift",
+        Step::Error => dc_intl::tr("Oh ok."),
+        Step::Success if gift.is_subscription() => dc_intl::tr("Sweet!"),
+        Step::Success => dc_intl::tr("Go to my Library"),
+        Step::Open => dc_intl::tr("Open gift"),
         Step::Confirm => {
             if custom {
-                "Woo! Accept Gift"
+                dc_intl::tr("Woo! Accept Gift")
             } else if gift.gift_style.is_some() {
                 if gift.is_claimed() {
-                    "Heck Yeah! Add to Library"
+                    dc_intl::tr("Heck Yeah! Add to Library")
                 } else {
-                    "Gimme"
+                    dc_intl::tr("Gimme")
                 }
             } else if gift.is_subscription() {
-                "I accept"
+                dc_intl::tr("I accept")
             } else {
-                "Heck Yeah! Add to Library"
+                dc_intl::tr("Heck Yeah! Add to Library")
             }
         }
     }
@@ -386,9 +386,9 @@ pub(super) fn header_text(modal: &Modal, step: Step, me: &str) -> String {
     match step {
         Step::Error => "Sad Trombone".to_owned(),
         Step::Success if gift.is_subscription() => format!("You got {}!", gift.sku_name),
-        Step::Success => "Noice!".to_owned(),
+        Step::Success => dc_intl::tr("Noice!").to_owned(),
         _ if gift.is_subscription() => format!("You've been gifted {}", gift.sku_name),
-        _ => "Accept this gift?".to_owned(),
+        _ => dc_intl::tr("Accept this gift?").to_owned(),
     }
 }
 
@@ -409,7 +409,7 @@ pub(super) fn body_text(modal: &Modal, step: Step, nitro: bool) -> Option<String
                 "Thanks to another generous human, you now have access to enhanced chat perks for {}.",
                 interval_phrase(plan)
             ),
-            (Some(_), _) => "Go forth and enjoy your gift!".to_owned(),
+            (Some(_), _) => dc_intl::tr("Go forth and enjoy your gift!").to_owned(),
             (None, _) => format!(
                 "{} is now available in your library. Go forth and play!",
                 gift.sku_name
@@ -680,7 +680,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Received a code for Nitro or a game?"),
+                    .child(dc_intl::tr("Received a code for Nitro or a game?")),
             )
             .child(
                 div()
@@ -690,7 +690,7 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(color("--text-muted"))
-                    .child("That\u{2019}s exciting! Enter it below."),
+                    .child(dc_intl::tr("That\u{2019}s exciting! Enter it below.")),
             )
             .child(field)
             .child(
@@ -717,7 +717,7 @@ impl Root {
                     .when(gift.submitting, |this| {
                         this.child(crate::ui::components::dots("gift-redeem", "--white"))
                     })
-                    .when(!gift.submitting, |this| this.child("Redeem"))
+                    .when(!gift.submitting, |this| this.child(dc_intl::tr("Redeem")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.settings_extra.gift.submitting {
                             return;
@@ -741,7 +741,7 @@ impl Root {
                             .line_height(px(16.))
                             .text_color(color("--text-feedback-critical"))
                             // `Y11a2u`
-                            .child("Invalid code entered"),
+                            .child(dc_intl::tr("Invalid code entered")),
                     ),
             );
         }

@@ -189,15 +189,19 @@ impl Root {
                 .bg(color("--border-subtle"))
         };
         let mut rows: Vec<AnyElement> = vec![
-            row("folder-menu-read", "Mark Folder As Read", !unread)
-                .when(unread, |this| {
-                    this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.mark_folder_read(folder, cx);
-                        this.rail_folders.menu = None;
-                        cx.notify();
-                    }))
-                })
-                .into_any_element(),
+            row(
+                "folder-menu-read",
+                dc_intl::tr("Mark Folder As Read"),
+                !unread,
+            )
+            .when(unread, |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.mark_folder_read(folder, cx);
+                    this.rail_folders.menu = None;
+                    cx.notify();
+                }))
+            })
+            .into_any_element(),
             separator().into_any_element(),
         ];
         if let Some((first_disabled, last_disabled)) = placements {
@@ -213,7 +217,7 @@ impl Root {
                 })
             };
             rows.push(
-                row("folder-menu-move", "Move to...", false)
+                row("folder-menu-move", dc_intl::tr("Move to..."), false)
                     .relative()
                     .justify_between()
                     .on_hover(cx.listener(|this, inside: &bool, _, cx| {
@@ -239,13 +243,13 @@ impl Root {
                                 .flex_col()
                                 .child(sub_row(
                                     "folder-menu-first",
-                                    "First in List",
+                                    dc_intl::tr("First in List"),
                                     first_disabled,
                                     dc_state::folders::Placement::First,
                                 ))
                                 .child(sub_row(
                                     "folder-menu-last",
-                                    "Last in List",
+                                    dc_intl::tr("Last in List"),
                                     last_disabled,
                                     dc_state::folders::Placement::Last,
                                 )),
@@ -256,21 +260,29 @@ impl Root {
             rows.push(separator().into_any_element());
         }
         rows.push(
-            row("folder-menu-settings", "Folder Settings", false)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.rail_folders.menu = None;
-                    this.open_folder_settings(folder, window, cx);
-                }))
-                .into_any_element(),
+            row(
+                "folder-menu-settings",
+                dc_intl::tr("Folder Settings"),
+                false,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.rail_folders.menu = None;
+                this.open_folder_settings(folder, window, cx);
+            }))
+            .into_any_element(),
         );
         if any_open {
             rows.push(
-                row("folder-menu-collapse", "Close All Folders", false)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.rail_folders.menu = None;
-                        this.collapse_all_folders(cx);
-                    }))
-                    .into_any_element(),
+                row(
+                    "folder-menu-collapse",
+                    dc_intl::tr("Close All Folders"),
+                    false,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.rail_folders.menu = None;
+                    this.collapse_all_folders(cx);
+                }))
+                .into_any_element(),
             );
         }
         let frame = div()
@@ -321,7 +333,7 @@ impl Root {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_single_line(true);
             editor.set_max_utf16(NAME_MAX);
-            editor.set_placeholder("Server Folder".to_owned());
+            editor.set_placeholder_message("Server Folder");
             editor.set_text(current.name.as_deref().unwrap_or(""));
             editor
         });
@@ -572,24 +584,24 @@ impl Root {
             .gap(px(16.))
             .child(
                 div()
-                    .child(text_line("Folder Name", 500., "--text-strong").mb(px(8.)))
+                    .child(text_line(dc_intl::tr("Folder Name"), 500., "--text-strong").mb(px(8.)))
                     .child(field),
             )
             .child(
                 div()
                     .h(px(140.))
-                    .child(text_line("Folder Color", 500., "--text-strong").mb(px(8.)))
+                    .child(text_line(dc_intl::tr("Folder Color"), 500., "--text-strong").mb(px(8.)))
                     .child(control),
             )
             .into_any_element();
         let spec = modal::Spec {
             id: "folder-settings",
-            title: "Folder Settings".into(),
+            title: dc_intl::tr("Folder Settings").into(),
             subtitle: None,
             body: Some(body),
             buttons: vec![modal::button(
                 "folder-settings-done",
-                "Done",
+                dc_intl::tr("Done"),
                 modal::Tone::Primary,
                 |this, _, cx| this.finish_folder_settings(cx),
             )],

@@ -275,7 +275,7 @@ impl Root {
                 super::mask_icon("sb_play", 16., "--control-primary-text-default")
                     .into_any_element()
             })
-            .child("Preview")
+            .child(dc_intl::tr("Preview"))
             .into_any_element()
     }
 

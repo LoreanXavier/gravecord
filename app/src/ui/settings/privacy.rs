@@ -351,7 +351,7 @@ impl Root {
 
     /// The options of the server selector: "All servers", then the servers in the rail's order.
     pub(super) fn guild_selector(&self) -> (Vec<SharedString>, usize) {
-        let mut options: Vec<SharedString> = vec!["All servers".into()];
+        let mut options: Vec<SharedString> = vec![dc_intl::tr("All servers").into()];
         options.extend(
             self.stores
                 .guilds
@@ -426,7 +426,7 @@ impl Root {
         let editor = cx.new(|cx| {
             let mut editor = crate::editor::Editor::new(crate::ui::editor_style(), cx);
             editor.set_single_line(true);
-            editor.set_placeholder("Search my servers".to_owned());
+            editor.set_placeholder_message("Search my servers");
             editor
         });
         self.settings_extra.guild_search_sub = Some(
@@ -460,7 +460,7 @@ impl Root {
         let sort_label = SORTS
             .iter()
             .find(|(known, _)| *known == sort)
-            .map_or("", |(_, label)| *label);
+            .map_or("", |(_, label)| dc_intl::tr(label));
         let open = self.setting_choices.get(ACTIVITY_SORT_OPEN) == Some(&super::Choice::On(true));
         let query = self.guild_query(cx);
         let rows: Vec<AnyElement> = order
@@ -561,7 +561,7 @@ impl Root {
                         .hover(|style| style.bg(crate::ui::color("--background-mod-normal")))
                         .text_size(px(14.))
                         .text_color(crate::ui::color("--text-default"))
-                        .child(*label)
+                        .child(dc_intl::tr(label))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.settings_extra.activity_sort = which;
                             this.setting_choices
@@ -641,9 +641,9 @@ impl Root {
                             .font_weight(FontWeight(500.))
                             .text_color(crate::ui::color("--text-link"))
                             .child(if any_restricted {
-                                "Toggle All On"
+                                dc_intl::tr("Toggle All On")
                             } else {
-                                "Toggle All Off"
+                                dc_intl::tr("Toggle All Off")
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.activity_toggle_all();

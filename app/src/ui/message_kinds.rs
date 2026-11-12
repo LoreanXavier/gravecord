@@ -101,9 +101,9 @@ impl Root {
     /// or "Original message was deleted" when the server said the message is gone.
     pub(super) fn starter_missing_line(&self, starter: &Message) -> AnyElement {
         let text = if starter.extra.reference_deleted {
-            "Original message was deleted"
+            dc_intl::tr("Original message was deleted")
         } else {
-            "Sorry, we couldn't load the first message in this thread"
+            dc_intl::tr("Sorry, we couldn't load the first message in this thread")
         };
         div()
             .relative()
@@ -283,7 +283,7 @@ impl Root {
                     .text_color(color("--text-link"))
                     .cursor_pointer()
                     .hover(|style| style.underline())
-                    .child("Edit Group")
+                    .child(dc_intl::tr("Edit Group"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_group_edit(channel, window, cx);
                     }))

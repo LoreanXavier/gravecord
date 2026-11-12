@@ -223,6 +223,23 @@ pub(in crate::ui) fn set_clock_24(on: bool) {
     CLOCK_24.store(on, Ordering::Relaxed);
 }
 
+/// Time format's option (Auto 0, 12-hour 1, 24-hour 2), set each frame with [`set_clock_24`].
+static TIME_FORMAT_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(in crate::ui) fn set_time_format(index: usize) {
+    TIME_FORMAT_INDEX.store(index, Ordering::Relaxed);
+    set_clock_24(index == HOUR_24);
+}
+
+/// The `hourCycle` the date formatters take (module 5377 `I`): none for Auto, `h12` (false) or `h23` (true).
+pub(in crate::ui) fn hour_cycle() -> Option<bool> {
+    match TIME_FORMAT_INDEX.load(Ordering::Relaxed) {
+        1 => Some(false),
+        HOUR_24 => Some(true),
+        _ => None,
+    }
+}
+
 /// A time of day as the chosen Time format writes it: `1:05 PM`, or `13:05` in 24-hour.
 pub(in crate::ui) fn clock<Tz: chrono::TimeZone>(time: &chrono::DateTime<Tz>) -> String
 where

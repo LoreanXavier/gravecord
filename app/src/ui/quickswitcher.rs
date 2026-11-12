@@ -21,6 +21,32 @@ const MAX_RESULTS: usize = 15;
 
 // The prefix/substring tiers of 787578. Equal scores keep username, friend nickname, global name order.
 // Fuzzy/normalized matches and guild nicknames still need the full search index.
+/// The protip's text around its symbols (`BGHbLb`): `0` before the first symbol, `1` after the last one, before
+/// "Learn more".
+fn protip_part(which: usize) -> String {
+    let hooks = [
+        "userSymbolHook",
+        "textChannelSymbolHook",
+        "voiceChannelSymbolHook",
+        "guildSymbolHook",
+        "gameProfileSymbolHook",
+    ];
+    let values: Vec<(&str, dc_intl::Arg)> = hooks.iter().map(|hook| (*hook, "@".into())).collect();
+    let runs = dc_intl::format_runs("BGHbLb", &values);
+    let plain: Vec<&str> = runs
+        .iter()
+        .filter(|(_, tag)| tag.is_none())
+        .map(|(text, _)| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    let part = if which == 0 {
+        plain.first()
+    } else {
+        plain.last()
+    };
+    part.copied().unwrap_or_default().to_owned()
+}
+
 fn matched_user_name<'a>(
     user: &'a User,
     nickname: Option<&'a str>,
@@ -146,7 +172,7 @@ impl Root {
             };
             let mut editor = Editor::new(style, cx);
             editor.set_single_line(true);
-            editor.set_placeholder("Where would you like to go?".to_owned());
+            editor.set_placeholder_message("Where would you like to go?");
             editor
         });
         let events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
@@ -657,9 +683,9 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(color("--white"))
             .child(if !has_query_results {
-                "Search for servers, channels or DMs"
+                dc_intl::tr("Search for servers, channels or DMs")
             } else {
-                "Select a result and press ENTER to jump to it"
+                dc_intl::tr("Select a result and press ENTER to jump to it")
             });
         // The switcher is a modal: the scrim and the box run the modal's enter (modules 462824 and 150591). The
         // tutorial (`tutorial_12gY2-`, module 910839) is rendered inside the modal root, so its arrows and caption
@@ -731,7 +757,7 @@ impl Root {
                                         .line_height(px(30.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(color("--interactive-text-default"))
-                                        .child("Previous Channels"),
+                                        .child(dc_intl::tr("Previous Channels")),
                                 )
                             })
                             .children(rows),
@@ -750,15 +776,15 @@ impl Root {
                                 div()
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-feedback-positive"))
-                                    .child("Protip:"),
+                                    .child(dc_intl::tr("Protip:")),
                             )
-                            .child(div().ml(px(3.)).child("Start searches with"))
+                            .child(div().ml(px(3.)).child(protip_part(0)))
                             .child(symbol("@"))
                             .child(symbol("#"))
                             .child(symbol("!"))
                             .child(symbol("*"))
                             .child(symbol("$"))
-                            .child(div().ml(px(2.)).child("to narrow results."))
+                            .child(div().ml(px(2.)).child(protip_part(1)))
                             .child(
                                 div()
                                     .id("switcher-learn-more")
@@ -768,7 +794,7 @@ impl Root {
                                     .on_click(|_, _, cx| {
                                         cx.open_url("https://support.discord.com/hc/en-us/articles/115000070311")
                                     })
-                                    .child("Learn more"),
+                                    .child(dc_intl::tr("Learn more")),
                             ),
                     ),
             );

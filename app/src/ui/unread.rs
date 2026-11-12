@@ -147,7 +147,7 @@ impl Root {
                                     .line_height(px(13.))
                                     .font_weight(FontWeight(700.))
                                     .text_color(color("--white"))
-                                    .child("NEW"),
+                                    .child(dc_intl::tr("NEW")),
                             ),
                     ),
             )
@@ -179,12 +179,15 @@ impl Root {
         let summary = unread_summary(&ids, acked)?;
         let first = list.iter().find(|message| message.id == summary.first)?;
         let local = first.local_time();
-        let same_day = local.date_naive() == chrono::Local::now().date_naive();
+        // Module 5377 `ro`: at most a day apart and the same day of the month.
+        let now = chrono::Local::now();
+        let same_day = (now - local).num_milliseconds().abs() <= 86_400_000
+            && chrono::Datelike::day(&now) == chrono::Datelike::day(&local);
         let label = bar_text(
             summary.count,
             summary.estimated,
-            &super::settings::prefs::clock(&local).to_string(),
-            (!same_day).then(|| local.format("%B %-d, %Y").to_string()),
+            &super::timestamps::long("LT", &local),
+            (!same_day).then(|| super::timestamps::long_date(local)),
         );
         let first_id = summary.first;
         Some(
@@ -239,7 +242,7 @@ impl Root {
                         .font_weight(FontWeight(600.))
                         .text_color(color("--white"))
                         .on_click(cx.listener(|this, _, _, cx| this.mark_current_read(cx)))
-                        .child("Mark As Read")
+                        .child(dc_intl::tr("Mark As Read"))
                         .child(
                             svg()
                                 .path("icons/mark_as_read.svg")
@@ -294,8 +297,14 @@ impl Root {
         // A jump from a reply keeps the message the reply was on: the bar offers it (`ks.REPLY`, module 383055).
         let reply = state.jump_return_target_id;
         let (label, button) = match reply {
-            Some(_) => ("You Are Viewing a Reply.", "Jump To Original Message"),
-            None => ("You're Viewing Older Messages", "Jump To Present"),
+            Some(_) => (
+                dc_intl::tr("You Are Viewing a Reply."),
+                dc_intl::tr("Jump To Original Message"),
+            ),
+            None => (
+                dc_intl::tr("You're Viewing Older Messages"),
+                dc_intl::tr("Jump To Present"),
+            ),
         };
         Some(
             div()
@@ -391,17 +400,31 @@ pub(super) fn unread_summary(ids: &[Id], acked: Id) -> Option<UnreadSummary> {
 /// first unread message is from another day), and their estimated forms `wvtbbG` and `tHqbtg` (`{count}+ new
 /// messages since ...`). The newline the strings hold collapses to a space in the nowrap bar.
 pub(super) fn bar_text(count: usize, estimated: bool, time: &str, date: Option<String>) -> String {
-    let head = if estimated {
-        format!("{count}+ new messages since {time}")
-    } else if count == 1 {
-        format!("{count} new message since {time}")
-    } else {
-        format!("{count} new messages since {time}")
+    // Module 891522: `BctFH/` or `3wXb9P` (with the date), `wvtbbG` or `tHqbtg` when the count is estimated. The
+    // line break before "on" is collapsed white space in the bar.
+    let when = |date: &str| dc_intl::Arg::When {
+        date: date.to_owned().into(),
+        time: time.to_owned().into(),
     };
-    match date {
-        Some(date) => format!("{head} on {date}"),
-        None => head,
-    }
+    let text = match (estimated, &date) {
+        (true, None) => dc_intl::format(
+            "wvtbbG",
+            &[("count", count.into()), ("timestamp", when(""))],
+        ),
+        (true, Some(date)) => dc_intl::format(
+            "tHqbtg",
+            &[("count", count.into()), ("timestamp", when(date))],
+        ),
+        (false, None) => dc_intl::format(
+            "BctFH/",
+            &[("count", count.into()), ("timestamp", when(""))],
+        ),
+        (false, Some(date)) => dc_intl::format(
+            "3wXb9P",
+            &[("count", count.into()), ("timestamp", when(date))],
+        ),
+    };
+    text.replace('\n', " ")
 }
 
 #[cfg(test)]

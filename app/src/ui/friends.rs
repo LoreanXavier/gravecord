@@ -129,12 +129,12 @@ impl Root {
         if tab == FriendsTab::Add && self.add_friend.is_none() {
             let name = cx.new(|cx| {
                 let mut editor = Editor::new(editor_style(), cx);
-                editor.set_placeholder("Enter a username".to_owned());
+                editor.set_placeholder_message("Enter a username");
                 editor
             });
             let note = cx.new(|cx| {
                 let mut editor = Editor::new(editor_style(), cx);
-                editor.set_placeholder("Personalize your request (Optional)".to_owned());
+                editor.set_placeholder_message("Personalize your request (Optional)");
                 editor
             });
             // Enter submits the form; the editor empties itself on Enter, so the text goes back first.
@@ -181,7 +181,7 @@ impl Root {
         }
         let field = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
-            editor.set_placeholder("Search".to_owned());
+            editor.set_placeholder_message("Search");
             editor
         });
         let events = cx.subscribe(&field, |this, editor, event: &EditorEvent, cx| {
@@ -409,7 +409,7 @@ impl Root {
                     .filter(|user| matches(user))
                     .map(|user| (user.clone(), RELATIONSHIP_FRIEND))
                     .collect();
-                (format!("Online \u{2014} {}", list.len()), list)
+                (dc_intl::t!("BagU2U", online = list.len().to_string()), list)
             }
             FriendsTab::All => {
                 let list: Vec<(User, u64)> = self
@@ -419,7 +419,7 @@ impl Root {
                     .filter(|user| matches(user))
                     .map(|user| (user.clone(), RELATIONSHIP_FRIEND))
                     .collect();
-                (format!("All friends \u{2014} {}", list.len()), list)
+                (dc_intl::t!("rHRrhC", count = list.len().to_string()), list)
             }
             FriendsTab::Pending => {
                 let mut list: Vec<(User, u64)> = self
@@ -433,7 +433,7 @@ impl Root {
                     .filter(|(user, _)| matches(user))
                     .collect();
                 list.sort_by_key(|(user, _)| user.display_name().to_lowercase());
-                (format!("Pending \u{2014} {}", list.len()), list)
+                (dc_intl::t!("XIpar2", count = list.len().to_string()), list)
             }
         }
     }
@@ -490,8 +490,8 @@ impl Root {
                 )
         };
         let subtitle = match kind {
-            RELATIONSHIP_INCOMING => "Incoming Friend Request".to_owned(),
-            RELATIONSHIP_OUTGOING => "Outgoing Friend Request".to_owned(),
+            RELATIONSHIP_INCOMING => dc_intl::tr("Incoming Friend Request").to_owned(),
+            RELATIONSHIP_OUTGOING => dc_intl::tr("Outgoing Friend Request").to_owned(),
             _ => status_label(&status).to_owned(),
         };
         let actions: Vec<AnyElement> = match kind {
@@ -744,7 +744,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Friends"),
+                    .child(dc_intl::tr("Friends")),
             )
             .child(
                 div()
@@ -755,13 +755,21 @@ impl Root {
             )
             .child(div().flex_none().w(px(4.)))
             .when(self.stores.has_online_friends(), |header| {
-                header.child(tab("friends-online", "Online", FriendsTab::Online))
+                header.child(tab(
+                    "friends-online",
+                    dc_intl::tr("Online"),
+                    FriendsTab::Online,
+                ))
             })
             .when(self.stores.has_friends(), |header| {
-                header.child(tab("friends-all", "All", FriendsTab::All))
+                header.child(tab("friends-all", dc_intl::tr("All"), FriendsTab::All))
             })
             .when(self.has_pending(), |this| {
-                this.child(tab("friends-pending", "Pending", FriendsTab::Pending))
+                this.child(tab(
+                    "friends-pending",
+                    dc_intl::tr("Pending"),
+                    FriendsTab::Pending,
+                ))
             })
             .child(
                 // `addFriend_zrUwGA`: brand fill, or while open a 16% brand tint with brand text.
@@ -794,7 +802,7 @@ impl Root {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.set_friends_tab(FriendsTab::Add, window, cx)
                     }))
-                    .child("Add Friend"),
+                    .child(dc_intl::tr("Add Friend")),
             )
             .child(div().flex_1())
             // `toolbar_ybUK7Z` (8px in) holding `inviteToolbar_zrUwGA` (8px out): New Group DM, a 32px button.
@@ -835,16 +843,21 @@ impl Root {
         let helper: AnyElement = match &form.result {
             // `Rtl1Ep`: "Success! Your friend request to **{discordTag}** was sent."
             Some(Ok(username)) => line("--text-feedback-positive")
-                .flex()
-                .child("Success! Your friend request to\u{a0}")
-                .child(div().font_weight(FontWeight(600.)).child(username.clone()))
-                .child("\u{a0}was sent.")
+                .child(super::bold_message(
+                    "Rtl1Ep",
+                    &[("discordTag", username.into())],
+                    FontWeight(600.),
+                ))
                 .into_any_element(),
             Some(Err(())) => line("--text-feedback-critical")
-                .child("Hm, didn\u{2019}t work. Double check that the username is correct.")
+                .child(dc_intl::tr(
+                    "Hm, didn\u{2019}t work. Double check that the username is correct.",
+                ))
                 .into_any_element(),
             None => line("--text-subtle")
-                .child("What you write here will also show up in your DM if you become friends.")
+                .child(dc_intl::tr(
+                    "What you write here will also show up in your DM if you become friends.",
+                ))
                 .into_any_element(),
         };
         let heading = |text: &'static str| {
@@ -887,7 +900,7 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(color("--white"))
             .on_click(cx.listener(|this, _, _, cx| this.send_friend_request(cx)))
-            .child("Send Friend Request");
+            .child(dc_intl::tr("Send Friend Request"));
         let wrapper = div()
             .parity_with_border("add-friend-wrapper", 1.)
             .mt(px(16.))
@@ -952,12 +965,12 @@ impl Root {
                     .px(px(30.))
                     .border_b_1()
                     .border_color(color("--border-subtle"))
-                    .child(heading("Add Friend"))
+                    .child(heading(dc_intl::tr("Add Friend")))
                     .child(
                         div()
                             .mt(px(8.))
                             .relative()
-                            .child(body_text("You can add friends with their Discord username."))
+                            .child(body_text(dc_intl::tr("You can add friends with their Discord username.")))
                             .child(wrapper)
                             .child(helper)
                             // "Wumpus Waving", 84x72, 385px in and 36px above the subtitle.
@@ -978,9 +991,9 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(heading("Other Places to Make Friends"))
+                    .child(heading(dc_intl::tr("Other Places to Make Friends")))
                     .child(body_text(
-                        "Don't have a username on hand? Check out our list of public servers that includes everything from gaming to cooking, music, anime and more.",
+                        dc_intl::tr("Don't have a username on hand? Check out our list of public servers that includes everything from gaming to cooking, music, anime and more."),
                     )),
             )
             .child(
@@ -1023,7 +1036,7 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-default"))
-                                .child("Explore Discoverable Servers"),
+                                .child(dc_intl::tr("Explore Discoverable Servers")),
                         )
                         .child(
                             div()
@@ -1052,12 +1065,12 @@ impl Root {
         // 596339 returns the empty state before the search/list when the unfiltered section is empty.
         if people.is_empty() && !searching {
             let note = match self.friends_tab {
-                FriendsTab::Online => {
-                    Some("There are no friends online at this time. Check back later!")
-                }
-                FriendsTab::Pending => Some(
+                FriendsTab::Online => Some(dc_intl::tr(
+                    "There are no friends online at this time. Check back later!",
+                )),
+                FriendsTab::Pending => Some(dc_intl::tr(
                     "There are no pending friend requests. Click “Add Friend” to send friend requests.",
-                ),
+                )),
                 _ => None,
             };
             if let Some(note) = note {
@@ -1145,7 +1158,9 @@ impl Root {
                 // Search margin-bottom 8 plus the empty people scroller's bottom padding 8.
                 column
                     .child(div().flex_none().h(px(16.)))
-                    .child(friends_empty("No one with that name could be found."))
+                    .child(friends_empty(dc_intl::tr(
+                        "No one with that name could be found.",
+                    )))
             })
             .when(!no_results, |column| {
                 column
@@ -1236,25 +1251,30 @@ impl Root {
                                     cx.stop_propagation();
                                 }
                             }))
-                            .child(row("friend-video", "Start Video Call", false).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.friend_menu = None;
-                                    this.start_dm_call_with(user, true, cx);
-                                }),
-                            ))
-                            .child(row("friend-voice", "Start Voice Call", false).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.friend_menu = None;
-                                    this.start_dm_call_with(user, false, cx);
-                                }),
-                            ))
-                            .child(row("friend-remove", "Remove Friend", true).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.friend_menu = None;
-                                    this.confirm_remove_friend = Some(RemoveFriend::Friends(user));
-                                    cx.notify();
-                                }),
-                            )),
+                            .child(
+                                row("friend-video", dc_intl::tr("Start Video Call"), false)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.friend_menu = None;
+                                        this.start_dm_call_with(user, true, cx);
+                                    })),
+                            )
+                            .child(
+                                row("friend-voice", dc_intl::tr("Start Voice Call"), false)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.friend_menu = None;
+                                        this.start_dm_call_with(user, false, cx);
+                                    })),
+                            )
+                            .child(
+                                row("friend-remove", dc_intl::tr("Remove Friend"), true).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.friend_menu = None;
+                                        this.confirm_remove_friend =
+                                            Some(RemoveFriend::Friends(user));
+                                        cx.notify();
+                                    }),
+                                ),
+                            ),
                     ),
             )
             .with_priority(1)
@@ -1304,30 +1324,27 @@ impl Root {
                 }
             })
             .unwrap_or_default();
-        let prefix = "Are you sure you want to remove ";
-        let subtitle = gpui::StyledText::new(format!("{prefix}{name} from your friends?"))
-            .with_highlights(from_menu.then_some((
-                prefix.len()..prefix.len() + name.len(),
-                gpui::HighlightStyle {
-                    font_weight: Some(FontWeight(600.)),
-                    ..Default::default()
-                },
-            )));
+        // `l5FFq6`: the name bold when the menu opened it (module 596339).
+        let subtitle = super::bold_message(
+            "l5FFq6",
+            &[("name", (&name).into())],
+            FontWeight(if from_menu { 600. } else { 400. }),
+        );
         let spec = super::modal::Spec {
             id: "remove-friend-modal",
-            title: format!("Remove '{name}'").into(),
+            title: dc_intl::t!("fPLvZd", name = &name).into(),
             subtitle: Some(div().child(subtitle).into_any_element()),
             body: None,
             buttons: vec![
                 super::modal::button(
                     "remove-friend-cancel",
-                    "Cancel",
+                    dc_intl::tr("Cancel"),
                     super::modal::Tone::Secondary,
                     |this, _, _| this.confirm_remove_friend = None,
                 ),
                 super::modal::button(
                     "remove-friend-confirm",
-                    "Remove Friend",
+                    dc_intl::tr("Remove Friend"),
                     super::modal::Tone::Critical,
                     move |this, _, _| {
                         this.confirm_remove_friend = None;

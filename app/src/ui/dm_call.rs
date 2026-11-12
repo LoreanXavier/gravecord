@@ -267,9 +267,9 @@ impl Root {
         // `rF7lN5` Call Unavailable, `PHzjvX` blocked.
         let disabled_tip = |normal: &'static str| {
             if unavailable {
-                ("Call Unavailable", true)
+                (dc_intl::tr("Call Unavailable"), true)
             } else if blocked {
-                ("You cannot call a user you have blocked", true)
+                (dc_intl::tr("You cannot call a user you have blocked"), true)
             } else {
                 (normal, false)
             }
@@ -277,16 +277,16 @@ impl Root {
         CallButtons {
             voice: (!in_call).then(|| {
                 disabled_tip(if active {
-                    "Join Voice Call"
+                    dc_intl::tr("Join Voice Call")
                 } else {
-                    "Start Voice Call"
+                    dc_intl::tr("Start Voice Call")
                 })
             }),
             video: (!in_call && !(active && !video_call)).then(|| {
                 disabled_tip(if video_call {
-                    "Join Video Call"
+                    dc_intl::tr("Join Video Call")
                 } else {
-                    "Start Video Call"
+                    dc_intl::tr("Start Video Call")
                 })
             }),
         }
@@ -366,19 +366,19 @@ impl Root {
             )));
         let spec = super::modal::Spec {
             id: "not-friend-call-modal",
-            title: "Start Call".into(),
+            title: dc_intl::tr("Start Call").into(),
             subtitle: Some(div().child(text).into_any_element()),
             body: None,
             buttons: vec![
                 super::modal::button(
                     "not-friend-call-cancel",
-                    "Okay",
+                    dc_intl::tr("Okay"),
                     super::modal::Tone::Secondary,
                     |this, _, _| this.dmc.not_friend = None,
                 ),
                 super::modal::button(
                     "not-friend-call-confirm",
-                    "Send Friend Request",
+                    dc_intl::tr("Send Friend Request"),
                     super::modal::Tone::Primary,
                     move |this, _, cx| {
                         this.dmc.not_friend = None;
@@ -709,6 +709,12 @@ impl Root {
                 }
                 cx.notify();
                 "the test person is shown with clips enabled; nothing was sent".to_owned()
+            }
+            // `fake-unfocused`: the client draws as if none of its windows had the focus.
+            ["fake-unfocused"] => {
+                super::voice_video::FAKE_UNFOCUSED.store(true, std::sync::atomic::Ordering::Relaxed);
+                cx.notify();
+                "drawn as if no window of the client were focused".to_owned()
             }
             // `fake-preview`: the test person's stream has a preview, their avatar's picture standing in for it.
             ["fake-preview"] => {

@@ -160,9 +160,15 @@ impl Root {
                 editor
             })
         };
-        let name = field(24., 32., 600., "Display name", cx);
-        let pronouns = field(14., 18., 400., "Add pronouns", cx);
-        let bio = field(14., 18., 400., "Share a fun fact about yourself", cx);
+        let name = field(24., 32., 600., dc_intl::tr("Display name"), cx);
+        let pronouns = field(14., 18., 400., dc_intl::tr("Add pronouns"), cx);
+        let bio = field(
+            14.,
+            18.,
+            400.,
+            dc_intl::tr("Share a fun fact about yourself"),
+            cx,
+        );
         name.update(cx, |editor, _| editor.set_text(me.display_name()));
         let events = vec![
             cx.subscribe(&name, |this, editor, event: &EditorEvent, cx| {
@@ -353,7 +359,7 @@ impl Root {
                 if body["ok"] == true {
                     self.profile_editor = None;
                 } else {
-                    open.error = Some("Something went wrong. Try again.".to_owned());
+                    open.error = Some(dc_intl::tr("Something went wrong. Try again.").to_owned());
                 }
             }
             _ => {}

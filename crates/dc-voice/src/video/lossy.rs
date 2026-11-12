@@ -10,6 +10,7 @@ use super::{
     playout::Playout,
     receive::Receivers,
     send::{History, Packet, packetize},
+    sender::KEYFRAME_INTERVAL,
 };
 use crate::rtp::{self, Rtp};
 use std::{collections::BinaryHeap, time::Duration};
@@ -113,19 +114,40 @@ fn header_fields(packet: &Packet) -> (u8, bool, u16, u32, u32) {
 /// Runs `seconds` of the stream with `loss_percent` independent loss on every datagram (media, repairs and feedback).
 /// `drain_on_arrival` hands pictures over as their last packet arrives; otherwise only on the 20 ms media tick.
 pub(crate) fn run(seconds: u64, loss_percent: f64, drain_on_arrival: bool) -> Outcome {
-    run_with(seconds, loss_percent, drain_on_arrival, KEY_BYTES)
+    run_with(seconds, loss_percent, drain_on_arrival, KEY_BYTES, true)
 }
 
-/// [`run`] with keyframes of `key_bytes`.
+/// [`run`] with keyframes of `key_bytes`. `feedback_on_arrival` sends NACK and PLI as soon as they are due, as the call
+/// and stream loops do; otherwise only on the 20 ms media tick, as they did before.
 pub(crate) fn run_with(
     seconds: u64,
     loss_percent: f64,
     drain_on_arrival: bool,
     key_bytes: usize,
+    feedback_on_arrival: bool,
+) -> Outcome {
+    run_seeded(
+        seconds,
+        loss_percent,
+        drain_on_arrival,
+        key_bytes,
+        feedback_on_arrival,
+        0x9E37_79B9 ^ (loss_percent * 1000.0) as u32,
+    )
+}
+
+/// [`run_with`] on another random sequence of losses.
+pub(crate) fn run_seeded(
+    seconds: u64,
+    loss_percent: f64,
+    drain_on_arrival: bool,
+    key_bytes: usize,
+    feedback_on_arrival: bool,
+    seed: u32,
 ) -> Outcome {
     let start = Instant::now();
     let at = |ms: u64| start + Duration::from_millis(ms);
-    let mut random = Random(0x9E37_79B9 ^ (loss_percent * 1000.0) as u32);
+    let mut random = Random(seed.max(1));
     let mut receivers = Receivers::default();
     receivers.announce(1, SSRC, RTX).unwrap();
     let mut history = History::default();
@@ -234,7 +256,7 @@ pub(crate) fn run_with(
             };
             let missing = history.request(&feedback.nacks, at(now_ms));
             if (feedback.keyframe || missing) && now_ms >= next_key_allowed {
-                next_key_allowed = now_ms + 500;
+                next_key_allowed = now_ms + KEYFRAME_INTERVAL.as_millis() as u64;
                 force_key = true;
             }
             while let Some(repair) = history.repair(RTX, &mut rtx_sequence, at(now_ms)) {
@@ -259,6 +281,7 @@ pub(crate) fn run_with(
                     ssrc,
                     sequence: seq,
                     timestamp,
+                    transport_sequence: None,
                     payload,
                 },
                 at(now_ms),
@@ -273,6 +296,38 @@ pub(crate) fn run_with(
                     &mut playout,
                     &mut played,
                 );
+                if feedback_on_arrival {
+                    for (header, body) in receivers.feedback(OWN, at(now_ms)) {
+                        if header[1] == 206 && body.len() == 4 {
+                            outcome.plis += 1;
+                        }
+                        if random.chance(loss_percent) {
+                            continue;
+                        }
+                        feedback_air.push((now_ms + DELAY_MS, [&header[..], &body].concat()));
+                    }
+                }
+            }
+        }
+        // Requests that come due by time alone (a retry, a hole at the end of a picture) go at once, not on the tick.
+        if drain_on_arrival && feedback_on_arrival {
+            handover(
+                &mut receivers,
+                &mut ready,
+                now_ms,
+                &mut outcome,
+                &mut shown_at,
+                &mut playout,
+                &mut played,
+            );
+            for (header, body) in receivers.feedback(OWN, at(now_ms)) {
+                if header[1] == 206 && body.len() == 4 {
+                    outcome.plis += 1;
+                }
+                if random.chance(loss_percent) {
+                    continue;
+                }
+                feedback_air.push((now_ms + DELAY_MS, [&header[..], &body].concat()));
             }
         }
         if now_ms % 20 == 7 {
@@ -351,6 +406,21 @@ fn bursts_behind_repairs_are_spread_out_at_playout_time() {
 }
 
 #[test]
+fn three_percent_loss_never_freezes_the_picture_for_300_ms() {
+    for loss in [1.0, 2.0, 3.0] {
+        let prompt = run(60, loss, true);
+        let ticked = run_with(60, loss, true, KEY_BYTES, false);
+        println!("{loss}% loss, feedback when due: {prompt:?}");
+        println!("{loss}% loss, feedback on the 20 ms tick: {ticked:?}");
+        assert!(prompt.longest_freeze_ms < 300, "{loss}%: {prompt:?}");
+        assert!(
+            prompt.shown * 100 >= prompt.sent * 98,
+            "{loss}%: {prompt:?}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "prints the loss table; takes a few seconds"]
 fn loss_table() {
     for loss in [0.0, 1.0, 2.0, 3.0, 5.0] {
@@ -374,9 +444,33 @@ fn loss_table() {
             );
         }
     }
+    // The same loss on other random sequences: the worst gap of ten runs a minute each.
+    for loss in [1.0, 2.0, 3.0, 5.0] {
+        let runs: Vec<Outcome> = (1..=10u32)
+            .map(|seed| {
+                run_seeded(
+                    60,
+                    loss,
+                    true,
+                    KEY_BYTES,
+                    true,
+                    seed.wrapping_mul(0x2545_F491),
+                )
+            })
+            .collect();
+        println!(
+            "ten seeds, loss {loss}%: worst gap {} ms, gaps {:?}, shown {:.2}% at worst, repairs {} on average",
+            runs.iter().map(|o| o.longest_freeze_ms).max().unwrap(),
+            runs.iter().map(|o| o.longest_freeze_ms).collect::<Vec<_>>(),
+            runs.iter()
+                .map(|o| o.shown as f64 * 100.0 / o.sent as f64)
+                .fold(100.0, f64::min),
+            runs.iter().map(|o| o.repairs).sum::<u64>() / 10
+        );
+    }
     // Busier pictures: keyframes of 400 kB, as a detailed desktop gives at this rate.
     for loss in [1.0, 3.0, 5.0] {
-        let outcome = run_with(60, loss, true, 400_000);
+        let outcome = run_with(60, loss, true, 400_000, true);
         println!(
             "400 kB keyframes, loss {loss}%: sent {} shown {} ({:.1}%) frozen {} plis {} longest gap {} ms",
             outcome.sent,

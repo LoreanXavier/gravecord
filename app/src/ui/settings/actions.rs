@@ -251,33 +251,53 @@ fn account_dialog(
     modal::Tone,
 ) {
     match kind {
-        "email" => ("Enter an email address", None, "Done", modal::Tone::Primary),
+        "email" => (
+            dc_intl::tr("Enter an email address"),
+            None,
+            dc_intl::tr("Done"),
+            modal::Tone::Primary,
+        ),
         // `QiGOak`, then the type list (`8lqkf8`): the dialog stops here, nothing is charged or saved.
         "payment" => (
-            "Add Payment Method",
-            Some("Select Payment Type"),
+            dc_intl::tr("Add Payment Method"),
+            Some(dc_intl::tr("Select Payment Type")),
             "",
             modal::Tone::Primary,
         ),
-        "phone" => ("Add a phone number", None, "Send", modal::Tone::Primary),
-        "password" => ("Update your password", None, "Done", modal::Tone::Primary),
+        "phone" => (
+            dc_intl::tr("Add a phone number"),
+            None,
+            dc_intl::tr("Send"),
+            modal::Tone::Primary,
+        ),
+        "password" => (
+            dc_intl::tr("Update your password"),
+            None,
+            dc_intl::tr("Done"),
+            modal::Tone::Primary,
+        ),
         "disable" => (
-            "Disable Account",
-            Some(
+            dc_intl::tr("Disable Account"),
+            Some(dc_intl::tr(
                 "Are you sure that you want to disable your account? This will immediately log you out and make your account inaccessible to anyone.",
-            ),
-            "Disable Account",
+            )),
+            dc_intl::tr("Disable Account"),
             modal::Tone::Critical,
         ),
         "delete" => (
-            "Delete Account",
-            Some(
+            dc_intl::tr("Delete Account"),
+            Some(dc_intl::tr(
                 "Are you sure that you want to delete your account? This will immediately log you out of your account and you will not be able to log in again.",
-            ),
-            "Delete Account",
+            )),
+            dc_intl::tr("Delete Account"),
             modal::Tone::Critical,
         ),
-        _ => ("Change your username", None, "Done", modal::Tone::Primary),
+        _ => (
+            dc_intl::tr("Change your username"),
+            None,
+            dc_intl::tr("Done"),
+            modal::Tone::Primary,
+        ),
     }
 }
 
@@ -429,12 +449,12 @@ impl Root {
                 // `CA.A.show`: "Request received" or "Oops, something went wrong...".
                 self.settings_extra.dialog = Some(if ok {
                     Dialog::Alert {
-                        title: "Request received".to_owned(),
-                        body: "Our privacy farmers have begun harvesting your data. This can take up to 30 days, but we'll email you when it\u{2019}s done.".to_owned(),
+                        title: dc_intl::tr("Request received").to_owned(),
+                        body: dc_intl::tr("Our privacy farmers have begun harvesting your data. This can take up to 30 days, but we'll email you when it\u{2019}s done.").to_owned(),
                     }
                 } else {
                     Dialog::Alert {
-                        title: "Oops, something went wrong...".to_owned(),
+                        title: dc_intl::tr("Oops, something went wrong...").to_owned(),
                         body: body["body"]["message"]
                             .as_str()
                             .unwrap_or("Please try again")
@@ -486,19 +506,23 @@ impl Root {
                 // `OdPCbN`, `MGWabA`, `D3+rU4`, `kYpG0u`.
                 USAGE_STATISTICS => Dialog::Confirm {
                     id: "consent-usage-off",
-                    header: "Turn off use data to improve Discord?",
-                    body: "If you turn this off, we\u{2019}ll stop processing new data for analytics. You will lose access to new experimental features and usage-based improvements to features like voice chat. If you'd like to further assert your right to object to our processing of your data, email privacy@discord.com.",
-                    confirm: "Yes, I'm sure",
-                    cancel: "No, take me back!",
+                    header: dc_intl::tr("Turn off use data to improve Discord?"),
+                    body: dc_intl::tr(
+                        "If you turn this off, we\u{2019}ll stop processing new data for analytics. You will lose access to new experimental features and usage-based improvements to features like voice chat. If you'd like to further assert your right to object to our processing of your data, email privacy@discord.com.",
+                    ),
+                    confirm: dc_intl::tr("Yes, I'm sure"),
+                    cancel: dc_intl::tr("No, take me back!"),
                     then: Then::Revoke(USAGE_STATISTICS),
                 },
                 // `9SNpzv`, `gJvDDh`, `9g5UGw`, `+ZLPw9`.
                 _ => Dialog::Confirm {
                     id: "consent-personalization-off",
-                    header: "Turn off personalization?",
-                    body: "By turning this off you lose access to things like personalized recommendations and suggestions. You won\u{2019}t be able to recover them in the future!",
-                    confirm: "Yes, I'm sure",
-                    cancel: "No, take me back!",
+                    header: dc_intl::tr("Turn off personalization?"),
+                    body: dc_intl::tr(
+                        "By turning this off you lose access to things like personalized recommendations and suggestions. You won\u{2019}t be able to recover them in the future!",
+                    ),
+                    confirm: dc_intl::tr("Yes, I'm sure"),
+                    cancel: dc_intl::tr("No, take me back!"),
                     then: Then::Revoke(PERSONALIZATION),
                 },
             });
@@ -670,7 +694,7 @@ impl Root {
                     buttons: vec![
                         modal::button(
                             "settings-account-cancel",
-                            "Cancel",
+                            dc_intl::tr("Cancel"),
                             modal::Tone::Secondary,
                             |this, _, _| this.settings_extra.dialog = None,
                         ),
@@ -693,20 +717,20 @@ impl Root {
                 title: format!("Disconnect {}", account.name).into(),
                 subtitle: Some(
                     div()
-                        .child("Disconnecting your account might remove you from servers you joined via this account.")
+                        .child(dc_intl::tr("Disconnecting your account might remove you from servers you joined via this account."))
                         .into_any_element(),
                 ),
                 body: None,
                 buttons: vec![
                     modal::button(
                         "settings-disconnect-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         modal::Tone::Secondary,
                         |this, _, _| this.settings_extra.dialog = None,
                     ),
                     modal::button(
                         "settings-disconnect-ok",
-                        "Disconnect",
+                        dc_intl::tr("Disconnect"),
                         modal::Tone::Critical,
                         move |this, _, _| {
                             this.settings_extra.dialog = None;
@@ -718,19 +742,19 @@ impl Root {
             },
             Dialog::Deauthorize(app) => modal::Spec {
                 id: "settings-deauthorize",
-                title: "Deauthorize Application".into(),
+                title: dc_intl::tr("Deauthorize Application").into(),
                 subtitle: Some(div().child(app.name.clone()).into_any_element()),
                 body: None,
                 buttons: vec![
                     modal::button(
                         "settings-deauthorize-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         modal::Tone::Secondary,
                         |this, _, _| this.settings_extra.dialog = None,
                     ),
                     modal::button(
                         "settings-deauthorize-ok",
-                        "Deauthorize",
+                        dc_intl::tr("Deauthorize"),
                         modal::Tone::Critical,
                         move |this, _, _| {
                             this.settings_extra.dialog = None;
@@ -743,17 +767,17 @@ impl Root {
             Dialog::ApplyToServers { requests, restrict } => modal::Spec {
                 id: "settings-apply-to-servers",
                 title: if requests {
-                    "Message Requests"
+                    dc_intl::tr("Message Requests")
                 } else {
-                    "Server Privacy"
+                    dc_intl::tr("Server Privacy")
                 }
                 .into(),
                 subtitle: Some(
                     div()
                         .child(if requests {
-                            "Do you want to also apply this change to all your existing servers? You can also disable messages requests on individual servers by visiting that servers setting's page."
+                            dc_intl::tr("Do you want to also apply this change to all your existing servers? You can also disable messages requests on individual servers by visiting that servers setting's page.")
                         } else {
-                            "Do you want to also apply this change to all your existing servers? You can also disable direct messages on individual servers by visiting that server's settings page."
+                            dc_intl::tr("Do you want to also apply this change to all your existing servers? You can also disable direct messages on individual servers by visiting that server's settings page.")
                         })
                         .into_any_element(),
                 ),
@@ -762,7 +786,7 @@ impl Root {
                 buttons: vec![
                     modal::button(
                         "settings-apply-all",
-                        "Yes",
+                        dc_intl::tr("Yes"),
                         modal::Tone::Secondary,
                         move |this, _, _| {
                             this.settings_extra.dialog = None;
@@ -771,7 +795,7 @@ impl Root {
                     ),
                     modal::button(
                         "settings-apply-default",
-                        "No",
+                        dc_intl::tr("No"),
                         modal::Tone::Primary,
                         move |this, _, _| {
                             this.settings_extra.dialog = None;
@@ -788,7 +812,7 @@ impl Root {
                 body: None,
                 buttons: vec![modal::button(
                     "settings-alert-ok",
-                    "Okay",
+                    dc_intl::tr("Okay"),
                     modal::Tone::Primary,
                     |this, _, _| this.settings_extra.dialog = None,
                 )],
@@ -823,14 +847,14 @@ impl Root {
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .text_color(color("--text-default"))
-                                    .child(*label),
+                                    .child(dc_intl::tr(label)),
                             )
                             .into_any_element()
                     })
                     .collect();
                 modal::Spec {
                     id: "request-data",
-                    title: "Submit Data Request".into(),
+                    title: dc_intl::tr("Submit Data Request").into(),
                     // `fSv59b`.
                     subtitle: Some(
                         div()
@@ -855,7 +879,7 @@ impl Root {
                                         .line_height(px(16.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(color("--text-feedback-critical"))
-                                        .child("Please select at least one data type for your request"),
+                                        .child(dc_intl::tr("Please select at least one data type for your request")),
                                 )
                             })
                             .into_any_element(),
@@ -863,13 +887,13 @@ impl Root {
                     buttons: vec![
                         modal::button(
                             "request-data-cancel",
-                            "I've changed my mind",
+                            dc_intl::tr("I've changed my mind"),
                             modal::Tone::Secondary,
                             |this, _, _| this.settings_extra.dialog = None,
                         ),
                         modal::button(
                             "request-data-send",
-                            "Request My Data",
+                            dc_intl::tr("Request My Data"),
                             modal::Tone::Primary,
                             |this, _, _| this.request_data_confirmed(),
                         ),

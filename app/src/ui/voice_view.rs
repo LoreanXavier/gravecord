@@ -74,6 +74,39 @@ fn mid(name: &str) -> Rgba {
     rgba(Theme::Midnight.color(name))
 }
 
+/// The notice over the sharer's own tile while no window of the client is focused (modules 638480, 919706, 200749:
+/// `root_eYyGVJ` over the tile, a `body-md/semibold` header 4px above a `body-sm/medium` line, 4px of padding).
+fn own_preview_paused() -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .bg(gpui::hsla(0., 0., 0., 0.6))
+        .p(px(4.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .text_center()
+        .child(
+            div()
+                .mb(px(4.))
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(600.))
+                .text_color(mid("--white"))
+                .child("Your stream is still running!"),
+        )
+        .child(
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(mid("--primary-200"))
+                .child("We\u{2019}ve paused this preview to save your resources."),
+        )
+        .into_any_element()
+}
+
 /// The wandering-cubes spinner of a tile that waits for its picture (module 259264): two diamonds in a 32px box.
 fn spinner() -> AnyElement {
     div()
@@ -1055,11 +1088,14 @@ impl Root {
             .filter_map(|tile| by_key.remove(&(tile.user, tile.kind)))
             .collect();
         // The focused tile left the call: back to the grid.
-        self.vv.focus.keep_if(|user, kind| {
-            people
-                .iter()
-                .any(|person| person.tile.user == user && person.tile.kind == kind)
-        });
+        // Another conversation's call, seen from outside, does not touch the focus of the call this client is in.
+        if !self.vv.outside {
+            self.vv.focus.keep_if(|user, kind| {
+                people
+                    .iter()
+                    .any(|person| person.tile.user == user && person.tile.kind == kind)
+            });
+        }
         // `selectedParticipant: v ? n : null`, `v` being in the call with video.
         let focused = self
             .vv
@@ -1108,10 +1144,12 @@ impl Root {
             );
         }
         let focus_head = focused.map(|index| self.focus_crumb(&people[index]));
-        self.stream_zoom.follow(focused.and_then(|index| {
-            let tile = &people[index].tile;
-            (tile.kind == TileKind::Stream).then_some(tile.user)
-        }));
+        if !self.vv.outside {
+            self.stream_zoom.follow(focused.and_then(|index| {
+                let tile = &people[index].tile;
+                (tile.kind == TileKind::Stream).then_some(tile.user)
+            }));
+        }
         let activity_stage = self
             .activities
             .running
@@ -1488,6 +1526,15 @@ impl Root {
                 )
                 .child(self.watch_overlay(user_id, layout.tile_width, cx))
             })
+            .when(
+                stream_tile
+                    && !waiting
+                    && !self.vv.popout_render
+                    && self.stores.current_user.as_ref().map(|me| me.id) == Some(user_id)
+                    && super::voice_video::pause_own_preview_unfocused()
+                    && super::voice_video::client_unfocused(cx),
+                |this| this.child(own_preview_paused()),
+            )
             .children(indicators)
             .child(
                 div()
@@ -3019,6 +3066,23 @@ impl Root {
                     rows_height +=
                         36. + 18. + 58. + 18. + 36. + if attenuation { 58. } else { 0. } + 18.;
                 }
+                if Some(owner) == me {
+                    // `self-stream-pause-preview-when-unfocused` (module 16001), a checkbox of the own stream's menu.
+                    let on = super::voice_video::pause_own_preview_unfocused();
+                    rows.push(self.vmenu_row(
+                        "vmenu-stream-pause-preview",
+                        None,
+                        "Pause Preview When Discord Isn\u{2019}t Focused",
+                        Some(on),
+                        false,
+                        cx,
+                        move |_, _, cx| {
+                            super::voice_video::set_pause_own_preview_unfocused(!on);
+                            cx.notify();
+                        },
+                    ));
+                    rows_height += 36.;
+                }
                 rows.push(self.vmenu_row(
                     "vmenu-stream-settings",
                     Some("voice_view_gear"),
@@ -3031,10 +3095,16 @@ impl Root {
                         this.open_settings_section("Voice & Video", cx);
                     },
                 ));
+                // A `flexible` menu grows with its longest label, up to 320px: the own stream's checkbox row needs it.
+                let menu_width = if Some(owner) == me {
+                    320.
+                } else {
+                    TILE_MENU_WIDTH
+                };
                 let (ox, oy) = self.call_origin();
                 let window_w = width + ox;
                 let window_h = height + oy;
-                let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);
+                let left = f32::from(at.x).min(window_w - 16. - menu_width);
                 let top = f32::from(at.y).min(window_h - 16. - rows_height);
                 vec![
                     deferred(
@@ -3043,7 +3113,7 @@ impl Root {
                             .left(px(left - ox))
                             .top(px(top - oy))
                             .child(
-                                self.menu_panel(TILE_MENU_WIDTH, false)
+                                self.menu_panel(menu_width, false)
                                     .id("voice-stream-menu")
                                     .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
                                         close(this, cx);

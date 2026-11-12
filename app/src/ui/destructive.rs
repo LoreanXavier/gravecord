@@ -38,16 +38,31 @@ pub(super) fn delete_thread_request(thread: Id) -> Request {
     }
 }
 
+/// The text of a message before and after its bold name (`**{name}**`), for a body drawn as before, name, after.
+fn around(key: &str, name_value: &str, name: &str) -> (String, String) {
+    let runs = dc_intl::format_runs(key, &[(name_value, name.into())]);
+    let at = runs
+        .iter()
+        .position(|(_, tag)| tag.as_deref() == Some("$b"));
+    let join = |runs: &[(String, Option<Box<str>>)]| -> String {
+        runs.iter().map(|(text, _)| text.as_str()).collect()
+    };
+    match at {
+        Some(at) => (join(&runs[..at]), join(&runs[at + 1..])),
+        None => (join(&runs), String::new()),
+    }
+}
+
 impl Pending {
     /// Module 894533 for a thread: title and button `H7vTe2` "Delete Thread", body `a6Gz9J`.
     pub(super) fn delete_thread(thread: Id, name: &str) -> Self {
         Self {
             id: "delete-thread-modal",
-            title: "Delete Thread".to_owned(),
-            before: "Are you sure you want to delete ".to_owned(),
+            title: dc_intl::tr("Delete Thread").to_owned(),
+            before: around("a6Gz9J", "channelName", name).0,
             name: name.to_owned(),
-            after: "? This cannot be undone.".to_owned(),
-            confirm: "Delete Thread".to_owned(),
+            after: around("a6Gz9J", "channelName", name).1,
+            confirm: dc_intl::tr("Delete Thread").to_owned(),
             critical: true,
             then: Some(Then::Send(delete_thread_request(thread))),
         }
@@ -58,12 +73,12 @@ impl Pending {
     pub(super) fn mark_all_read(reads: Vec<(Id, Id)>) -> Self {
         Self {
             id: "mark-all-read-modal",
-            title: "Mark all as read?".to_owned(),
-            before: "This will mark all your unmuted channels as read. Are you sure you want to continue?"
+            title: dc_intl::tr("Mark all as read?").to_owned(),
+            before: dc_intl::tr("This will mark all your unmuted channels as read. Are you sure you want to continue?")
                 .to_owned(),
             name: String::new(),
             after: String::new(),
-            confirm: "Mark As Read".to_owned(),
+            confirm: dc_intl::tr("Mark As Read").to_owned(),
             critical: false,
             then: Some(Then::MarkRead(reads)),
         }
@@ -119,7 +134,7 @@ impl Root {
                 buttons: vec![
                     super::modal::button(
                         "destructive-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         super::modal::Tone::Secondary,
                         |this, _, _| this.close_destructive(),
                     ),

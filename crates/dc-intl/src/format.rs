@@ -11,13 +11,19 @@ use std::fmt::Write as _;
 pub enum Arg<'a> {
     Str(Cow<'a, str>),
     Num(f64),
+    /// A moment for Date and Time nodes, written by the caller (`Intl.DateTimeFormat` is not ported): a Date node
+    /// prints `date`, a Time node `time`, anything else `date`.
+    When {
+        date: Cow<'a, str>,
+        time: Cow<'a, str>,
+    },
 }
 
 impl Arg<'_> {
     /// JavaScript's `String(value)`: what an Argument node prints and what Select and Plural compare option keys with.
     fn js_string(&self) -> Cow<'_, str> {
         match self {
-            Arg::Str(text) => Cow::Borrowed(text),
+            Arg::Str(text) | Arg::When { date: text, .. } => Cow::Borrowed(text),
             Arg::Num(number) => Cow::Owned(js_number(*number)),
         }
     }
@@ -27,6 +33,7 @@ impl Arg<'_> {
         match self {
             Arg::Num(number) => Some(*number),
             Arg::Str(text) => text.trim().parse().ok(),
+            Arg::When { .. } => None,
         }
     }
 }
@@ -145,6 +152,9 @@ fn bind(
             },
             Node::Date(name, _) | Node::Time(name, _) => match value_of(values, name) {
                 // Intl.DateTimeFormat is not ported: the caller passes the date already written.
+                Some(Arg::When { time, .. }) if matches!(node, Node::Time(..)) => {
+                    out.push_str(time)
+                }
                 Some(value) => out.push_str(&value.js_string()),
                 None => missing(name),
             },
@@ -194,6 +204,58 @@ fn bind(
                     .or_else(|| options.iter().find(|(option, _)| &**option == "other"));
                 if let Some((_, nodes)) = chosen {
                     bind(out, nodes, values, formatters, Some(shifted));
+                }
+            }
+        }
+    }
+}
+
+/// `formatToPlainString` keeping where the rich-text tags were: the text in runs, each with the innermost tag around
+/// it (`$b` for bold, `$link`, ...), for callers that style them as the React builder does.
+pub fn runs(
+    nodes: &[Node],
+    values: &Args<'_>,
+    formatters: &Formatters,
+) -> Vec<(String, Option<Box<str>>)> {
+    let mut out: Vec<(String, Option<Box<str>>)> = Vec::new();
+    collect_runs(&mut out, nodes, values, formatters, None);
+    out.retain(|(text, _)| !text.is_empty());
+    out
+}
+
+fn collect_runs(
+    out: &mut Vec<(String, Option<Box<str>>)>,
+    nodes: &[Node],
+    values: &Args<'_>,
+    formatters: &Formatters,
+    tag: Option<&str>,
+) {
+    for node in nodes {
+        match node {
+            // A hook (a tag without `$`) given a value prints that value in its run: the caller's stand-in for the
+            // element the official hook returns.
+            Node::Tag { name, .. }
+                if !name.starts_with('$') && value_of(values, name).is_some() =>
+            {
+                if let Some(value) = value_of(values, name) {
+                    out.push((value.js_string().into_owned(), Some(name.clone())));
+                }
+            }
+            Node::Tag { name, children, .. } => {
+                collect_runs(out, children, values, formatters, Some(&**name));
+            }
+            other => {
+                let mut text = String::new();
+                bind(
+                    &mut text,
+                    std::slice::from_ref(other),
+                    values,
+                    formatters,
+                    None,
+                );
+                match out.last_mut() {
+                    Some((last, last_tag)) if last_tag.as_deref() == tag => last.push_str(&text),
+                    _ => out.push((text, tag.map(Into::into))),
                 }
             }
         }

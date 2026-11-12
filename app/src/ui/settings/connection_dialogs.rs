@@ -98,8 +98,10 @@ const HELP: &str = "https://support.discord.com/hc/en-us/articles/";
 fn landing(kind: &str) -> Landing {
     match kind {
         "crunchyroll" => Landing {
-            title: "Crunchyroll is now on Discord!",
-            body: "It\u{2019}s anime time! Sign in to Crunchyroll to connect your accounts.",
+            title: dc_intl::tr("Crunchyroll is now on Discord!"),
+            body: dc_intl::tr(
+                "It\u{2019}s anime time! Sign in to Crunchyroll to connect your accounts.",
+            ),
             article: "9929188048023",
             inline_link: false,
             art: (
@@ -120,8 +122,10 @@ fn landing(kind: &str) -> Landing {
                     152.,
                     123.,
                 ),
-                "First let's sign in with Crunchyroll",
-                "We\u{2019}ll use this to display what show you\u{2019}re watching on Crunchyroll",
+                dc_intl::tr("First let's sign in with Crunchyroll"),
+                dc_intl::tr(
+                    "We\u{2019}ll use this to display what show you\u{2019}re watching on Crunchyroll",
+                ),
             ),
             waiting: (
                 (
@@ -130,17 +134,21 @@ fn landing(kind: &str) -> Landing {
                     168.,
                     124.,
                 ),
-                "Waiting for connection...",
-                "Sign in to Crunchyroll in your browser and return here when you're done.",
+                dc_intl::tr("Waiting for connection..."),
+                dc_intl::tr(
+                    "Sign in to Crunchyroll in your browser and return here when you're done.",
+                ),
             ),
             redirect: Some("https://crunchyroll.com"),
             error: (
-                "Oops, something went wrong...",
-                "We were unable to link your Crunchyroll account. Please try again or contact support if the issue persists.",
+                dc_intl::tr("Oops, something went wrong..."),
+                dc_intl::tr(
+                    "We were unable to link your Crunchyroll account. Please try again or contact support if the issue persists.",
+                ),
             ),
         },
         "xbox" => Landing {
-            title: "Link your Xbox account",
+            title: dc_intl::tr("Link your Xbox account"),
             body: "Sign in to your Xbox account to start using Discord on your Xbox. ",
             article: "360003953831",
             inline_link: true,
@@ -175,8 +183,10 @@ fn landing(kind: &str) -> Landing {
                     231.,
                     160.,
                 ),
-                "Sign in with Xbox",
-                "You'll be redirected to the official Xbox sign in page. Log in and click \u{201c}accept.\u{201d}",
+                dc_intl::tr("Sign in with Xbox"),
+                dc_intl::tr(
+                    "You'll be redirected to the official Xbox sign in page. Log in and click \u{201c}accept.\u{201d}",
+                ),
             ),
             waiting: (
                 (
@@ -185,17 +195,19 @@ fn landing(kind: &str) -> Landing {
                     231.,
                     172.,
                 ),
-                "Waiting for connection...",
-                "Sign in to Xbox in your browser and return here when you're done.",
+                dc_intl::tr("Waiting for connection..."),
+                dc_intl::tr("Sign in to Xbox in your browser and return here when you're done."),
             ),
             redirect: None,
             error: (
-                "Oops, something went wrong...",
-                "We were unable to link your Xbox account. Please try again or contact support if the issue persists.",
+                dc_intl::tr("Oops, something went wrong..."),
+                dc_intl::tr(
+                    "We were unable to link your Xbox account. Please try again or contact support if the issue persists.",
+                ),
             ),
         },
         _ => Landing {
-            title: "Link your PlayStation Network account",
+            title: dc_intl::tr("Link your PlayStation Network account"),
             body: "Sign in to your PlayStation Network account to start using Discord on your PlayStation. ",
             article: "4419534960919",
             inline_link: true,
@@ -224,8 +236,10 @@ fn landing(kind: &str) -> Landing {
                     231.,
                     160.,
                 ),
-                "Sign in with PlayStation Network",
-                "You'll be redirected to the official PlayStation Network sign in page. Log in and click \u{201c}accept.\u{201d}",
+                dc_intl::tr("Sign in with PlayStation Network"),
+                dc_intl::tr(
+                    "You'll be redirected to the official PlayStation Network sign in page. Log in and click \u{201c}accept.\u{201d}",
+                ),
             ),
             waiting: (
                 (
@@ -234,12 +248,14 @@ fn landing(kind: &str) -> Landing {
                     231.,
                     172.,
                 ),
-                "Waiting for connection...",
-                "Sign in to PlayStation Network in your browser and return here when you're done",
+                dc_intl::tr("Waiting for connection..."),
+                dc_intl::tr(
+                    "Sign in to PlayStation Network in your browser and return here when you're done",
+                ),
             ),
             redirect: None,
             error: (
-                "Oops, something went wrong...",
+                dc_intl::tr("Oops, something went wrong..."),
                 "We were unable to link your PlayStation Network account. Please try again or contact support if the issue persists.",
             ),
         },
@@ -259,9 +275,9 @@ fn art_of(kind: &str) -> Vec<(&'static str, &'static str)> {
 /// The platform's name in the forms' strings (`ImMhq+`, `7TByKh`).
 fn service_name(kind: &str) -> &'static str {
     match kind {
-        "bluesky" => "Bluesky",
+        "bluesky" => dc_intl::tr("Bluesky"),
         "mastodon" => "Mastodon",
-        _ => "Account",
+        _ => dc_intl::tr("Account"),
     }
 }
 
@@ -418,7 +434,7 @@ impl Root {
                 }
                 let domain = form.editor.read(cx).text().to_owned();
                 if form.proof.is_none() && domain.is_empty() {
-                    form.error = Some("This field is required.".to_owned());
+                    form.error = Some(dc_intl::tr("This field is required.").to_owned());
                     return;
                 }
                 form.working = true;
@@ -507,8 +523,10 @@ impl Root {
                 if ok {
                     self.settings_extra.conn = None;
                 } else {
-                    form.error =
-                        Some("An unknown error occurred. Maybe check your handle?".to_owned());
+                    form.error = Some(
+                        dc_intl::tr("An unknown error occurred. Maybe check your handle?")
+                            .to_owned(),
+                    );
                 }
             }
             _ => {}
@@ -604,7 +622,7 @@ impl Root {
         let text = form.editor.read(cx).text().to_owned();
         let valid = handle_is_valid(&text);
         let body = self.field_box(
-            "Handle",
+            dc_intl::tr("Handle"),
             false,
             &form.editor,
             form.focused,
@@ -626,13 +644,13 @@ impl Root {
                 buttons: vec![
                     modal::button(
                         "settings-connect-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         modal::Tone::Secondary,
                         |this, _, _| this.close_connection_dialog(),
                     ),
                     modal::button(
                         "settings-connect-next",
-                        "Next",
+                        dc_intl::tr("Next"),
                         if !valid {
                             modal::Tone::PrimaryDisabled
                         } else if form.working {
@@ -651,10 +669,10 @@ impl Root {
 
     /// Module 683286: the Domain form and its proof slide.
     fn domain_dialog(&self, form: &Domain, cx: &mut Context<Self>) -> AnyElement {
-        let title = "Connect your Domain";
+        let title = dc_intl::tr("Connect your Domain");
         let Some(proof) = form.proof.clone() else {
             let body = self.field_box(
-                "Domain",
+                dc_intl::tr("Domain"),
                 true,
                 &form.editor,
                 form.focused,
@@ -667,22 +685,22 @@ impl Root {
                     title: title.into(),
                     subtitle: Some(
                         div()
-                            .child(
+                            .child(dc_intl::tr(
                                 "Verify ownership of your domain and show it off on your profile!",
-                            )
+                            ))
                             .into_any_element(),
                     ),
                     body: Some(body),
                     buttons: vec![
                         modal::button(
                             "settings-connect-cancel",
-                            "Cancel",
+                            dc_intl::tr("Cancel"),
                             modal::Tone::Secondary,
                             |this, _, _| this.close_connection_dialog(),
                         ),
                         modal::button(
                             "settings-connect-next",
-                            "Next",
+                            dc_intl::tr("Next"),
                             if form.working {
                                 modal::Tone::PrimaryLoading
                             } else {
@@ -745,33 +763,37 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(px(12.))
-                        .child(copy_row("Name", format!("_discord.{domain}")))
-                        .child(copy_row("Type", "TXT".to_owned()))
-                        .child(copy_row("Content", proof)),
+                        .child(copy_row(dc_intl::tr("Name"), format!("_discord.{domain}")))
+                        .child(copy_row(dc_intl::tr("Type"), "TXT".to_owned()))
+                        .child(copy_row(dc_intl::tr("Content"), proof)),
                 )
                 .child(
                     div()
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .text_color(color("--text-default"))
-                        .child("It may take a few minutes for the DNS record to propagate."),
+                        .child(dc_intl::tr(
+                            "It may take a few minutes for the DNS record to propagate.",
+                        )),
                 )
         } else {
             div()
                 .flex()
                 .flex_col()
                 .gap(px(16.))
-                .child(text("Create a new file on your website:".to_owned()))
+                .child(text(
+                    dc_intl::tr("Create a new file on your website:").to_owned(),
+                ))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(12.))
                         .child(copy_row(
-                            "Name",
+                            dc_intl::tr("Name"),
                             format!("https://{domain}/.well-known/discord"),
                         ))
-                        .child(copy_row("Content", proof)),
+                        .child(copy_row(dc_intl::tr("Content"), proof)),
                 )
         };
         let body = div()
@@ -797,9 +819,9 @@ impl Root {
                     modal::button(
                         "settings-connect-method",
                         if dns {
-                            "Verify using HTTPS"
+                            dc_intl::tr("Verify using HTTPS")
                         } else {
-                            "Verify using DNS"
+                            dc_intl::tr("Verify using DNS")
                         },
                         modal::Tone::Secondary,
                         |this, _, cx| {
@@ -812,7 +834,7 @@ impl Root {
                     ),
                     modal::button(
                         "settings-connect-verify",
-                        "Verify",
+                        dc_intl::tr("Verify"),
                         if form.working {
                             modal::Tone::PrimaryLoading
                         } else {
@@ -964,14 +986,14 @@ impl Root {
                                                     .line_height(px(18.))
                                                     .font_weight(FontWeight(500.))
                                                     .text_color(color("--text-default"))
-                                                    .child(*label),
+                                                    .child(dc_intl::tr(label)),
                                             )
                                             .children(sub.map(|sub| {
                                                 div()
                                                     .text_size(px(12.))
                                                     .line_height(px(16.))
                                                     .text_color(color("--text-subtle"))
-                                                    .child(sub)
+                                                    .child(dc_intl::tr(sub))
                                             })),
                                     ),
                             )
@@ -1024,12 +1046,16 @@ impl Root {
                             )
                         })
                         .into_any_element(),
-                    primary("settings-connect-continue", "Continue", |this, cx| {
-                        if let Some(Dlg::Info(info)) = this.settings_extra.conn.as_mut() {
-                            info.slide = Slide::Connect;
-                        }
-                        cx.notify();
-                    })
+                    primary(
+                        "settings-connect-continue",
+                        dc_intl::tr("Continue"),
+                        |this, cx| {
+                            if let Some(Dlg::Info(info)) = this.settings_extra.conn.as_mut() {
+                                info.slide = Slide::Connect;
+                            }
+                            cx.notify();
+                        },
+                    )
                     .w(px(100.))
                     .into_any_element(),
                 )
@@ -1042,9 +1068,9 @@ impl Root {
                 };
                 let waiting = slide == Slide::Waiting;
                 let label = match slide {
-                    Slide::Waiting => "Retry",
-                    Slide::Error => "Continue",
-                    _ => "Continue",
+                    Slide::Waiting => dc_intl::tr("Retry"),
+                    Slide::Error => dc_intl::tr("Continue"),
+                    _ => dc_intl::tr("Continue"),
                 };
                 let start: fn(&mut Root, &mut Context<Root>) = |this, cx| {
                     let Some(Dlg::Info(info)) = this.settings_extra.conn.as_mut() else {

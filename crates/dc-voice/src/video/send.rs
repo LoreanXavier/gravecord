@@ -25,12 +25,16 @@ const PACING_FACTOR: f64 = 2.5;
 const MAX_CATCH_UP: Duration = Duration::from_millis(100);
 /// Budget a fresh access unit may send before the first pacing sleep.
 const INITIAL_BURST: f64 = (4 * MTU) as f64;
+/// Retransmissions may use up to the target rate over this window (libwebrtc's retransmission rate limiter,
+/// `kRetransmitWindowSizeMs`).
+const REPAIR_WINDOW: Duration = Duration::from_millis(500);
 
 /// One bounded access unit, paced by elapsed time against the encoder target.
 pub(crate) struct Pacer {
     packets: std::vec::IntoIter<Packet>,
     credit: f64,
-    repair_credit: f64,
+    /// Repairs sent within `REPAIR_WINDOW`: when, and their size on the wire.
+    repairs: VecDeque<(Instant, usize)>,
     updated: Instant,
     progress: Instant,
     pub deadline: Instant,
@@ -40,7 +44,7 @@ impl Pacer {
         Self {
             packets: Vec::new().into_iter(),
             credit: INITIAL_BURST,
-            repair_credit: 0.0,
+            repairs: VecDeque::new(),
             updated: Instant::now(),
             progress: Instant::now(),
             deadline: Instant::now(),
@@ -76,16 +80,33 @@ impl Pacer {
             .max(INITIAL_BURST)
             .max(added);
         self.credit = (self.credit + added).min(limit);
-        self.repair_credit = (self.repair_credit + elapsed * target * 0.20).min((2 * MTU) as f64);
+        while self
+            .repairs
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) >= REPAIR_WINDOW)
+        {
+            self.repairs.pop_front();
+        }
     }
+    /// Whether one more repair may leave now: the pacer has a packet's budget, and repairs in the last half second stay
+    /// within the target rate. Repairs go before media, so they wait for nothing but these two limits.
     pub fn allow_repair(&mut self, now: Instant, bitrate: u32) -> bool {
         self.refill(now, bitrate);
-        if self.credit < MTU as f64 || self.repair_credit < MTU as f64 {
+        let window = f64::from(bitrate) / 8.0 * REPAIR_WINDOW.as_secs_f64();
+        let sent: usize = self.repairs.iter().map(|(_, bytes)| bytes).sum();
+        if self.credit < MTU as f64 || (sent + MTU) as f64 > window {
             return false;
         }
-        self.credit -= MTU as f64;
-        self.repair_credit -= MTU as f64;
+        self.repairs.push_back((now, 0));
         true
+    }
+    /// The size of the repair `allow_repair` just let through.
+    pub fn charge_repair(&mut self, payload: usize) {
+        let bytes = RTP_HEADER + payload + TRANSPORT_OVERHEAD;
+        self.credit -= bytes as f64;
+        if let Some(last) = self.repairs.back_mut() {
+            last.1 = bytes;
+        }
     }
     pub fn next_batch(&mut self, now: Instant, bitrate: u32) -> impl Iterator<Item = Packet> + '_ {
         self.refill(now, bitrate);
@@ -105,8 +126,16 @@ impl Pacer {
         let wait = if count < self.packets.len() {
             shortfall / (target * PACING_FACTOR)
         } else {
-            ((MTU as f64 - self.repair_credit) / (target * 0.20))
-                .max((MTU as f64 - self.credit) / (target * PACING_FACTOR))
+            let sent: usize = self.repairs.iter().map(|(_, bytes)| bytes).sum();
+            let full = (sent + MTU) as f64 > target * REPAIR_WINDOW.as_secs_f64();
+            let window = match self.repairs.front() {
+                Some((at, _)) if full => (*at + REPAIR_WINDOW)
+                    .saturating_duration_since(now)
+                    .as_secs_f64(),
+                _ => 0.0,
+            };
+            ((MTU as f64 - self.credit) / (target * PACING_FACTOR))
+                .max(window)
                 .max(0.0)
         };
         self.deadline = now + Duration::from_secs_f64(wait.min(0.1)).max(Duration::from_millis(1));
@@ -119,23 +148,28 @@ impl Pacer {
     }
 }
 
-/// Conservative loss-based control, with REMB as a ceiling and no growth without feedback.
+/// Loss-based control as libwebrtc's send-side estimator runs it without delay feedback (`SendSideBandwidthEstimation`):
+/// below 2% loss the rate grows 8% a second, above 10% it falls by half the loss, in between it holds. REMB is a
+/// ceiling, nothing grows without feedback, and the rate stays between the official floor and the encoder's top.
 pub(crate) struct Rate {
     pub target: u32,
+    minimum: u32,
     maximum: u32,
     at: Instant,
-    last_congestion: Instant,
     loss: Option<u8>,
     limit: Option<(u32, Instant)>,
     estimate: Option<u32>,
 }
+/// Fractions lost over 256: libwebrtc's low (2%) and high (10%) loss thresholds.
+const LOW_LOSS: u8 = 5;
+const HIGH_LOSS: u8 = 25;
 impl Rate {
-    pub fn new(maximum: u32, now: Instant) -> Self {
+    pub fn new(minimum: u32, maximum: u32, now: Instant) -> Self {
         Self {
             target: maximum,
+            minimum: minimum.min(maximum),
             maximum,
             at: now,
-            last_congestion: now,
             loss: None,
             limit: None,
             estimate: None,
@@ -165,22 +199,20 @@ impl Rate {
             .limit
             .filter(|(_, at)| now.duration_since(*at) < Duration::from_secs(5))
             .map_or(self.maximum, |(limit, _)| limit.min(self.maximum))
-            .max(250_000.min(self.maximum));
+            .max(self.minimum);
         let mut target = self.target.min(ceiling);
-        // Fraction lost is /256. Reduce at >=5%, recover only below 2% for two seconds.
-        if loss.is_some_and(|loss| loss >= 13) {
-            target = target.saturating_mul(4) / 5;
-            self.last_congestion = now;
-        } else if target < self.target {
-            self.last_congestion = now;
-        } else if (loss.is_some_and(|loss| loss <= 5) || (loss.is_none() && estimate.is_some()))
-            && now.duration_since(self.last_congestion) >= Duration::from_secs(2)
-        {
-            target = target
-                .saturating_add((target / 20).max(25_000))
-                .min(ceiling);
+        match loss {
+            Some(loss) if loss > HIGH_LOSS => {
+                // bitrate * (1 - loss / 2), loss over 256.
+                target = (u64::from(target) * (512 - u64::from(loss)) / 512) as u32;
+            }
+            Some(loss) if loss > LOW_LOSS => {}
+            _ if loss.is_some() || estimate.is_some() => {
+                target = (u64::from(target) * 108 / 100 + 1000).min(u64::from(ceiling)) as u32;
+            }
+            _ => {}
         }
-        target = target.clamp(250_000.min(self.maximum), self.maximum);
+        target = target.clamp(self.minimum, self.maximum);
         if target == self.target {
             return None;
         }
@@ -192,6 +224,12 @@ impl Rate {
 const HISTORY_PACKETS: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const HISTORY_AGE: Duration = Duration::from_secs(1);
+/// Resends of one packet; a request past this costs a keyframe instead. The receiver asks at most ten times
+/// (libwebrtc's `kMaxNackRetries`), and libwebrtc's sender sets no lower bound of its own.
+const MAX_RESENDS: u8 = 10;
+/// A request this soon after the last resend of the same packet is the receiver's retry crossing that resend in
+/// flight, not a second loss.
+const RESEND_SPACING: Duration = Duration::from_millis(20);
 struct Sent {
     packet: Packet,
     at: Instant,
@@ -260,7 +298,7 @@ impl History {
                 missing = true;
                 continue;
             };
-            if sent.retries >= 2 {
+            if sent.retries >= MAX_RESENDS {
                 missing = true;
                 continue;
             }
@@ -268,7 +306,7 @@ impl History {
                 && !self.pending.contains(&seq)
                 && sent
                     .last_retry
-                    .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(50))
+                    .is_none_or(|at| now.duration_since(at) >= RESEND_SPACING)
             {
                 self.pending.push_back(seq);
             }
@@ -293,7 +331,7 @@ impl History {
             else {
                 continue;
             };
-            if sent.retries >= 2 {
+            if sent.retries >= MAX_RESENDS {
                 continue;
             }
             sent.retries += 1;
@@ -419,4 +457,62 @@ fn nalus(frame: &[u8]) -> Result<Vec<&[u8]>, &'static str> {
         out.push(&frame[start + size..end]);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loss_control_follows_libwebrtc_thresholds() {
+        let start = Instant::now();
+        let second = |n: u64| start + Duration::from_secs(n);
+        let mut rate = Rate::new(500_000, 9_000_000, start);
+        // 3 and 8 percent hold the rate: a lossy line is not driven to the floor.
+        for (n, loss) in [(1, 8u8), (2, 20)] {
+            rate.observe(Some(loss), None);
+            assert_eq!(rate.tick(second(n)), None);
+        }
+        assert_eq!(rate.target, 9_000_000);
+        // 20 percent: down by half of it.
+        rate.observe(Some(51), None);
+        assert_eq!(rate.tick(second(3)), Some(8_103_515));
+        // Under 2 percent: 8 percent a second plus 1 kb/s, up to the top.
+        rate.observe(Some(2), None);
+        assert_eq!(rate.tick(second(4)), Some(8_752_796));
+        rate.observe(Some(0), None);
+        assert_eq!(rate.tick(second(5)), Some(9_000_000));
+        // No feedback, no growth; a REMB ceiling holds for five seconds; the floor is the official minimum.
+        let mut rate = Rate::new(500_000, 9_000_000, start);
+        rate.observe(None, Some(1_000_000));
+        assert_eq!(rate.tick(second(1)), Some(800_000));
+        for n in 2..=5 {
+            rate.observe(Some(0), None);
+            assert_eq!(rate.tick(second(n)), None, "held under the ceiling");
+        }
+        for n in 6..=40 {
+            rate.observe(Some(200), None);
+            rate.tick(second(n));
+        }
+        assert_eq!(rate.target, 500_000);
+    }
+
+    #[test]
+    fn repairs_go_within_the_target_rate_over_half_a_second() {
+        let start = Instant::now();
+        let mut pacer = Pacer::new();
+        // 1 Mb/s: 62.5 kB of repairs per 500 ms, about 52 packets of 1200 bytes.
+        let mut sent = 0;
+        for ms in 0..400u64 {
+            let now = start + Duration::from_millis(ms);
+            while pacer.allow_repair(now, 1_000_000) {
+                pacer.charge_repair(MTU - RTP_HEADER - TRANSPORT_OVERHEAD);
+                sent += 1;
+            }
+        }
+        assert!((45..=52).contains(&sent), "{sent} repairs");
+        // Half a second after the first, the window has room again.
+        let later = start + Duration::from_millis(900);
+        assert!(pacer.allow_repair(later, 1_000_000));
+    }
 }

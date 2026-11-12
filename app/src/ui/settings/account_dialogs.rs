@@ -201,9 +201,11 @@ pub(in crate::ui) fn username_problem(username: &str) -> Option<&'static str> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
     {
-        Some("Please only use numbers, letters, underscores _ , or periods.")
+        Some(dc_intl::tr(
+            "Please only use numbers, letters, underscores _ , or periods.",
+        ))
     } else if username.contains("..") {
-        Some("Username cannot contain repeating dots.")
+        Some(dc_intl::tr("Username cannot contain repeating dots."))
     } else if username.chars().count() < 2 || username.chars().count() > 32 {
         Some("This must be 2-32 characters.")
     } else {
@@ -231,13 +233,15 @@ pub(in crate::ui) fn username_verdict(answer: &Value) -> Option<Verdict> {
     }
     if answer["ok"].as_bool() == Some(true) {
         return Some(match answer["body"]["taken"].as_bool() {
-            Some(true) => Verdict::Problem(USERNAME_TAKEN.to_owned()),
+            Some(true) => Verdict::Problem(dc_intl::tr(USERNAME_TAKEN).to_owned()),
             Some(false) => Verdict::Available,
             None => return None,
         });
     }
     match answer["status"].as_u64() {
-        Some(429) => Some(Verdict::Problem(USERNAME_RATE_LIMIT.to_owned())),
+        Some(429) => Some(Verdict::Problem(
+            dc_intl::tr(USERNAME_RATE_LIMIT).to_owned(),
+        )),
         Some(status) if (1..500).contains(&status) && status != 401 => {
             let message = answer["body"]["message"].as_str()?;
             Some(Verdict::Problem(message.to_owned()))
@@ -253,8 +257,8 @@ pub(in crate::ui) fn password_problems(
 ) -> (Option<&'static str>, Option<&'static str>) {
     let first = new
         .is_empty()
-        .then_some("Your new password cannot be empty.");
-    let second = (new != confirm).then_some("Passwords do not match!");
+        .then_some(dc_intl::tr("Your new password cannot be empty."));
+    let second = (new != confirm).then_some(dc_intl::tr("Passwords do not match!"));
     (first, second)
 }
 
@@ -639,7 +643,7 @@ impl Root {
                                     .line_height(px(20.))
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-strong"))
-                                    .child("Country Code"),
+                                    .child(dc_intl::tr("Country Code")),
                             )
                             .child(self.country_select(form, cx)),
                     )
@@ -927,8 +931,8 @@ impl Root {
                 // `b3`: an owner of servers is told to transfer them first.
                 if self.owns_servers() {
                     self.settings_extra.dialog = Some(super::actions::Dialog::Alert {
-                        title: "You own servers!".to_owned(),
-                        body: "In order to delete or disable your account you must first transfer ownership of all servers that you own.".to_owned(),
+                        title: dc_intl::tr("You own servers!").to_owned(),
+                        body: dc_intl::tr("In order to delete or disable your account you must first transfer ownership of all servers that you own.").to_owned(),
                     });
                     cx.notify();
                     return;
@@ -960,14 +964,20 @@ impl Root {
         match step {
             Step::Username => {
                 let unique = user.discriminator == "0" || user.discriminator.is_empty();
-                let mut name = self.account_field("username", "Username", false, cx);
+                let mut name = self.account_field("username", dc_intl::tr("Username"), false, cx);
                 name.editor.update(cx, |e, _| e.set_text(&user.username));
-                name.helper = unique
-                    .then_some("Please only use numbers, letters, underscores _ , or periods.");
+                name.helper = unique.then_some(dc_intl::tr(
+                    "Please only use numbers, letters, underscores _ , or periods.",
+                ));
                 name.width = (!unique).then_some(1.);
                 fields.push(name);
                 if !unique {
-                    let mut tag = self.account_field("discriminator", "Discriminator", false, cx);
+                    let mut tag = self.account_field(
+                        "discriminator",
+                        dc_intl::tr("Discriminator"),
+                        false,
+                        cx,
+                    );
                     tag.editor
                         .update(cx, |e, _| e.set_text(&user.discriminator));
                     tag.leading = Some("#".into());
@@ -975,19 +985,44 @@ impl Root {
                     let _ = premium;
                     fields.push(tag);
                 }
-                fields.push(self.account_field("password", "Current Password", true, cx));
+                fields.push(self.account_field(
+                    "password",
+                    dc_intl::tr("Current Password"),
+                    true,
+                    cx,
+                ));
             }
             Step::Password => {
-                fields.push(self.account_field("password", "Current Password", true, cx));
-                fields.push(self.account_field("new_password", "New Password", true, cx));
-                fields.push(self.account_field("confirm", "Confirm New Password", true, cx));
+                fields.push(self.account_field(
+                    "password",
+                    dc_intl::tr("Current Password"),
+                    true,
+                    cx,
+                ));
+                fields.push(self.account_field(
+                    "new_password",
+                    dc_intl::tr("New Password"),
+                    true,
+                    cx,
+                ));
+                fields.push(self.account_field(
+                    "confirm",
+                    dc_intl::tr("Confirm New Password"),
+                    true,
+                    cx,
+                ));
             }
             Step::EmailCode => {
-                fields.push(self.account_field("code", "Verification Code", false, cx))
+                fields.push(self.account_field("code", dc_intl::tr("Verification Code"), false, cx))
             }
             Step::EmailAddress => {
-                fields.push(self.account_field("email", "Email", false, cx));
-                fields.push(self.account_field("password", "Current Password", true, cx));
+                fields.push(self.account_field("email", dc_intl::tr("Email"), false, cx));
+                fields.push(self.account_field(
+                    "password",
+                    dc_intl::tr("Current Password"),
+                    true,
+                    cx,
+                ));
             }
             Step::PhoneNumber => {
                 // `f` of module 938401: the country select, then the number box with the dialing code in front.
@@ -996,21 +1031,24 @@ impl Root {
                     .form
                     .as_ref()
                     .map_or_else(default_country, |form| form.country);
-                let mut phone = self.account_field("phone", "Phone Number", false, cx);
+                let mut phone = self.account_field("phone", dc_intl::tr("Phone Number"), false, cx);
                 phone.leading = Some(country_prefix(country).into());
                 fields.push(phone);
                 search = Some(self.country_search_editor(cx));
                 self.setting_choices.insert(COUNTRY_OPEN, Choice::On(false));
             }
-            Step::PhoneCode => {
-                fields.push(self.account_field("code", "Verify Your Number", false, cx))
-            }
+            Step::PhoneCode => fields.push(self.account_field(
+                "code",
+                dc_intl::tr("Verify Your Number"),
+                false,
+                cx,
+            )),
             Step::PhonePassword | Step::PhoneRemove | Step::Remove => {
-                fields.push(self.account_field("password", "Password", true, cx));
+                fields.push(self.account_field("password", dc_intl::tr("Password"), true, cx));
             }
             Step::MfaSmsPassword | Step::MfaCodesPassword => {
                 // `CIGa+7`.
-                fields.push(self.account_field("password", "Password", true, cx));
+                fields.push(self.account_field("password", dc_intl::tr("Password"), true, cx));
             }
             Step::MfaEnable => {
                 // `HZPBOd` is the hidden label, `000 000` the placeholder, `maxLength: 7`.
@@ -1025,20 +1063,25 @@ impl Root {
             }
             Step::MfaCodesKey => {
                 // `TjGb4Q`, `maxLength: 8`.
-                fields.push(self.account_field("code", "Verification key", false, cx));
+                fields.push(self.account_field("code", dc_intl::tr("Verification key"), false, cx));
             }
             Step::MfaRemove | Step::MfaCodes | Step::KeyRegister | Step::KeyDelete => {}
             Step::KeyName => {
                 // `Jzd+z/` over the box, which starts with `I/sJtJ`.
-                let field = self.account_field("name", "Choose a name for your new key", false, cx);
+                let field = self.account_field(
+                    "name",
+                    dc_intl::tr("Choose a name for your new key"),
+                    false,
+                    cx,
+                );
                 field
                     .editor
-                    .update(cx, |e, _| e.set_text(mfa::KEY_DEFAULT_NAME));
+                    .update(cx, |e, _| e.set_text(dc_intl::tr(mfa::KEY_DEFAULT_NAME)));
                 fields.push(field);
             }
             Step::KeyRename => {
                 // `7yEgJY` over the box; `placeholder: credential.name`, `maxLength: 32`.
-                let field = self.account_field("name", "New Key Name", false, cx);
+                let field = self.account_field("name", dc_intl::tr("New Key Name"), false, cx);
                 let current = self
                     .settings_extra
                     .form
@@ -1142,7 +1185,7 @@ impl Root {
             Some(Verdict::Available) => {
                 if let Some(field) = form.fields.iter_mut().find(|f| f.name == "username") {
                     field.error = None;
-                    field.success = Some(USERNAME_AVAILABLE.to_owned());
+                    field.success = Some(dc_intl::tr(USERNAME_AVAILABLE).to_owned());
                 }
             }
             Some(Verdict::Problem(message)) => form.set_error("username", Some(message)),
@@ -1327,11 +1370,11 @@ impl Root {
                 // `b2`: any other refusal is an alert of its own.
                 let message = answer["message"]
                     .as_str()
-                    .unwrap_or("Please try again")
+                    .unwrap_or(dc_intl::tr("Please try again"))
                     .to_owned();
                 self.settings_extra.form = None;
                 self.settings_extra.dialog = Some(super::actions::Dialog::Alert {
-                    title: "Error Deleting Your Account".to_owned(),
+                    title: dc_intl::tr("Error Deleting Your Account").to_owned(),
                     body: message,
                 });
                 return;
@@ -1523,9 +1566,14 @@ impl Root {
                 .child(value.to_owned())
         };
         let cancel = |id: &'static str| {
-            modal::button(id, "Cancel", modal::Tone::Secondary, |this, _, _| {
-                this.settings_extra.form = None;
-            })
+            modal::button(
+                id,
+                dc_intl::tr("Cancel"),
+                modal::Tone::Secondary,
+                |this, _, _| {
+                    this.settings_extra.form = None;
+                },
+            )
         };
         let primary = |id: &'static str, label: &'static str, tone: modal::Tone| {
             modal::button(id, label, tone, |this, _, cx| this.account_form_submit(cx))
@@ -1545,19 +1593,19 @@ impl Root {
         let (title, subtitle, mut body, buttons): (&str, Option<String>, Vec<AnyElement>, Vec<modal::Button>) =
             match form.step {
                 Step::Username => (
-                    "Change your username",
-                    Some("Enter a new username and your existing password.".to_owned()),
+                    dc_intl::tr("Change your username"),
+                    Some(dc_intl::tr("Enter a new username and your existing password.").to_owned()),
                     Vec::new(),
-                    vec![cancel("account-cancel"), primary("account-ok", "Done", busy(modal::Tone::Primary))],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Done"), busy(modal::Tone::Primary))],
                 ),
                 Step::Password => (
-                    "Update your password",
-                    Some("Enter your current password and a new password.".to_owned()),
+                    dc_intl::tr("Update your password"),
+                    Some(dc_intl::tr("Enter your current password and a new password.").to_owned()),
                     Vec::new(),
-                    vec![cancel("account-cancel"), primary("account-ok", "Done", busy(modal::Tone::Primary))],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Done"), busy(modal::Tone::Primary))],
                 ),
                 Step::EmailSend => (
-                    "Verify email address",
+                    dc_intl::tr("Verify email address"),
                     None,
                     vec![
                         div()
@@ -1579,23 +1627,23 @@ impl Root {
                     ],
                     vec![
                         cancel("account-cancel"),
-                        primary("account-ok", "Send Verification Code", busy(modal::Tone::Primary)),
+                        primary("account-ok", dc_intl::tr("Send Verification Code"), busy(modal::Tone::Primary)),
                     ],
                 ),
                 Step::EmailCode => (
-                    "Enter code",
-                    Some("Check your email: we sent you a verification code. Enter it here to verify you\u{2019}re really you.".to_owned()),
+                    dc_intl::tr("Enter code"),
+                    Some(dc_intl::tr("Check your email: we sent you a verification code. Enter it here to verify you\u{2019}re really you.").to_owned()),
                     Vec::new(),
-                    vec![primary("account-ok", "Next", busy(modal::Tone::Primary))],
+                    vec![primary("account-ok", dc_intl::tr("Next"), busy(modal::Tone::Primary))],
                 ),
                 Step::EmailReason => (
-                    "Why are you changing your email?",
+                    dc_intl::tr("Why are you changing your email?"),
                     None,
                     vec![self.email_reasons(form.reason, cx)],
                     vec![
                         cancel("account-cancel"),
                         if form.reason.is_some() {
-                            modal::button("account-ok", "Continue", modal::Tone::Primary, |this, _, cx| {
+                            modal::button("account-ok", dc_intl::tr("Continue"), modal::Tone::Primary, |this, _, cx| {
                                 // `u.qr`: the first two reasons get the scam alert.
                                 let next = match this.settings_extra.form.as_ref().and_then(|f| f.reason) {
                                     Some(0 | 1) => Step::EmailScam,
@@ -1604,40 +1652,40 @@ impl Root {
                                 this.account_form_step(next, cx);
                             })
                         } else {
-                            modal::button("account-ok", "Continue", modal::Tone::PrimaryDisabled, |_, _, _| {})
+                            modal::button("account-ok", dc_intl::tr("Continue"), modal::Tone::PrimaryDisabled, |_, _, _| {})
                         },
                     ],
                 ),
                 Step::EmailScam => (
-                    "Potential scam alert!",
+                    dc_intl::tr("Potential scam alert!"),
                     None,
                     vec![div()
                         .flex()
                         .flex_col()
                         .gap(px(8.))
                         .child(text("This sounds very similar to common scams going around! Changing your email address can give someone else access to your account - learn more about trending scams here.", false))
-                        .child(text("Discord will never ask you to change your email - report anyone who asks you to do this.", false))
+                        .child(text(dc_intl::tr("Discord will never ask you to change your email - report anyone who asks you to do this."), false))
                         .into_any_element()],
                     vec![
-                        go("account-risk", "I know the risks, continue", modal::Tone::Secondary, Step::EmailAddress),
+                        go("account-risk", dc_intl::tr("I know the risks, continue"), modal::Tone::Secondary, Step::EmailAddress),
                         cancel("account-cancel"),
                     ],
                 ),
                 Step::EmailAddress => (
-                    "Enter an email address",
-                    Some("Enter a new email address and your existing password.".to_owned()),
+                    dc_intl::tr("Enter an email address"),
+                    Some(dc_intl::tr("Enter a new email address and your existing password.").to_owned()),
                     Vec::new(),
                     vec![
                         if form.email_token.is_some() {
-                            go("account-back", "Back", modal::Tone::Secondary, Step::EmailReason)
+                            go("account-back", dc_intl::tr("Back"), modal::Tone::Secondary, Step::EmailReason)
                         } else {
                             cancel("account-cancel")
                         },
-                        primary("account-ok", "Done", busy(modal::Tone::Primary)),
+                        primary("account-ok", dc_intl::tr("Done"), busy(modal::Tone::Primary)),
                     ],
                 ),
                 Step::EmailDone => (
-                    "Confirm your new email",
+                    dc_intl::tr("Confirm your new email"),
                     None,
                     vec![div()
                         .flex()
@@ -1647,19 +1695,19 @@ impl Root {
                             &format!("To finish, we sent a verification email to: {}", form.new_email),
                             false,
                         ))
-                        .child(text("Didn't get the email? Make sure to check your spam folder.", false))
+                        .child(text(dc_intl::tr("Didn't get the email? Make sure to check your spam folder."), false))
                         .into_any_element()],
-                    vec![modal::button("account-ok", "Okay", modal::Tone::Primary, |this, _, _| {
+                    vec![modal::button("account-ok", dc_intl::tr("Okay"), modal::Tone::Primary, |this, _, _| {
                         this.settings_extra.form = None;
                     })],
                 ),
                 Step::PhoneNumber => (
-                    "Enter a phone number",
-                    Some("You will receive a text message with a verification code.".to_owned()),
+                    dc_intl::tr("Enter a phone number"),
+                    Some(dc_intl::tr("You will receive a text message with a verification code.").to_owned()),
                     vec![self.phone_number_body(form, cx)],
                     vec![primary(
                         "account-ok",
-                        "Send",
+                        dc_intl::tr("Send"),
                         if form.phone_typed.is_empty() {
                             modal::Tone::PrimaryDisabled
                         } else {
@@ -1668,10 +1716,10 @@ impl Root {
                     )],
                 ),
                 Step::PhoneCode => (
-                    "Verify your phone number",
-                    Some("Enter the 6 digit code we sent to your phone.".to_owned()),
+                    dc_intl::tr("Verify your phone number"),
+                    Some(dc_intl::tr("Enter the 6 digit code we sent to your phone.").to_owned()),
                     Vec::new(),
-                    vec![modal::button("account-resend", "Resend Code", modal::Tone::Secondary, |this, _, cx| {
+                    vec![modal::button("account-resend", dc_intl::tr("Resend Code"), modal::Tone::Secondary, |this, _, cx| {
                         let Some(form) = this.settings_extra.form.as_ref() else {
                             return;
                         };
@@ -1680,13 +1728,13 @@ impl Root {
                     })],
                 ),
                 Step::PhonePassword => (
-                    "Enter your password to confirm changes",
+                    dc_intl::tr("Enter your password to confirm changes"),
                     None,
                     Vec::new(),
-                    vec![cancel("account-cancel"), primary("account-ok", "Confirm", busy(modal::Tone::Primary))],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Confirm"), busy(modal::Tone::Primary))],
                 ),
                 Step::PhoneManage => (
-                    "Edit your phone number",
+                    dc_intl::tr("Edit your phone number"),
                     None,
                     vec![div()
                         .flex()
@@ -1698,45 +1746,45 @@ impl Root {
                     {
                         let mut buttons = Vec::new();
                         if account.email.is_some() {
-                            buttons.push(go("account-remove", "Remove", modal::Tone::CriticalSecondary, Step::PhoneRemove));
+                            buttons.push(go("account-remove", dc_intl::tr("Remove"), modal::Tone::CriticalSecondary, Step::PhoneRemove));
                         }
-                        buttons.push(go("account-edit", "Edit", modal::Tone::Primary, Step::PhoneNumber));
+                        buttons.push(go("account-edit", dc_intl::tr("Edit"), modal::Tone::Primary, Step::PhoneNumber));
                         buttons
                     },
                 ),
                 Step::PhoneRemove => (
-                    "Remove phone number",
+                    dc_intl::tr("Remove phone number"),
                     None,
                     Vec::new(),
-                    vec![cancel("account-cancel"), primary("account-ok", "Remove", modal::Tone::Critical)],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Remove"), modal::Tone::Critical)],
                 ),
                 Step::Remove => (
-                    if form.delete { "Delete account" } else { "Disable account" },
+                    if form.delete { dc_intl::tr("Delete account") } else { dc_intl::tr("Disable account") },
                     None,
                     vec![self.warning_notice(if form.delete {
-                        "Are you sure that you want to delete your account? This will immediately log you out of your account and you will not be able to log in again."
+                        dc_intl::tr("Are you sure that you want to delete your account? This will immediately log you out of your account and you will not be able to log in again.")
                     } else {
-                        "Are you sure that you want to disable your account? This will immediately log you out and make your account inaccessible to anyone."
+                        dc_intl::tr("Are you sure that you want to disable your account? This will immediately log you out and make your account inaccessible to anyone.")
                     })],
                     vec![
                         cancel("account-cancel"),
                         primary(
                             "account-ok",
-                            if form.delete { "Delete Account" } else { "Disable Account" },
+                            if form.delete { dc_intl::tr("Delete Account") } else { dc_intl::tr("Disable Account") },
                             modal::Tone::Critical,
                         ),
                     ],
                 ),
                 // Module 333737: the three steps, the last with the code field and its Activate button.
                 Step::MfaEnable => (
-                    "Enable Authenticator App",
-                    Some("Make your account safer in 3 easy steps:".to_owned()),
+                    dc_intl::tr("Enable Authenticator App"),
+                    Some(dc_intl::tr("Make your account safer in 3 easy steps:").to_owned()),
                     vec![self.mfa_enable_body(form, cx)],
                     Vec::new(),
                 ),
                 // `bn`: `D+aE7g` over `EA4ZEk`, a critical `Remove`.
                 Step::MfaRemove => (
-                    "Remove Authenticator App",
+                    dc_intl::tr("Remove Authenticator App"),
                     // `xlA7Tl` or `EA4ZEk` by the security keys of the account (module 705147).
                     Some(
                         mfa::remove_text(
@@ -1750,41 +1798,41 @@ impl Root {
                     Vec::new(),
                     vec![
                         cancel("account-cancel"),
-                        primary("account-ok", "Remove", busy(modal::Tone::Critical)),
+                        primary("account-ok", dc_intl::tr("Remove"), busy(modal::Tone::Critical)),
                     ],
                 ),
                 // `KLWnit` over `W0/Duf` in the warning notice of module 662758.
                 Step::MfaSmsPassword => (
-                    "Remove SMS Authentication",
+                    dc_intl::tr("Remove SMS Authentication"),
                     None,
                     vec![self.warning_notice(
-                        "This removes the ability to log in with an authentication code through SMS. Are you sure you want to remove this?",
+                        dc_intl::tr("This removes the ability to log in with an authentication code through SMS. Are you sure you want to remove this?"),
                     )],
-                    vec![cancel("account-cancel"), primary("account-ok", "Confirm", busy(modal::Tone::Primary))],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Confirm"), busy(modal::Tone::Primary))],
                 ),
                 Step::MfaCodesPassword => (
-                    "Enter Your Password",
+                    dc_intl::tr("Enter Your Password"),
                     None,
                     Vec::new(),
-                    vec![cancel("account-cancel"), primary("account-ok", "Next", busy(modal::Tone::Primary))],
+                    vec![cancel("account-cancel"), primary("account-ok", dc_intl::tr("Next"), busy(modal::Tone::Primary))],
                 ),
                 // Module 518142.
                 Step::MfaCodesKey => (
-                    "Enter Verification Key",
+                    dc_intl::tr("Enter Verification Key"),
                     None,
                     vec![text(
-                        "As an added security measure, please enter the key we just sent to your email address. You should see it in a minute or two.",
+                        dc_intl::tr("As an added security measure, please enter the key we just sent to your email address. You should see it in a minute or two."),
                         false,
                     )
                     .into_any_element()],
                     vec![
                         cancel("account-cancel"),
-                        primary("account-ok", "Submit", busy(modal::Tone::Primary)),
+                        primary("account-ok", dc_intl::tr("Submit"), busy(modal::Tone::Primary)),
                     ],
                 ),
                 // Module 549404 `renderTotp`.
                 Step::MfaCodes => (
-                    "2FA is activated! \u{1f389}",
+                    dc_intl::tr("2FA is activated! \u{1f389}"),
                     Some("Here is something you should do!".to_owned()),
                     vec![self.mfa_codes_body(form, cx)],
                     Vec::new(),
@@ -1793,9 +1841,9 @@ impl Root {
                 // critical notice of a failed attempt above, and `oibaQa` as the one button.
                 Step::KeyRegister => (
                     if form.mfa.waiting {
-                        "Interact with your security key"
+                        dc_intl::tr("Interact with your security key")
                     } else {
-                        "Register a Security Key"
+                        dc_intl::tr("Register a Security Key")
                     },
                     None,
                     {
@@ -1806,9 +1854,9 @@ impl Root {
                         parts.push(
                             text(
                                 if form.mfa.waiting {
-                                    "You may need to tap your device or confirm a prompt."
+                                    dc_intl::tr("You may need to tap your device or confirm a prompt.")
                                 } else {
-                                    "When you are ready to authenticate, press the button below."
+                                    dc_intl::tr("When you are ready to authenticate, press the button below.")
                                 },
                                 false,
                             )
@@ -1832,12 +1880,12 @@ impl Root {
                 ),
                 // Module 245329 `NAME`: `cY/IOu`, the box under `Jzd+z/` and `5dyZ1S`.
                 Step::KeyName => (
-                    "Name your security key",
+                    dc_intl::tr("Name your security key"),
                     None,
                     Vec::new(),
                     vec![primary(
                         "account-ok",
-                        "Finish",
+                        dc_intl::tr("Finish"),
                         if form
                             .fields
                             .iter()
@@ -1853,14 +1901,14 @@ impl Root {
                 ),
                 // Module 428726: `YjuMsf`, the `7yEgJY` box (at most 32 characters) and `ETE/oC` / `i4jeWR`.
                 Step::KeyRename => (
-                    "Rename your security key",
+                    dc_intl::tr("Rename your security key"),
                     None,
                     Vec::new(),
                     vec![
                         cancel("account-cancel"),
                         primary(
                             "account-ok",
-                            "Done",
+                            dc_intl::tr("Done"),
                             {
                                 let typed = form
                                     .fields
@@ -1878,12 +1926,12 @@ impl Root {
                 ),
                 // Module 41000: `J/x6ns` over `IMKkcn`, a critical `+xgS+L`.
                 Step::KeyDelete => (
-                    "This is your last Passkey",
-                    Some(mfa::LAST_KEY_TEXT.to_owned()),
+                    dc_intl::tr("This is your last Passkey"),
+                    Some(dc_intl::tr(mfa::LAST_KEY_TEXT).to_owned()),
                     Vec::new(),
                     vec![
                         cancel("account-cancel"),
-                        primary("account-ok", "Delete", busy(modal::Tone::Critical)),
+                        primary("account-ok", dc_intl::tr("Delete"), busy(modal::Tone::Critical)),
                     ],
                 ),
             };
@@ -1940,7 +1988,9 @@ impl Root {
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .text_color(color("--text-feedback-positive"))
-                        .child("Verification email resent, please check your email.")
+                        .child(dc_intl::tr(
+                            "Verification email resent, please check your email.",
+                        ))
                         .into_any_element(),
                 );
             }
@@ -1975,7 +2025,9 @@ impl Root {
                         let _ = this.requests.send(email_send_call().request());
                         cx.notify();
                     }))
-                    .child("Didn\u{2019}t receive a code or it expired? Resend it.")
+                    .child(dc_intl::tr(
+                        "Didn\u{2019}t receive a code or it expired? Resend it.",
+                    ))
                     .into_any_element(),
             );
         }
@@ -2007,11 +2059,16 @@ impl Root {
             return Some(modal::render(
                 modal::Spec {
                     id: "settings-mfa-skip",
-                    title: SharedString::from("Continue without Backup"),
+                    title: SharedString::from(dc_intl::tr("Continue without Backup")),
                     subtitle: None,
-                    body: Some(text(mfa::SKIP_BACKUP_TEXT, false).into_any_element()),
+                    body: Some(text(dc_intl::tr(mfa::SKIP_BACKUP_TEXT), false).into_any_element()),
                     buttons: vec![
-                        modal::button("mfa-skip-cancel", "Cancel", modal::Tone::Secondary, back),
+                        modal::button(
+                            "mfa-skip-cancel",
+                            dc_intl::tr("Cancel"),
+                            modal::Tone::Secondary,
+                            back,
+                        ),
                         modal::button(
                             "mfa-skip-ok",
                             "I\u{2019}m sure",
@@ -2221,7 +2278,7 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| this.account_form_submit(cx)))
             .child(super::button(
                 "mfa-activate-button",
-                "Activate",
+                dc_intl::tr("Activate"),
                 if form.working {
                     super::ButtonKind::Secondary
                 } else {
@@ -2233,15 +2290,15 @@ impl Root {
             .flex_col()
             .child(self.mfa_section(
                 div().size(px(100.)).into_any_element(),
-                "Download an authenticator app",
+                dc_intl::tr("Download an authenticator app"),
                 self.mfa_links(
                     "mfa-apps",
                     &[
                         ("Download and install ", None),
-                        ("Authy", Some("https://www.authy.com/")),
+                        (dc_intl::tr("Authy"), Some("https://www.authy.com/")),
                         (" or ", None),
                         (
-                            "Google Authenticator",
+                            dc_intl::tr("Google Authenticator"),
                             Some("https://support.google.com/accounts/answer/1066447?hl=en"),
                         ),
                         (" for your phone or tablet.", None),
@@ -2252,7 +2309,7 @@ impl Root {
             .child(self.mfa_rule())
             .child(self.mfa_section(
                 qr,
-                "Scan the QR code",
+                dc_intl::tr("Scan the QR code"),
                 body("Open the authentication app and scan the image to the left using your phone\u{2019}s camera."),
                 // `topSpacing_uV72M-`: 20 above the manual key, whose value is `secret_uV72M-` (`--font-code`).
                 vec![div()
@@ -2265,7 +2322,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child("2FA Key (Manual entry)"),
+                            .child(dc_intl::tr("2FA Key (Manual entry)")),
                     )
                     .child(
                         div()
@@ -2280,8 +2337,8 @@ impl Root {
             .child(self.mfa_rule())
             .child(self.mfa_section(
                 div().size(px(100.)).into_any_element(),
-                "Log in with your code",
-                body("Enter the 6-digit verification code generated."),
+                dc_intl::tr("Log in with your code"),
+                body(dc_intl::tr("Enter the 6-digit verification code generated.")),
                 // `inputContainer_uV72M-`: the field and the button in a row, 8 apart and 8 below the text.
                 vec![div()
                     .mt(px(8.))
@@ -2326,9 +2383,9 @@ impl Root {
             div()
                 .flex()
                 .flex_col()
-                .child(label("Add a Passkey"))
+                .child(label(dc_intl::tr("Add a Passkey")))
                 .child(muted().child(
-                    "Skip passwords entirely. Sign in with your face, fingerprint, device PIN, or password manager for the ultimate convenience and security.",
+                    dc_intl::tr("Skip passwords entirely. Sign in with your face, fingerprint, device PIN, or password manager for the ultimate convenience and security."),
                 ))
                 .child(muted().child(self.mfa_links(
                     "mfa-passkey-learn",
@@ -2339,7 +2396,7 @@ impl Root {
                 )))
                 .child(div().flex().child(Self::mfa_small_button(
                     "mfa-add-passkey",
-                    "Add a Passkey",
+                    dc_intl::tr("Add a Passkey"),
                     "connected",
                     cx,
                     // `handleAddPasskey`: the dialog closes and the key registration starts (module 665671).
@@ -2352,7 +2409,7 @@ impl Root {
         });
         let download = Self::mfa_small_button(
             "mfa-download-codes",
-            "Download Backup Codes",
+            dc_intl::tr("Download Backup Codes"),
             "connected",
             cx,
             move |this, cx| {
@@ -2370,7 +2427,7 @@ impl Root {
                 div()
                     .flex()
                     .flex_col()
-                    .child(label("Download Backup Codes"))
+                    .child(label(dc_intl::tr("Download Backup Codes")))
                     .child(muted().child("Without your backup codes, you are at risk of losing your account permanently if you lose access to your authenticator! Save these somewhere safe on and off your device to reduce the risk of losing your account!"))
                     .child(div().flex().child(download)),
             )
@@ -2448,7 +2505,7 @@ impl Root {
                 form.mfa.credential = credential;
                 self.account_form_step(Step::KeyName, cx);
             }
-            Err(_) => form.mfa.error = Some(mfa::KEY_PROMPT_FAILED.to_owned()),
+            Err(_) => form.mfa.error = Some(dc_intl::tr(mfa::KEY_PROMPT_FAILED).to_owned()),
         }
         cx.notify();
     }
@@ -2504,7 +2561,7 @@ impl Root {
         };
         let message = answer["message"]
             .as_str()
-            .unwrap_or(mfa::KEY_REGISTER_FAILED)
+            .unwrap_or(dc_intl::tr(mfa::KEY_REGISTER_FAILED))
             .to_owned();
         match form.step {
             Step::KeyRegister => {
@@ -2518,13 +2575,13 @@ impl Root {
                     _ => {
                         // `xSCvBf` as a critical toast, and no dialog.
                         self.settings_extra.form = None;
-                        self.show_app_toast(mfa::KEY_PROMPT_FAILED, cx);
+                        self.show_app_toast(dc_intl::tr(mfa::KEY_PROMPT_FAILED), cx);
                     }
                 }
             }
             Step::KeyName if !ok => {
                 // The register request failed: back to the first step with `fEptJP`, the draft kept.
-                form.mfa.error = Some(mfa::KEY_REGISTER_FAILED.to_owned());
+                form.mfa.error = Some(dc_intl::tr(mfa::KEY_REGISTER_FAILED).to_owned());
                 self.account_form_step(Step::KeyRegister, cx);
             }
             Step::KeyName => {
@@ -2726,7 +2783,7 @@ impl Root {
                     .to_string();
                     form.working = false;
                     if words[0] == "key-error" {
-                        form.mfa.error = Some(mfa::KEY_PROMPT_FAILED.to_owned());
+                        form.mfa.error = Some(dc_intl::tr(mfa::KEY_PROMPT_FAILED).to_owned());
                     }
                 }
                 match words[0] {
@@ -2835,7 +2892,7 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-default"))
-                            .child(*label),
+                            .child(dc_intl::tr(label)),
                     )
             }))
             .into_any_element()

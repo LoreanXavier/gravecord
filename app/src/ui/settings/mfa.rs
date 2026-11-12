@@ -79,9 +79,11 @@ pub(in crate::ui) fn prompt_seen() -> bool {
 /// text; with a security key it is the short `EA4ZEk`.
 pub(in crate::ui) fn remove_text(security_keys: usize) -> &'static str {
     if security_keys == 0 {
-        "Heads up, removing your Authenticator App means your account will no longer require Multi-Factor Authentication to sign in. If you have not reached out to Discord support for help with removing your Authenticator App and someone reached out to you instead, back out and report them. Discord support will never contact you first in a direct message."
+        dc_intl::tr(
+            "Heads up, removing your Authenticator App means your account will no longer require Multi-Factor Authentication to sign in. If you have not reached out to Discord support for help with removing your Authenticator App and someone reached out to you instead, back out and report them. Discord support will never contact you first in a direct message.",
+        )
     } else {
-        "Are you sure you want to remove your Authenticator App?"
+        dc_intl::tr("Are you sure you want to remove your Authenticator App?")
     }
 }
 
@@ -150,7 +152,7 @@ fn encode_uri(text: &str) -> String {
 pub(in crate::ui) fn otpauth_url(email: &str, secret: &str) -> String {
     format!(
         "otpauth://totp/{}:{}?secret={}&issuer=Discord",
-        encode_uri("Discord"),
+        encode_uri(dc_intl::tr("Discord")),
         encode_uri(email),
         normalize(secret)
     )

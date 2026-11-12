@@ -327,13 +327,13 @@ fn heading(title: &'static str) -> Div {
 
 fn effect_name(effect: u32) -> &'static str {
     match effect {
-        1 => "Solid",
-        2 => "Gradient",
-        3 => "Neon",
-        4 => "Toon",
-        5 => "Pop",
-        8 => "Gummy",
-        7 => "Prism",
+        1 => dc_intl::tr("Solid"),
+        2 => dc_intl::tr("Gradient"),
+        3 => dc_intl::tr("Neon"),
+        4 => dc_intl::tr("Toon"),
+        5 => dc_intl::tr("Pop"),
+        8 => dc_intl::tr("Gummy"),
+        7 => dc_intl::tr("Prism"),
         _ => "Glow",
     }
 }
@@ -485,7 +485,7 @@ impl Root {
             .pl(px(24.))
             .pt(px(24.))
             .child(text(
-                "Change Display Name Style",
+                dc_intl::tr("Change Display Name Style"),
                 20.,
                 24.,
                 600.,
@@ -497,7 +497,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(heading("Choose Font"))
+                    .child(heading(dc_intl::tr("Choose Font")))
                     .child(fonts),
             )
             .child(
@@ -506,7 +506,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(heading("Choose Effect"))
+                    .child(heading(dc_intl::tr("Choose Effect")))
                     .child(effects),
             )
             .child(
@@ -516,14 +516,14 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(heading("Choose Color"))
+                    .child(heading(dc_intl::tr("Choose Color")))
                     .child(colors_row),
             );
 
         let preview = self.styles_preview(&user, &styles, nitro, cx);
         let surprise = modal::button(
             "styles-surprise",
-            "Surprise Me",
+            dc_intl::tr("Surprise Me"),
             Tone::Secondary,
             |this, _, cx| {
                 this.profile_editor_styles_surprise(cx);
@@ -532,7 +532,7 @@ impl Root {
         .with_icon("profile_editor_dice", 20., "--icon-strong");
         let apply = modal::button(
             "styles-apply",
-            "Apply",
+            dc_intl::tr("Apply"),
             Tone::Primary,
             move |this, _, cx| {
                 this.profile_editor_styles_apply(cx);
@@ -898,7 +898,7 @@ impl Root {
                             .child(text("5:08 PM", 12., 20., 500., "--text-subtle")),
                     )
                     .child(text(
-                        "does anyone read this?",
+                        dc_intl::tr("does anyone read this?"),
                         16.,
                         22.,
                         400.,

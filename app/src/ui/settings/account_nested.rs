@@ -424,7 +424,7 @@ impl Root {
                             .cursor_pointer()
                             .text_color(color("--text-subtle"))
                             .on_click(up)
-                            .child("Account"),
+                            .child(dc_intl::tr("Account")),
                     )
                     .child(div().text_color(color("--text-subtle")).child("/"))
                     .child(
@@ -614,7 +614,7 @@ impl Root {
                             } else {
                                 "--text-subtle"
                             }))
-                            .child(*label),
+                            .child(dc_intl::tr(label)),
                     )
                     .when(selected, |this| {
                         this.child(
@@ -671,7 +671,9 @@ impl Root {
                             .line_height(px(32.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child("Stay informed about how your teen is using Discord."),
+                            .child(dc_intl::tr(
+                                "Stay informed about how your teen is using Discord.",
+                            )),
                     )
                     .child(
                         div()
@@ -692,7 +694,7 @@ impl Root {
                                 }))
                                 .child(button(
                                     "settings-family-get-started-button",
-                                    "Get Started",
+                                    dc_intl::tr("Get Started"),
                                     ButtonKind::Primary,
                                 )),
                         ),
@@ -740,9 +742,13 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child(card.title),
+                            .child(dc_intl::tr(card.title)),
                     )
-                    .child(div().mt(px(6.)).child(muted(card.text, 14., 18.)))
+                    .child(
+                        div()
+                            .mt(px(6.))
+                            .child(muted(dc_intl::tr(card.text), 14., 18.)),
+                    )
             }));
         let sections = div()
             .flex()
@@ -765,9 +771,9 @@ impl Root {
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-strong"))
-                                    .child(section.title),
+                                    .child(dc_intl::tr(section.title)),
                             )
-                            .children(section.note.map(|note| muted(note, 12., 16.))),
+                            .children(section.note.map(|note| muted(dc_intl::tr(note), 12., 16.))),
                     )
                     .child(
                         div()
@@ -804,11 +810,13 @@ impl Root {
                                                     .line_height(px(18.))
                                                     .font_weight(FontWeight(500.))
                                                     .text_color(color("--text-strong"))
-                                                    .child(line.title),
+                                                    .child(dc_intl::tr(line.title)),
                                             )
-                                            .child(
-                                                div().mt(px(4.)).child(muted(line.text, 12., 16.)),
-                                            ),
+                                            .child(div().mt(px(4.)).child(muted(
+                                                dc_intl::tr(line.text),
+                                                12.,
+                                                16.,
+                                            ))),
                                     )
                                     .when(!last, |this| {
                                         this.child(
@@ -921,10 +929,10 @@ impl Root {
                                     .line_height(px(32.))
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-strong"))
-                                    .child("Download the Discord app to connect with your teens!"),
+                                    .child(dc_intl::tr("Download the Discord app to connect with your teens!")),
                             )
                             .child(div().mt(px(8.)).mb(px(20.)).child(muted(
-                                "In order to connect with your teen, you'll need to download the Discord app on your phone. You can then complete setup by going to Family Center in user settings. After connecting, you will see high-level information about your teen's activity on Discord.",
+                                dc_intl::tr("In order to connect with your teen, you'll need to download the Discord app on your phone. You can then complete setup by going to Family Center in user settings. After connecting, you will see high-level information about your teen's activity on Discord."),
                                 14.,
                                 18.,
                             ))),
@@ -943,18 +951,18 @@ impl Root {
                     .gap(px(16.))
                     .child(step(
                         "1",
-                        "Ask your teen for their QR code",
-                        "Your teen can find this by going to Family Center in user settings and clicking My Family.",
+                        dc_intl::tr("Ask your teen for their QR code"),
+                        dc_intl::tr("Your teen can find this by going to Family Center in user settings and clicking My Family."),
                     ))
                     .child(step(
                         "2",
-                        "Scan the QR code with your Discord app",
-                        "This will send a connection request to your teen, like magic!",
+                        dc_intl::tr("Scan the QR code with your Discord app"),
+                        dc_intl::tr("This will send a connection request to your teen, like magic!"),
                     ))
                     .child(step(
                         "3",
-                        "Have your teen accept the connection request",
-                        "Once they give consent for you to view their activity data, you\u{2019}re good to go.",
+                        dc_intl::tr("Have your teen accept the connection request"),
+                        dc_intl::tr("Once they give consent for you to view their activity data, you\u{2019}re good to go."),
                     )),
             );
         div()
@@ -976,7 +984,7 @@ impl Root {
                             .child("CONNECTED TEENS \u{2014} 0 OF 8"),
                     )
                     .child(div().p(px(32.)).flex().justify_center().child(muted(
-                        "No family members connected yet.",
+                        dc_intl::tr("No family members connected yet."),
                         14.,
                         18.,
                     ))),
@@ -1045,7 +1053,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("General Settings"),
+                    .child(dc_intl::tr("General Settings")),
             )
             .child(
                 div()
@@ -1054,8 +1062,8 @@ impl Root {
                     .gap(px(24.))
                     .child(row(
                         FAMILY_ENABLED,
-                        "Enable Family Center tab",
-                        "This will show you the Family Center tab. Here you can pair with your family members to create a safe, yet privacy conscious environment for your family!",
+                        dc_intl::tr("Enable Family Center tab"),
+                        dc_intl::tr("This will show you the Family Center tab. Here you can pair with your family members to create a safe, yet privacy conscious environment for your family!"),
                         enabled,
                         |root, on| {
                             root.setting_choices.insert(FAMILY_ENABLED, Choice::On(on));
@@ -1065,8 +1073,8 @@ impl Root {
                     ))
                     .child(row(
                         "family_center_email_digest",
-                        "Receive Activity Summary emails",
-                        "You will receive a weekly email summarizing your teen(s)' recent activity. We recommend keeping this setting on.",
+                        dc_intl::tr("Receive Activity Summary emails"),
+                        dc_intl::tr("You will receive a weekly email summarizing your teen(s)' recent activity. We recommend keeping this setting on."),
                         digest,
                         |root, on| {
                             root.settings_extra

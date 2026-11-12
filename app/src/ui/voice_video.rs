@@ -99,16 +99,18 @@ impl Frames {
         }
     }
 
-    /// The pictures `slots` has no image of yet, newest only; each is marked as converting.
+    /// The pictures `slots` has no image of yet, newest only, except those of sources `paused` holds; each is marked
+    /// as converting.
     fn pending(
         &self,
         slots: &mut Slots<Arc<RenderImage>>,
+        paused: impl Fn(&Key) -> bool,
     ) -> Vec<(Key, u64, Arc<dc_media::Picture>)> {
         self.latest
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|(key, (seq, _))| slots.wanted(**key, *seq))
+            .filter(|(key, (seq, _))| !paused(key) && slots.wanted(**key, *seq))
             .map(|(key, (seq, picture))| (*key, *seq, picture.clone()))
             .collect()
     }
@@ -211,6 +213,35 @@ impl Video {
     }
 }
 
+/// `pauseSelfStreamPreviewWhenUnfocused` of `UnsyncedUserSettingsStore` (module 964404): on until switched off.
+pub(super) fn pause_own_preview_unfocused() -> bool {
+    crate::storage::get("UnsyncedUserSettingsStore")
+        .and_then(|store| store.get("pauseSelfStreamPreviewWhenUnfocused")?.as_bool())
+        .unwrap_or(true)
+}
+
+/// Harness only: frames of what an unfocused client draws.
+#[cfg(feature = "capture")]
+pub(super) static FAKE_UNFOCUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether no window of the client has the focus.
+pub(super) fn client_unfocused(cx: &gpui::App) -> bool {
+    #[cfg(feature = "capture")]
+    if FAKE_UNFOCUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    cx.active_window().is_none()
+}
+
+pub(super) fn set_pause_own_preview_unfocused(on: bool) {
+    let mut store = crate::storage::get("UnsyncedUserSettingsStore")
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    store["pauseSelfStreamPreviewWhenUnfocused"] = serde_json::json!(on);
+    crate::storage::set("UnsyncedUserSettingsStore", store);
+}
+
 impl Root {
     /// A call was created: pictures of it go to the store, and the repaint task runs while the call lasts.
     pub(super) fn video_call_started(&mut self, cx: &mut Context<Self>) {
@@ -306,7 +337,15 @@ impl Root {
                 cx.drop_image(image, None);
             }
         }
-        for (key, seq, picture) in self.video.frames.pending(&mut self.video.images) {
+        // The sharer's own tile holds its picture while no window of the client is focused
+        // (`pauseSelfStreamPreviewWhenUnfocused`, on unless the user turns it off: module 964404; module 555148 pauses
+        // the self stream's video then). The switch is the stream menu's `Pause Preview When Discord Isn't Focused`. Every
+        // picture of a 60 fps share would otherwise be converted for a window nobody looks at.
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let unfocused = pause_own_preview_unfocused() && client_unfocused(cx);
+        let paused =
+            |key: &Key| unfocused && Some(key.0) == me && key.1 == VideoSource::Stream(key.0);
+        for (key, seq, picture) in self.video.frames.pending(&mut self.video.images, paused) {
             cx.spawn(async move |this, cx| {
                 let image = cx
                     .background_executor()
@@ -661,6 +700,15 @@ impl Root {
         "started"
     }
 
+    /// The call is left: every stream watched or sent in it ends, and no watch waits for it any more.
+    pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
+        self.video.pending_watch = None;
+        let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
+        for key in keys {
+            self.stream_stop_key(key, cx);
+        }
+    }
+
     /// Ends the stream we send, if any (op 19 and the connection).
     pub(crate) fn stream_stop(&mut self, cx: &mut Context<Self>) {
         let own: Vec<StreamKey> = self
@@ -863,6 +911,16 @@ impl Root {
         self.watch_stream_of(owner, cx);
     }
 
+    /// Whether `owner` is live in the call here.
+    fn streams_in_call(&self, owner: u64) -> bool {
+        self.call.as_ref().is_some_and(|call| {
+            self.stores
+                .voice_members(call.guild, call.channel)
+                .into_iter()
+                .any(|state| state.user_id == owner && state.self_stream)
+        })
+    }
+
     /// Our voice state arrived, or the call is gone: the watch that waited for it is sent or dropped.
     pub(super) fn stream_pending_watch(&mut self, cx: &mut Context<Self>) {
         if self.call.is_none() {
@@ -871,6 +929,7 @@ impl Root {
         }
         if self.stream_identity().is_some()
             && let Some((owner, multiple)) = self.video.pending_watch.take()
+            && self.streams_in_call(owner)
         {
             self.watch_stream_with(owner, multiple, cx);
         }
@@ -881,7 +940,7 @@ impl Root {
         if let Some(call) = &self.call {
             call.controls
                 .hub()
-                .set_stream_volume(super::stream_volume::gain(owner));
+                .set_stream_volume(owner, super::stream_volume::gain(owner));
         }
     }
 

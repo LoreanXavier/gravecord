@@ -258,6 +258,17 @@ pub fn format(key: &str, values: &Args<'_>) -> String {
     }
 }
 
+/// [`format`] in runs of text, each with the innermost rich-text tag around it (`$b` is bold): for messages whose
+/// placeholders the official client styles, such as "**{a}** is typing...".
+pub fn format_runs(key: &str, values: &Args<'_>) -> Vec<(String, Option<Box<str>>)> {
+    match message(key) {
+        Some((locale, message)) => {
+            format::runs(&message.nodes, values, locale_data::formatters(locale))
+        }
+        None => Vec::new(),
+    }
+}
+
 /// `intl.string`: the message reserialized, rich-text tags as markdown and placeholders as `{name}`.
 pub fn string(key: &str) -> Cow<'static, str> {
     match message(key) {
@@ -272,6 +283,13 @@ pub fn string(key: &str) -> Cow<'static, str> {
 /// A number as `Intl.NumberFormat` writes it in the current locale (`intl.data.formatNumber`).
 pub fn number(value: f64) -> String {
     locale_data::formatters(locale()).number(value, None)
+}
+
+/// A literal message of an installed locale's own catalog, whatever the current locale (none when the locale is not
+/// installed or lacks the key).
+pub fn t_in(code: &str, key: &str) -> Option<&'static str> {
+    let catalog = installed().read().ok()?.get(code).copied()?;
+    catalog.get(key)?.text.as_deref()
 }
 
 /// Whether the en-US catalog has the key.

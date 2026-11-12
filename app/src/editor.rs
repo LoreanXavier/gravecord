@@ -234,6 +234,8 @@ pub struct Editor {
     focus: FocusHandle,
     buffer: TextBuffer,
     placeholder: SharedString,
+    /// An en-US message shown as the placeholder in the current interface language, read at each paint.
+    placeholder_message: Option<&'static str>,
     ellipsis_placeholder: bool,
     style: Rc<EditorStyle>,
     laid: Rc<RefCell<Laid>>,
@@ -287,6 +289,7 @@ impl Editor {
             focus,
             buffer: TextBuffer::default(),
             placeholder: SharedString::default(),
+            placeholder_message: None,
             ellipsis_placeholder: false,
             style: Rc::new(style),
             laid: Rc::default(),
@@ -500,6 +503,13 @@ impl Editor {
 
     pub fn set_placeholder(&mut self, placeholder: String) {
         self.placeholder = placeholder.into();
+        self.placeholder_message = None;
+    }
+
+    /// The placeholder is an en-US message (`dc_intl::tr`), so it follows the interface language while shown.
+    pub fn set_placeholder_message(&mut self, message: &'static str) {
+        self.placeholder = message.into();
+        self.placeholder_message = Some(message);
     }
 
     pub fn set_ellipsis_placeholder(&mut self, on: bool) {
@@ -1044,7 +1054,13 @@ impl Element for EditorElement {
                 editor.focus.clone(),
                 editor.style.clone(),
                 editor.laid.clone(),
-                editor.buffer.is_empty().then(|| editor.placeholder.clone()),
+                editor
+                    .buffer
+                    .is_empty()
+                    .then(|| match editor.placeholder_message {
+                        Some(message) => SharedString::from(dc_intl::tr(message)),
+                        None => editor.placeholder.clone(),
+                    }),
                 editor.buffer.selection(),
                 editor.buffer.caret(),
                 editor.enter_inserts_newline,

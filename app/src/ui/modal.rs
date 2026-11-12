@@ -573,22 +573,27 @@ impl Root {
                 "Hey, just double checking that you want to pin this message to #{} for posterity and greatness?",
                 channel.name
             ),
-            None => "Hey, just double checking that you want to pin this message to the current channel for posterity and greatness?".to_owned(),
+            None => dc_intl::tr("Hey, just double checking that you want to pin this message to the current channel for posterity and greatness?").to_owned(),
         };
         let target = (message.channel_id, message.id);
         Some(render(
             Spec {
                 id: "pin-modal",
-                title: "Pin It. Pin It Good.".into(),
+                title: dc_intl::tr("Pin It. Pin It Good.").into(),
                 subtitle: Some(div().child(subtitle).into_any_element()),
                 body: Some(self.message_preview(&message)),
                 buttons: vec![
-                    button("pin-cancel", "Cancel", Tone::Secondary, |this, _, _| {
-                        this.confirm_pin = None;
-                    }),
+                    button(
+                        "pin-cancel",
+                        dc_intl::tr("Cancel"),
+                        Tone::Secondary,
+                        |this, _, _| {
+                            this.confirm_pin = None;
+                        },
+                    ),
                     button(
                         "pin-confirm",
-                        "Oh yeah. Pin it",
+                        dc_intl::tr("Oh yeah. Pin it"),
                         Tone::Primary,
                         move |this, _, _| {
                             this.confirm_pin = None;

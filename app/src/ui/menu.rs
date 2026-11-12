@@ -666,9 +666,9 @@ impl Root {
         };
         super::actions::log_effect(
             if emoji.is_some() {
-                "Remove Reactions"
+                dc_intl::tr("Remove Reactions")
             } else {
-                "Remove All Reactions"
+                dc_intl::tr("Remove All Reactions")
             },
             "DELETE reactions",
             route.len(),
@@ -759,13 +759,15 @@ impl Root {
         let ask = self.menu_extra.reactions_confirm.clone()?;
         let (title, body) = if ask.emoji.is_some() {
             (
-                "Remove Reactions for Emoji",
-                "Are you sure you want to remove all of the reactions for this emoji from this message?",
+                dc_intl::tr("Remove Reactions for Emoji"),
+                dc_intl::tr(
+                    "Are you sure you want to remove all of the reactions for this emoji from this message?",
+                ),
             )
         } else {
             (
-                "Remove All Reactions",
-                "Are you sure you want to remove all reactions from this message?",
+                dc_intl::tr("Remove All Reactions"),
+                dc_intl::tr("Are you sure you want to remove all reactions from this message?"),
             )
         };
         let emoji = ask.emoji.clone();
@@ -778,13 +780,13 @@ impl Root {
                 buttons: vec![
                     super::modal::button(
                         "remove-reactions-no",
-                        "No",
+                        dc_intl::tr("No"),
                         super::modal::Tone::Secondary,
                         |this, _, _| this.menu_extra.reactions_confirm = None,
                     ),
                     super::modal::button(
                         "remove-reactions-yes",
-                        "Yes",
+                        dc_intl::tr("Yes"),
                         super::modal::Tone::Critical,
                         move |this, _, _| {
                             this.menu_extra.reactions_confirm = None;
@@ -937,6 +939,8 @@ impl Root {
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
                 .text_color(label_tint)
+                // `label_M3qk4j`: one line, cut with an ellipsis.
+                .truncate()
                 .child(dc_intl::tr(label)),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
@@ -1209,10 +1213,13 @@ impl Root {
             .children(leading.map(|leading| div().mr(px(8.)).child(leading)))
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.))
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
+                    .truncate()
                     .child(label),
             )
     }
@@ -1272,7 +1279,7 @@ impl Root {
             self.submenu_item(
                 "reaction-view-more".into(),
                 Some(leading),
-                "View More".to_owned(),
+                dc_intl::tr("View More").to_owned(),
                 36.,
             )
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1347,7 +1354,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-feedback-positive"))
-                            .child("Protip:"),
+                            .child(dc_intl::tr("Protip:")),
                     )
                     .child(crate::inline::inline(tip_pieces, px(16.))),
             )
@@ -1356,23 +1363,23 @@ impl Root {
         Some(super::modal::render(
             super::modal::Spec {
                 id: "delete-modal",
-                title: "Delete Message".into(),
+                title: dc_intl::tr("Delete Message").into(),
                 subtitle: Some(
                     div()
-                        .child("Are you sure you want to delete this message?")
+                        .child(dc_intl::tr("Are you sure you want to delete this message?"))
                         .into_any_element(),
                 ),
                 body: Some(body),
                 buttons: vec![
                     super::modal::button(
                         "delete-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         super::modal::Tone::Secondary,
                         |this, _, _| this.confirm_delete = None,
                     ),
                     super::modal::button(
                         "delete-confirm",
-                        "Delete",
+                        dc_intl::tr("Delete"),
                         super::modal::Tone::Critical,
                         move |this, _, _| {
                             this.confirm_delete = None;

@@ -134,7 +134,7 @@ impl Resolution {
             Resolution::P720 => "720p",
             Resolution::P1080 => "1080p",
             Resolution::P1440 => "1440p",
-            Resolution::Source => "Source",
+            Resolution::Source => dc_intl::tr("Source"),
         }
     }
 }
@@ -442,7 +442,7 @@ fn documents_folder() -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn documents_folder() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| Path::new(&home).join("Documents"))
+    std::env::var_os("HOME").map(|home| Path::new(&home).join(dc_intl::tr("Documents")))
 }
 
 #[cfg(windows)]
@@ -791,7 +791,7 @@ impl Root {
                     .bg(color("--background-mod-muted"))
                     .child(div().py(px(8.)).child(self.switch_row(
                         ENABLE,
-                        "Enable Clipping",
+                        dc_intl::tr("Enable Clipping"),
                         false,
                         ENABLE_DESCRIPTION,
                         self.clips.store.settings.clips_enabled && self.clips_listed(),
@@ -813,11 +813,11 @@ impl Root {
             .flex()
             .flex_col()
             .child(category_head(
-                "Clipping",
+                dc_intl::tr("Clipping"),
                 Some(self.text_with_link(
                     "clips-learn-more",
                     "Clip any fun or amazing gaming moments by saving them directly to your computer. ",
-                    "Learn more",
+                    dc_intl::tr("Learn more"),
                     "",
                     cx,
                     |_, cx| cx.open_url(LEARN_MORE),
@@ -845,7 +845,7 @@ impl Root {
             (String::new(), critical, 600.)
         } else if self.clips.keybind.is_empty() {
             (
-                "No Keybind Set".to_owned(),
+                dc_intl::tr("No Keybind Set").to_owned(),
                 color("--input-placeholder-text-default"),
                 400.,
             )
@@ -856,11 +856,16 @@ impl Root {
                 600.,
             )
         };
-        let extent = render::label_extent(window, "Clipping Keybind", false, KEYBIND_DESCRIPTION);
+        let extent = render::label_extent(
+            window,
+            dc_intl::tr("Clipping Keybind"),
+            false,
+            KEYBIND_DESCRIPTION,
+        );
         let label_width = render::label_track(width - 24., extent, RECORDER);
         let edit = self.with_tip(
             "clips-edit-keybind",
-            tooltip::Tip::text("Edit keybind", tooltip::Side::Top),
+            tooltip::Tip::text(dc_intl::tr("Edit keybind"), tooltip::Side::Top),
             icon_button("clips-edit-keybind-button", "clips_keyboard", disabled).when(
                 !disabled,
                 |this| {
@@ -875,7 +880,7 @@ impl Root {
         );
         let reset = self.with_tip(
             "clips-reset-keybind",
-            tooltip::Tip::text("Reset to default", tooltip::Side::Top),
+            tooltip::Tip::text(dc_intl::tr("Reset to default"), tooltip::Side::Top),
             icon_button("clips-reset-keybind-button", "clips_retry", disabled).when(
                 !disabled,
                 |this| {
@@ -940,7 +945,7 @@ impl Root {
             .justify_between()
             .gap(px(24.))
             .child(
-                render::label_block("Clipping Keybind", false, KEYBIND_DESCRIPTION)
+                render::label_block(dc_intl::tr("Clipping Keybind"), false, KEYBIND_DESCRIPTION)
                     .w(px(label_width)),
             )
             .child(recorder)
@@ -972,7 +977,7 @@ impl Root {
         div()
             .flex()
             .flex_col()
-            .child(category_head("Capture Settings", None, marker))
+            .child(category_head(dc_intl::tr("Capture Settings"), None, marker))
             .child(
                 div()
                     .flex()
@@ -980,7 +985,7 @@ impl Root {
                     .gap(px(8.))
                     .child(self.clips_select_row(
                         ClipSelect::Length,
-                        "Clip Length",
+                        dc_intl::tr("Clip Length"),
                         LENGTH_DESCRIPTION,
                         length,
                         enabled,
@@ -988,7 +993,7 @@ impl Root {
                     ))
                     .child(self.clips_select_row(
                         ClipSelect::FrameRate,
-                        "Clip Frame Rate",
+                        dc_intl::tr("Clip Frame Rate"),
                         FRAME_RATE_DESCRIPTION,
                         frame_rate,
                         enabled,
@@ -996,7 +1001,7 @@ impl Root {
                     ))
                     .child(self.clips_select_row(
                         ClipSelect::Resolution,
-                        "Clip Resolution",
+                        dc_intl::tr("Clip Resolution"),
                         RESOLUTION_DESCRIPTION,
                         resolution,
                         enabled,
@@ -1028,13 +1033,13 @@ impl Root {
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(color("--text-default"))
-                                        .child(QUALITY_NOTE),
+                                        .child(dc_intl::tr(QUALITY_NOTE)),
                                 ),
                         ),
                     )
                     .child(div().py(px(8.)).child(self.switch_row(
                         REMINDERS,
-                        "Enable Reminders",
+                        dc_intl::tr("Enable Reminders"),
                         false,
                         REMINDERS_DESCRIPTION,
                         settings.reminders_enabled,
@@ -1197,7 +1202,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(
-                render::label_block("Clip Quality", false, QUALITY_DESCRIPTION)
+                render::label_block(dc_intl::tr("Clip Quality"), false, QUALITY_DESCRIPTION)
                     .mb(px(8.))
                     .when(disabled, |this| this.opacity(0.5)),
             )
@@ -1536,13 +1541,13 @@ impl Root {
             })
             .child(button(
                 "clips-edit-location-button",
-                "Edit Location",
+                dc_intl::tr("Edit Location"),
                 ButtonKind::Secondary,
             ));
         div()
             .flex()
             .flex_col()
-            .child(category_head("Storage", None, marker))
+            .child(category_head(dc_intl::tr("Storage"), None, marker))
             .child(
                 div().py(px(8.)).child(
                     div()
@@ -1551,7 +1556,7 @@ impl Root {
                         .flex_col()
                         .gap(px(8.))
                         .child(render::label_block(
-                            "Storage Location",
+                            dc_intl::tr("Storage Location"),
                             false,
                             STORAGE_DESCRIPTION,
                         ))

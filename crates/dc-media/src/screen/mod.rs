@@ -28,6 +28,10 @@ pub use settings::{
 #[cfg(windows)]
 pub use worker::{PREVIEW_WIDTH, Worker};
 
+/// Receives every picture the share's encoder takes, as the encoder takes it (NV12 or I420 at the share's size), for
+/// the owner's own tile. It runs on a helper thread beside the encoder and must return quickly.
+pub type LocalSink = std::sync::Arc<dyn Fn(Picture) + Send + Sync>;
+
 /// A display or window that can be shared.
 #[derive(Clone, Debug)]
 pub struct Source {
@@ -103,6 +107,7 @@ impl Worker {
 
     pub fn set_bitrate(&self, _bitrate: u32) {}
     pub fn force_keyframe(&self) {}
+    pub fn set_local_sink(&self, _sink: Option<LocalSink>) {}
     pub fn take_preview(&self) -> Option<Picture> {
         None
     }

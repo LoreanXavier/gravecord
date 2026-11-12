@@ -118,7 +118,7 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
     let frame = generator.next(false).unwrap().unwrap();
     assert!(frame.keyframe);
     let expected = sps::normalize(&frame.data).unwrap().into_owned();
-    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 900_000);
+    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 900_000);
     assert!(sender.offer(&frame, &mut alice, Instant::now()).unwrap());
     assert!(
         !sender.ready(),
@@ -237,7 +237,7 @@ fn a_third_party_without_the_group_cannot_read_the_picture() {
     let mut stranger = Dave::new(7, 3).unwrap();
     let mut generator = Generator::new(160, 120, 15, 300_000).unwrap();
     let frame = generator.next(false).unwrap().unwrap();
-    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 300_000);
+    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 300_000);
     assert!(sender.offer(&frame, &mut alice, Instant::now()).unwrap());
     let mut transport = Transport::new(Mode::XChaCha20Poly1305RtpSize, &[1; 32]);
     let mut sealed = Vec::new();

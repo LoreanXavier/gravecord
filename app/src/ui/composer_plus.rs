@@ -130,7 +130,7 @@ impl Root {
     ) -> Entity<Editor> {
         let editor = cx.new(|cx| {
             let mut editor = Editor::new(super::editor_style(), cx);
-            editor.set_placeholder("Type your answer".to_owned());
+            editor.set_placeholder_message("Type your answer");
             editor
         });
         events.push(
@@ -163,7 +163,7 @@ impl Root {
         }
         let question = cx.new(|cx| {
             let mut editor = Editor::new(super::editor_style(), cx);
-            editor.set_placeholder("What question do you want to ask?".to_owned());
+            editor.set_placeholder_message("What question do you want to ask?");
             editor
         });
         let mut events = vec![
@@ -322,7 +322,7 @@ impl Root {
             .child(row(
                 "plus-upload",
                 "cp_upload",
-                "Upload a File",
+                dc_intl::tr("Upload a File"),
                 Some(Plus::Upload),
                 false,
                 cx,
@@ -330,7 +330,7 @@ impl Root {
             .child(row(
                 "plus-thread",
                 "cp_thread",
-                "Create Thread",
+                dc_intl::tr("Create Thread"),
                 Some(Plus::Thread),
                 false,
                 cx,
@@ -338,7 +338,7 @@ impl Root {
             .child(row(
                 "plus-poll",
                 "cp_poll",
-                "Create Poll",
+                dc_intl::tr("Create Poll"),
                 Some(Plus::Poll),
                 false,
                 cx,
@@ -346,7 +346,7 @@ impl Root {
             .child(row(
                 "plus-apps",
                 "cp_apps",
-                "Use Apps",
+                dc_intl::tr("Use Apps"),
                 Some(Plus::Apps),
                 false,
                 cx,
@@ -355,7 +355,7 @@ impl Root {
                 row(
                     "plus-schedule",
                     "cp_schedule",
-                    "Schedule Message",
+                    dc_intl::tr("Schedule Message"),
                     Some(Plus::Schedule),
                     true,
                     cx,
@@ -366,7 +366,7 @@ impl Root {
                 row(
                     "plus-record",
                     "cp_mic",
-                    "Record Voice Message",
+                    dc_intl::tr("Record Voice Message"),
                     Some(Plus::RecordVoice),
                     false,
                     cx,
@@ -458,7 +458,7 @@ impl Root {
         let duration_label = DURATIONS
             .iter()
             .find(|(hours, _)| *hours == form.duration)
-            .map_or("24 hours", |(_, label)| *label);
+            .map_or(dc_intl::tr("24 hours"), |(_, label)| dc_intl::tr(label));
         let list = form.duration_open.then(|| {
             div()
                 .id("poll-duration-list")
@@ -484,7 +484,7 @@ impl Root {
                         .hover(|this| this.bg(color("--background-mod-subtle")))
                         .text_size(px(14.))
                         .text_color(color("--text-default"))
-                        .child(*text)
+                        .child(dc_intl::tr(text))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(form) = this.poll.as_mut() {
                                 form.duration = hours;
@@ -506,7 +506,7 @@ impl Root {
                         .child(message),
                 )
             })
-            .child(label("Question"))
+            .child(label(dc_intl::tr("Question")))
             .child(div().mt(px(8.)).child(field(form.question.clone(), true)))
             .child(
                 div()
@@ -518,7 +518,7 @@ impl Root {
                     .text_color(color("--text-muted"))
                     .child(format!("{count} / {QUESTION_MAX}")),
             )
-            .child(div().mt(px(26.)).child(label("Answers")))
+            .child(div().mt(px(26.)).child(label(dc_intl::tr("Answers"))))
             .child(
                 div()
                     .mt(px(8.))
@@ -544,12 +544,12 @@ impl Root {
                             .font_weight(FontWeight(500.))
                             .text_color(color("--control-secondary-text-default"))
                             .child(icon("plus_small", 16., "--control-secondary-text-default"))
-                            .child("Add another answer")
+                            .child(dc_intl::tr("Add another answer"))
                             .on_click(cx.listener(|this, _, _, cx| this.add_poll_answer(cx))),
                     ),
                 )
             })
-            .child(div().mt(px(18.)).child(label("Duration")))
+            .child(div().mt(px(18.)).child(label(dc_intl::tr("Duration"))))
             .child(
                 div()
                     .id("poll-duration")
@@ -601,7 +601,7 @@ impl Root {
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .text_color(color("--text-default"))
-                    .child("Allow Multiple Answers"),
+                    .child(dc_intl::tr("Allow Multiple Answers")),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 if let Some(form) = this.poll.as_mut() {
@@ -612,12 +612,12 @@ impl Root {
             .into_any_element();
         let spec = modal::Spec {
             id: "create-poll",
-            title: "Create a Poll".into(),
+            title: dc_intl::tr("Create a Poll").into(),
             subtitle: None,
             body: Some(body.into_any_element()),
             buttons: vec![modal::button(
                 "poll-post",
-                "Post",
+                dc_intl::tr("Post"),
                 Tone::Primary,
                 |this, _, cx| this.post_poll(cx),
             )],

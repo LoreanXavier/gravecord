@@ -1,7 +1,8 @@
 //! Bounded RTP ordering before video reassembly. Only encrypted payloads are retained.
 //!
 //! Adapted from Serein `crates/discord-voice/src/video_reorder.rs` (MIT OR Apache-2.0); the NACK body comes from
-//! `rtp::nack`.
+//! `rtp::nack`. The request timing follows libwebrtc's NACK requester, which the native engine runs: a hole is asked
+//! for when it is seen, again every round trip, and the wait before a first request follows the path's reordering.
 use std::{
     collections::{BTreeMap, VecDeque},
     time::Duration,
@@ -15,9 +16,16 @@ const REPAIR_AGE: Duration = Duration::from_millis(120);
 const MAX_REPAIR_AGE: Duration = Duration::from_millis(400);
 const REPAIR_HEADROOM: Duration = Duration::from_millis(40);
 const HISTORY_AGE: Duration = Duration::from_secs(1);
+/// A hole is asked for at once when a packet after it arrives, unless reordering on this path usually fills it; past
+/// this age it is asked for anyway.
 const REORDER_GRACE: Duration = Duration::from_millis(10);
-const RETRY: Duration = Duration::from_millis(40);
-const FEEDBACK_INTERVAL: Duration = Duration::from_millis(20);
+/// The round trip assumed before any repair was seen (libwebrtc's `kDefaultRtt` of the NACK requester).
+const DEFAULT_RTT: Duration = Duration::from_millis(100);
+const MIN_RTT: Duration = Duration::from_millis(10);
+/// Requests per hole (libwebrtc's `kMaxNackRetries`); the repair budget usually ends them first.
+const MAX_ATTEMPTS: u8 = 10;
+/// Reorder distances remembered for the wait before a first request.
+const REORDER_SAMPLES: usize = 64;
 const MAX_REQUESTS: usize = 64;
 
 pub(crate) struct Packet {
@@ -29,6 +37,8 @@ pub(crate) struct Packet {
 
 struct Missing {
     since: Instant,
+    /// The newest sequence number when the hole was seen.
+    seen_at: u64,
     first_sent: Option<Instant>,
     last_sent: Option<Instant>,
     attempts: u8,
@@ -44,7 +54,12 @@ pub(crate) struct Window {
     expired: VecDeque<(u64, Missing)>,
     repair_age: Option<Duration>,
     bytes: usize,
-    next_feedback: Option<Instant>,
+    /// The newest extended sequence number received.
+    newest: u64,
+    /// How far behind the newest packet out-of-order packets arrived without being asked for.
+    reorder: VecDeque<u16>,
+    /// Smoothed time from a first request to its repair.
+    rtt: Option<Duration>,
     pub repaired: u64,
     pub expired_packets: u64,
     pub late_packets: u64,
@@ -54,7 +69,30 @@ pub(crate) struct Window {
 impl Window {
     #[cfg(test)]
     pub fn budget_ms(&self) -> u64 {
-        self.repair_age.unwrap_or(REPAIR_AGE).as_millis() as u64
+        self.budget().as_millis() as u64
+    }
+    /// How long a hole is waited for: what repairs have taken so far, and once a round trip is known at least three
+    /// of them, so a request and two retries fit.
+    fn budget(&self) -> Duration {
+        let learned = self.repair_age.unwrap_or(REPAIR_AGE);
+        let trips = self.rtt.map_or(Duration::ZERO, |rtt| {
+            (rtt * 3 + REPAIR_HEADROOM).min(MAX_REPAIR_AGE)
+        });
+        learned.max(trips)
+    }
+    pub fn rtt(&self) -> Duration {
+        self.rtt.unwrap_or(DEFAULT_RTT)
+    }
+    /// Later packets a first request waits for: one more than the furthest an unrequested packet has turned up late
+    /// recently. `None` until reordering has been seen often enough to know; then only the time grace applies.
+    fn reorder_wait(&self) -> Option<u64> {
+        if self.reorder.len() < 8 {
+            return None;
+        }
+        self.reorder
+            .iter()
+            .max()
+            .map(|furthest| u64::from(*furthest) + 1)
     }
     fn prune_history(&mut self, now: Instant) {
         self.expired
@@ -64,6 +102,13 @@ impl Window {
         let Some(requested) = missing.first_sent else {
             return;
         };
+        if missing.attempts == 1 {
+            let sample = now.saturating_duration_since(requested).max(MIN_RTT);
+            self.rtt = Some(match self.rtt {
+                None => sample,
+                Some(rtt) => (rtt * 7 + sample) / 8,
+            });
+        }
         // This is an observed response to a requested hole, not a proven network RTT:
         // natural reordering and retransmission retries can also fill that hole.
         self.response_ms = self
@@ -100,9 +145,12 @@ impl Window {
         if self.packets.contains_key(&extended) {
             return false;
         }
-        if self.missing.get(&extended).is_some_and(|missing| {
-            now.saturating_duration_since(missing.since) >= self.repair_age.unwrap_or(REPAIR_AGE)
-        }) {
+        let budget = self.budget();
+        if self
+            .missing
+            .get(&extended)
+            .is_some_and(|missing| now.saturating_duration_since(missing.since) >= budget)
+        {
             return false;
         }
         let reset = u64::from(distance) >= MAX_PACKETS
@@ -114,16 +162,18 @@ impl Window {
             self.expired.clear();
             self.bytes = 0;
             self.next = Some(extended);
-            self.next_feedback = None;
+            self.newest = extended;
         }
         if payload.len() > MAX_PAYLOAD {
             self.next = Some(extended + 1);
             return true;
         }
+        let newest = self.newest.max(extended);
         for missing in self.next.unwrap()..extended {
             if !self.packets.contains_key(&missing) {
                 self.missing.entry(missing).or_insert(Missing {
                     since: now,
+                    seen_at: newest,
                     first_sent: None,
                     last_sent: None,
                     attempts: 0,
@@ -131,9 +181,22 @@ impl Window {
             }
         }
         if let Some(missing) = self.missing.remove(&extended) {
-            self.repaired += 1;
+            if missing.first_sent.is_none() {
+                // Reordering filled it before anyone asked.
+                if self.reorder.len() == REORDER_SAMPLES {
+                    self.reorder.pop_front();
+                }
+                let behind = self
+                    .newest
+                    .saturating_sub(extended)
+                    .min(u64::from(u16::MAX));
+                self.reorder.push_back(behind as u16);
+            } else {
+                self.repaired += 1;
+            }
             self.observe_repair(&missing, now);
         }
+        self.newest = newest;
         self.bytes += payload.len();
         self.packets.insert(
             extended,
@@ -156,10 +219,11 @@ impl Window {
         };
         let mut lost = false;
         if !self.packets.contains_key(&next) {
-            let expired = self.missing.get(&next).is_some_and(|missing| {
-                now.saturating_duration_since(missing.since)
-                    >= self.repair_age.unwrap_or(REPAIR_AGE)
-            });
+            let budget = self.budget();
+            let expired = self
+                .missing
+                .get(&next)
+                .is_some_and(|missing| now.saturating_duration_since(missing.since) >= budget);
             if !expired {
                 return (None, false);
             }
@@ -187,22 +251,30 @@ impl Window {
         (Some(packet), lost)
     }
 
-    /// RFC 4585 Generic NACK (FMT=1/PT=205). Ask only for observed holes, never
-    /// advertise bandwidth. Three attempts per hole; at most 64 numbers per 20 ms.
+    /// RFC 4585 Generic NACK (FMT=1/PT=205) for the holes that are due now; never advertises bandwidth. A hole is
+    /// first asked for `REORDER_GRACE` after it was seen, or earlier once more later packets passed it than reordering
+    /// on this path has ever delayed one; it is asked again every round trip until it is repaired or its budget runs
+    /// out, as libwebrtc's NACK requester does. At most 64 numbers a call.
+    /// Cheap to call on every arrival: it returns `None` when nothing is due.
     pub fn nack(&mut self, sender: u32, media: u32, now: Instant) -> Option<([u8; 8], Vec<u8>)> {
-        if self.next_feedback.is_some_and(|at| now < at) {
-            return None;
-        }
+        let budget = self.budget();
+        let rtt = self.rtt();
+        let wait = self.reorder_wait();
+        let newest = self.newest;
         let mut requests = Vec::new();
         for (&sequence, missing) in &mut self.missing {
             let age = now.saturating_duration_since(missing.since);
-            if age < REORDER_GRACE
-                || age >= self.repair_age.unwrap_or(REPAIR_AGE)
-                || missing.attempts >= 3
-                || missing
-                    .last_sent
-                    .is_some_and(|at| now.saturating_duration_since(at) < RETRY)
-            {
+            if age >= budget || missing.attempts >= MAX_ATTEMPTS {
+                continue;
+            }
+            let due = match missing.last_sent {
+                None => {
+                    age >= REORDER_GRACE
+                        || wait.is_some_and(|wait| newest.max(missing.seen_at) > sequence + wait)
+                }
+                Some(at) => now.saturating_duration_since(at) >= rtt,
+            };
+            if !due {
                 continue;
             }
             requests.push(sequence as u16);
@@ -213,10 +285,6 @@ impl Window {
                 break;
             }
         }
-        if requests.is_empty() {
-            return None;
-        }
-        self.next_feedback = Some(now + FEEDBACK_INTERVAL);
         crate::rtp::nack(sender, media, &requests)
     }
 }
@@ -224,6 +292,7 @@ impl Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const RETRY: Duration = Duration::from_millis(40);
     #[test]
     fn late_requested_repair_teaches_subsequent_holes_without_replaying_old_pictures() {
         let start = Instant::now();
@@ -239,8 +308,10 @@ mod tests {
         assert!(window.pop(at(190)).0.is_none());
         assert_eq!(
             (window.late_packets, window.response_ms, window.budget_ms()),
-            (1, 170, 220)
+            (1, 170, 400),
+            "a 170 ms round trip: three of them, capped at 400 ms"
         );
+        assert_eq!(window.rtt(), Duration::from_millis(170));
         window.push(65535, 2, true, &[2], at(191)); // Duplicate late RTX cannot train twice.
         assert_eq!(window.late_packets, 1);
         window.push(1, 4, true, &[4], at(200));
@@ -312,7 +383,9 @@ mod tests {
             assert_eq!(packet.unwrap().sequence, sequence);
             assert!(!lost);
         }
-        assert_eq!(window.repaired, 2);
+        // 0 came by itself before anyone asked: reordering, not a repair.
+        assert_eq!(window.repaired, 1);
+        assert_eq!(window.reorder.len(), 1);
         assert!(window.nack(7, 9, now + RETRY).is_none());
         assert!(!window.push(65535, 1, true, &[9], now + RETRY));
         assert!(window.pop(now + RETRY).0.is_none());
@@ -324,7 +397,8 @@ mod tests {
         window.push(1, 1, true, &[1], now);
         window.pop(now);
         window.push(4, 2, true, &[4], now);
-        for ms in [10, 50, 90] {
+        // Asked after the reorder grace, then again a round trip (100 ms until one is measured) later.
+        for ms in [10, 110] {
             let (header, body) = window.nack(7, 9, now + Duration::from_millis(ms)).unwrap();
             assert_eq!(&header[..4], &[0x81, 205, 0, 3]);
             assert_eq!(body, [0, 0, 0, 9, 0, 2, 0, 1]); // PID 2, BLP requests 3.
@@ -346,6 +420,37 @@ mod tests {
         assert!(window.nack(7, 9, now + REPAIR_AGE).is_none());
         window.push(2, 1, true, &[2], now + REPAIR_AGE);
         assert!(window.pop(now + REPAIR_AGE).0.is_none());
+    }
+    #[test]
+    fn holes_are_asked_for_at_once_where_reordering_is_known_and_retried_every_round_trip() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut window = Window::default();
+        // Eight reordered pairs teach the window that a packet turns up at most one place late.
+        let mut sequence = 0u16;
+        for round in 0..8u64 {
+            window.push(sequence, 1, true, &[1], at(round));
+            window.push(sequence + 2, 1, true, &[1], at(round));
+            window.push(sequence + 1, 1, true, &[1], at(round));
+            while window.pop(at(round)).0.is_some() {}
+            sequence += 3;
+        }
+        assert_eq!(window.reorder_wait(), Some(2));
+        assert!(window.nack(7, 9, at(8)).is_none(), "nothing missing");
+        // A hole is asked for once three packets passed it, without the 10 ms grace.
+        window.push(sequence + 1, 1, true, &[1], at(20));
+        window.push(sequence + 2, 1, true, &[1], at(20));
+        assert!(window.nack(7, 9, at(20)).is_none(), "only two passed");
+        window.push(sequence + 3, 1, true, &[1], at(20));
+        let (_, body) = window.nack(7, 9, at(20)).unwrap();
+        assert_eq!(&body[4..6], &sequence.to_be_bytes());
+        // Repaired 30 ms later: the round trip is learned, and the next hole is retried after it.
+        window.push(sequence, 1, true, &[1], at(50));
+        assert_eq!(window.rtt(), Duration::from_millis(30));
+        window.push(sequence + 5, 1, true, &[1], at(60));
+        assert!(window.nack(7, 9, at(70)).is_some());
+        assert!(window.nack(7, 9, at(99)).is_none());
+        assert!(window.nack(7, 9, at(100)).is_some());
     }
     #[test]
     fn memory_discontinuity_and_feedback_are_bounded() {

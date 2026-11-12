@@ -246,9 +246,9 @@ impl Root {
                                         .child(button(
                                             "camera-test-button",
                                             if running {
-                                                "Stop Testing"
+                                                dc_intl::tr("Stop Testing")
                                             } else {
-                                                "Test Video"
+                                                dc_intl::tr("Test Video")
                                             },
                                             if running {
                                                 ButtonKind::Secondary
@@ -386,7 +386,7 @@ impl Root {
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
-                        .child("Camera"),
+                        .child(dc_intl::tr("Camera")),
                 )
             })
             .child(div().relative().child(field).when(open, |this| {

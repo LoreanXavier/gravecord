@@ -172,7 +172,7 @@ fn badge_text(label: &str) -> &'static str {
     if label == "Show Favorites server" {
         "BETA"
     } else {
-        "NEW"
+        dc_intl::tr("NEW")
     }
 }
 
@@ -471,6 +471,14 @@ pub(super) fn select_field_led(
         )
 }
 
+/// One row of a select's open list: the option's index, its label, and what stands before and after it.
+struct OptionRow {
+    index: usize,
+    label: SharedString,
+    leading: Option<AnyElement>,
+    trailing: Option<SharedString>,
+}
+
 /// Selects that open, as module 158935's `r2` lists its options: the key, the key its open state is kept under in
 /// `setting_choices`, and the labels in order. The rest still show the captured value only.
 const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
@@ -679,6 +687,9 @@ impl Root {
         width: Option<f32>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if key == super::prefs::LANGUAGE {
+            return self.language_select(captured, width, cx);
+        }
         if key == super::privacy::GUILD_SELECTOR {
             let (labels, current) = self.guild_selector();
             return self.select_with_list(
@@ -702,7 +713,10 @@ impl Root {
             .iter()
             .position(|option| *option == captured)
             .unwrap_or(0);
-        let labels: Vec<SharedString> = options.iter().map(|option| (*option).into()).collect();
+        let labels: Vec<SharedString> = options
+            .iter()
+            .map(|option| dc_intl::tr(option).into())
+            .collect();
         self.select_with_list(key, open_key, &labels, current, captured, width, cx)
     }
 
@@ -719,16 +733,97 @@ impl Root {
         width: Option<f32>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let chosen = self.choice_index(key, current);
-        let label = options
-            .get(chosen)
-            .cloned()
-            .unwrap_or_else(|| captured.into());
-        let open = self.choice_on(open_key, false);
-        let rows: Vec<AnyElement> = options
+        let rows = options
             .iter()
             .enumerate()
-            .map(|(index, option)| {
+            .map(|(index, option)| OptionRow {
+                index,
+                label: option.clone(),
+                leading: None,
+                trailing: None,
+            })
+            .collect();
+        self.select_with_rows((key, open_key), rows, current, captured, width, cx)
+    }
+
+    /// The Language select (module 172471): the enabled locales sorted by their own name, lower-cased (module 226536
+    /// `getAvailableLocales`), each with its flag (module 579832, the fallback 432706) and, at the right, its name in
+    /// the current language (`localizedName`, the message keyed by the locale's code).
+    fn language_select(
+        &self,
+        captured: &'static str,
+        width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let locales = dc_proto::settings::LOCALES;
+        let names = super::languages::NAMES;
+        let mut order: Vec<usize> = (0..locales.len()).collect();
+        order.sort_by_key(|index| names[*index].to_lowercase());
+        let rows =
+            order
+                .into_iter()
+                .map(|index| {
+                    let code = locales[index];
+                    let flag = self.images.get(&super::languages::flag_key(code)).cloned();
+                    OptionRow {
+                        index,
+                        label: names[index].into(),
+                        // `leading_o2hjBM`: a 32px box 8px into the row's padding; `flag_ykCVnh`: the 27 x 18 picture
+                        // with 8px either side, centred in it.
+                        leading: Some(
+                            div()
+                                .flex_none()
+                                .size(px(32.))
+                                .ml(px(-8.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().flex_none().mx(px(8.)).w(px(27.)).h(px(18.)).children(
+                                    flag.map(|flag| gpui::img(flag).w(px(27.)).h(px(18.))),
+                                ))
+                                .into_any_element(),
+                        ),
+                        trailing: Some(dc_intl::localized_locale_name(code).into()),
+                    }
+                })
+                .collect();
+        self.select_with_rows(
+            (super::prefs::LANGUAGE, "language_select_setting/open"),
+            rows,
+            0,
+            captured,
+            width,
+            cx,
+        )
+    }
+
+    /// The field and its open list of `rows` (in the order the list shows them); `keys` are the select's key and the
+    /// key of its open state.
+    fn select_with_rows(
+        &self,
+        (key, open_key): (&'static str, &'static str),
+        rows: Vec<OptionRow>,
+        current: usize,
+        captured: &'static str,
+        width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chosen = self.choice_index(key, current);
+        let label = rows
+            .iter()
+            .find(|row| row.index == chosen)
+            .map(|row| row.label.clone())
+            .unwrap_or_else(|| captured.into());
+        let open = self.choice_on(open_key, false);
+        let rows: Vec<AnyElement> = rows
+            .into_iter()
+            .map(|row| {
+                let OptionRow {
+                    index,
+                    label: option,
+                    leading,
+                    trailing,
+                } = row;
                 div()
                     .id(SharedString::from(format!("{key}-option-{index}")))
                     .flex_none()
@@ -740,6 +835,10 @@ impl Root {
                     .hover(|style| style.bg(color("--background-mod-normal")))
                     .flex()
                     .items_center()
+                    // `option_o2hjBM`: leading, label and trailing 4px apart.
+                    .when_some(leading, |this, leading| {
+                        this.child(leading).child(div().w(px(4.)))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -749,8 +848,20 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-strong"))
-                            .child(option.clone()),
+                            .child(option),
                     )
+                    // `localizedName_ykCVnh`: 14px, normal weight, on a 20px line.
+                    .when_some(trailing, |this, trailing| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .ml(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-strong"))
+                                .child(trailing),
+                        )
+                    })
                     .when(index == chosen, |this| {
                         this.child(div().p(px(4.)).child(super::super::icon(
                             "select_check",
@@ -1482,7 +1593,7 @@ impl Root {
                     })
                     .child(button(
                         "voice-upload-logs-button",
-                        "Upload Logs",
+                        dc_intl::tr("Upload Logs"),
                         ButtonKind::Secondary,
                     )),
             )
@@ -1492,7 +1603,7 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| this.voice_show_folder(cx)))
                     .child(button(
                         "voice-show-folder-button",
-                        "Show Folder",
+                        dc_intl::tr("Show Folder"),
                         ButtonKind::Secondary,
                     )),
             )

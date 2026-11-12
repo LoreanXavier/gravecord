@@ -579,7 +579,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--control-secondary-text-default"))
-                    .child("Add a Keybind"),
+                    .child(dc_intl::tr("Add a Keybind")),
             )
             .into_any_element()
     }
@@ -592,7 +592,7 @@ impl Root {
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .text_color(color("--text-subtle"))
-                .child("You haven't added any custom keybinds yet.")
+                .child(dc_intl::tr("You haven't added any custom keybinds yet."))
                 .into_any_element()
         } else {
             let last = shown.len() - 1;
@@ -636,7 +636,9 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-strong"))
-                            .child("Keybinds are disabled while this page is visible."),
+                            .child(dc_intl::tr(
+                                "Keybinds are disabled while this page is visible.",
+                            )),
                     ),
             )
             .child(body)
@@ -661,7 +663,7 @@ impl Root {
         let description = ACTIONS
             .iter()
             .find(|(value, ..)| *value == keybind.action)
-            .map_or("", |(_, _, description)| *description);
+            .map_or("", |(_, _, description)| dc_intl::tr(description));
         div()
             .flex()
             .flex_col()
@@ -676,7 +678,7 @@ impl Root {
                             .flex_none()
                             .flex()
                             .flex_col()
-                            .child(label("Keybind Action", keybind.managed))
+                            .child(label(dc_intl::tr("Keybind Action"), keybind.managed))
                             .child(self.kb_select(keybind, column, cx)),
                     )
                     .child(
@@ -685,7 +687,7 @@ impl Root {
                             .flex_none()
                             .flex()
                             .flex_col()
-                            .child(label("Keybind", false))
+                            .child(label(dc_intl::tr("Keybind"), false))
                             .child(self.kb_recorder(keybind, cx)),
                     )
                     .child(
@@ -784,7 +786,7 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-strong"))
-                            .child(*text),
+                            .child(dc_intl::tr(text)),
                     )
                     .when(chosen, |this| {
                         this.child(div().p(px(4.)).child(crate::ui::icon(
@@ -867,7 +869,7 @@ impl Root {
             (String::new(), critical, 600.)
         } else if keybind.shortcut.is_empty() {
             (
-                "No Keybind Set".to_owned(),
+                dc_intl::tr("No Keybind Set").to_owned(),
                 color("--input-placeholder-text-default"),
                 400.,
             )
@@ -901,9 +903,9 @@ impl Root {
                     .text_color(color("--control-secondary-text-default"))
             })
             .child(if recording {
-                "Stop Recording"
+                dc_intl::tr("Stop Recording")
             } else {
-                "Record Keybind"
+                dc_intl::tr("Record Keybind")
             });
         let id = keybind.id.clone();
         div()
@@ -954,23 +956,25 @@ impl Root {
         fn dnd() -> Section {
             use crate::ui::keyboard::help::Item;
             Section {
-                title: "Drag and Drop",
-                note: Some("These shortcuts work when focused on a draggable item"),
+                title: dc_intl::tr("Drag and Drop"),
+                note: Some(dc_intl::tr(
+                    "These shortcuts work when focused on a draggable item",
+                )),
                 items: vec![
                     Item {
-                        description: "Start Drag and Drop",
+                        description: dc_intl::tr("Start Drag and Drop"),
                         binds: vec!["mod+d"],
                     },
                     Item {
-                        description: "Move",
+                        description: dc_intl::tr("Move"),
                         binds: vec!["up", "down"],
                     },
                     Item {
-                        description: "Drop item",
+                        description: dc_intl::tr("Drop item"),
                         binds: vec!["spacebar", "enter"],
                     },
                     Item {
-                        description: "Cancel",
+                        description: dc_intl::tr("Cancel"),
                         binds: vec!["esc"],
                     },
                 ],
@@ -1027,18 +1031,21 @@ impl Root {
         }
         let mut all = sections();
         let mut order: Vec<Section> = Vec::new();
-        order.extend(pick_remove(&mut all, "Messages"));
-        order.extend(pick_remove(&mut all, "Navigation"));
+        order.extend(pick_remove(&mut all, dc_intl::tr("Messages")));
+        order.extend(pick_remove(&mut all, dc_intl::tr("Navigation")));
         order.push(dnd());
-        order.extend(pick_remove(&mut all, "Chat"));
-        order.extend(pick_remove(&mut all, "Voice and Video"));
-        order.extend(pick_remove(&mut all, "Miscellaneous"));
+        order.extend(pick_remove(&mut all, dc_intl::tr("Chat")));
+        order.extend(pick_remove(&mut all, dc_intl::tr("Voice and Video")));
+        order.extend(pick_remove(&mut all, dc_intl::tr("Miscellaneous")));
         let mut page = div()
             .pt(px(9.))
             .flex()
             .flex_col()
             .gap(px(48.))
-            .child(card(vec![("Show Keyboard Shortcuts List", vec!["mod+/"])]));
+            .child(card(vec![(
+                dc_intl::tr("Show Keyboard Shortcuts List"),
+                vec!["mod+/"],
+            )]));
         for section in order {
             let items = section
                 .items

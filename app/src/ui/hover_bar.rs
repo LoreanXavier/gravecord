@@ -333,31 +333,33 @@ fn group_contains(
 /// The label and icon of a plain button (`ni.qv` of module 194085). Quick and Publish draw their own.
 pub(super) fn label_icon(button: Button, caps: Caps) -> (&'static str, &'static str) {
     match button {
-        Button::CopyId => ("Copy Message ID", "menu_id"),
-        Button::CopyLink => ("Copy Link", "menu_copy_message_link"),
-        Button::MarkUnread => ("Mark Unread", "menu_mark_unread"),
-        Button::Bookmark if caps.bookmarked => ("Remove Bookmark", "menu_remove_bookmark"),
-        Button::Bookmark => ("Bookmark Message", "menu_bookmark_message"),
-        Button::Pin if caps.pinned => ("Unpin Message", "menu_pin_message"),
-        Button::Pin => ("Pin Message", "menu_pin_message"),
-        Button::Thread => ("Create Thread", "menu_create_thread"),
-        Button::ViewThread => ("View Thread", "menu_create_thread"),
-        Button::AddReaction | Button::Quick => ("Add Reaction", "msg_react"),
-        Button::Reply => ("Reply", "menu_reply"),
-        Button::Edit => ("Edit", "msg_edit"),
-        Button::Forward => ("Forward", "msg_forward"),
-        Button::Publish => ("Publish", "announcement_channel"),
-        Button::Delete => ("Delete", "msg_trash"),
-        Button::More => ("More", "msg_more"),
+        Button::CopyId => (dc_intl::tr("Copy Message ID"), "menu_id"),
+        Button::CopyLink => (dc_intl::tr("Copy Link"), "menu_copy_message_link"),
+        Button::MarkUnread => (dc_intl::tr("Mark Unread"), "menu_mark_unread"),
+        Button::Bookmark if caps.bookmarked => {
+            (dc_intl::tr("Remove Bookmark"), "menu_remove_bookmark")
+        }
+        Button::Bookmark => (dc_intl::tr("Bookmark Message"), "menu_bookmark_message"),
+        Button::Pin if caps.pinned => (dc_intl::tr("Unpin Message"), "menu_pin_message"),
+        Button::Pin => (dc_intl::tr("Pin Message"), "menu_pin_message"),
+        Button::Thread => (dc_intl::tr("Create Thread"), "menu_create_thread"),
+        Button::ViewThread => (dc_intl::tr("View Thread"), "menu_create_thread"),
+        Button::AddReaction | Button::Quick => (dc_intl::tr("Add Reaction"), "msg_react"),
+        Button::Reply => (dc_intl::tr("Reply"), "menu_reply"),
+        Button::Edit => (dc_intl::tr("Edit"), "msg_edit"),
+        Button::Forward => (dc_intl::tr("Forward"), "msg_forward"),
+        Button::Publish => (dc_intl::tr("Publish"), "announcement_channel"),
+        Button::Delete => (dc_intl::tr("Delete"), "msg_trash"),
+        Button::More => (dc_intl::tr("More"), "msg_more"),
     }
 }
 
 /// The second line of a quick reaction's tooltip (`wunKKA`, `XVx5BN`).
 pub(super) fn quick_hint(reacted: bool) -> &'static str {
     if reacted {
-        "Click to remove"
+        dc_intl::tr("Click to remove")
     } else {
-        "Click to react"
+        dc_intl::tr("Click to react")
     }
 }
 

@@ -76,6 +76,18 @@ pub(super) fn small_button(
         .child(label)
 }
 
+/// A run of a message drawn between flex children: its edge spaces kept as no-break spaces, as the line wraps.
+fn spaced(text: &str) -> String {
+    let start = text.len() - text.trim_start_matches(' ').len();
+    let end = text.trim_end_matches(' ').len().max(start);
+    format!(
+        "{}{}{}",
+        "\u{a0}".repeat(start),
+        &text[start..end],
+        "\u{a0}".repeat(text.len() - end)
+    )
+}
+
 impl Root {
     /// The start of a DM: the other person large, the opening line, mutual servers and the friend buttons.
     pub(super) fn dm_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -109,111 +121,111 @@ impl Root {
         let name = self.dm_display_name(&user);
         Some(
             // A list row's own margin is not measured, so the 16px above `container_w6h4R2` is padding on a wrapper.
-            div().pt(px(16.)).child(
             div()
-                .parity("dm-welcome")
-                .id("dm-welcome")
-                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                    if this.hovered_welcome != *inside {
-                        this.hovered_welcome = *inside;
-                        cx.notify();
-                    }
-                }))
-                .ml(px(16.))
-                .mr(px(32.))
-                .flex()
-                .flex_col()
+                .pt(px(16.))
                 .child(
                     div()
-                        .size(px(80.))
-                        .rounded_full()
-                        .children(avatar.map(|picture| img(picture).size(px(80.)).rounded_full())),
-                )
-                .child(
-                    div()
-                        .mt(px(8.))
-                        .text_size(px(32.))
-                        .line_height(px(40.))
-                        .font_weight(FontWeight(700.))
-                        .text_color(color("--text-strong"))
-                        // 891522: a 1:1 DM's heading takes the recipient's display name style, animated while hovered.
-                        .child(super::name_styles::name(
-                            format!("dm-welcome-{}", user.id),
-                            name.clone(),
-                            self.name_styles(&user, None).as_ref(),
-                            if self.hovered_welcome {
-                                super::name_styles::Display::Animated
-                            } else {
-                                super::name_styles::Display::Static
-                            },
-                        )),
-                )
-                .child(
-                    div()
-                        .mt(px(8.))
-                        .text_size(px(24.))
-                        .line_height(px(32.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--text-strong"))
-                        .child(user.username.clone()),
-                )
-                .child(
-                    div()
-                        .mt(px(20.))
+                        .parity("dm-welcome")
+                        .id("dm-welcome")
+                        .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                            if this.hovered_welcome != *inside {
+                                this.hovered_welcome = *inside;
+                                cx.notify();
+                            }
+                        }))
+                        .ml(px(16.))
+                        .mr(px(32.))
                         .flex()
-                        .text_size(px(16.))
-                        .line_height(px(20.))
-                        .text_color(color("--text-default"))
-                        .child("This is the beginning of your direct message history with\u{a0}")
-                        .child(div().font_weight(FontWeight(600.)).child(name))
-                        .child("."),
-                )
-                .child(
-                    div()
-                        .mt(px(8.))
-                        .h(px(32.))
-                        .flex()
-                        .items_center()
-                        .when(mutual > 0, |this| {
-                            this.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(
+                        .flex_col()
+                        .child(div().size(px(80.)).rounded_full().children(
+                            avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
+                        ))
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(32.))
+                                .line_height(px(40.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                // 891522: a 1:1 DM's heading takes the recipient's display name style, animated while hovered.
+                                .child(super::name_styles::name(
+                                    format!("dm-welcome-{}", user.id),
+                                    name.clone(),
+                                    self.name_styles(&user, None).as_ref(),
+                                    if self.hovered_welcome {
+                                        super::name_styles::Display::Animated
+                                    } else {
+                                        super::name_styles::Display::Static
+                                    },
+                                )),
+                        )
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(24.))
+                                .line_height(px(32.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(user.username.clone()),
+                        )
+                        .child(
+                            div()
+                                .mt(px(20.))
+                                .flex()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-default"))
+                                // `Qvg+6+`: the text, the bold name, the full stop.
+                                .child(super::bold_message(
+                                    "Qvg+6+",
+                                    &[("username", (&name).into())],
+                                    FontWeight(600.),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .h(px(32.))
+                                .flex()
+                                .items_center()
+                                .when(mutual > 0, |this| {
+                                    this.child(
                                         div()
-                                            .size(px(24.))
-                                            .rounded(px(8.))
-                                            .overflow_hidden()
-                                            .children(
-                                                first_mutual
-                                                    .map(|picture| img(picture).size(px(24.))),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .size(px(24.))
+                                                    .rounded(px(8.))
+                                                    .overflow_hidden()
+                                                    .children(
+                                                        first_mutual.map(|picture| {
+                                                            img(picture).size(px(24.))
+                                                        }),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(18.))
+                                                    .text_color(color("--text-subtle"))
+                                                    .child(dc_intl::t!("E215W7", count = mutual)),
+                                            )
+                                            // The dot between the servers and the buttons.
+                                            .child(
+                                                div()
+                                                    .mx(px(4.))
+                                                    .size(px(4.))
+                                                    .rounded_full()
+                                                    .bg(color("--background-mod-strong")),
                                             ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .text_color(color("--text-subtle"))
-                                            .child(if mutual == 1 {
-                                                "1 Mutual Server".to_owned()
-                                            } else {
-                                                format!("{mutual} Mutual Servers")
-                                            }),
-                                    )
-                                    // The dot between the servers and the buttons.
-                                    .child(
-                                        div()
-                                            .mx(px(4.))
-                                            .size(px(4.))
-                                            .rounded_full()
-                                            .bg(color("--background-mod-strong")),
-                                    ),
-                            )
-                        })
-                        .child(div().ml(px(4.)).flex().gap(px(8.)).children(buttons)),
+                                })
+                                .child(div().ml(px(4.)).flex().gap(px(8.)).children(buttons)),
+                        ),
                 )
-                ).into_any_element(),
+                .into_any_element(),
         )
     }
 
@@ -233,39 +245,55 @@ impl Root {
         let mut list = Vec::new();
         match relationship {
             1 => list.push(
-                small_button("welcome-remove", "Remove Friend", Tone::Secondary, true)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        // The same question the menu row asks before a friend is removed.
-                        this.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(id));
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                small_button(
+                    "welcome-remove",
+                    dc_intl::tr("Remove Friend"),
+                    Tone::Secondary,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    // The same question the menu row asks before a friend is removed.
+                    this.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(id));
+                    cx.notify();
+                }))
+                .into_any_element(),
             ),
             2 => list.push(
-                small_button("welcome-unblock", "Unblock", Tone::Secondary, true)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)),
-                    )
-                    .into_any_element(),
+                small_button(
+                    "welcome-unblock",
+                    dc_intl::tr("Unblock"),
+                    Tone::Secondary,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)))
+                .into_any_element(),
             ),
             4 => list.push(
-                small_button("welcome-sent", "Friend Request Sent", Tone::Primary, false)
-                    .into_any_element(),
+                small_button(
+                    "welcome-sent",
+                    dc_intl::tr("Friend Request Sent"),
+                    Tone::Primary,
+                    false,
+                )
+                .into_any_element(),
             ),
             _ => list.push(
-                small_button("welcome-add", "Add Friend", Tone::Primary, true)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.set_relationship(id, Some(0), cx)),
-                    )
-                    .into_any_element(),
+                small_button(
+                    "welcome-add",
+                    dc_intl::tr("Add Friend"),
+                    Tone::Primary,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_relationship(id, Some(0), cx)))
+                .into_any_element(),
             ),
         }
         if relationship != 2 {
             list.push(
-                small_button("welcome-block", "Block", Tone::Secondary, true)
+                small_button("welcome-block", dc_intl::tr("Block"), Tone::Secondary, true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_relationship(id, Some(2), cx);
-                        this.show_success_toast(format!("{name} blocked"), cx);
+                        this.show_success_toast(dc_intl::t!("XXPrIs", username = &name), cx);
                     }))
                     .into_any_element(),
             );
@@ -281,12 +309,17 @@ impl Root {
             && let Some(first) = first_theirs
         {
             list.push(
-                small_button("welcome-report", "Report Spam", Tone::CriticalPrimary, true)
-                    // `b8`: the first message of theirs is reported as `first_dm`.
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_report_message(&first, true, window, cx);
-                    }))
-                    .into_any_element(),
+                small_button(
+                    "welcome-report",
+                    dc_intl::tr("Report Spam"),
+                    Tone::CriticalPrimary,
+                    true,
+                )
+                // `b8`: the first message of theirs is reported as `first_dm`.
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_report_message(&first, true, window, cx);
+                }))
+                .into_any_element(),
             );
         }
         list
@@ -324,11 +357,16 @@ impl Root {
                     cx,
                 ),
             )
-            .child("\u{a0}pinned\u{a0}")
+            // `yIDvPL`'s runs: name, " pinned ", the message link, " to this channel. See all ", the pins link, ".".
+            .child(spaced(&super::message_part(
+                "yIDvPL",
+                &[("username", "".into())],
+                0,
+            )))
             .child(
                 link(
                     format!("pin-notice-message-{}", message.id),
-                    "a message".to_owned(),
+                    super::message_part("yIDvPL", &[("username", "".into())], 1),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let found = target.and_then(|target| {
@@ -343,11 +381,15 @@ impl Root {
                     }
                 })),
             )
-            .child("\u{a0}to this channel. See all\u{a0}")
+            .child(spaced(&super::message_part(
+                "yIDvPL",
+                &[("username", "".into())],
+                2,
+            )))
             .child(
                 link(
                     format!("pin-notice-pins-{}", message.id),
-                    "pinned messages".to_owned(),
+                    super::message_part("yIDvPL", &[("username", "".into())], 3),
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     let key = if this.current_dm().is_some() {
@@ -373,24 +415,19 @@ impl Root {
 
     /// `getSystemMessageUserJoin` in module 779014: one of thirteen lines, picked by the message's snowflake time
     /// modulo 13, as (before, after) around the name.
-    pub(super) fn join_line(message: &Message) -> (&'static str, &'static str) {
-        const LINES: [(&str, &str); 13] = [
-            ("", " joined the party."),
-            ("", " is here."),
-            ("Welcome, ", ". We hope you brought pizza."),
-            ("A wild ", " appeared."),
-            ("", " just landed."),
-            ("", " just slid into the server."),
-            ("", " just showed up!"),
-            ("Welcome ", ". Say hi!"),
-            ("", " hopped into the server."),
-            ("Everyone welcome ", "!"),
-            ("Glad you're here, ", "."),
-            ("Good to see you, ", "."),
-            ("Yay you made it, ", "!"),
+    pub(super) fn join_line(message: &Message) -> (String, String) {
+        const LINES: [&str; 13] = [
+            "0cuj7l", "MuW+CN", "osqpHX", "5ToSh2", "JEB8ps", "pkOV5T", "kRb1J+", "EmKLY+",
+            "rPtBnb", "5B/ekS", "ESNC3Y", "Iw6d8w", "WecSZ/",
         ];
         let timestamp = (message.id >> 22) + 1_420_070_400_000;
-        LINES[(timestamp % LINES.len() as u64) as usize]
+        let key = LINES[(timestamp % LINES.len() as u64) as usize];
+        // The message around its `usernameHook`, split where the name goes.
+        let text = dc_intl::format(key, &[("username", "\u{1}".into())]);
+        match text.split_once('\u{1}') {
+            Some((before, after)) => (before.to_owned(), after.to_owned()),
+            None => (text, String::new()),
+        }
     }
 
     /// THREAD_CREATED: "name started a thread: **thread**. See all **threads**." and the thread's card
@@ -454,9 +491,9 @@ impl Root {
                                     .child(message.content.clone()),
                             )
                             .child(div().text_color(color("--text-link")).child(if count == 1 {
-                                "1 Message \u{203a}".to_owned()
+                                dc_intl::t!("rfAXDV", count = 1)
                             } else {
-                                format!("{count} Messages \u{203a}")
+                                dc_intl::t!("rfAXDV", count = count)
                             })),
                     )
                     .children(latest.map(|latest| {
@@ -506,19 +543,32 @@ impl Root {
                     .line_height(px(22.))
                     .text_color(color("--text-muted"))
                     .child(bold(message.author.display_name().to_owned()))
-                    .child("\u{a0}started a thread:\u{a0}")
+                    // `cZ9Uf2`'s runs: actor, " started a thread: ", the thread, ". See all ", "threads", ".".
+                    .child(spaced(&super::message_part(
+                        "cZ9Uf2",
+                        &[("actorName", "".into()), ("threadName", "".into())],
+                        0,
+                    )))
                     .child(bold(message.content.clone()))
-                    .child(".\u{a0}See all\u{a0}")
+                    .child(spaced(&super::message_part(
+                        "cZ9Uf2",
+                        &[("actorName", "".into()), ("threadName", "".into())],
+                        1,
+                    )))
                     .child(
-                        bold("threads".to_owned())
-                            .id("see-all-threads")
-                            .cursor_pointer()
-                            .hover(|this| this.underline())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.thread_browser.is_none() {
-                                    this.toggle_thread_browser(window, cx);
-                                }
-                            })),
+                        bold(super::message_part(
+                            "cZ9Uf2",
+                            &[("actorName", "".into()), ("threadName", "".into())],
+                            2,
+                        ))
+                        .id("see-all-threads")
+                        .cursor_pointer()
+                        .hover(|this| this.underline())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.thread_browser.is_none() {
+                                this.toggle_thread_browser(window, cx);
+                            }
+                        })),
                     )
                     .child(".")
                     .child(
@@ -564,12 +614,12 @@ impl Root {
         let (icon_name, tail, tint) = match message.kind {
             FRIEND_REQUEST_ACCEPTED => (
                 "system_friend_accepted",
-                " accepted your friend request.",
+                super::message_part("H/9Tlj", &[("username", "".into())], 0),
                 "--status-positive",
             ),
-            CHANNEL_PINNED_MESSAGE => ("system_pinned", "", "--channels-default"),
-            THREAD_CREATED => ("system_thread", "", "--text-muted"),
-            _ => ("system_friend_accepted", "", "--status-positive"),
+            CHANNEL_PINNED_MESSAGE => ("system_pinned", String::new(), "--channels-default"),
+            THREAD_CREATED => ("system_thread", String::new(), "--text-muted"),
+            _ => ("system_friend_accepted", String::new(), "--status-positive"),
         };
         div()
             .child(

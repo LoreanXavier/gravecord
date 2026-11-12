@@ -315,7 +315,11 @@ impl Root {
                             )
                         }))
                         .child(self.mutual_avatars(body))
-                        .child(plural(mutual_friends, "Mutual Friend", "Mutual Friends")),
+                        .child(plural(
+                            mutual_friends,
+                            "Mutual Friend",
+                            dc_intl::tr("Mutual Friends"),
+                        )),
                 )
             })
             .when(mutual_friends > 0 && mutual_servers > 0, |this| {
@@ -334,7 +338,11 @@ impl Root {
                                 cx,
                             )
                         }))
-                        .child(plural(mutual_servers, "Mutual Server", "Mutual Servers")),
+                        .child(plural(
+                            mutual_servers,
+                            "Mutual Server",
+                            dc_intl::tr("Mutual Servers"),
+                        )),
                 )
             });
         let sections = div()
@@ -363,7 +371,7 @@ impl Root {
                             .line_height(px(16.))
                             .font_weight(FontWeight(600.))
                             .text_color(text)
-                            .child("Member Since"),
+                            .child(dc_intl::tr("Member Since")),
                     )
                     .child(
                         div()
@@ -394,7 +402,7 @@ impl Root {
                 .line_height(px(20.))
                 .font_weight(FontWeight(500.))
                 .text_color(color("--control-secondary-text-default"))
-                .child("View Full Profile"),
+                .child(dc_intl::tr("View Full Profile")),
         );
         let card = div()
             .id("dm-profile-card")

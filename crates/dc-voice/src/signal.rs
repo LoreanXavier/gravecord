@@ -369,6 +369,12 @@ pub(crate) fn session_description(
     Ok(key)
 }
 
+/// `keyframe_interval` of op 4 or 14, in milliseconds. The official client passes it on only when it is set and not 0
+/// (`a.keyframe_interval&&this.emit("keyframe-interval", ...)` in module 921747).
+pub(crate) fn keyframe_interval(data: &Value) -> Option<u64> {
+    data["keyframe_interval"].as_u64().filter(|ms| *ms > 0)
+}
+
 /// Op 11: `user_ids`, bounded to the 64-participant limit.
 pub(crate) fn client_connect(data: &Value) -> Result<Vec<u64>, &'static str> {
     let ids = data["user_ids"]

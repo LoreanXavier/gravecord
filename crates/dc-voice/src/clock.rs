@@ -39,6 +39,43 @@ pub(crate) fn ticks() -> Result<mpsc::Receiver<()>, &'static str> {
     Ok(receive)
 }
 
+/// Counts 20 ms frames owed since a start, for a loop that must move one frame per 20 ms of real time even when its
+/// tick came late and the clock skipped one (`ticks` skips rather than bursts).
+#[derive(Default)]
+pub(crate) struct FrameClock {
+    start: Option<Instant>,
+    taken: u64,
+}
+
+impl FrameClock {
+    /// Most frames handed out at once; a longer stall starts the count again rather than burst.
+    const MAX_CATCH_UP: u64 = 3;
+
+    /// Frames due at `now`: one per tick on time, more after a skipped tick.
+    pub(crate) fn due(&mut self, now: Instant) -> u64 {
+        let start = *self.start.get_or_insert(now);
+        self.owed(now.saturating_duration_since(start).as_micros() as u64)
+    }
+
+    /// [`FrameClock::due`] `elapsed` microseconds after the first call. A tick is counted from half way to it, so a
+    /// wake a little early or late on the grid neither owes nothing nor owes two.
+    pub(crate) fn owed(&mut self, elapsed: u64) -> u64 {
+        let tick = TICK.as_micros() as u64;
+        let expected = (elapsed + tick / 2) / tick + 1;
+        let mut owed = expected.saturating_sub(self.taken);
+        if owed > Self::MAX_CATCH_UP {
+            self.taken = expected - 1;
+            owed = 1;
+        }
+        self.taken += owed;
+        owed
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Run one media loop on its own thread and single-threaded runtime, so gateway, image and
 /// UI tasks on the shared runtime cannot delay audio ticks. Dropping the returned future
 /// stops the loop at its next await.

@@ -37,17 +37,18 @@ pub(super) fn names(body: &serde_json::Value) -> Vec<String> {
 /// "and N other(s)" for everyone else. Nothing when no name is known.
 pub(super) fn text(label: &str, names: &[String], count: usize) -> Option<String> {
     let rest = count.saturating_sub(names.len());
-    let others = |n: usize| format!("{n} {}", if n == 1 { "other" } else { "others" });
-    let who = match (names, rest) {
+    let n = rest;
+    Some(match (names, rest) {
         ([], _) => return None,
-        ([a], 0) => a.clone(),
-        ([a], n) => format!("{a} and {}", others(n)),
-        ([a, b], 0) => format!("{a} and {b}"),
-        ([a, b], n) => format!("{a}, {b}, and {}", others(n)),
-        ([a, b, c, ..], 0) => format!("{a}, {b}, and {c}"),
-        ([a, b, c, ..], n) => format!("{a}, {b}, {c}, and {}", others(n)),
-    };
-    Some(format!("{label} reacted by {who}"))
+        ([a], 0) => dc_intl::t!("Oro30L", emojiName = label, a = a),
+        ([a], _) => dc_intl::t!("mXild1", emojiName = label, a = a, n = n),
+        ([a, b], 0) => dc_intl::t!("p+0jvt", emojiName = label, a = a, b = b),
+        ([a, b], _) => dc_intl::t!("UWGs2n", emojiName = label, a = a, b = b, n = n),
+        ([a, b, c, ..], 0) => dc_intl::t!("bbPMcR", emojiName = label, a = a, b = b, c = c),
+        ([a, b, c, ..], _) => {
+            dc_intl::t!("UnXdX/", emojiName = label, a = a, b = b, c = c, n = n)
+        }
+    })
 }
 
 #[cfg(test)]

@@ -66,9 +66,9 @@ pub(super) fn options(row: usize, adult: bool) -> Vec<u64> {
 fn label_of(value: u64) -> &'static str {
     // `S49Uad`, `D/157Y` and `5k5OFp`.
     match value {
-        SHOW => "Show",
-        BLOCK => "Block",
-        _ => "Blur",
+        SHOW => dc_intl::tr("Show"),
+        BLOCK => dc_intl::tr("Block"),
+        _ => dc_intl::tr("Blur"),
     }
 }
 
@@ -157,7 +157,7 @@ pub(super) fn age_notice(
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
                 .text_color(color("--control-secondary-text-default"))
-                .child("Confirm Age"),
+                .child(dc_intl::tr("Confirm Age")),
         )
 }
 
@@ -198,16 +198,23 @@ impl Root {
             _ => 0,
         };
         let values = self.redaction_values(kind);
-        let tabs = ["Mature Sexual Media", "Graphic Media"];
+        let tabs = [
+            dc_intl::tr("Mature Sexual Media"),
+            dc_intl::tr("Graphic Media"),
+        ];
         let titles = [
-            "Direct messages from friends",
-            "Direct messages from others",
-            "Messages in server channels",
+            dc_intl::tr("Direct messages from friends"),
+            dc_intl::tr("Direct messages from others"),
+            dc_intl::tr("Messages in server channels"),
         ];
         let note = if kind == 0 {
-            "Helps detect image-based media that may contain sexually explicit or suggestive material involving adults."
+            dc_intl::tr(
+                "Helps detect image-based media that may contain sexually explicit or suggestive material involving adults.",
+            )
         } else {
-            "Helps detect image-based media that may contain violent or potentially disturbing visual content."
+            dc_intl::tr(
+                "Helps detect image-based media that may contain violent or potentially disturbing visual content.",
+            )
         };
         // `tab_9mZA96.vertical`: 20px of text and 12px of padding below it (32 tall), a 1px `--border-subtle` bar on
         // the left, 2px `--text-brand` and a -1px margin when selected; the captured tabs sit 18px apart, 12px below
@@ -391,7 +398,7 @@ impl Root {
                     "Some settings can only be changed if you’re in the adult age group. ",
                     false,
                 ),
-                ("Learn more", true),
+                (dc_intl::tr("Learn more"), true),
             ],
             root,
         )
@@ -409,7 +416,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Sensitive content filters"),
+                    .child(dc_intl::tr("Sensitive content filters")),
             )
             .child(runs_text(
                 &[

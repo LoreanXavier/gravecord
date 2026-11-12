@@ -935,7 +935,7 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(text(20., 600., "--text-strong").child("Preview Theme"))
+                        .child(text(20., 600., "--text-strong").child(dc_intl::tr("Preview Theme")))
                         .child(
                             div()
                                 .id("theme-preview-close")
@@ -984,11 +984,13 @@ impl Root {
                                         .flex_col()
                                         .child(
                                             text(16., 600., "--text-strong")
-                                                .child("Create your own theme"),
+                                                .child(dc_intl::tr("Create your own theme")),
                                         )
                                         // `body-sm/medium`, 2px under the title.
                                         .child(text(14., 500., "--text-default").mt(px(2.)).child(
-                                            "Style your space with endless color combinations.",
+                                            dc_intl::tr(
+                                                "Style your space with endless color combinations.",
+                                            ),
                                         )),
                                 ),
                         )
@@ -1010,7 +1012,7 @@ impl Root {
                                 )
                                 .child(
                                     text(14., 500., "--control-secondary-text-default")
-                                        .child("Try It Out"),
+                                        .child(dc_intl::tr("Try It Out")),
                                 ),
                         ),
                 )
@@ -1024,7 +1026,7 @@ impl Root {
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
-                                .child("Color Themes")
+                                .child(dc_intl::tr("Color Themes"))
                                 .child(mask_icon("nitro_wheel", 16., "--text-strong")),
                         )
                         .child(
@@ -1096,7 +1098,8 @@ impl Root {
                                         )
                                         .child(mask_icon("nitro_wheel", 20., on_unlock))
                                         .child(
-                                            text(16., 600., on_unlock).child("Unlock with Nitro"),
+                                            text(16., 600., on_unlock)
+                                                .child(dc_intl::tr("Unlock with Nitro")),
                                         ),
                                 ),
                         )
@@ -1113,7 +1116,7 @@ impl Root {
                                 .on_click(cx.listener(|this, _, _, cx| this.exit_theme_preview(cx)))
                                 .child(
                                     text(16., 600., "--control-secondary-text-default")
-                                        .child("Exit Preview"),
+                                        .child(dc_intl::tr("Exit Preview")),
                                 ),
                         ),
                 )

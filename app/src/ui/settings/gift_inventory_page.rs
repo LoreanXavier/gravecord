@@ -76,13 +76,13 @@ impl Root {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .child(text(*name, 14., 18., 600., "--text-muted"))
+                        .child(text(dc_intl::tr(name), 14., 18., 600., "--text-muted"))
                         .child(text(*count, 12., 16., 400., "--text-muted")),
                 );
         }
         card = card.child(
             at(0., 152.).w(px(696.)).flex().justify_center().child(text(
-                "Your badge progresses as you gift. Exceptions include when a gift is refunded or when fraud is detected.",
+                dc_intl::tr("Your badge progresses as you gift. Exceptions include when a gift is refunded or when fraud is detected."),
                 12.,
                 16.,
                 400.,
@@ -108,7 +108,7 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(text("Send a Gift", 16., 20., 500., "--white"))
+                        .child(text(dc_intl::tr("Send a Gift"), 16., 20., 500., "--white"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_settings(cx);
                             this.open_nitro(cx);
@@ -135,7 +135,7 @@ impl Root {
             .flex_col()
             .items_center()
             .child(text(
-                "There are no gifts.",
+                dc_intl::tr("There are no gifts."),
                 24.,
                 28.,
                 400.,
@@ -154,7 +154,7 @@ impl Root {
                             .id("gifts-nitro-link")
                             .cursor_pointer()
                             .text_color(color("--text-link"))
-                            .child("Nitro")
+                            .child(dc_intl::tr("Nitro"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.close_settings(cx);
                                 this.open_nitro(cx);

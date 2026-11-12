@@ -94,9 +94,9 @@ fn pick_icon_role(
 /// The line of the role icon popout (`t0928V`, `UDDkGy`).
 pub(super) fn role_icon_line(name: &str, subscription: bool) -> String {
     if subscription {
-        format!("Custom Role Icon for {name}. This feature is a part of Server Subscriptions.")
+        dc_intl::t!("t0928V", name = name)
     } else {
-        format!("Custom Role Icon for {name}. This feature is a part of Server Boosting.")
+        dc_intl::t!("UDDkGy", name = name)
     }
 }
 
@@ -105,9 +105,12 @@ pub(super) fn established(guild: Id) -> String {
     let millis = (guild >> 22) as i64 + 1_420_070_400_000;
     chrono::DateTime::from_timestamp_millis(millis)
         .map(|date| {
-            format!(
-                "Est. {}",
-                date.with_timezone(&chrono::Local).format("%B %-d, %Y")
+            dc_intl::t!(
+                "zb2Q56",
+                createdAtDate = date
+                    .with_timezone(&chrono::Local)
+                    .format("%B %-d, %Y")
+                    .to_string()
             )
         })
         .unwrap_or_default()
@@ -115,11 +118,8 @@ pub(super) fn established(guild: Id) -> String {
 
 /// The `{n} Members` count (`zRl6XR`).
 pub(super) fn member_count_label(count: u64) -> String {
-    format!(
-        "{} {}",
-        super::role_popout::group_digits(count),
-        if count == 1 { "Member" } else { "Members" }
-    )
+    // `zRl6XR`: the count as `Intl.NumberFormat` writes it, then Member(s).
+    dc_intl::t!("zRl6XR", count = count)
 }
 
 pub(super) fn profile_key(guild: Id) -> String {
@@ -285,7 +285,7 @@ impl Root {
                 self.with_tip(
                     key,
                     // `g76OcH`.
-                    Tip::body(Body::Text("Verified App".into()), Side::Top),
+                    Tip::body(Body::Text(dc_intl::tr("Verified App").into()), Side::Top),
                     div()
                         .ml(px(-3.2))
                         .size(px(16.))
@@ -300,9 +300,9 @@ impl Root {
                     .font_weight(FontWeight(600.))
                     // `9RNkeF`, `fyE8sH` and `PuJGuM`.
                     .child(match kind {
-                        AppTag::OriginalPoster => "OP",
-                        AppTag::Server => "SERVER",
-                        AppTag::App { .. } => "APP",
+                        AppTag::OriginalPoster => dc_intl::tr("OP"),
+                        AppTag::Server => dc_intl::tr("SERVER"),
+                        AppTag::App { .. } => dc_intl::tr("APP"),
                     }),
             );
         if op {
@@ -310,7 +310,7 @@ impl Root {
             return self
                 .with_tip(
                     format!("message-op-{message}"),
-                    Tip::body(Body::Text("Original Poster".into()), Side::Top),
+                    Tip::body(Body::Text(dc_intl::tr("Original Poster").into()), Side::Top),
                     tag,
                     cx,
                 )
@@ -579,9 +579,10 @@ impl Root {
                         )
                         // `H930+H`.
                         .child(
-                            small_button("role-icon-learn-more", "Learn more", false).on_click(
-                                cx.listener(|this, _, _, cx| this.close_header_popout(cx)),
-                            ),
+                            small_button("role-icon-learn-more", dc_intl::tr("Learn more"), false)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.close_header_popout(cx)),
+                                ),
                         ),
                 )
                 .into_any_element(),
@@ -605,13 +606,16 @@ impl Root {
                 .occlude()
                 .p(px(16.))
                 .child(text(14., 18., 400., "--text-default").child(if failed {
-                    "Unable to load server profile"
+                    dc_intl::tr("Unable to load server profile")
                 } else {
                     ""
                 }))
                 .into_any_element();
         };
-        let name = body["name"].as_str().unwrap_or("Unknown Server").to_owned();
+        let name = body["name"]
+            .as_str()
+            .unwrap_or(dc_intl::tr("Unknown Server"))
+            .to_owned();
         let tag = body["tag"].as_str().filter(|tag| !tag.is_empty());
         let badge = body["badge_hash"].as_str().and_then(|hash| {
             self.images
@@ -632,9 +636,9 @@ impl Root {
         let icon_image = self.images.get(&format!("guild:{guild}")).cloned();
         let acronym = dc_state::Guild::acronym_of(&name);
         let button = if joined {
-            Some(("guild-profile-go", "Go to Server"))
+            Some(("guild-profile-go", dc_intl::tr("Go to Server")))
         } else if discoverable {
-            Some(("guild-profile-join", "Join"))
+            Some(("guild-profile-join", dc_intl::tr("Join")))
         } else {
             None
         };
@@ -727,7 +731,10 @@ impl Root {
                             .flex_wrap()
                             .gap_x(px(8.))
                             // `LC+S+m` and `zRl6XR`.
-                            .child(count("--text-status-online", format!("{online} Online")))
+                            .child(count(
+                                "--text-status-online",
+                                dc_intl::t!("LC+S+m", membersOnline = online),
+                            ))
                             .child(count("--text-status-offline", member_count_label(members))),
                     )
                     .child(

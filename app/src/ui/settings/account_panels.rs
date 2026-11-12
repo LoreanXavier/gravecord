@@ -24,10 +24,10 @@ impl Panel {
     /// The title the nested header's breadcrumb ends with.
     pub(in crate::ui) fn title(self) -> &'static str {
         match self {
-            Panel::Sessions => "Logged-in Devices",
-            Panel::Mfa => "Multi-Factor Authentication",
-            Panel::Standing => "Account Standing",
-            Panel::Family => "Family Center",
+            Panel::Sessions => dc_intl::tr("Logged-in Devices"),
+            Panel::Mfa => dc_intl::tr("Multi-Factor Authentication"),
+            Panel::Standing => dc_intl::tr("Account Standing"),
+            Panel::Family => dc_intl::tr("Family Center"),
         }
     }
 
@@ -51,7 +51,7 @@ pub(in crate::ui) fn logout_request(hashes: &[String]) -> Request {
 pub(in crate::ui) fn last_used(seconds_ago: i64) -> String {
     let minutes = seconds_ago.max(0) as f64 / 60.;
     if minutes < 60. {
-        return "less than an hour ago".to_owned();
+        return dc_intl::tr("less than an hour ago").to_owned();
     }
     let hours = minutes / 60.;
     let days = hours / 24.;
@@ -115,7 +115,7 @@ pub(in crate::ui) fn devices_of(list: &[Value], now: i64) -> Vec<Device> {
                 hash: session["id_hash"].as_str().unwrap_or("").to_owned(),
                 mobile: matches!(os.to_lowercase().as_str(), "ios" | "android"),
                 os: if os.is_empty() {
-                    "Unknown".to_owned()
+                    dc_intl::tr("Unknown").to_owned()
                 } else {
                     os
                 },
@@ -179,7 +179,7 @@ impl Root {
             .get("sessions")
             .and_then(|body| body["user_sessions"].as_array())
         else {
-            return vec![value("Loading...").into_any_element()];
+            return vec![value(dc_intl::tr("Loading...")).into_any_element()];
         };
         let now = chrono::Utc::now().timestamp();
         let mut devices = devices_of(list, now);
@@ -269,9 +269,9 @@ impl Root {
                 })
                 .into_any_element()
         };
-        let mut out = vec![note(
+        let mut out = vec![note(dc_intl::tr(
             "These are all the devices that are currently logged-in with your Discord account. Log out of devices that you don't recognize.",
-        )];
+        ))];
         if let Some(current) = &current {
             out.push(group("Current Device", vec![row(current, false, cx)]));
         }
@@ -283,13 +283,15 @@ impl Root {
                 div()
                     .pt(px(24.))
                     .child(
-                        Row::new("Log out of all known devices")
+                        Row::new(dc_intl::tr("Log out of all known devices"))
                             .description(
                                 div()
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .text_color(color("--text-subtle"))
-                                    .child("You'll have to log back in on all logged out devices."),
+                                    .child(dc_intl::tr(
+                                        "You'll have to log back in on all logged out devices.",
+                                    )),
                             )
                             .trailing(
                                 div()
@@ -301,7 +303,7 @@ impl Root {
                                     }))
                                     .child(button(
                                         "settings-logout-all",
-                                        "Log Out All Known Devices",
+                                        dc_intl::tr("Log Out All Known Devices"),
                                         ButtonKind::CriticalPrimary,
                                     )),
                             )
@@ -346,7 +348,7 @@ impl Root {
             .get(mfa::CREDENTIALS_KEY)
             .and_then(Value::as_array)
         {
-            None => vec![value("Loading...").into_any_element()],
+            None => vec![value(dc_intl::tr("Loading...")).into_any_element()],
             Some(list) => {
                 let now = chrono::Utc::now();
                 list.iter()
@@ -382,12 +384,12 @@ impl Root {
             }
         };
         out.push(mfa_category(
-            "Security Keys",
+            dc_intl::tr("Security Keys"),
             Some(
                 div()
-                    .child(
+                    .child(dc_intl::tr(
                         "Use your fingerprint, face, screenlock, or security key when logging in.",
-                    )
+                    ))
                     .into_any_element(),
             ),
             None,
@@ -398,9 +400,9 @@ impl Root {
         let mut header = None;
         let mut body = Vec::new();
         if !account.verified {
-            body.push(self.warning_notice(
+            body.push(self.warning_notice(dc_intl::tr(
                 "You must verify your account before you can enable two-factor authentication.",
-            ));
+            )));
         } else if account.mfa_enabled {
             body.push(
                 div()
@@ -413,12 +415,12 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child("Enabled"),
+                            .child(dc_intl::tr("Enabled")),
                     )
                     .child(opens(
                         "mfa-remove",
                         "mfa-remove-button",
-                        "Remove",
+                        dc_intl::tr("Remove"),
                         ButtonKind::CriticalSecondary,
                         cx,
                     ))
@@ -428,14 +430,14 @@ impl Root {
             header = Some(opens(
                 "mfa-enable",
                 "mfa-enable-button",
-                "Enable Authenticator App",
+                dc_intl::tr("Enable Authenticator App"),
                 ButtonKind::Primary,
                 cx,
             ));
         }
         out.push(mfa_category(
-            "Authenticator App",
-            Some(div().child("Use an app to generate a one-time code when logging in. This adds an extra layer of security to your Discord account, making sure that only you have the ability to log in.").into_any_element()),
+            dc_intl::tr("Authenticator App"),
+            Some(div().child(dc_intl::tr("Use an app to generate a one-time code when logging in. This adds an extra layer of security to your Discord account, making sure that only you have the ability to log in.")).into_any_element()),
             header,
             body,
         ));
@@ -481,7 +483,7 @@ impl Root {
                                         .line_height(px(20.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(color("--text-strong"))
-                                        .child("Enabled"),
+                                        .child(dc_intl::tr("Enabled")),
                                 )
                                 .child(
                                     div()
@@ -509,14 +511,18 @@ impl Root {
                                                     }
                                                     cx.notify();
                                                 }))
-                                                .child(if revealed { "Hide" } else { "Reveal" }),
+                                                .child(if revealed {
+                                                    dc_intl::tr("Hide")
+                                                } else {
+                                                    dc_intl::tr("Reveal")
+                                                }),
                                         ),
                                 ),
                         )
                         .child(opens(
                             "mfa-sms-remove",
                             "mfa-sms-remove-button",
-                            "Remove",
+                            dc_intl::tr("Remove"),
                             ButtonKind::CriticalSecondary,
                             cx,
                         ))
@@ -532,13 +538,18 @@ impl Root {
                         }))
                         .child(button(
                             "mfa-sms-enable-button",
-                            "Enable SMS Authentication",
+                            dc_intl::tr("Enable SMS Authentication"),
                             ButtonKind::Primary,
                         ))
                         .into_any_element(),
                 );
             }
-            out.push(mfa_category("SMS Authentication", None, header, body));
+            out.push(mfa_category(
+                dc_intl::tr("SMS Authentication"),
+                None,
+                header,
+                body,
+            ));
 
             // Backup Codes (`bA`, `bE`).
             let codes = self
@@ -574,7 +585,7 @@ impl Root {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_account_form("mfa-codes", cx);
                         }))
-                        .child("Show Backup Codes")
+                        .child(dc_intl::tr("Show Backup Codes"))
                         .into_any_element(),
                 );
             } else {
@@ -600,7 +611,10 @@ impl Root {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                         copied.clone(),
                                     ));
-                                    this.show_success_toast("Copied to clipboard.".into(), cx);
+                                    this.show_success_toast(
+                                        dc_intl::tr("Copied to clipboard.").into(),
+                                        cx,
+                                    );
                                 }))
                                 .child(crate::ui::server_onboarding::checkbox(*consumed, false))
                                 .child(
@@ -656,7 +670,7 @@ impl Root {
                         .gap(px(8.))
                         .child(small(
                             "mfa-codes-download",
-                            "Download Backup Codes",
+                            dc_intl::tr("Download Backup Codes"),
                             "lb_download",
                             Box::new(move |this, cx| {
                                 this.mfa_save_codes(&contents, cx);
@@ -665,7 +679,7 @@ impl Root {
                         ))
                         .child(small(
                             "mfa-codes-regenerate",
-                            "Generate New Backup Codes",
+                            dc_intl::tr("Generate New Backup Codes"),
                             "system_refresh",
                             Box::new(|this, cx| this.mfa_regenerate_codes(cx)),
                             cx,
@@ -677,14 +691,19 @@ impl Root {
             let explain = div()
                 .flex()
                 .flex_col()
-                .child("These codes will allow you to enter your account if you lose your authenticator app. Protect them like you would protect your password. Do not share them with anyone, and keep them somewhere safe.")
+                .child(dc_intl::tr("These codes will allow you to enter your account if you lose your authenticator app. Protect them like you would protect your password. Do not share them with anyone, and keep them somewhere safe."))
                 .children((!codes.is_empty()).then(|| {
                     div()
                         .font_weight(FontWeight(600.))
                         .child("Each code can only be used once. Any previously generated backup codes will no longer work.")
                 }))
                 .into_any_element();
-            out.push(mfa_category("Backup Codes", Some(explain), None, body));
+            out.push(mfa_category(
+                dc_intl::tr("Backup Codes"),
+                Some(explain),
+                None,
+                body,
+            ));
         }
         out
     }
@@ -738,7 +757,7 @@ impl Root {
                 .unwrap_or("Uh oh, something went wrong. Please try again later.")
                 .to_owned();
             self.settings_extra.dialog = Some(super::actions::Dialog::Alert {
-                title: "Multi-Factor Authentication".to_owned(),
+                title: dc_intl::tr("Multi-Factor Authentication").to_owned(),
                 body: message,
             });
             cx.notify();

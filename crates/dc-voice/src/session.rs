@@ -110,6 +110,8 @@ pub(crate) struct Shared {
 
 /// Video senders announce this much; the camera encoder runs at `camera::BITRATE`.
 const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
+/// The lowest rate the camera is steered to (`videoBitrate.min` and `videoBitrateFloor` of module 731854, 150 kb/s).
+const CAMERA_MIN_BITRATE: u32 = 150_000;
 
 pub(crate) async fn send(ws: &mut Socket, message: Message) -> Result<(), &'static str> {
     timeout(Duration::from_secs(5), ws.send(message))
@@ -344,6 +346,8 @@ pub(crate) async fn run(
     let mut secure = false;
     let mut was_secure = false;
     let mut camera_sent_keyframe = false;
+    // The server's keyframe interval (op 4 or 14), for the camera sender.
+    let mut keyframe_interval = 0u64;
     let mut video_tally = [0u32; 3];
 
     loop {
@@ -679,7 +683,9 @@ pub(crate) async fn run(
                     emit(&events, Event::VideoState { camera: false });
                 }
                 if camera.is_some() && !video_announced && transport.is_some() && !discovering && !resuming {
-                    video_sender = Some(VideoSender::new(video_ssrc, rtx_ssrc, camera::BITRATE));
+                    let mut sender = VideoSender::new(video_ssrc, rtx_ssrc, CAMERA_MIN_BITRATE, camera::BITRATE);
+                    sender.set_keyframe_interval(keyframe_interval);
+                    video_sender = Some(sender);
                     text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Call, None)))).await?;
                     video_announced = true;
                     debug!("camera announced");
@@ -693,16 +699,22 @@ pub(crate) async fn run(
                     if let Some(bitrate) = sender.tick_rate(now) {
                         debug!(bitrate, "camera send rate steered");
                     }
+                    if secure && sender.periodic_keyframe_due(now) && let Some(started) = &camera {
+                        started.force_keyframe();
+                    }
                 }
                 if secure && !was_secure && let Some(started) = &camera {
                     started.force_keyframe();
                 }
                 was_secure = secure;
                 if now >= tally_at {
+                    let (numbered, unnumbered) = receivers.transport_counts();
                     debug!(
                         video_packets = video_tally[0],
                         video_pictures = video_tally[2],
                         camera = camera.is_some(),
+                        transport_cc_packets = numbered,
+                        without_transport_cc = unnumbered,
                         "voice video tally"
                     );
                     video_tally = [0; 3];
@@ -762,6 +774,7 @@ pub(crate) async fn run(
                 let Some(crypto) = &transport else { continue };
                 if rtp::is_rtcp(&packet[..length]) {
                     if let Some(compound) = crypto.open_rtcp(&packet[..length]) {
+                        receivers.sender_reports(&compound, Instant::now());
                         if let Some(percent) = rtp::outbound_loss(&compound, ssrc) {
                             emit(&events, Event::OutboundLoss { percent });
                         }
@@ -780,18 +793,29 @@ pub(crate) async fn run(
                     continue;
                 }
                 let Some(rtp) = crypto.open(&packet[..length]) else { continue };
+                let arrived = Instant::now();
+                receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
                 if rtp.payload_type != rtp::OPUS_PAYLOAD_TYPE {
                     // Video and its retransmissions; ignored while nobody wants pictures.
                     if dave.ready && hub.has_sink() {
                         video_tally[0] += 1;
-                        let now = Instant::now();
+                        let now = arrived;
                         receivers.push(rtp, now);
                         if secure {
                             video_tally[2] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
+                            // NACK for a hole and PLI for a lost chain go as soon as they are due, not on the tick.
+                            if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
+                                for (header, body) in receivers.feedback(ssrc, now) {
+                                    if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
+                                        let _ = socket.try_send(&wire);
+                                    }
+                                }
+                            }
                         }
                     }
                     continue;
                 }
+                receivers.observe_audio(rtp.ssrc, rtp.sequence, rtp.timestamp, arrived);
                 tally[1] += 1;
                 let Some(user) = mixer.user(rtp.ssrc) else { continue };
                 tally[2] += 1;
@@ -886,6 +910,10 @@ pub(crate) async fn run(
                                     return Err("Unexpected voice session description");
                                 }
                                 let mode = mode.ok_or("Unexpected voice session description")?;
+                                if let Some(interval) = signal::keyframe_interval(data) {
+                                    keyframe_interval = interval;
+                                    debug!(interval, "voice keyframe interval");
+                                }
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
@@ -897,6 +925,15 @@ pub(crate) async fn run(
                                     text(&mut ws, signal::media_sink_wants(100)).await?;
                                     wants_video = true;
                                     wants_video_at = Instant::now() + SINK_WANTS_INTERVAL;
+                                }
+                            }
+                            Some(VoiceOp::SessionUpdate) => {
+                                if let Some(interval) = signal::keyframe_interval(data) {
+                                    keyframe_interval = interval;
+                                    if let Some(sender) = video_sender.as_mut() {
+                                        sender.set_keyframe_interval(interval);
+                                    }
+                                    debug!(interval, "voice keyframe interval");
                                 }
                             }
                             Some(VoiceOp::Speaking) => {

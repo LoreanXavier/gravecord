@@ -140,7 +140,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child("Your Subscriptions"),
+                    .child(dc_intl::tr("Your Subscriptions")),
             )
             .child(
                 div()
@@ -149,14 +149,14 @@ impl Root {
                     .line_height(px(20.))
                     .text_color(color("--text-default"))
                     .child(
-                        "These are your current subscriptions. They will be billed on the same billing cycle. You can update any subscription at any time.",
+                        dc_intl::tr("These are your current subscriptions. They will be billed on the same billing cycle. You can update any subscription at any time."),
                     ),
             )
             .child(
                 div()
                     .mt(px(16.))
                     .children(none.then(|| {
-                        empty_row("subscriptions-none", "You have no active subscriptions")
+                        empty_row("subscriptions-none", dc_intl::tr("You have no active subscriptions"))
                     }))
                     .children(row.map(|sub| self.subscription_row(&sub, cx))),
             )
@@ -167,7 +167,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Subscription Credit"),
+                    .child(dc_intl::tr("Subscription Credit")),
             )
             .child(
                 div()
@@ -176,12 +176,12 @@ impl Root {
                     .line_height(px(18.))
                     .text_color(color("--text-default"))
                     .child(
-                        "When you accept a gift while you have a running subscription, redeem a promotion, or accept a gift that differs from your current subscription, it will appear here as credit.",
+                        dc_intl::tr("When you accept a gift while you have a running subscription, redeem a promotion, or accept a gift that differs from your current subscription, it will appear here as credit."),
                     ),
             )
             .child(div().mt(px(32.)).child(empty_row(
                 "subscriptions-no-credit",
-                "You have no unused credits",
+                dc_intl::tr("You have no unused credits"),
             )))
             .child(div().mt(px(40.)).h(px(1.)).bg(color("--border-subtle")))
             .into_any_element()
@@ -289,7 +289,7 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(16.))
                     .font_weight(FontWeight(500.))
-                    .child("Cancel")
+                    .child(dc_intl::tr("Cancel"))
             }))
             .child(
                 div()
@@ -312,9 +312,9 @@ impl Root {
                     .line_height(px(16.))
                     .font_weight(FontWeight(500.))
                     .child(if canceled {
-                        "Re-subscribe"
+                        dc_intl::tr("Re-subscribe")
                     } else {
-                        "Switch Plans"
+                        dc_intl::tr("Switch Plans")
                     }),
             );
         banner
@@ -324,7 +324,11 @@ impl Root {
                     .line_height(px(28.))
                     .font_weight(FontWeight(800.))
                     .font_family(crate::ui::nitro::NITRO_FONT)
-                    .child(sub.display_name().unwrap_or("Nitro").to_uppercase()),
+                    .child(
+                        sub.display_name()
+                            .unwrap_or(dc_intl::tr("Nitro"))
+                            .to_uppercase(),
+                    ),
             )
             .child(info)
             .child(tools)
@@ -379,11 +383,11 @@ impl Root {
         };
         modal::Spec {
             id: "settings-cancel-nitro",
-            title: "Are you sure you want to cancel?".into(),
+            title: dc_intl::tr("Are you sure you want to cancel?").into(),
             subtitle: Some(
                 div()
                     .child(
-                        "If you cancel, you will lose these perks at the end of your current billing period:",
+                        dc_intl::tr("If you cancel, you will lose these perks at the end of your current billing period:"),
                     )
                     .into_any_element(),
             ),
@@ -405,13 +409,13 @@ impl Root {
             buttons: vec![
                 modal::button(
                     "settings-cancel-nitro-keep",
-                    "Never mind, keep Nitro",
+                    dc_intl::tr("Never mind, keep Nitro"),
                     modal::Tone::Secondary,
                     close,
                 ),
                 modal::button(
                     "settings-cancel-nitro-continue",
-                    "Continue",
+                    dc_intl::tr("Continue"),
                     modal::Tone::Primary,
                     |_, _, _| {},
                 ),
@@ -449,7 +453,7 @@ impl Root {
                     // `ey`: close, then Server Boost.
                     Lose::Boost => {
                         this.settings_extra.dialog = None;
-                        this.open_settings_section("Server Boost", cx);
+                        this.open_settings_section(dc_intl::tr("Server Boost"), cx);
                     }
                     Lose::ScreenShare => this.settings_open_url(STREAM_QUALITY, cx),
                     Lose::EmojiStickers | Lose::Uploads => {
@@ -458,7 +462,7 @@ impl Root {
                 }
                 cx.notify();
             }))
-            .child("Learn More");
+            .child(dc_intl::tr("Learn More"));
         let visual: AnyElement = match item {
             Lose::Profile => self.lose_profile_card(),
             other => {
@@ -589,13 +593,13 @@ impl Root {
                     .child(
                         div()
                             .text_color(color("--text-default"))
-                            .child("No payment method saved"),
+                            .child(dc_intl::tr("No payment method saved")),
                     )
                     .child(
                         div()
                             .mt(px(4.))
                             .text_color(color("--text-muted"))
-                            .child("Checkout faster by saving a payment method"),
+                            .child(dc_intl::tr("Checkout faster by saving a payment method")),
                     ),
             )
             .child(
@@ -610,7 +614,7 @@ impl Root {
                     }))
                     .child(button(
                         "billing-add-payment-button",
-                        "Add Payment Method",
+                        dc_intl::tr("Add Payment Method"),
                         ButtonKind::Primary,
                     )),
             )
@@ -627,7 +631,7 @@ impl Root {
             .text_size(px(14.))
             .line_height(px(18.))
             .text_color(color("--text-muted"))
-            .child("You haven't made any transactions yet.")
+            .child(dc_intl::tr("You haven't made any transactions yet."))
             .into_any_element()
     }
 }

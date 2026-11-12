@@ -32,6 +32,15 @@ pub fn startup_locale() -> &'static str {
     })
 }
 
+/// `initialLocale` (module 792996): the locale the client started in. Unit tests start in en-US and read no storage.
+pub fn initial_locale() -> &'static str {
+    if cfg!(test) {
+        dc_intl::DEFAULT_LOCALE
+    } else {
+        startup_locale()
+    }
+}
+
 /// Keeps the account's locale for the next start.
 pub fn remember(code: &'static str) {
     static LAST: Mutex<Option<&'static str>> = Mutex::new(None);
@@ -210,6 +219,15 @@ fn cache_path(file: &str) -> Option<std::path::PathBuf> {
 /// The catalogs of `code` installed, one per loader: each from the disk cache, else from the pinned build's chunk on
 /// the asset host (fetched together). A catalog that cannot be had leaves its messages in en-US.
 fn load(code: &str) -> Result<(), String> {
+    load_from(code, cache_path, fetch_all)
+}
+
+/// [`load`] with its disk cache and its fetch given, so a test can stand in for both.
+fn load_from(
+    code: &str,
+    cache_path: impl Fn(&str) -> Option<std::path::PathBuf>,
+    fetch_all: impl FnOnce(&[&'static str]) -> Result<Vec<Fetched>, String>,
+) -> Result<(), String> {
     let files: Vec<&'static str> = dc_intl::chunk_files(code).collect();
     if files.is_empty() {
         return Err(format!("no catalog chunk for {code}"));
@@ -304,8 +322,554 @@ fn fetch_all(files: &[&'static str]) -> Result<Vec<Fetched>, String> {
     }))
 }
 
+/// Keeps the adopted surfaces adopted: a string literal whose text is exactly a literal en-US message must reach the
+/// screen through `dc_intl::tr` / `t!` (or be listed in [`guard::ALLOWED`] with its reason).
+#[cfg(test)]
+mod guard {
+    /// The files whose interface text is adopted, relative to `app/src`.
+    pub(super) const ADOPTED: &[&str] = &[
+        "ui.rs",
+        "ui/message_kinds.rs",
+        "ui/message_header.rs",
+        "ui/unread.rs",
+        "ui/jump.rs",
+        "ui/reaction_tip.rs",
+        "ui/embed.rs",
+        "ui/sent_attachment.rs",
+        "ui/uploads.rs",
+        "ui/upload_error.rs",
+        "ui/upload_progress.rs",
+        "ui/hover_bar.rs",
+        "ui/message_tips.rs",
+        "ui/send_state.rs",
+        "ui/composer_plus.rs",
+        "ui/dm.rs",
+        "ui/dm_call.rs",
+        "ui/dm_profile.rs",
+        "ui/invite_embed.rs",
+        "ui/pins.rs",
+        "ui/context_menu.rs",
+        "ui/menu.rs",
+        "ui/guild_menu.rs",
+        "ui/rail_folder_menu.rs",
+        "ui/guild_navigation.rs",
+        "ui/channel_icon.rs",
+        "ui/friends.rs",
+        "ui/quickswitcher.rs",
+        "ui/destructive.rs",
+        "ui/modal.rs",
+        "ui/settings.rs",
+        "ui/settings/account_dialogs.rs",
+        "ui/settings/account_nested.rs",
+        "ui/settings/account_panels.rs",
+        "ui/settings/actions.rs",
+        "ui/settings/appearance.rs",
+        "ui/settings/billing.rs",
+        "ui/settings/client_theme.rs",
+        "ui/settings/clips.rs",
+        "ui/settings/connection_dialogs.rs",
+        "ui/settings/connections.rs",
+        "ui/settings/content_filters.rs",
+        "ui/settings/controls.rs",
+        "ui/settings/custom_theme.rs",
+        "ui/settings/gift_inventory_page.rs",
+        "ui/settings/gift_redeem.rs",
+        "ui/settings/keybinds.rs",
+        "ui/settings/mfa.rs",
+        "ui/settings/nitro_page.rs",
+        "ui/settings/notifications_page.rs",
+        "ui/settings/privacy.rs",
+        "ui/settings/render.rs",
+        "ui/settings/server_boost_page.rs",
+        "ui/settings/soundboard.rs",
+        "ui/settings/streamer.rs",
+        "ui/settings/system.rs",
+        "ui/settings/voice.rs",
+        "ui/settings/voice_camera.rs",
+        "ui/settings/voice/extra.rs",
+        "ui/profile_editor.rs",
+        "ui/profile_editor/panel.rs",
+        "ui/profile_editor/widgets.rs",
+        "ui/profile_editor/servers.rs",
+        "ui/profile_editor/styles.rs",
+    ];
+
+    /// Literals that read like a message but are not shown as written, with why: (file, text, reason).
+    pub(super) const ALLOWED: &[(&str, &str, &str)] = &[
+        // The Mute/Unmute pairs are looked up by their English text and shown through `tr`.
+        (
+            "ui/context_menu.rs",
+            "Mute Channel",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute Channel",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Mute Category",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute Category",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Mute Thread",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute Thread",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Mute Server",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute Server",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Mute Conversation",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute Conversation",
+            "lookup key, shown through tr",
+        ),
+        (
+            "ui/context_menu.rs",
+            "Unmute",
+            "fallback replace of an English label",
+        ),
+        // The connection dialogs' feature lists: (glyph, label, note) tables drawn through `tr`.
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Display the Crunchyroll show you\u{2019}re watching on Discord.",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Join voice calls directly from Xbox",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Stream and watch streams on Xbox",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "See what Discord friends are currently doing on your Xbox",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Display the Xbox game you're playing on Discord",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Join voice calls directly from PlayStation",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Only available on PS5",
+            "props table",
+        ),
+        (
+            "ui/settings/connection_dialogs.rs",
+            "Display the game you're playing on Discord",
+            "props table",
+        ),
+    ];
+
+    /// Functions whose literals are lookup keys (sidebar labels the navigation matches) or are translated where they
+    /// are drawn (the message menu's items go through `tr` in `menu_row`).
+    const KEY_FUNCTIONS: &[&str] = &[
+        "destination_of",
+        "link_destination",
+        "message_items",
+        "message_items_saved",
+    ];
+
+    /// Calls whose string argument is an id, a key, a pattern or a log line, never interface text.
+    const KEY_CALLS: &[&str] = &[
+        ".id",
+        "parity",
+        "parity_with_border",
+        ".path",
+        "icon",
+        "mask_icon",
+        "color",
+        "hsla",
+        "request_image",
+        "insert",
+        "get",
+        "remove",
+        "contains",
+        "contains_key",
+        "starts_with",
+        "ends_with",
+        "strip_prefix",
+        "find",
+        "split",
+        "replace",
+        "replacen",
+        "matches!",
+        "anchor_probe",
+        "group",
+        "format!",
+        "write!",
+        "panic!",
+        "assert!",
+        "assert_eq!",
+        "debug_assert!",
+        "concat!",
+        "include_str!",
+        "position",
+        "any",
+        "eq",
+        "expect",
+        "storage::get",
+        "storage::set",
+        "script_menu_run",
+        "run_label",
+        "font",
+        "log_effect",
+    ];
+
+    pub(super) struct Literal {
+        pub start: usize,
+        pub end: usize,
+        pub text: String,
+    }
+
+    /// The normal string literals of a source outside comments, raw strings, byte strings and char literals.
+    pub(super) fn literals(source: &str) -> Vec<Literal> {
+        let bytes = source.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        let ident =
+            |at: usize| at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        while i < bytes.len() {
+            let rest = &source[i..];
+            if rest.starts_with("//") {
+                i += rest.find('\n').unwrap_or(rest.len());
+            } else if rest.starts_with("/*") {
+                i += rest.find("*/").map_or(rest.len(), |end| end + 2);
+            } else if (rest.starts_with("r\"") || rest.starts_with("r#")) && !ident(i) {
+                let hashes = rest[1..].bytes().take_while(|b| *b == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                let open = 1 + hashes + 1;
+                i += rest[open..]
+                    .find(&close)
+                    .map_or(rest.len(), |end| open + end + close.len());
+            } else if rest.starts_with("b\"") && !ident(i) {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            } else if bytes[i] == b'\'' {
+                // A char literal ('x', '\n', '\u{..}') or a lifetime.
+                let close = rest[1..]
+                    .char_indices()
+                    .take(12)
+                    .find(|(_, ch)| *ch == '\'');
+                match close {
+                    Some((at, _)) if at > 0 && (at <= 4 || rest[1..].starts_with("\\u")) => {
+                        i += at + 2
+                    }
+                    _ => i += 1,
+                }
+            } else if bytes[i] == b'"' {
+                let start = i;
+                i += 1;
+                let mut text = String::new();
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        let next = source[i + 1..].chars().next().unwrap_or(' ');
+                        match next {
+                            'n' => text.push('\n'),
+                            't' => text.push('\t'),
+                            'u' => {
+                                let close = source[i..].find('}').unwrap_or(2);
+                                let hex = source[i + 3..i + close].to_owned();
+                                if let Some(ch) =
+                                    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                                {
+                                    text.push(ch);
+                                }
+                                i += close + 1;
+                                continue;
+                            }
+                            '\n' | '\r' => {
+                                i += 1;
+                                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                                    i += 1;
+                                }
+                                continue;
+                            }
+                            other => text.push(other),
+                        }
+                        i += 1 + next.len_utf8();
+                    } else {
+                        let ch = source[i..].chars().next().unwrap_or(' ');
+                        text.push(ch);
+                        i += ch.len_utf8();
+                    }
+                }
+                i += 1;
+                out.push(Literal {
+                    start,
+                    end: i,
+                    text,
+                });
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Where the first `#[cfg(test)]` module starts.
+    fn tests_start(source: &str) -> usize {
+        source
+            .match_indices("#[cfg(test)]")
+            .find(|(at, _)| {
+                source[at + "#[cfg(test)]".len()..]
+                    .trim_start()
+                    .starts_with("mod ")
+            })
+            .map_or(source.len(), |(at, _)| at)
+    }
+
+    /// The spans of `const` and `static` items: their literals are drawn through `tr` where they are used.
+    fn item_spans(source: &str) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let trimmed = trimmed
+                .strip_prefix("pub(in crate::ui) ")
+                .or_else(|| trimmed.strip_prefix("pub(super) "))
+                .or_else(|| trimmed.strip_prefix("pub(crate) "))
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let named = |rest: &str| {
+                rest.chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_uppercase())
+            };
+            if !(trimmed.strip_prefix("const ").is_some_and(named)
+                || trimmed.strip_prefix("static ").is_some_and(named))
+            {
+                continue;
+            }
+            let start: usize = source.lines().take(index).map(|line| line.len() + 1).sum();
+            let end = source[start..]
+                .find(";\n")
+                .map_or(source.len(), |end| start + end);
+            spans.push((start, end));
+        }
+        spans
+    }
+
+    /// Whether the literal sits inside `tr(...)`, `t!(...)`, `format(...)` or `string(...)` of `dc_intl`, possibly
+    /// inside an `if`/`else` there.
+    fn translated(source: &str, start: usize) -> bool {
+        let before = &source[..start];
+        let mut depth = 0i32;
+        for (at, ch) in before.char_indices().rev() {
+            match ch {
+                ')' | '}' | ']' => depth += 1,
+                '(' | '[' if depth > 0 => depth -= 1,
+                '{' if depth > 0 => depth -= 1,
+                '(' => {
+                    let head = before[..at].trim_end();
+                    return [
+                        "tr",
+                        "t!",
+                        "dc_intl::t",
+                        "dc_intl::format",
+                        "dc_intl::string",
+                        "format_runs",
+                        "set_placeholder_message",
+                    ]
+                    .iter()
+                    .any(|name| head.ends_with(name));
+                }
+                '{' => {
+                    let head = before[..at].trim_end();
+                    let line = head.rsplit(['\n', ';']).next().unwrap_or(head);
+                    if !(head.ends_with("else") || line.contains("if ")) {
+                        return false;
+                    }
+                }
+                '[' => return false,
+                ';' if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Why a literal is not interface text, if it is not.
+    fn exempt(source: &str, literal: &Literal) -> Option<&'static str> {
+        let text = &literal.text;
+        if text
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || "_.-".contains(ch))
+        {
+            return Some("identifier");
+        }
+        let before = source[..literal.start].trim_end();
+        let after = source[literal.end..].trim_start();
+        if before.ends_with("==")
+            || before.ends_with("!=")
+            || after.starts_with("==")
+            || after.starts_with("!=")
+        {
+            return Some("comparison");
+        }
+        if let Some(head) = before.strip_suffix("Some(")
+            && (head.trim_end().ends_with("==") || head.trim_end().ends_with("!="))
+        {
+            return Some("comparison");
+        }
+        // A part of a settings text (`Runs`): drawn through `tr` when it is the only part; the parts of a longer
+        // text are the fragments of a keyed message, left in English.
+        let compact: String = after
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .take(7)
+            .collect();
+        if compact.starts_with(",false") || compact.starts_with(",true") {
+            return Some("runs part");
+        }
+        if after.starts_with("=>") || after.starts_with('|') || before.ends_with('|') {
+            return Some("pattern");
+        }
+        if [
+            ".len",
+            ".is_empty",
+            ".starts_with",
+            ".ends_with",
+            ".contains",
+            ".split",
+            ".eq",
+        ]
+        .iter()
+        .any(|method| after.starts_with(method))
+        {
+            return Some("method");
+        }
+        if let Some(head) = before.strip_suffix('(') {
+            let head = head.trim_end();
+            if KEY_CALLS.iter().any(|call| head.ends_with(call)) {
+                return Some("key argument");
+            }
+        }
+        let line = source[..literal.start]
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .trim_start();
+        if line.starts_with("#[") || line.starts_with("tracing::") {
+            return Some("attribute or log");
+        }
+        if source[..literal.start].rfind("json!(").is_some_and(|at| {
+            let open = &source[at..literal.start];
+            open.matches(['(', '[', '{']).count() > open.matches([')', ']', '}']).count()
+        }) {
+            return Some("json");
+        }
+        let function = source[..literal.start]
+            .rmatch_indices("fn ")
+            .next()
+            .map(|(at, _)| {
+                source[at + 3..]
+                    .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                    .next()
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        KEY_FUNCTIONS.contains(&function).then_some("lookup keys")
+    }
+
+    /// The literals of `file` that are exact en-US messages and reach the screen untranslated.
+    pub(super) fn untranslated(file: &str, source: &str) -> Vec<String> {
+        let tests = tests_start(source);
+        let items = item_spans(source);
+        literals(source)
+            .into_iter()
+            .filter(|literal| literal.start < tests)
+            .filter(|literal| !items.iter().any(|(a, b)| (*a..*b).contains(&literal.start)))
+            .filter(|literal| literal.text.chars().any(|ch| ch.is_alphabetic()))
+            .filter(|literal| dc_intl::keys_of(&literal.text).next().is_some())
+            .filter(|literal| !translated(source, literal.start))
+            .filter(|literal| exempt(source, literal).is_none())
+            .filter(|literal| {
+                !ALLOWED
+                    .iter()
+                    .any(|(known, text, _)| *known == file && *text == literal.text)
+            })
+            .map(|literal| {
+                let line = source[..literal.start].matches('\n').count() + 1;
+                format!("{file}:{line}: {:?}", literal.text)
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Every literal of the adopted files that an en-US message reads goes through `tr` / `t!`: a new one added
+    /// without fails here, so the adoption does not rot.
+    #[test]
+    fn adopted_files_draw_no_untranslated_message() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        for file in super::guard::ADOPTED {
+            let source = std::fs::read_to_string(src.join(file))
+                .unwrap_or_else(|error| panic!("{file}: {error}"));
+            found.extend(super::guard::untranslated(file, &source));
+        }
+        assert!(
+            found.is_empty(),
+            "untranslated messages (wrap them in dc_intl::tr, or list them in guard::ALLOWED): {found:#?}"
+        );
+    }
+
+    /// The guard sees a bare message, and passes the translated, compared, keyed and test ones.
+    #[test]
+    fn the_guard_flags_a_bare_message_only() {
+        let source = concat!(
+            "fn view() {\n",
+            "    div().child(\"Settings\");\n",
+            "    div().child(dc_intl::tr(\"Settings\"));\n",
+            "    div().child(dc_intl::tr(if on { \"Mute\" } else { \"Unmute\" }));\n",
+            "    if label == \"Settings\" {}\n",
+            "    div().id(\"Settings\");\n",
+            "}\n",
+            "const LABELS: [&str; 1] = [\"Settings\"];\n",
+            "#[cfg(test)]\nmod tests {\n    const X: &str = \"Settings\";\n    fn t() { div().child(\"Settings\"); }\n}\n",
+        );
+        let found = super::guard::untranslated("example.rs", source);
+        assert_eq!(found, ["example.rs:2: \"Settings\""]);
+    }
+
     /// The string literals inside every `dc_intl::tr(...)` of the app's sources.
     fn adopted_literals() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
@@ -349,10 +913,8 @@ mod tests {
                             }
                         }
                         let argument = &rest[..end];
-                        for (index, part) in argument.split('"').enumerate() {
-                            if index % 2 == 1 {
-                                out.push((path.display().to_string(), part.to_owned()));
-                            }
+                        for literal in super::guard::literals(argument) {
+                            out.push((path.display().to_string(), literal.text));
                         }
                     }
                 }
@@ -376,6 +938,64 @@ mod tests {
             .map(|(file, text)| format!("{file}: {text:?}"))
             .collect();
         assert!(unknown.is_empty(), "no literal en-US message: {unknown:#?}");
+    }
+
+    /// The fetch of a normal run, stood in for: the main catalog arrives (the other chunks fail), the locale installs
+    /// and its messages read from it; nothing is written to the disk cache.
+    #[test]
+    fn a_fetched_catalog_installs_its_locale() {
+        let key = dc_intl::keys_of("Settings")
+            .next()
+            .expect("Settings is a message");
+        let mut asked = Vec::new();
+        let result = super::load_from(
+            "lt",
+            |_| None,
+            |files| {
+                asked = files.to_vec();
+                Ok(files
+                    .iter()
+                    .enumerate()
+                    .map(|(index, file)| {
+                        let json = if index == 0 {
+                            Ok(format!("{{\"{key}\":[\"Nustatymai\"]}}"))
+                        } else {
+                            Err("offline".to_owned())
+                        };
+                        (*file, json)
+                    })
+                    .collect())
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(asked, dc_intl::chunk_files("lt").collect::<Vec<_>>());
+        assert!(dc_intl::is_loaded("lt"));
+        assert_eq!(dc_intl::t_in("lt", key), Some("Nustatymai"));
+    }
+
+    /// A fetch that fails leaves the locale uninstalled: its frames show en-US (`MessageLoader.get`'s fallback) and a
+    /// later choice of the locale tries again.
+    #[test]
+    fn a_failed_fetch_falls_back_to_english() {
+        let result = super::load_from(
+            "fi",
+            |_| None,
+            |files| {
+                Ok(files
+                    .iter()
+                    .map(|file| (*file, Err("offline".to_owned())))
+                    .collect())
+            },
+        );
+        assert!(result.is_err(), "{result:?}");
+        assert!(!dc_intl::is_loaded("fi"));
+        let key = dc_intl::keys_of("Settings")
+            .next()
+            .expect("Settings is a message");
+        assert_eq!(dc_intl::t_in("fi", key), None);
+        assert_eq!(dc_intl::en_us_text(key), Some("Settings"));
+        let error = super::load_from("fi", |_| None, |_| Err("no network".to_owned()));
+        assert_eq!(error, Err("no network".to_owned()));
     }
 
     #[test]

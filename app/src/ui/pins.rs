@@ -176,7 +176,7 @@ impl Root {
                                 this.pins_open = None;
                                 this.jump_to_message(&jump, cx);
                             }))
-                            .child("Jump"),
+                            .child(dc_intl::tr("Jump")),
                     )
                     .child(
                         div()
@@ -252,9 +252,9 @@ impl Root {
                                         .text_color(color("--text-default"))
                                         .text_center()
                                         .child(if dm {
-                                            "This direct message doesn't have\nany pinned messages... yet."
+                                            dc_intl::tr("This direct message doesn't have\nany pinned messages... yet.")
                                         } else {
-                                            "This channel doesn't have any\npinned messages... yet."
+                                            dc_intl::tr("This channel doesn't have any\npinned messages... yet.")
                                         }),
                                 ),
                         ),
@@ -273,7 +273,7 @@ impl Root {
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--text-feedback-positive"))
-                                        .child("Protip:"),
+                                        .child(dc_intl::tr("Protip:")),
                                 )
                                 .child(
                                     div()
@@ -281,9 +281,9 @@ impl Root {
                                         .line_height(px(16.))
                                         .text_color(color("--text-default"))
                                         .child(if dm {
-                                            "You can pin a message from its context menu."
+                                            dc_intl::tr("You can pin a message from its context menu.")
                                         } else {
-                                            "Users with the 'Pin Messages' permission can pin a message from its context menu."
+                                            dc_intl::tr("Users with the 'Pin Messages' permission can pin a message from its context menu.")
                                         }),
                                 ),
                         ),
@@ -350,7 +350,7 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Pinned Messages"),
+                                    .child(dc_intl::tr("Pinned Messages")),
                             ),
                     )
                     .child(body),
@@ -387,7 +387,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-feedback-positive"))
-                            .child("Protip:"),
+                            .child(dc_intl::tr("Protip:")),
                     )
                     .child(crate::inline::inline(tip_pieces, px(16.))),
             )
@@ -396,23 +396,25 @@ impl Root {
         Some(super::modal::render(
             super::modal::Spec {
                 id: "unpin-modal",
-                title: "Unpin Message".into(),
+                title: dc_intl::tr("Unpin Message").into(),
                 subtitle: Some(
                     div()
-                        .child("You sure you want to remove this pinned message?")
+                        .child(dc_intl::tr(
+                            "You sure you want to remove this pinned message?",
+                        ))
                         .into_any_element(),
                 ),
                 body: Some(body),
                 buttons: vec![
                     super::modal::button(
                         "unpin-cancel",
-                        "Cancel",
+                        dc_intl::tr("Cancel"),
                         super::modal::Tone::Secondary,
                         |this, _, _| this.confirm_unpin = None,
                     ),
                     super::modal::button(
                         "unpin-confirm",
-                        "Remove it please!",
+                        dc_intl::tr("Remove it please!"),
                         super::modal::Tone::Critical,
                         move |this, _, cx| {
                             this.confirm_unpin = None;

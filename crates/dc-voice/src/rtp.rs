@@ -22,6 +22,13 @@ pub(crate) const H264_PAYLOAD_TYPE: u8 = 101;
 pub(crate) const H264_RTX_PAYLOAD_TYPE: u8 = 102;
 /// One 20 ms frame at 48 kHz.
 pub(crate) const FRAME_SAMPLES: u32 = 960;
+/// The one-byte RTP header extension that carries the transport-wide sequence number
+/// (`draft-holmer-rmcat-transport-wide-cc-extensions-01`). The native engine registers its extensions with fixed ids,
+/// the same for audio and video: 1 audio level (audio only), 2 toffset, 3 abs-send-time, 4 video orientation,
+/// 5 transport-wide cc, 6 playout delay, 7 video content type, 8 video timing, 9 Discord's speaker (audio only), 10 mid,
+/// 11 rtp-stream-id, 12 repaired-rtp-stream-id (`discord_voice.node` of the pinned build, the two lists built at
+/// RVA 0x17a600 and 0x17aa70).
+pub(crate) const TRANSPORT_SEQUENCE_EXTENSION: u8 = 5;
 const TAG: usize = 16;
 const NONCE_SUFFIX: usize = 4;
 const DISCOVERY_LEN: usize = 74;
@@ -330,6 +337,29 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
     Some(feedback)
 }
 
+/// The sender reports of a decrypted compound RTCP packet: each sender's SSRC with the middle 32 bits of its NTP time,
+/// which a receiver report echoes as LSR (RFC 3550 section 6.4.1). A malformed compound packet gives nothing.
+pub(crate) fn sender_reports(mut remaining: &[u8]) -> Vec<(u32, u32)> {
+    let mut reports = Vec::new();
+    while !remaining.is_empty() {
+        if remaining.len() < 4 || !is_rtcp(remaining) {
+            return Vec::new();
+        }
+        let size = (usize::from(u16::from_be_bytes([remaining[2], remaining[3]])) + 1) * 4;
+        if size > remaining.len() {
+            return Vec::new();
+        }
+        let packet = &remaining[..size];
+        if packet[1] == 200 && packet.len() >= 28 {
+            let ssrc = u32::from_be_bytes([packet[4], packet[5], packet[6], packet[7]]);
+            let middle = u32::from_be_bytes([packet[10], packet[11], packet[12], packet[13]]);
+            reports.push((ssrc, middle));
+        }
+        remaining = &remaining[size..];
+    }
+    reports
+}
+
 // One authenticated, transport-decrypted RTP packet; the payload is still DAVE ciphertext.
 #[derive(Debug)]
 pub(crate) struct Rtp {
@@ -338,7 +368,36 @@ pub(crate) struct Rtp {
     pub ssrc: u32,
     pub sequence: u16,
     pub timestamp: u32,
+    /// The transport-wide sequence number of extension 5, when the packet carries one.
+    pub transport_sequence: Option<u16>,
     pub payload: Vec<u8>,
+}
+
+/// The transport-wide sequence number in a decrypted RFC 8285 one-byte extension block (`0xBEDE` profile): element 5
+/// with two bytes of data. Padding bytes (id 0) are skipped; id 15 ends the block. Two-byte blocks carry none here.
+pub(crate) fn transport_sequence(profile: [u8; 2], mut block: &[u8]) -> Option<u16> {
+    if profile != [0xbe, 0xde] {
+        return None;
+    }
+    while let Some((&first, rest)) = block.split_first() {
+        let id = first >> 4;
+        if id == 0 {
+            block = rest;
+            continue;
+        }
+        if id == 15 {
+            return None;
+        }
+        let length = usize::from(first & 0x0f) + 1;
+        if rest.len() < length {
+            return None;
+        }
+        if id == TRANSPORT_SEQUENCE_EXTENSION && length == 2 {
+            return Some(u16::from_be_bytes([rest[0], rest[1]]));
+        }
+        block = &rest[length..];
+    }
+    None
 }
 
 /// Per-session transport encryption: the clear RTP header (and extension preamble) is the
@@ -422,6 +481,7 @@ impl Transport {
         Some(compound)
     }
     /// A viewer's RTCP about our video source, authenticated and parsed.
+    #[cfg(test)]
     pub fn feedback(&self, packet: &[u8], video_ssrc: u32) -> Option<Feedback> {
         feedback(&self.open_rtcp(packet)?, video_ssrc)
     }
@@ -450,6 +510,7 @@ impl Transport {
             &packet[..header_len],
             &packet[header_len..packet.len() - NONCE_SUFFIX],
         )?;
+        let mut transport_sequence = None;
         if extended {
             // `rtpsize`: the extension preamble is clear, its body is encrypted with the payload.
             let words = u16::from_be_bytes(packet[csrc_end + 2..csrc_end + 4].try_into().ok()?);
@@ -457,6 +518,10 @@ impl Transport {
             if extension_len > frame.len() {
                 return None;
             }
+            transport_sequence = self::transport_sequence(
+                [packet[csrc_end], packet[csrc_end + 1]],
+                &frame[..extension_len],
+            );
             frame.drain(..extension_len);
         }
         if packet[0] & 0x20 != 0 {
@@ -472,6 +537,7 @@ impl Transport {
             ssrc: u32::from_be_bytes(packet[8..12].try_into().ok()?),
             sequence: u16::from_be_bytes(packet[2..4].try_into().ok()?),
             timestamp: u32::from_be_bytes(packet[4..8].try_into().ok()?),
+            transport_sequence,
             payload: frame,
         })
     }
@@ -867,6 +933,48 @@ mod tests {
         let last = forged.len() - 6;
         forged[last] ^= 1;
         assert!(sender.feedback(&forged, 55).is_none());
+    }
+
+    #[test]
+    fn the_transport_wide_sequence_number_is_read_from_extension_5_only() {
+        let transport = Transport::new(Mode::Aes256GcmRtpSize, &[7; 32]);
+        // Audio level (id 1, one byte), padding, then id 5 with two bytes: 0x1234.
+        let mut header = video_header(H264_PAYLOAD_TYPE, true, 8, 90_000, 42).to_vec();
+        header[0] |= 0x10;
+        header.extend([0xbe, 0xde, 0, 2]);
+        let suffix = [0, 0, 0, 1];
+        let body = [0x10, 0x7f, 0x00, 0x51, 0x12, 0x34, 0, 0, b'h', b'2'];
+        let sealed = transport.cipher.seal(suffix, &header, &body).unwrap();
+        let mut wire = header.clone();
+        wire.extend(sealed);
+        wire.extend(suffix);
+        let rtp = transport.open(&wire).unwrap();
+        assert_eq!(rtp.transport_sequence, Some(0x1234));
+        assert_eq!(rtp.payload, b"h2");
+        // Other ids, a wrong length, a two-byte profile or a cut element carry none.
+        assert_eq!(transport_sequence([0xbe, 0xde], &[0x20, 1, 2]), None);
+        assert_eq!(transport_sequence([0xbe, 0xde], &[0x52, 1, 2, 3]), None);
+        assert_eq!(transport_sequence([0x10, 0x00], &[0x51, 1, 2]), None);
+        assert_eq!(transport_sequence([0xbe, 0xde], &[0x51, 1]), None);
+        assert_eq!(transport_sequence([0xbe, 0xde], &[0xf0, 0x51, 1, 2]), None);
+        // A packet without extensions has none either.
+        let mut sender = Transport::new(Mode::Aes256GcmRtpSize, &[7; 32]);
+        let plain = sender.seal(&super::header(1, 960, 9), b"a").unwrap();
+        assert_eq!(transport.open(&plain).unwrap().transport_sequence, None);
+    }
+
+    #[test]
+    fn sender_reports_give_their_ssrc_and_middle_ntp_bits() {
+        let mut report = vec![0x80, 200, 0, 6];
+        report.extend(55u32.to_be_bytes());
+        report.extend([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        report.extend([0; 12]);
+        let mut compound = report.clone();
+        compound.extend(pli(9, 55).0);
+        compound.extend(pli(9, 55).1);
+        assert_eq!(sender_reports(&compound), [(55, 0x3344_5566)]);
+        compound.push(0x80);
+        assert!(sender_reports(&compound).is_empty(), "malformed tail");
     }
 
     #[test]

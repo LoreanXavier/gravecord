@@ -5,10 +5,10 @@
 
 use super::audio::{AudioCapture, AudioChunk};
 use super::capture::{Capture, Frame};
-use super::{Settings, thumbnail_from};
-use crate::convert::{PixelOrder, Raw, downscale_rgba, to_yuv420};
+use super::{LocalSink, Settings, thumbnail_from};
+use crate::convert::{Chroma, PixelOrder, Raw, downscale_rgba, to_yuv420};
 use crate::encode::{Backend, Config, Content, Encoder, Profile};
-use crate::{EncodedFrame, Error, Picture, Result, h264, rtp_ticks};
+use crate::{EncodedFrame, Error, Layout, Picture, Result, h264, rtp_ticks};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -17,7 +17,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// The widest preview kept for the owner's own view of the share.
+/// The widest preview kept for the stream's uploaded thumbnail.
 pub const PREVIEW_WIDTH: u32 = 640;
 /// A preview is only produced while someone is taking them.
 const PREVIEW_ACTIVE: Duration = Duration::from_secs(2);
@@ -40,6 +40,8 @@ struct State {
     encoded: AtomicU64,
     error: Mutex<Option<String>>,
     preview: Mutex<Option<Picture>>,
+    /// The owner's own view of the share.
+    local: Mutex<Option<LocalSink>>,
     /// Microseconds since `origin` of the last `take_preview`.
     preview_taken: AtomicU64,
     /// When the pacing gate takes the next frame.
@@ -78,6 +80,7 @@ impl Worker {
             encoded: AtomicU64::new(0),
             error: Mutex::new(None),
             preview: Mutex::new(None),
+            local: Mutex::new(None),
             preview_taken: AtomicU64::new(0),
             cadence: Cadence::new(settings.fps),
             pending: AtomicBool::new(false),
@@ -140,6 +143,13 @@ impl Worker {
     /// Makes the next picture a keyframe: a viewer asked for one, or joined.
     pub fn force_keyframe(&self) {
         self.state.keyframe.store(true, Ordering::Release);
+    }
+
+    /// Hands every encoded picture to `sink` as well, the way the native engine feeds the sharer's own video sink: the
+    /// stream itself at its size and rate. The copy is made on another core while the hardware encodes, so it costs
+    /// the encoder nothing. `None` stops it.
+    pub fn set_local_sink(&self, sink: Option<LocalSink>) {
+        *self.state.local.lock().unwrap_or_else(|e| e.into_inner()) = sink;
     }
 
     /// The newest preview (at most 640 wide, RGBA), once; `None` when there is nothing new. Calling this is what keeps
@@ -384,8 +394,29 @@ fn run(
         // 2560x1440 here), more than a 60 Hz display's 16.7 ms, so the share took every other refresh: 30 fps.
         state.pending.store(false, Ordering::Release);
         let force = state.keyframe.swap(false, Ordering::AcqRel);
-        // The owner's preview (8 ms at 2560x1440) is cut on another core while the hardware encodes.
+        let local = state
+            .local
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // The thumbnail (8 ms at 2560x1440) and the owner's own picture (a copy of the encoder's input) are made on
+        // other cores while the hardware encodes.
         let output = std::thread::scope(|scope| {
+            if let Some(local) = local {
+                let yuv = &yuv;
+                scope.spawn(move || {
+                    let picture = Picture {
+                        width: settings.width,
+                        height: settings.height,
+                        layout: match chroma {
+                            Chroma::Interleaved => Layout::Nv12,
+                            Chroma::Planar => Layout::I420,
+                        },
+                        data: yuv.clone(),
+                    };
+                    local(picture);
+                });
+            }
             if preview_due {
                 scope.spawn(|| {
                     if let Ok(preview) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_WIDTH) {

@@ -476,7 +476,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Add a new connection"),
+                    .child(dc_intl::tr("Add a new connection")),
             )
             // `.connectionsContainer_yX-kzH`: wrapping, 8px gaps, 8px above and below.
             .child(
@@ -587,8 +587,8 @@ impl Root {
             return div()
                 .mt(px(10.))
                 .child(empty_state(
-                    "No Connections",
-                    "Connect your accounts to unlock special Discord integrations",
+                    dc_intl::tr("No Connections"),
+                    dc_intl::tr("Connect your accounts to unlock special Discord integrations"),
                 ))
                 .into_any_element();
         }
@@ -639,7 +639,7 @@ impl Root {
                         }))
                         .child(button(
                             SharedString::from(format!("disconnect-button-{}", account.id)),
-                            "Disconnect",
+                            dc_intl::tr("Disconnect"),
                             super::model::ButtonKind::CriticalSecondary,
                         )),
                 )
@@ -668,8 +668,10 @@ impl Root {
         let apps = apps_of(list);
         if apps.is_empty() {
             return empty_state(
-                "No Authorized Apps",
-                "Enhance your Discord experience by authorizing and integrating third-party services",
+                dc_intl::tr("No Authorized Apps"),
+                dc_intl::tr(
+                    "Enhance your Discord experience by authorizing and integrating third-party services",
+                ),
             );
         }
         let rows: Vec<AnyElement> = apps
@@ -706,7 +708,7 @@ impl Root {
                             }))
                             .child(button(
                                 SharedString::from(format!("deauthorize-button-{}", app.token)),
-                                "Deauthorize",
+                                dc_intl::tr("Deauthorize"),
                                 super::model::ButtonKind::CriticalSecondary,
                             )),
                     )

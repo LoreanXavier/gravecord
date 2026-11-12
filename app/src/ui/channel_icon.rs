@@ -68,7 +68,7 @@ pub(super) fn name(facts: &Facts) -> &'static str {
 /// The tooltip on the icon; a kind the official names nothing for has none.
 pub(super) fn label(facts: &Facts) -> Option<&'static str> {
     if facts.rules {
-        return Some("Rules");
+        return Some(dc_intl::tr("Rules"));
     }
     let pick = |nsfw: &'static str, limited: &'static str, plain: &'static str| {
         if facts.nsfw {
@@ -80,23 +80,35 @@ pub(super) fn label(facts: &Facts) -> Option<&'static str> {
         }
     };
     Some(match facts.kind {
-        ChannelKind::Text if facts.active_threads => "Text (Active Threads)",
-        ChannelKind::Text => pick("Text (Age-Restricted)", "Text (Limited)", "Text"),
-        FORUM => pick("Forum (Age-Restricted)", "Forum (Limited)", "Forum"),
-        MEDIA => pick(
-            "Media Channel (Age-Restricted)",
-            "Media Channel (Limited)",
-            "Media Channel",
+        ChannelKind::Text if facts.active_threads => dc_intl::tr("Text (Active Threads)"),
+        ChannelKind::Text => pick(
+            dc_intl::tr("Text (Age-Restricted)"),
+            dc_intl::tr("Text (Limited)"),
+            dc_intl::tr("Text"),
         ),
-        STAGE if facts.locked => "Stage (Locked)",
-        STAGE if facts.private => "Stage (Limited)",
-        STAGE => "Stage",
-        ChannelKind::Voice if facts.locked => "Voice (Locked)",
-        ChannelKind::Voice => pick("Voice (Age-Restricted)", "Voice (Limited)", "Voice"),
+        FORUM => pick(
+            dc_intl::tr("Forum (Age-Restricted)"),
+            dc_intl::tr("Forum (Limited)"),
+            dc_intl::tr("Forum"),
+        ),
+        MEDIA => pick(
+            dc_intl::tr("Media Channel (Age-Restricted)"),
+            dc_intl::tr("Media Channel (Limited)"),
+            dc_intl::tr("Media Channel"),
+        ),
+        STAGE if facts.locked => dc_intl::tr("Stage (Locked)"),
+        STAGE if facts.private => dc_intl::tr("Stage (Limited)"),
+        STAGE => dc_intl::tr("Stage"),
+        ChannelKind::Voice if facts.locked => dc_intl::tr("Voice (Locked)"),
+        ChannelKind::Voice => pick(
+            dc_intl::tr("Voice (Age-Restricted)"),
+            dc_intl::tr("Voice (Limited)"),
+            dc_intl::tr("Voice"),
+        ),
         ANNOUNCEMENT => pick(
-            "Announcements (Age-Restricted)",
-            "Announcements (Limited)",
-            "Announcements",
+            dc_intl::tr("Announcements (Age-Restricted)"),
+            dc_intl::tr("Announcements (Limited)"),
+            dc_intl::tr("Announcements"),
         ),
         _ => return None,
     })

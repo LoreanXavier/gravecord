@@ -33,9 +33,15 @@ pub(super) struct Decoder {
     transform: IMFTransform,
     _runtime: Runtime,
     pictures: i64,
+    /// Pictures released so far; while it keeps up with `pictures` the transform runs without delay.
+    released: i64,
     output: Option<OutputFormat>,
     provides_samples: bool,
 }
+
+/// How long a decode waits, in 1 ms steps, for a picture the transform's decoding threads are still finishing, while
+/// the transform has released one picture per access unit so far. A transform that holds pictures back stops this.
+const SETTLE_STEPS: u32 = 8;
 
 #[derive(Clone, Copy)]
 struct OutputFormat {
@@ -71,6 +77,7 @@ impl Decoder {
                 transform,
                 _runtime: runtime,
                 pictures: 0,
+                released: 0,
                 output: None,
                 provides_samples: false,
             };
@@ -131,7 +138,21 @@ impl Decoder {
                 }
                 Err(error) => return Err(failed("process input", error)),
             }
-            Ok(self.drain()?.or(newest))
+            let mut picture = self.drain()?.or(newest);
+            // The transform decodes on threads of its own: now and then (about one call in 130 here) the picture of
+            // this access unit is not ready yet when its output is asked for, and would only come out with the next
+            // one, a picture late (never, for the last picture of a still desktop).
+            let in_step = self.released + 1 >= self.pictures;
+            let mut steps = 0;
+            while picture.is_none() && in_step && steps < SETTLE_STEPS {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                picture = self.drain()?;
+                steps += 1;
+            }
+            if picture.is_some() {
+                self.released = self.pictures;
+            }
+            Ok(picture)
         }
     }
 
@@ -404,6 +425,24 @@ fn crop_nv12(bytes: &[u8], format: OutputFormat) -> Result<Picture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lone keyframe comes out of the call that fed it, every time: the loopback test once found nothing there
+    /// (one run in four, then one in 25), because the transform's own decoding threads had not finished the picture
+    /// when its output was asked for.
+    #[test]
+    fn a_keyframe_comes_out_of_the_call_that_fed_it() {
+        let mut generator = crate::synthetic::Generator::new(640, 480, 15, 900_000).unwrap();
+        let keyframe = generator.next(false).unwrap().unwrap();
+        assert!(keyframe.keyframe);
+        let mut missing = 0;
+        for _ in 0..200 {
+            let mut decoder = Decoder::new().unwrap();
+            if decoder.decode(&keyframe.data).unwrap().is_none() {
+                missing += 1;
+            }
+        }
+        assert_eq!(missing, 0, "decodes of 200 that gave no picture");
+    }
 
     #[test]
     fn nv12_crops_to_the_aperture_and_bounds() {

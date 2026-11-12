@@ -329,7 +329,11 @@ impl Root {
                 linear_color_stop(to, 1.),
             ))
             .child(at(24., 12.).child(display(
-                if nitro { "Nitro" } else { "Nitro Basic" },
+                if nitro {
+                    dc_intl::tr("Nitro")
+                } else {
+                    dc_intl::tr("Nitro Basic")
+                },
                 28.,
                 30.,
             )))
@@ -356,7 +360,7 @@ impl Root {
                             .items_center()
                             .gap(px(8.))
                             .child(icon(glyph, 24., "--white"))
-                            .child(text(*line, 16., 20., 400., "--white"))
+                            .child(text(dc_intl::tr(line), 16., 20., 400., "--white"))
                     })),
             )
             .child(at(24., 317.).child(self.settings_outline_button(
@@ -365,7 +369,7 @@ impl Root {
                 } else {
                     "settings-basic-subscribe"
                 },
-                "Subscribe",
+                dc_intl::tr("Subscribe"),
                 // The captured plan card buttons carry no wheel (the hero's do).
                 "",
                 nitro,
@@ -435,8 +439,8 @@ impl Root {
 
     fn compare_cell(value: &Cell, centre: f32, top: f32) -> AnyElement {
         let (label, weight): (&str, f32) = match value {
-            Included => ("Included", 400.),
-            No => ("Not included", 400.),
+            Included => (dc_intl::tr("Included"), 400.),
+            No => (dc_intl::tr("Not included"), 400.),
             Text(value) => (value, 600.),
         };
         div()
@@ -513,7 +517,7 @@ impl Root {
             )
             .child(
                 at(0., 81.).w(px(696.)).flex().justify_center().child(
-                    display("Unlock a World of Perks with Nitro", 32., 34.)
+                    display(dc_intl::tr("Unlock a World of Perks with Nitro"), 32., 34.)
                         .w(px(480.))
                         .text_center()
                         .text_color(color("--white")),
@@ -528,7 +532,7 @@ impl Root {
             )
             .child(at(180., 228.).child(self.settings_outline_button(
                 "settings-nitro-hero-subscribe",
-                "Subscribe",
+                dc_intl::tr("Subscribe"),
                 "nitro_wheel",
                 true,
                 160.,
@@ -539,7 +543,7 @@ impl Root {
             )))
             .child(at(356., 228.).child(self.settings_outline_button(
                 "settings-nitro-hero-gift",
-                "Gift Nitro",
+                dc_intl::tr("Gift Nitro"),
                 "gift",
                 false,
                 160.,
@@ -551,14 +555,21 @@ impl Root {
             .child(at(361., 363.).child(self.settings_plan_card(true, cx)));
         // Favourite perks.
         page = page.child(at(0., 823.).w(px(696.)).flex().justify_center().child(text(
-            "Favorite Nitro Perks",
+            dc_intl::tr("Favorite Nitro Perks"),
             32.,
             40.,
             600.,
             "--text-strong",
         )));
         for (index, (title, body, column, top, height)) in PERKS.into_iter().enumerate() {
-            page = page.child(self.perk_card(title, body, column, top, height, index));
+            page = page.child(self.perk_card(
+                dc_intl::tr(title),
+                dc_intl::tr(body),
+                column,
+                top,
+                height,
+                index,
+            ));
         }
         // The comparison table.
         let table_top = 2492.;
@@ -569,7 +580,7 @@ impl Root {
                     .flex()
                     .justify_center()
                     .child(text(
-                        "Pick the plan that works best for you",
+                        dc_intl::tr("Pick the plan that works best for you"),
                         32.,
                         40.,
                         600.,
@@ -597,16 +608,22 @@ impl Root {
                     .bg(rgb(89, 31, 114))
                     .flex()
                     .items_center()
-                    .child(text("Most Popular", 12., 16., 600., "--white")),
+                    .child(text(dc_intl::tr("Most Popular"), 12., 16., 600., "--white")),
             )
             .child(at(2., table_top + 25.).child(text(
-                "Pricing and Features",
+                dc_intl::tr("Pricing and Features"),
                 20.,
                 24.,
                 600.,
                 "--text-strong",
             )))
-            .child(at(2., table_top + 107.).child(text("Price", 14., 18., 400., "--text-default")))
+            .child(at(2., table_top + 107.).child(text(
+                dc_intl::tr("Price"),
+                14.,
+                18.,
+                400.,
+                "--text-default",
+            )))
             .child(
                 at(323., table_top + 105.).child(text(
                     basic
@@ -635,7 +652,7 @@ impl Root {
             let middle = row_top + label_height / 2. - 8.;
             page = page
                 .child(at(2., row_top).w(px(237.)).child(text(
-                    *label,
+                    dc_intl::tr(label),
                     14.,
                     18.,
                     400.,
@@ -687,8 +704,8 @@ impl Root {
                 .hover(|this| this.underline())
                 .child(label)
         };
-        let to_subscriptions =
-            cx.listener(|this, _, _, cx| this.settings_goto("Subscriptions", None, cx));
+        let to_subscriptions = cx
+            .listener(|this, _, _, cx| this.settings_goto(dc_intl::tr("Subscriptions"), None, cx));
         let sentence = if classic {
             // `tYuv+T`: the words flow over as many lines as the card needs.
             let words = |text: &'static str| {
@@ -715,7 +732,7 @@ impl Root {
                 .child(div().mr(px(3.5)).child("."))
                 .children(words("Go to the"))
                 .child(div().mr(px(3.5)).child(
-                    link("nitro-notice-subscriptions", "Subscriptions").on_click(to_subscriptions),
+                    link("nitro-notice-subscriptions", dc_intl::tr("Subscriptions")).on_click(to_subscriptions),
                 ))
                 .children(words("page to manage your Nitro plan."))
         } else {
@@ -725,7 +742,8 @@ impl Root {
                     "Trying to manage your {name} subscription? Go to your "
                 ))
                 .child(
-                    link("nitro-notice-subscriptions", "Subscriptions").on_click(to_subscriptions),
+                    link("nitro-notice-subscriptions", dc_intl::tr("Subscriptions"))
+                        .on_click(to_subscriptions),
                 )
                 .child(" page.")
         };

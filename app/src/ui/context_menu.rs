@@ -549,14 +549,14 @@ pub(super) struct ComposerMenu {
 /// (`devmode-copy-id`, module 50268). The page's Copy Link button covers the wide layout, so the menu has no such row.
 pub(super) fn app_directory_items(developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::ReportApp, "Report App")
+        Row::new(Act::ReportApp, dc_intl::tr("Report App"))
             .icon("menu_flag")
             .danger(),
     )];
     group(
         &mut out,
         if developer {
-            vec![Row::new(Act::CopyId, "Copy Application ID").icon("menu_id")]
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Application ID")).icon("menu_id")]
         } else {
             Vec::new()
         },
@@ -577,25 +577,28 @@ pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
     );
     let mut spelling = Vec::new();
     if menu.word.is_some() {
-        spelling.push(Row::new(Act::AddToDictionary, "Add to Dictionary"));
+        spelling.push(Row::new(
+            Act::AddToDictionary,
+            dc_intl::tr("Add to Dictionary"),
+        ));
     }
     if menu.learned.is_some() && menu.word.is_none() {
         spelling.push(Row::new(
             Act::RemoveFromDictionary,
-            "Remove from Dictionary",
+            dc_intl::tr("Remove from Dictionary"),
         ));
     }
-    spelling.push(Row::new(Act::Spellcheck, "Spellcheck").check(menu.enabled));
+    spelling.push(Row::new(Act::Spellcheck, dc_intl::tr("Spellcheck")).check(menu.enabled));
     if menu.enabled {
-        spelling.push(Row::new(Act::SpellLanguages, "Languages"));
+        spelling.push(Row::new(Act::SpellLanguages, dc_intl::tr("Languages")));
     }
     group(&mut out, spelling);
     let mut clipboard = Vec::new();
     if menu.selection {
-        clipboard.push(Row::new(Act::Cut, "Cut").shortcut("Ctrl+X"));
-        clipboard.push(Row::new(Act::Copy, "Copy").shortcut("Ctrl+C"));
+        clipboard.push(Row::new(Act::Cut, dc_intl::tr("Cut")).shortcut("Ctrl+X"));
+        clipboard.push(Row::new(Act::Copy, dc_intl::tr("Copy")).shortcut("Ctrl+C"));
     }
-    clipboard.push(Row::new(Act::Paste, "Paste").shortcut("Ctrl+V"));
+    clipboard.push(Row::new(Act::Paste, dc_intl::tr("Paste")).shortcut("Ctrl+V"));
     group(&mut out, clipboard);
     tidy(out)
 }
@@ -615,66 +618,75 @@ pub(super) struct ChannelFacts {
 
 pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!facts.unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!facts.unread),
     )];
     group(
         &mut out,
-        vec![Row::new(Act::Favorite, "Add to Favorites").icon("clips_star")],
+        vec![Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star")],
     );
     let mut share = Vec::new();
     if facts.can_invite {
         share.push(Row::new(
             Act::Invite,
             if facts.voice {
-                "Invite to Voice"
+                dc_intl::tr("Invite to Voice")
             } else {
-                "Invite to Channel"
+                dc_intl::tr("Invite to Channel")
             },
         ));
     }
-    share.push(Row::new(Act::PinChannel, "Pin Channel to Top"));
-    share.push(Row::new(Act::CopyLink, "Copy Link"));
+    share.push(Row::new(Act::PinChannel, dc_intl::tr("Pin Channel to Top")));
+    share.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, share);
     if facts.voice {
         // The status row sits between Open Chat and Hide Names (`voice-actions` of module 428631).
-        let mut voice = vec![Row::new(Act::OpenChat, "Open Chat")];
+        let mut voice = vec![Row::new(Act::OpenChat, dc_intl::tr("Open Chat"))];
         if facts.clear_status {
-            voice.push(Row::new(Act::ClearStatus, "Clear Channel Status"));
+            voice.push(Row::new(
+                Act::ClearStatus,
+                dc_intl::tr("Clear Channel Status"),
+            ));
         }
-        voice.push(Row::new(Act::HideNames, "Hide Names").check(facts.hide_names));
+        voice.push(Row::new(Act::HideNames, dc_intl::tr("Hide Names")).check(facts.hide_names));
         group(&mut out, voice);
     }
     // A voice channel's menu has no Notification Settings (its capture, `voice-row`).
-    let mut alerts = vec![Row::new(Act::Mute, "Mute Channel").caret()];
+    let mut alerts = vec![Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret()];
     if !facts.voice {
         alerts.push(
-            Row::new(Act::Notifications, "Notification Settings")
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         );
     }
     group(&mut out, alerts);
     if facts.can_manage {
-        group(&mut out, vec![Row::new(Act::MoveTo, "Move to...").caret()]);
+        group(
+            &mut out,
+            vec![Row::new(Act::MoveTo, dc_intl::tr("Move to...")).caret()],
+        );
         group(
             &mut out,
             vec![
-                Row::new(Act::EditChannel, "Edit Channel"),
-                Row::new(Act::Duplicate, "Duplicate Channel"),
+                Row::new(Act::EditChannel, dc_intl::tr("Edit Channel")),
+                Row::new(Act::Duplicate, dc_intl::tr("Duplicate Channel")),
                 Row::new(
                     Act::CreateChannel,
                     if facts.voice {
-                        "Create Voice Channel"
+                        dc_intl::tr("Create Voice Channel")
                     } else {
-                        "Create Text Channel"
+                        dc_intl::tr("Create Text Channel")
                     },
                 ),
-                Row::new(Act::DeleteChannel, "Delete Channel").danger(),
+                Row::new(Act::DeleteChannel, dc_intl::tr("Delete Channel")).danger(),
             ],
         );
     }
     if facts.developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy Channel ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+        );
     }
     tidy(out)
 }
@@ -682,12 +694,12 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
 /// The menu of the Favorites star (frame menus2/favorites-rail-menu).
 pub(super) fn favorites_items() -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::FavoritesSettings, "Thread Settings").icon("menu_create_thread"),
+        Row::new(Act::FavoritesSettings, dc_intl::tr("Thread Settings")).icon("menu_create_thread"),
     )];
     group(
         &mut out,
         vec![
-            Row::new(Act::HideFavorites, "Hide Favorites")
+            Row::new(Act::HideFavorites, dc_intl::tr("Hide Favorites"))
                 .icon("eye_slash")
                 .danger(),
         ],
@@ -699,28 +711,31 @@ pub(super) fn favorites_items() -> Vec<Entry> {
 /// back to its own server, the favourite's nickname, then the usual link, mute and notification rows, and the removal.
 pub(super) fn favorite_channel_items(unread: bool, level: &str) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
     group(
         &mut out,
         vec![
-            Row::new(Act::GoToServer, "Go to Server"),
-            Row::new(Act::FavoritesNickname, "Change Nickname"),
+            Row::new(Act::GoToServer, dc_intl::tr("Go to Server")),
+            Row::new(Act::FavoritesNickname, dc_intl::tr("Change Nickname")),
         ],
     );
-    group(&mut out, vec![Row::new(Act::CopyLink, "Copy Link")]);
+    group(
+        &mut out,
+        vec![Row::new(Act::CopyLink, dc_intl::tr("Copy Link"))],
+    );
     group(
         &mut out,
         vec![
-            Row::new(Act::Mute, "Mute Channel").caret(),
-            Row::new(Act::Notifications, "Notification Settings")
+            Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         ],
     );
     group(
         &mut out,
-        vec![Row::new(Act::Favorite, "Remove from Favorites").danger()],
+        vec![Row::new(Act::Favorite, dc_intl::tr("Remove from Favorites")).danger()],
     );
     tidy(out)
 }
@@ -733,36 +748,42 @@ pub(super) fn category_items(
     level: &str,
 ) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
     group(
         &mut out,
         vec![
-            Row::new(Act::CollapseCategory, "Collapse Category").check(collapsed),
-            Row::new(Act::CollapseAll, "Collapse All Categories"),
+            Row::new(Act::CollapseCategory, dc_intl::tr("Collapse Category")).check(collapsed),
+            Row::new(Act::CollapseAll, dc_intl::tr("Collapse All Categories")),
         ],
     );
     group(
         &mut out,
         vec![
-            Row::new(Act::Mute, "Mute Category").caret(),
-            Row::new(Act::Notifications, "Notification Settings")
+            Row::new(Act::Mute, dc_intl::tr("Mute Category")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         ],
     );
     if can_manage {
-        group(&mut out, vec![Row::new(Act::MoveTo, "Move to...").caret()]);
+        group(
+            &mut out,
+            vec![Row::new(Act::MoveTo, dc_intl::tr("Move to...")).caret()],
+        );
         group(
             &mut out,
             vec![
-                Row::new(Act::EditChannel, "Edit Category"),
-                Row::new(Act::DeleteChannel, "Delete Category").danger(),
+                Row::new(Act::EditChannel, dc_intl::tr("Edit Category")),
+                Row::new(Act::DeleteChannel, dc_intl::tr("Delete Category")).danger(),
             ],
         );
     }
     if developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy Category ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Category ID"))],
+        );
     }
     tidy(out)
 }
@@ -776,37 +797,37 @@ pub(super) fn thread_items(
     level: &str,
 ) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
     group(
         &mut out,
-        vec![Row::new(Act::Favorite, "Add to Favorites").icon("clips_star")],
+        vec![Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star")],
     );
     let mut own = Vec::new();
     if !joined {
-        own.push(Row::new(Act::JoinThread, "Join Thread"));
+        own.push(Row::new(Act::JoinThread, dc_intl::tr("Join Thread")));
     }
     if manage || owner {
-        own.push(Row::new(Act::CloseThread, "Close Thread"));
+        own.push(Row::new(Act::CloseThread, dc_intl::tr("Close Thread")));
     }
     if manage {
-        own.push(Row::new(Act::LockThread, "Lock Thread"));
+        own.push(Row::new(Act::LockThread, dc_intl::tr("Lock Thread")));
     }
     if manage || owner {
-        own.push(Row::new(Act::EditChannel, "Edit Thread"));
+        own.push(Row::new(Act::EditChannel, dc_intl::tr("Edit Thread")));
     }
-    own.push(Row::new(Act::CopyLink, "Copy Link"));
+    own.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, own);
     group(
         &mut out,
         vec![
             // `mute-disabled` (module 57907) until the account has joined the thread.
             if joined {
-                Row::new(Act::Mute, "Mute Thread").caret()
+                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).caret()
             } else {
-                Row::new(Act::Mute, "Mute Thread").disabled(true)
+                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).disabled(true)
             },
-            Row::new(Act::Notifications, "Notification Settings")
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         ],
@@ -814,14 +835,20 @@ pub(super) fn thread_items(
     if manage || owner {
         group(
             &mut out,
-            vec![Row::new(Act::DeleteChannel, "Delete Thread").danger()],
+            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Thread")).danger()],
         );
     }
     if joined {
-        group(&mut out, vec![Row::new(Act::LeaveThread, "Leave Thread")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::LeaveThread, dc_intl::tr("Leave Thread"))],
+        );
     }
     if developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy Thread ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Thread ID"))],
+        );
     }
     tidy(out)
 }
@@ -840,47 +867,62 @@ pub(super) struct GuildFacts {
 
 pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!facts.unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!facts.unread),
     )];
     if facts.can_invite {
-        group(&mut out, vec![Row::new(Act::Invite, "Invite to Server")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::Invite, dc_intl::tr("Invite to Server"))],
+        );
     }
     group(
         &mut out,
         vec![
-            Row::new(Act::Mute, "Mute Server").caret(),
-            Row::new(Act::Notifications, "Notification Settings")
+            Row::new(Act::Mute, dc_intl::tr("Mute Server")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
-            Row::new(Act::HideMuted, "Hide Muted Channels").check(facts.hide_muted),
+            Row::new(Act::HideMuted, dc_intl::tr("Hide Muted Channels")).check(facts.hide_muted),
         ],
     );
     let mut settings = Vec::new();
     if facts.can_manage_guild {
-        settings.push(Row::new(Act::ServerSettings, "Server Settings").caret());
+        settings.push(Row::new(Act::ServerSettings, dc_intl::tr("Server Settings")).caret());
     }
-    settings.push(Row::new(Act::PrivacySettings, "Privacy Settings"));
-    settings.push(Row::new(Act::EditProfile, "Edit Per-server Profile"));
+    settings.push(Row::new(
+        Act::PrivacySettings,
+        dc_intl::tr("Privacy Settings"),
+    ));
+    settings.push(Row::new(
+        Act::EditProfile,
+        dc_intl::tr("Edit Per-server Profile"),
+    ));
     group(&mut out, settings);
     if facts.can_manage_channels {
         group(
             &mut out,
             vec![
-                Row::new(Act::CreateChannel, "Create Channel"),
-                Row::new(Act::CreateCategory, "Create Category"),
-                Row::new(Act::CreateEvent, "Create Event"),
+                Row::new(Act::CreateChannel, dc_intl::tr("Create Channel")),
+                Row::new(Act::CreateCategory, dc_intl::tr("Create Category")),
+                Row::new(Act::CreateEvent, dc_intl::tr("Create Event")),
             ],
         );
     }
-    group(&mut out, vec![Row::new(Act::MoveTo, "Move to...").caret()]);
+    group(
+        &mut out,
+        vec![Row::new(Act::MoveTo, dc_intl::tr("Move to...")).caret()],
+    );
     if !facts.owner {
         group(
             &mut out,
-            vec![Row::new(Act::LeaveGuild, "Leave Server").danger()],
+            vec![Row::new(Act::LeaveGuild, dc_intl::tr("Leave Server")).danger()],
         );
     }
     if facts.developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy Server ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Server ID"))],
+        );
     }
     tidy(out)
 }
@@ -964,32 +1006,35 @@ fn label_width(window: &Window, text: &str) -> f32 {
 /// channel id for developers. Invites (owner only) and Apps are not offered yet.
 pub(super) fn group_items(unread: bool, owner: bool, developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
-        Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+        Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
     group(
         &mut out,
         vec![
-            Row::new(Act::PinDm, "Pin").icon("menu_pin_message"),
-            Row::new(Act::Favorite, "Add to Favorites").icon("clips_star"),
+            Row::new(Act::PinDm, dc_intl::tr("Pin")).icon("menu_pin_message"),
+            Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"),
         ],
     );
     let mut manage = Vec::new();
     // The group's owner sees Invites above Edit Group (module 4027).
     if owner {
-        manage.push(Row::new(Act::Invites, "Invites"));
+        manage.push(Row::new(Act::Invites, dc_intl::tr("Invites")));
     }
-    manage.push(Row::new(Act::EditGroup, "Edit Group"));
+    manage.push(Row::new(Act::EditGroup, dc_intl::tr("Edit Group")));
     group(&mut out, manage);
     group(
         &mut out,
-        vec![Row::new(Act::Mute, "Mute Conversation").caret()],
+        vec![Row::new(Act::Mute, dc_intl::tr("Mute Conversation")).caret()],
     );
     group(
         &mut out,
-        vec![Row::new(Act::LeaveGroup, "Leave Group").danger()],
+        vec![Row::new(Act::LeaveGroup, dc_intl::tr("Leave Group")).danger()],
     );
     if developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy Channel ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+        );
     }
     tidy(out)
 }
@@ -998,44 +1043,46 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     if let Some(unread) = facts.dm {
         out.push(Entry::Row(
-            Row::new(Act::MarkRead, "Mark As Read").disabled(!unread),
+            Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
         ));
         group(
             &mut out,
             vec![
-                Row::new(Act::PinDm, "Pin").icon("menu_pin_message"),
-                Row::new(Act::Favorite, "Add to Favorites").icon("clips_star"),
+                Row::new(Act::PinDm, dc_intl::tr("Pin")).icon("menu_pin_message"),
+                Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"),
             ],
         );
     }
-    let mut first = vec![Row::new(Act::Profile, "Profile")];
+    let mut first = vec![Row::new(Act::Profile, dc_intl::tr("Profile"))];
     if facts.dm.is_none() {
-        first.push(Row::new(Act::Mention, "Mention"));
+        first.push(Row::new(Act::Mention, dc_intl::tr("Mention")));
         if !facts.me {
-            first.push(Row::new(Act::Message, "Message"));
+            first.push(Row::new(Act::Message, dc_intl::tr("Message")));
         }
     }
     if !facts.me {
-        first.push(Row::new(Act::Call, "Start a Call"));
+        first.push(Row::new(Act::Call, dc_intl::tr("Start a Call")));
         match facts.ring {
-            Some(false) => first.push(Row::new(Act::RingUser, "Ring")),
-            Some(true) => first.push(Row::new(Act::StopRinging, "Stop Ringing")),
+            Some(false) => first.push(Row::new(Act::RingUser, dc_intl::tr("Ring"))),
+            Some(true) => first.push(Row::new(Act::StopRinging, dc_intl::tr("Stop Ringing"))),
             None => {}
         }
-        first.push(Row::new(Act::Note, "Add Note").sub("Only visible to you"));
+        first.push(
+            Row::new(Act::Note, dc_intl::tr("Add Note")).sub(dc_intl::tr("Only visible to you")),
+        );
         if facts.friend {
             first.push(Row::new(
                 Act::FriendNickname,
                 if facts.nickname {
-                    "Change Friend Nickname"
+                    dc_intl::tr("Change Friend Nickname")
                 } else {
-                    "Add Friend Nickname"
+                    dc_intl::tr("Add Friend Nickname")
                 },
             ));
         }
     }
     if facts.dm.is_some() {
-        first.push(Row::new(Act::CloseDm, "Close DM"));
+        first.push(Row::new(Act::CloseDm, dc_intl::tr("Close DM")));
     }
     if facts.dm.is_some() {
         group(&mut out, first);
@@ -1045,21 +1092,23 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if let Some((muted, deafened)) = facts.self_voice {
         // Module 198229: our own row has the two self switches, their checks following the media engine.
         out.push(Entry::Separator);
-        out.push(Entry::Row(Row::new(Act::VoiceMute, "Mute").check(muted)));
         out.push(Entry::Row(
-            Row::new(Act::VoiceDeafen, "Deafen").check(deafened),
+            Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(muted),
+        ));
+        out.push(Entry::Row(
+            Row::new(Act::VoiceDeafen, dc_intl::tr("Deafen")).check(deafened),
         ));
     }
     if facts.in_call && !facts.me {
         let mut rows = vec![
-            Row::new(Act::Volume, "User Volume").sub(format!("{}%", facts.volume)),
-            Row::new(Act::VoiceMute, "Mute").check(facts.voice_muted),
+            Row::new(Act::Volume, dc_intl::tr("User Volume")).sub(format!("{}%", facts.volume)),
+            Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(facts.voice_muted),
             Row::new(
                 Act::SoundboardMute,
                 if facts.soundboard_muted {
-                    "Unmute Soundboard"
+                    dc_intl::tr("Unmute Soundboard")
                 } else {
-                    "Mute Soundboard"
+                    dc_intl::tr("Mute Soundboard")
                 },
             ),
         ];
@@ -1076,29 +1125,43 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
                 Act::ChangeNickname
             },
             if facts.me {
-                "Edit Per-server Profile"
+                dc_intl::tr("Edit Per-server Profile")
             } else {
-                "Change Nickname"
+                dc_intl::tr("Change Nickname")
             },
         ));
     }
-    mid.push(Row::new(Act::Apps, "Apps").caret());
+    mid.push(Row::new(Act::Apps, dc_intl::tr("Apps")).caret());
     if facts.invite_servers && !facts.me {
-        mid.push(Row::new(Act::InviteToServer, "Invite to Server").caret());
+        mid.push(Row::new(Act::InviteToServer, dc_intl::tr("Invite to Server")).caret());
     }
     if !facts.me {
         if !facts.bot {
             mid.push(if facts.friend {
-                Row::new(Act::RemoveFriend, "Remove Friend")
+                Row::new(Act::RemoveFriend, dc_intl::tr("Remove Friend"))
             } else {
-                Row::new(Act::AddFriend, "Add Friend").disabled(facts.blocked)
+                Row::new(Act::AddFriend, dc_intl::tr("Add Friend")).disabled(facts.blocked)
             });
         }
         mid.push(Row::new(
             Act::Ignore,
-            if facts.ignored { "Unignore" } else { "Ignore" },
+            if facts.ignored {
+                dc_intl::tr("Unignore")
+            } else {
+                dc_intl::tr("Ignore")
+            },
         ));
-        mid.push(Row::new(Act::Block, if facts.blocked { "Unblock" } else { "Block" }).danger());
+        mid.push(
+            Row::new(
+                Act::Block,
+                if facts.blocked {
+                    dc_intl::tr("Unblock")
+                } else {
+                    dc_intl::tr("Block")
+                },
+            )
+            .danger(),
+        );
     }
     if facts.dm.is_some() {
         group(&mut out, mid);
@@ -1117,24 +1180,24 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         // Module 107632: Roles (180798) and Move to (252726) share a group before the moderation one.
         let mut place = Vec::new();
         if facts.roles {
-            place.push(Row::new(Act::Roles, "Roles").caret());
+            place.push(Row::new(Act::Roles, dc_intl::tr("Roles")).caret());
         }
         if facts.server_voice.is_some_and(|voice| voice.can_move) {
-            place.push(Row::new(Act::MoveMember, "Move to").caret());
+            place.push(Row::new(Act::MoveMember, dc_intl::tr("Move to")).caret());
         }
         group(&mut out, place);
     }
     if facts.dm.is_none() && facts.in_guild {
-        let mut moderation = vec![Row::new(Act::ModView, "Open in Mod View")];
+        let mut moderation = vec![Row::new(Act::ModView, dc_intl::tr("Open in Mod View"))];
         if !facts.me
             && let Some(verified) = facts.verify
         {
             moderation.push(Row::new(
                 Act::Verify,
                 if verified {
-                    "Unverify Member"
+                    dc_intl::tr("Unverify Member")
                 } else {
-                    "Verify Member"
+                    dc_intl::tr("Verify Member")
                 },
             ));
         }
@@ -1144,20 +1207,20 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
             if let Some(voice) = facts.server_voice {
                 if voice.can_mute {
                     moderation.push(
-                        Row::new(Act::ServerMute, "Server Mute")
+                        Row::new(Act::ServerMute, dc_intl::tr("Server Mute"))
                             .check(voice.mute)
                             .danger(),
                     );
                 }
                 if voice.can_deafen {
                     moderation.push(
-                        Row::new(Act::ServerDeafen, "Server Deafen")
+                        Row::new(Act::ServerDeafen, dc_intl::tr("Server Deafen"))
                             .check(voice.deaf)
                             .danger(),
                     );
                 }
                 if voice.can_disconnect {
-                    moderation.push(Row::new(Act::Disconnect, "Disconnect").danger());
+                    moderation.push(Row::new(Act::Disconnect, dc_intl::tr("Disconnect")).danger());
                 }
             }
         }
@@ -1166,18 +1229,20 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
                 moderation.push(if facts.in_timeout {
                     Row::new(
                         Act::RemoveTimeout,
-                        format!("Remove Timeout From {}", facts.name),
+                        dc_intl::t!("csKeta", user = &facts.name),
                     )
                     .danger()
                 } else {
-                    Row::new(Act::Timeout, format!("Timeout {}", facts.name)).danger()
+                    Row::new(Act::Timeout, dc_intl::t!("OhsOy0", user = &facts.name)).danger()
                 });
             }
             if facts.can_kick {
-                moderation.push(Row::new(Act::Kick, format!("Kick {}", facts.name)).danger());
+                moderation
+                    .push(Row::new(Act::Kick, dc_intl::t!("9l/iTS", user = &facts.name)).danger());
             }
             if facts.can_ban {
-                moderation.push(Row::new(Act::Ban, format!("Ban {}", facts.name)).danger());
+                moderation
+                    .push(Row::new(Act::Ban, dc_intl::t!("WnpUBi", user = &facts.name)).danger());
             }
         }
         group(&mut out, moderation);
@@ -1185,11 +1250,21 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if let Some(_unread) = facts.dm {
         group(
             &mut out,
-            vec![Row::new(Act::Mute, format!("Mute @{}", facts.name)).caret()],
+            // Module 995102: "Mute **{name}**" (`byjuJm`) with the name as `@name`.
+            vec![
+                Row::new(
+                    Act::Mute,
+                    dc_intl::t!("byjuJm", name = format!("@{}", facts.name)),
+                )
+                .caret(),
+            ],
         );
     }
     if facts.developer {
-        group(&mut out, vec![Row::new(Act::CopyId, "Copy User ID")]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy User ID"))],
+        );
     }
     tidy(out)
 }
@@ -1284,7 +1359,11 @@ fn ordered_group(channels: &[Channel], kind: ChannelKind, parent: Option<Id>) ->
 
 /// Where a channel can go: Uncategorized (id 0, the null category of module 808728) and every category, the one it is in disabled.
 fn move_destinations(channels: &[Channel], me: &Channel) -> Vec<(Id, String, bool)> {
-    let mut list = vec![("Uncategorized".to_owned(), 0, me.parent_id.is_none())];
+    let mut list = vec![(
+        dc_intl::tr("Uncategorized").to_owned(),
+        0,
+        me.parent_id.is_none(),
+    )];
     list.extend(
         ordered_group(channels, ChannelKind::Category, None)
             .into_iter()
@@ -1339,10 +1418,10 @@ fn plan_channel_move(
 
 fn level_label(level: u64) -> &'static str {
     match level {
-        0 => "All Messages",
-        1 => "Only @mentions",
-        2 => "Nothing",
-        _ => "Use Category Default",
+        0 => dc_intl::tr("All Messages"),
+        1 => dc_intl::tr("Only @mentions"),
+        2 => dc_intl::tr("Nothing"),
+        _ => dc_intl::tr("Use Category Default"),
     }
 }
 
@@ -1726,19 +1805,48 @@ impl Root {
             };
             match row.act {
                 Act::Mute if muted => {
-                    row.label = row.label.replacen("Mute", "Unmute", 1);
+                    // Each row's own Unmute message (module 995102), a DM's with its name (`eC+9rj`).
+                    let unmute = [
+                        ("Mute Channel", "Unmute Channel"),
+                        ("Mute Category", "Unmute Category"),
+                        ("Mute Thread", "Unmute Thread"),
+                        ("Mute Server", "Unmute Server"),
+                        ("Mute Conversation", "Unmute Conversation"),
+                    ]
+                    .into_iter()
+                    .find(|(mute, _)| row.label == dc_intl::tr(mute))
+                    .map(|(_, unmute)| dc_intl::tr(unmute).to_owned());
+                    let dm_name = match target {
+                        Target::Dm(id) => self
+                            .stores
+                            .private_channels
+                            .iter()
+                            .find(|known| known.id == id)
+                            .map(|dm| format!("@{}", self.private_channel_name(dm))),
+                        _ => None,
+                    };
+                    row.label = match (unmute, dm_name) {
+                        (Some(unmute), _) => unmute,
+                        (None, Some(name)) => dc_intl::t!("eC+9rj", name = name),
+                        (None, None) => row.label.replacen("Mute", "Unmute", 1),
+                    };
                     row.caret = false;
+                    // "Muted until {endTime}" (`j7h4AJ`).
                     row.sub = end.map(|end| {
-                        format!(
-                            "Muted until {}",
-                            end.with_timezone(&chrono::Local)
+                        dc_intl::t!(
+                            "j7h4AJ",
+                            endTime = end
+                                .with_timezone(&chrono::Local)
                                 .format("%-m/%-d, %-I:%M %p")
+                                .to_string()
                         )
                     });
                 }
-                Act::PinChannel if pinned => row.label = "Unpin Channel".to_owned(),
-                Act::Favorite if favorite => row.label = "Remove from Favorites".to_owned(),
-                Act::PinDm if dm_pinned => row.label = "Unpin".to_owned(),
+                Act::PinChannel if pinned => row.label = dc_intl::tr("Unpin Channel").to_owned(),
+                Act::Favorite if favorite => {
+                    row.label = dc_intl::tr("Remove from Favorites").to_owned()
+                }
+                Act::PinDm if dm_pinned => row.label = dc_intl::tr("Unpin").to_owned(),
                 Act::HideNames => {
                     if let Target::Channel(id) = target {
                         row.check = Some(self.names_hidden(id));
@@ -1767,19 +1875,23 @@ impl Root {
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let items = match target {
             Target::InventoryAuthor { .. } => {
-                let mut items = vec![Entry::Row(Row::new(Act::Profile, "Profile"))];
+                let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
                 if developer {
                     items.push(Entry::Separator);
-                    items.push(Entry::Row(Row::new(Act::CopyId, "Copy User ID")));
+                    items.push(Entry::Row(Row::new(
+                        Act::CopyId,
+                        dc_intl::tr("Copy User ID"),
+                    )));
                 }
                 items
             }
             Target::InventoryFeed | Target::InventoryFeedAtPointer => vec![
                 Entry::Row(
-                    Row::new(Act::InventoryAbout, "About Recent Activity").icon("circle_info"),
+                    Row::new(Act::InventoryAbout, dc_intl::tr("About Recent Activity"))
+                        .icon("circle_info"),
                 ),
                 Entry::Row(
-                    Row::new(Act::InventoryHide, "Hide Activity Cards")
+                    Row::new(Act::InventoryHide, dc_intl::tr("Hide Activity Cards"))
                         .icon("eye_slash")
                         .check(self.inventory_hidden()),
                 ),
@@ -2189,9 +2301,9 @@ impl Root {
             }
             (Act::ServerSettings, Target::Guild(guild)) => self.open_server_settings(guild, cx),
             (Act::PrivacySettings, Target::Guild(_)) => {
-                self.open_settings_section("Data & Privacy", cx)
+                self.open_settings_section(dc_intl::tr("Data & Privacy"), cx)
             }
-            (Act::EditProfile, _) => self.open_settings_section("Account", cx),
+            (Act::EditProfile, _) => self.open_settings_section(dc_intl::tr("Account"), cx),
             (Act::CreateChannel | Act::CreateCategory, Target::Guild(guild)) => {
                 self.select(guild, None);
                 self.open_create_channel(act == Act::CreateCategory, window, cx);
@@ -2817,7 +2929,7 @@ impl Root {
             },
             // The apps' commands are not listed yet: every person shows the official empty state.
             Act::Apps => vec![SubRow {
-                label: "No Commands Available".to_owned(),
+                label: dc_intl::tr("No Commands Available").to_owned(),
                 disabled: true,
                 ..SubRow::default()
             }],
@@ -2861,7 +2973,7 @@ impl Root {
                 .collect(),
             Act::Mute => MUTE_FOR
                 .iter()
-                .map(|(_, label)| plain(label, false))
+                .map(|(_, label)| plain(dc_intl::tr(label), false))
                 .collect(),
             // `EU` (module 37411) with the ticked one of 607508's `l`: a thread has three levels, no inherited one.
             Act::Notifications if matches!(target, Target::Thread(_)) => {
@@ -2873,7 +2985,7 @@ impl Root {
                     .iter()
                     .map(|(flag, label)| SubRow {
                         radio: true,
-                        ..plain(label, current == *flag)
+                        ..plain(dc_intl::tr(label), current == *flag)
                     })
                     .collect()
             }
@@ -2896,17 +3008,17 @@ impl Root {
                     // What "Use Category Default" would give: the category's level, else the server's.
                     let inherited = match target {
                         Target::Channel(id) | Target::Thread(id) => self.inherited_level_label(id),
-                        _ => "All Messages",
+                        _ => dc_intl::tr("All Messages"),
                     };
                     rows.push(SubRow {
                         sub: Some(inherited.to_owned()),
-                        ..plain("Use Category Default", current == INHERIT)
+                        ..plain(dc_intl::tr("Use Category Default"), current == INHERIT)
                     });
                 }
                 rows.extend(
                     LEVELS
                         .iter()
-                        .map(|(value, label)| plain(label, current == *value)),
+                        .map(|(value, label)| plain(dc_intl::tr(label), current == *value)),
                 );
                 for row in &mut rows {
                     row.radio = true;
@@ -2921,7 +3033,7 @@ impl Root {
     /// The level a channel gets from "Use Category Default": its category's own, else the server's.
     fn inherited_level_label(&self, channel: Id) -> &'static str {
         let Some(guild) = self.guild_of_channel(channel) else {
-            return "All Messages";
+            return dc_intl::tr("All Messages");
         };
         let parent = self
             .stores
@@ -2946,8 +3058,8 @@ impl Root {
         match target {
             Target::Guild(guild) => match self.stores.folders.placement_disabled(guild) {
                 Some((first, last)) => vec![
-                    row("First in List", first, false),
-                    row("Last in List", last, false),
+                    row(dc_intl::tr("First in List"), first, false),
+                    row(dc_intl::tr("Last in List"), last, false),
                 ],
                 None => Vec::new(),
             },
@@ -2967,22 +3079,19 @@ impl Root {
                 if me.kind != ChannelKind::Category {
                     let list = move_destinations(channels, me);
                     if list.iter().any(|(_, _, disabled)| !disabled) && list.len() > 1 {
-                        rows.push(row("Category", false, true));
+                        rows.push(row(dc_intl::tr("Category"), false, true));
                     }
                 }
                 if siblings.len() > 1 {
-                    let noun = if me.kind == ChannelKind::Category || me.parent_id.is_none() {
-                        "List"
-                    } else {
-                        "Category"
-                    };
+                    // "First in List" / "First in Category" (`IMqgs9`, `Q9TKt6`) and their Last.
+                    let list = me.kind == ChannelKind::Category || me.parent_id.is_none();
                     rows.push(row(
-                        &format!("First in {noun}"),
+                        dc_intl::t(if list { "IMqgs9" } else { "Q9TKt6" }),
                         siblings.first() == Some(&id),
                         false,
                     ));
                     rows.push(row(
-                        &format!("Last in {noun}"),
+                        dc_intl::t(if list { "8fQe3x" } else { "/Pkxmw" }),
                         siblings.last() == Some(&id),
                         false,
                     ));
@@ -3151,7 +3260,9 @@ impl Root {
                 if row.disabled || row.caret {
                     return;
                 }
-                let first = row.label.starts_with("First");
+                let first = ["IMqgs9", "Q9TKt6", "9qpRrY"]
+                    .iter()
+                    .any(|key| row.label == dc_intl::t(key));
                 match target {
                     Target::Guild(guild) => self.move_guild(
                         guild,
@@ -3320,6 +3431,8 @@ impl Root {
                                 }
                             },
                         ))
+                        // `flexible_M3qk4j`: the menu grows with its labels up to 320 wide.
+                        .max_w(px(320.))
                         // A menu taller than the window stops 96px short of its height and scrolls (user-guild: 624 of 720).
                         .max_h(px(f32::from(window.viewport_size().height) - 96.))
                         .flex()
@@ -3400,7 +3513,7 @@ impl Root {
                                             .text_size(px(14.))
                                             .line_height(px(18.))
                                             .font_weight(FontWeight(500.))
-                                            .whitespace_nowrap()
+                                            .truncate()
                                             .text_color(color("--text-strong"))
                                             .child(label),
                                     )
@@ -3545,7 +3658,8 @@ impl Root {
             } else {
                 widest + 34.
             };
-            Some(self.submenu_frame_wide(rows, row, window, width.max(188.)))
+            // `submenu_M3qk4j`: 188 to 320 wide.
+            Some(self.submenu_frame_wide(rows, row, window, width.clamp(188., 320.)))
         });
         let nested = open.nested.and_then(|(_, row)| {
             if open.sub.map(|(act, _)| act) != Some(Act::MoveTo) {
@@ -3559,7 +3673,7 @@ impl Root {
                 .iter()
                 .map(|sub| label_width(window, &sub.label))
                 .fold(0., f32::max);
-            let width = (widest + 34.).max(188.);
+            let width = (widest + 34.).clamp(188., 320.);
             let rows: Vec<AnyElement> = labels
                 .into_iter()
                 .enumerate()
@@ -3746,7 +3860,8 @@ impl Root {
         )
         .relative()
         .child(self.anchor_probe(probe))
-        .h(px(row.height()))
+        // `labelContainer_M3qk4j` has a min-height: a wrapped second line grows the row.
+        .min_h(px(row.height()))
         .flex_none()
         .p(px(8.))
         .rounded(px(2.))
@@ -3831,6 +3946,8 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(tint)
+                        // `label_M3qk4j`: one line, cut with an ellipsis; `subtext_M3qk4j` wraps.
+                        .truncate()
                         .child(label),
                 )
                 .children(row.sub.clone().map(|sub| {

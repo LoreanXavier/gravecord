@@ -762,7 +762,7 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Active Now"),
+                                    .child(dc_intl::tr("Active Now")),
                             )
                             .child(
                                 div()
@@ -780,7 +780,7 @@ impl Root {
                                             .line_height(px(20.))
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-strong"))
-                                            .child("It's quiet for now..."),
+                                            .child(dc_intl::tr("It's quiet for now...")),
                                     )
                                     .child(
                                         div()

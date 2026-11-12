@@ -17,30 +17,7 @@ pub(super) fn when(
     created: chrono::DateTime<chrono::Local>,
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
-    use chrono::{Datelike, Timelike};
-    let hour = match created.hour() % 12 {
-        0 => 12,
-        hour => hour,
-    };
-    let time = format!(
-        "{hour}:{:02} {}",
-        created.minute(),
-        if created.hour() < 12 { "AM" } else { "PM" }
-    );
-    let day = created.date_naive();
-    let today = now.date_naive();
-    if day == today {
-        format!("Today at {time}")
-    } else if today.pred_opt() == Some(day) {
-        format!("Yesterday at {time}")
-    } else {
-        format!(
-            "{}/{}/{} {time}",
-            created.month(),
-            created.day(),
-            created.year()
-        )
-    }
+    super::super::timestamps::calendar_time(created, now, false)
 }
 
 impl Root {

@@ -138,7 +138,7 @@ fn faq_answer(index: usize, cx: &mut Context<Root>) -> AnyElement {
             cx,
         );
     }
-    div().child(answer).into_any_element()
+    div().child(dc_intl::tr(answer)).into_any_element()
 }
 
 /// The lines a text of `chars` characters takes in the 670px answer column at 14px (about 100 characters a line).
@@ -232,7 +232,13 @@ impl Root {
                     .justify_center()
                     .gap(px(8.))
                     .child(icon("boost_badge", 16., "--text-strong"))
-                    .child(text("Boost this server", 14., 18., 500., "--text-strong")),
+                    .child(text(
+                        dc_intl::tr("Boost this server"),
+                        14.,
+                        18.,
+                        500.,
+                        "--text-strong",
+                    )),
             )
             .into_any_element()
     }
@@ -247,7 +253,7 @@ impl Root {
         let mut page = div().relative().w_full().h(px(2095.6 + open_extra));
         page = page
             .child(at(0., 49.).child(icon("boost_gem", 24., "--text-strong")))
-            .child(at(26., 49.).child(text("Server Boosts", 24., 32., 500., "--text-strong")))
+            .child(at(26., 49.).child(text(dc_intl::tr("Server Boosts"), 24., 32., 500., "--text-strong")))
             .child({
                 // "Learn more" is the link to the Boosting article (`helpDeskArticle`, module 440074).
                 let line = "Boosting a server unlocks perks for everyone in that server. You can manage your Boosts here (add, subtract, cancel \u{2014} just beware the 7 day cooldown). Learn more";
@@ -277,7 +283,7 @@ impl Root {
                         linear_color_stop(rgb(46, 30, 110), 0.),
                         linear_color_stop(rgb(24, 20, 60), 1.),
                     ))
-                    .child(at(13., 12.).child(text("How do Boosts work?", 14., 18., 600., "--white")))
+                    .child(at(13., 12.).child(text(dc_intl::tr("How do Boosts work?"), 14., 18., 600., "--white")))
                     .child(
                         at(125., 60.)
                             .size(px(48.))
@@ -352,7 +358,7 @@ impl Root {
                             .justify_center()
                             .gap(px(4.))
                             .child(icon("nitro_wheel", 16., "--black"))
-                            .child(text("Get Nitro", 14., 18., 500., "--black"))
+                            .child(text(dc_intl::tr("Get Nitro"), 14., 18., 500., "--black"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.close_settings(cx);
                                 this.open_nitro(cx);
@@ -361,7 +367,7 @@ impl Root {
             );
         }
         page = page.child(at(0., 308.).child(text(
-            "These servers could use a Boost",
+            dc_intl::tr("These servers could use a Boost"),
             16.,
             20.,
             600.,
@@ -381,7 +387,13 @@ impl Root {
         }
         // The perks table, below the list.
         let head = top + 39.;
-        page = page.child(at(16., head).child(text("Perks", 20., 24., 600., "--text-default")));
+        page = page.child(at(16., head).child(text(
+            dc_intl::tr("Perks"),
+            20.,
+            24.,
+            600.,
+            "--text-default",
+        )));
         for (level, boosts) in ["2 Boosts", "7 Boosts", "14 Boosts"].iter().enumerate() {
             let centre = CENTRES[level];
             page = page.child(
@@ -403,7 +415,7 @@ impl Root {
         let mut row = head + 75.;
         for (label, values, step) in TABLE {
             page = page.child(at(16., row).w(px(135.)).child(text(
-                label,
+                dc_intl::tr(label),
                 16.,
                 20.,
                 500.,
@@ -429,7 +441,7 @@ impl Root {
         // Recognition cards and the FAQ follow the table.
         let cards_head = row + 14.;
         page = page.child(at(0., cards_head).child(text(
-            "Give your community a Boost & be recognized",
+            dc_intl::tr("Give your community a Boost & be recognized"),
             24.,
             32.,
             500.,
@@ -447,7 +459,7 @@ impl Root {
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-high"))
                     .child(at(0., 62.).w(px(340.)).flex().justify_center().child(text(
-                        *label,
+                        dc_intl::tr(label),
                         14.,
                         18.,
                         500.,
@@ -457,7 +469,7 @@ impl Root {
         }
         let faq_head = cards_head + 48. + 220. + 16.;
         page = page.child(at(0., faq_head).child(text(
-            "Boosting FAQ",
+            dc_intl::tr("Boosting FAQ"),
             24.,
             32.,
             500.,
@@ -524,7 +536,7 @@ impl Root {
                                     .group_hover(group, |style| {
                                         style.text_color(color("--text-default"))
                                     })
-                                    .child(*question),
+                                    .child(dc_intl::tr(question)),
                             )
                             .child({
                                 let chevron = icon("chevron_down", 20., "--text-muted");

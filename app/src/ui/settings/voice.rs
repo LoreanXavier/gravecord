@@ -121,9 +121,9 @@ impl Profile {
     /// `cjPbpT`, `VZPR0R`, `N/PQjv`.
     pub fn label(self) -> &'static str {
         match self {
-            Profile::VoiceIsolation => "Voice Isolation",
-            Profile::Studio => "Studio",
-            Profile::Custom => "Custom",
+            Profile::VoiceIsolation => dc_intl::tr("Voice Isolation"),
+            Profile::Studio => dc_intl::tr("Studio"),
+            Profile::Custom => dc_intl::tr("Custom"),
         }
     }
 
@@ -1496,9 +1496,13 @@ impl Root {
             KEYBIND => self.keybind_row(width, cx),
             "camera_video_preview" => self.camera_preview_row(cx),
             "camera_selection_setting" => self.camera_select_row(false, cx),
-            RELEASE_DELAY => {
-                self.slider_row(RELEASE_DELAY, "Push to Talk Release Delay", &[], width, cx)
-            }
+            RELEASE_DELAY => self.slider_row(
+                RELEASE_DELAY,
+                dc_intl::tr("Push to Talk Release Delay"),
+                &[],
+                width,
+                cx,
+            ),
             _ => return None,
         })
     }
@@ -2014,7 +2018,7 @@ impl Root {
         };
         let switch = self.switch_row(
             SENSITIVITY,
-            "Automatically Adjust Input Sensitivity",
+            dc_intl::tr("Automatically Adjust Input Sensitivity"),
             false,
             description,
             automatic,
@@ -2073,14 +2077,14 @@ impl Root {
         let prefs = dc_voice::prefs();
         let (label, list, default, chosen, icon) = match side {
             Side::Input => (
-                "Microphone",
+                dc_intl::tr("Microphone"),
                 &devices.inputs,
                 &devices.default_input,
                 prefs.input_device(),
                 "voice_select_mic",
             ),
             Side::Output => (
-                "Speaker",
+                dc_intl::tr("Speaker"),
                 &devices.outputs,
                 &devices.default_output,
                 prefs.output_device(),
@@ -2089,7 +2093,7 @@ impl Root {
         };
         // "default" first (named "Windows Default", the default device's name under it), then each device.
         let mut options: Vec<(String, Option<String>, Option<String>)> = vec![(
-            "Windows Default".to_owned(),
+            dc_intl::tr("Windows Default").to_owned(),
             default
                 .as_ref()
                 .map(|name| audio_menu::split_device(name).0),
@@ -2278,8 +2282,9 @@ impl Root {
             .is_none_or(|test| test.detecting);
         // The hidden `buttonSizer` sizes the button to the longer string.
         let button_width = f32::from(
-            super::render::measure_text(window, "Stop Testing", 16., 500.)
-                .max(super::render::measure_text(window, "Mic Test", 16., 500.)),
+            super::render::measure_text(window, dc_intl::tr("Stop Testing"), 16., 500.).max(
+                super::render::measure_text(window, dc_intl::tr("Mic Test"), 16., 500.),
+            ),
         )
         .ceil()
             + 32.;
@@ -2305,7 +2310,11 @@ impl Root {
             }))
             .child(super::button(
                 "voice-mic-test-button",
-                if testing { "Stop Testing" } else { "Mic Test" },
+                if testing {
+                    dc_intl::tr("Stop Testing")
+                } else {
+                    dc_intl::tr("Mic Test")
+                },
                 super::model::ButtonKind::Primary,
             ));
         let connected = self.call.as_ref().is_some_and(|call| call.connected);
@@ -2313,7 +2322,9 @@ impl Root {
             self.with_tip(
                 "voice-mic-test-tip",
                 tooltip::Tip::text(
-                    "You'll be muted and deafened in your voice session during Mic Testing.",
+                    dc_intl::tr(
+                        "You'll be muted and deafened in your voice session during Mic Testing.",
+                    ),
                     tooltip::Side::Top,
                 ),
                 button,
@@ -2354,16 +2365,19 @@ impl Root {
             );
         let caption = if testing && detecting {
             div()
-                .child("Playing back your beautiful voice")
+                .child(dc_intl::tr("Playing back your beautiful voice"))
                 .into_any_element()
         } else if testing {
-            let text = "Please check that you\u{2019}ve selected the right input device.";
+            let text =
+                dc_intl::tr("Please check that you\u{2019}ve selected the right input device.");
             div()
                 .child(
                     div()
                         .font_weight(FontWeight(600.))
                         .text_color(color("--text-default"))
-                        .child("Discord isn\u{2019}t detecting any input from your mic."),
+                        .child(dc_intl::tr(
+                            "Discord isn\u{2019}t detecting any input from your mic.",
+                        )),
                 )
                 .child(
                     // `micTestHelpLink`: the link 4px after the sentence, about a space at this size.
@@ -2371,7 +2385,7 @@ impl Root {
                     self.text_with_link(
                         "mic-test-help",
                         &format!("{text} "),
-                        "Help!",
+                        dc_intl::tr("Help!"),
                         "",
                         cx,
                         |_, cx| cx.open_url(NO_INPUT_HELP),
@@ -2455,7 +2469,7 @@ impl Root {
             (String::new(), critical, 600.)
         } else if shortcut.is_empty() {
             (
-                "No Keybind Set".to_owned(),
+                dc_intl::tr("No Keybind Set").to_owned(),
                 color("--input-placeholder-text-default"),
                 400.,
             )
@@ -2464,7 +2478,7 @@ impl Root {
         };
         let button = if recording {
             small_button(
-                "Stop Recording",
+                dc_intl::tr("Stop Recording"),
                 with_alpha(red, 0.1),
                 color("--control-critical-secondary-border-default"),
                 critical,
@@ -2472,9 +2486,9 @@ impl Root {
         } else {
             small_button(
                 if shortcut.is_empty() {
-                    "Record Keybind"
+                    dc_intl::tr("Record Keybind")
                 } else {
-                    "Edit Keybind"
+                    dc_intl::tr("Edit Keybind")
                 },
                 color("--control-secondary-background-default"),
                 color("--control-secondary-border-default"),
@@ -2528,7 +2542,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(label_text("Push to Talk Keybind"))
+                    .child(label_text(dc_intl::tr("Push to Talk Keybind")))
                     .child(
                         div()
                             .text_size(px(14.))
@@ -2542,7 +2556,11 @@ impl Root {
                                 cx,
                                 // `openUserSettings(SYSTEM_CUSTOM_KEYBINDS_CATEGORY)`.
                                 |this, cx| {
-                                    this.open_settings_category("System", "Custom Keybinds", cx)
+                                    this.open_settings_category(
+                                        dc_intl::tr("System"),
+                                        dc_intl::tr("Custom Keybinds"),
+                                        cx,
+                                    )
                                 },
                             )),
                     ),

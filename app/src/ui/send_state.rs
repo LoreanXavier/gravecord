@@ -702,14 +702,19 @@ impl Root {
             .flex()
             .items_center()
             .child({
-                let target = button(cx, "msg_retry", "Retry", "toolbar-retry");
+                let target = button(cx, "msg_retry", dc_intl::tr("Retry"), "toolbar-retry");
                 target.on_click(cx.listener(move |this, _, _, cx| {
                     this.tip = None;
                     this.retry_send(id, cx);
                 }))
             })
             .child({
-                let target = button(cx, "msg_trash", "Delete", "toolbar-delete-failed");
+                let target = button(
+                    cx,
+                    "msg_trash",
+                    dc_intl::tr("Delete"),
+                    "toolbar-delete-failed",
+                );
                 target.on_click(cx.listener(move |this, _, _, cx| {
                     this.tip = None;
                     this.delete_failed(id, cx);

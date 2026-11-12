@@ -123,7 +123,7 @@ impl Root {
                     .text_size(px(12.))
                     .line_height(px(16.))
                     .text_color(color("--text-muted"))
-                    .child("Processing...")
+                    .child(dc_intl::tr("Processing..."))
             }))
             .children(fill.filter(|_| !processing).map(|fraction| {
                 // `progressContainer_-9z-XO`: 16 high, the 8px track 4px down.

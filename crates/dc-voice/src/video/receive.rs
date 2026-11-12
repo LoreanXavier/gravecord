@@ -7,7 +7,10 @@
 use super::{
     RemoteFrame, VideoHub, VideoSource, depacketize::Assembler, playout::Playout, reorder::Window,
 };
-use crate::rtp::{self, H264_PAYLOAD_TYPE, H264_RTX_PAYLOAD_TYPE, Rtp};
+use crate::{
+    rtp::{self, H264_PAYLOAD_TYPE, H264_RTX_PAYLOAD_TYPE, Rtp},
+    transport_cc::TransportFeedback,
+};
 use dc_media::decode::{DecodeError, Decoder};
 use std::{
     collections::HashMap,
@@ -31,8 +34,11 @@ const DECODER_QUEUE: usize = 8;
 const MAX_HELD: usize = 32;
 /// The longest a decoder thread sleeps before it looks for new access units again.
 const HOLD_STEP: Duration = Duration::from_millis(10);
-/// A source that wants a keyframe is asked at most this often (Serein: two a second).
-const PLI_INTERVAL: Duration = Duration::from_millis(500);
+/// A source that wants a keyframe is asked again this often while none comes (libwebrtc's video receive stream:
+/// `max_wait_for_keyframe`, 200 ms).
+const PLI_INTERVAL: Duration = Duration::from_millis(200);
+/// Audio sources a connection keeps reception statistics for; a new one replaces the longest silent.
+const MAX_AUDIO_SOURCES: usize = 64;
 /// A decoder that failed to start is not tried again for this long.
 const DECODER_RETRY: Duration = Duration::from_secs(5);
 
@@ -57,36 +63,101 @@ struct Source {
     stats: Stats,
 }
 
-/// RFC 3550 reception statistics of one source, for the receiver report.
-#[derive(Default)]
+/// RTP clock rates of the two media kinds.
+const VIDEO_CLOCK: u32 = 90_000;
+const AUDIO_CLOCK: u32 = 48_000;
+
+/// RFC 3550 reception statistics of one source, for the receiver report: loss over the original packets only (a
+/// repair through RTX is not a received original, as libwebrtc counts it), interarrival jitter (appendix A.8) and the
+/// echo of the last sender report.
 struct Stats {
+    /// RTP clock rate: 90 kHz video, 48 kHz Opus.
+    clock: u32,
     base: u32,
     highest: Option<u32>,
     received: u32,
     expected_prior: u32,
     received_prior: u32,
+    /// Where arrival times are counted from, and the last relative transit time in clock units.
+    epoch: Option<Instant>,
+    transit: Option<u32>,
+    last_timestamp: Option<u32>,
+    /// Interarrival jitter times 16, as appendix A.8 keeps it.
+    jitter: u32,
+    /// The middle 32 bits of the last sender report's NTP time, and when it arrived.
+    last_sender_report: Option<(u32, Instant)>,
+    last_arrival: Option<Instant>,
 }
 
+/// A source that sent nothing for this long is left out of receiver reports (libwebrtc's `kStatisticsTimeoutMs`).
+const STATISTICS_TIMEOUT: Duration = Duration::from_secs(8);
+
 impl Stats {
-    fn observe(&mut self, sequence: u16) {
+    fn new(clock: u32) -> Self {
+        Self {
+            clock,
+            base: 0,
+            highest: None,
+            received: 0,
+            expected_prior: 0,
+            received_prior: 0,
+            epoch: None,
+            transit: None,
+            last_timestamp: None,
+            jitter: 0,
+            last_sender_report: None,
+            last_arrival: None,
+        }
+    }
+
+    fn observe(&mut self, sequence: u16, timestamp: u32, now: Instant) {
         self.received = self.received.wrapping_add(1);
-        match self.highest {
+        self.last_arrival = Some(now);
+        let in_order = match self.highest {
             None => {
                 self.base = u32::from(sequence);
                 self.highest = Some(u32::from(sequence));
+                true
             }
             Some(highest) => {
                 let delta = sequence.wrapping_sub(highest as u16);
                 if delta != 0 && delta < 0x8000 {
                     self.highest = Some(highest.wrapping_add(u32::from(delta)));
+                    true
+                } else {
+                    false
                 }
             }
+        };
+        // Jitter from packets in order with a new timestamp: the packets of one picture leave together.
+        if in_order && self.last_timestamp != Some(timestamp) {
+            self.last_timestamp = Some(timestamp);
+            let epoch = *self.epoch.get_or_insert(now);
+            let arrival = (now.saturating_duration_since(epoch).as_micros()
+                * u128::from(self.clock)
+                / 1_000_000) as u32;
+            let transit = arrival.wrapping_sub(timestamp);
+            if let Some(previous) = self.transit {
+                let difference = (transit.wrapping_sub(previous) as i32).unsigned_abs();
+                // J += (|D| - J) / 16, with J kept times 16.
+                self.jitter = self
+                    .jitter
+                    .wrapping_add(difference)
+                    .wrapping_sub((self.jitter + 8) >> 4);
+            }
+            self.transit = Some(transit);
         }
     }
 
     /// The block for the interval since the last one, or `None` before the first packet.
-    fn block(&mut self, ssrc: u32) -> Option<rtp::ReportBlock> {
+    fn block(&mut self, ssrc: u32, now: Instant) -> Option<rtp::ReportBlock> {
         let highest = self.highest?;
+        if self
+            .last_arrival
+            .is_none_or(|at| now.saturating_duration_since(at) >= STATISTICS_TIMEOUT)
+        {
+            return None;
+        }
         let expected = highest.wrapping_sub(self.base).wrapping_add(1);
         let lost = i64::from(expected) - i64::from(self.received);
         let expected_interval = expected.wrapping_sub(self.expected_prior);
@@ -99,14 +170,20 @@ impl Stats {
         } else {
             ((lost_interval << 8) / i64::from(expected_interval)).min(255) as u8
         };
+        let (last_sender_report, delay) = self.last_sender_report.map_or((0, 0), |(middle, at)| {
+            (
+                middle,
+                (now.saturating_duration_since(at).as_secs_f64() * 65_536.0) as u32,
+            )
+        });
         Some(rtp::ReportBlock {
             ssrc,
             fraction_lost: fraction,
             cumulative_lost: lost.clamp(-0x80_0000, 0x7f_ffff) as i32,
             highest,
-            jitter: 0,
-            last_sender_report: 0,
-            delay: 0,
+            jitter: self.jitter >> 4,
+            last_sender_report,
+            delay,
         })
     }
 }
@@ -114,7 +191,9 @@ impl Stats {
 #[derive(Default)]
 pub(crate) struct Receivers {
     sources: Vec<Source>,
+    audio: Vec<(u32, Stats)>,
     next_report: Option<Instant>,
+    transport: Option<TransportFeedback>,
 }
 
 impl Receivers {
@@ -147,7 +226,7 @@ impl Receivers {
             // A decoder cannot start from a delta picture.
             awaiting: true,
             last_pli: None,
-            stats: Stats::default(),
+            stats: Stats::new(VIDEO_CLOCK),
         });
         Ok(())
     }
@@ -158,6 +237,7 @@ impl Receivers {
 
     /// Queues one authenticated RTP packet of payload type 101 or 102. Unknown SSRCs are dropped.
     pub fn push(&mut self, mut rtp: Rtp, now: Instant) {
+        let original = rtp.payload_type == H264_PAYLOAD_TYPE;
         let (ssrc, sequence) = if rtp.payload_type == H264_RTX_PAYLOAD_TYPE {
             // RFC 4588: the original sequence number leads the payload.
             if rtp.payload.len() < 3 {
@@ -177,7 +257,9 @@ impl Receivers {
         let Some(source) = self.sources.iter_mut().find(|s| s.ssrc == ssrc) else {
             return;
         };
-        source.stats.observe(sequence);
+        if original {
+            source.stats.observe(sequence, rtp.timestamp, now);
+        }
         if source
             .window
             .push(sequence, rtp.timestamp, rtp.marker, &rtp.payload, now)
@@ -216,6 +298,61 @@ impl Receivers {
         }
     }
 
+    /// One authenticated Opus packet, for the receiver report.
+    pub fn observe_audio(&mut self, ssrc: u32, sequence: u16, timestamp: u32, now: Instant) {
+        if let Some((_, stats)) = self.audio.iter_mut().find(|(known, _)| *known == ssrc) {
+            stats.observe(sequence, timestamp, now);
+        } else {
+            if self.audio.len() >= MAX_AUDIO_SOURCES
+                && let Some(oldest) =
+                    (0..self.audio.len()).min_by_key(|i| self.audio[*i].1.last_arrival)
+            {
+                self.audio.swap_remove(oldest);
+            }
+            let mut stats = Stats::new(AUDIO_CLOCK);
+            stats.observe(sequence, timestamp, now);
+            self.audio.push((ssrc, stats));
+        }
+    }
+
+    /// The transport-wide sequence number of any authenticated media packet (audio or video, extension 5).
+    pub fn observe_transport(&mut self, ssrc: u32, sequence: Option<u16>, now: Instant) {
+        let feedback = self
+            .transport
+            .get_or_insert_with(|| TransportFeedback::new(now.into_std()));
+        match sequence {
+            Some(sequence) => feedback.receive(ssrc, sequence, now.into_std()),
+            None => feedback.unnumbered += 1,
+        }
+    }
+
+    /// Numbered and unnumbered media packets seen so far, for the log.
+    pub fn transport_counts(&self) -> (u64, u64) {
+        self.transport
+            .as_ref()
+            .map_or((0, 0), |feedback| (feedback.numbered, feedback.unnumbered))
+    }
+
+    /// A decrypted compound RTCP packet from the server: its sender reports are echoed in our receiver reports.
+    pub fn sender_reports(&mut self, compound: &[u8], now: Instant) {
+        for (ssrc, middle) in rtp::sender_reports(compound) {
+            let stats = self
+                .sources
+                .iter_mut()
+                .filter(|source| source.ssrc == ssrc)
+                .map(|source| &mut source.stats)
+                .chain(
+                    self.audio
+                        .iter_mut()
+                        .filter(|(known, _)| *known == ssrc)
+                        .map(|(_, stats)| stats),
+                );
+            for stats in stats {
+                stats.last_sender_report = Some((middle, now));
+            }
+        }
+    }
+
     /// A dropped or undecodable picture invalidates every later prediction until an IDR.
     pub fn require_keyframe(&mut self, user: u64) {
         for source in self.sources.iter_mut().filter(|s| s.user == user) {
@@ -236,8 +373,9 @@ impl Receivers {
         !source.awaiting
     }
 
-    /// The feedback to send now: NACKs for observed holes, and a PLI per source that wants a keyframe (capped at two a
-    /// second each). `own_ssrc` is our audio SSRC, the RTCP sender.
+    /// The feedback to send now: NACKs for the holes that are due, a PLI per source that wants a keyframe (again every
+    /// 200 ms while it waits), transport-wide feedback every 100 ms, and a receiver report a second. `own_ssrc` is our
+    /// audio SSRC, the RTCP sender. Cheap enough to call on every arrival; most calls return nothing.
     pub fn feedback(&mut self, own_ssrc: u32, now: Instant) -> Vec<([u8; 8], Vec<u8>)> {
         let mut out = Vec::new();
         for source in &mut self.sources {
@@ -254,13 +392,22 @@ impl Receivers {
                 out.push((header, body.to_vec()));
             }
         }
-        // A receiver report a second keeps the sender's rate control informed (RFC 3550).
+        if let Some(transport) = self.transport.as_mut() {
+            out.extend(transport.due(own_ssrc, now.into_std()));
+        }
+        // A receiver report a second keeps the sender's rate control informed (RFC 3550; libwebrtc's video report
+        // interval). Audio sources are reported with the video ones.
         if self.next_report.is_none_or(|at| now >= at) {
             self.next_report = Some(now + Duration::from_secs(1));
             let blocks: Vec<_> = self
                 .sources
                 .iter_mut()
-                .filter_map(|s| s.stats.block(s.ssrc))
+                .filter_map(|s| s.stats.block(s.ssrc, now))
+                .chain(
+                    self.audio
+                        .iter_mut()
+                        .filter_map(|(ssrc, stats)| stats.block(*ssrc, now)),
+                )
                 .collect();
             if !blocks.is_empty() {
                 let (header, body) = rtp::receiver_report(own_ssrc, &blocks);
@@ -510,6 +657,7 @@ mod tests {
             ssrc,
             sequence,
             timestamp: 1000,
+            transport_sequence: None,
             payload: payload.to_vec(),
         }
     }
@@ -577,6 +725,76 @@ mod tests {
         receivers.require_keyframe(5);
         assert!(!receivers.accept(5, false));
         assert!(!receivers.accept(6, true), "unknown user");
+    }
+
+    #[test]
+    fn reports_carry_loss_of_originals_jitter_sender_report_echo_and_transport_feedback() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut receivers = Receivers::default();
+        receivers.announce(5, 100, 101).unwrap();
+        // Ten pictures 33 ms apart (3000 ticks at 90 kHz), the odd ones arriving 2 ms late; sequence 4 is lost and
+        // comes back through RTX, which does not count as a received original.
+        for n in 0..10u16 {
+            if n == 4 {
+                continue;
+            }
+            let mut packet = rtp(101, 100, n, true, &[0x41, 1]);
+            packet.timestamp = u32::from(n) * 3000;
+            let late = if n % 2 == 1 { 2 } else { 0 };
+            receivers.push(packet, at(u64::from(n) * 100 / 3 + late));
+            receivers.observe_transport(100, Some(n), at(u64::from(n) * 100 / 3 + late));
+        }
+        let mut repair = vec![0, 4];
+        repair.extend([0x41, 1]);
+        receivers.push(rtp(102, 101, 1, true, &repair), at(400));
+        receivers.observe_audio(300, 7, 960, at(10));
+        receivers.observe_audio(300, 8, 1920, at(30));
+        // The server's sender report for the video source, 250 ms before the report.
+        let mut report = vec![0x80, 200, 0, 6];
+        report.extend(100u32.to_be_bytes());
+        report.extend([0, 0, 0xab, 0xcd, 0x12, 0x34, 0, 0]);
+        report.extend([0; 12]);
+        receivers.sender_reports(&report, at(150));
+        let feedback = receivers.feedback(7, at(400));
+        let rr = feedback
+            .iter()
+            .find(|(header, _)| header[1] == 201)
+            .expect("a receiver report");
+        assert_eq!(rr.0[0] & 0x1f, 2, "video and audio blocks");
+        let mut compound = rr.0.to_vec();
+        compound.extend(&rr.1);
+        let video = &rr.1[..24];
+        assert_eq!(&video[..4], &100u32.to_be_bytes());
+        assert_eq!(video[4], 25, "one original in ten lost: 25/256");
+        assert_eq!(&video[5..8], &[0, 0, 1]);
+        assert_eq!(&video[8..12], &9u32.to_be_bytes(), "highest sequence");
+        let jitter = u32::from_be_bytes(video[12..16].try_into().unwrap());
+        // About 2 ms (180 ticks) of alternating delay, smoothed over 1/16 steps.
+        assert!((20..=180).contains(&jitter), "jitter {jitter}");
+        assert_eq!(&video[16..20], &0xabcd_1234u32.to_be_bytes(), "LSR");
+        let delay = u32::from_be_bytes(video[20..24].try_into().unwrap());
+        assert!(
+            (16_000..=17_000).contains(&delay),
+            "DLSR of 250 ms: {delay}"
+        );
+        assert_eq!(&rr.1[24..28], &300u32.to_be_bytes());
+        // Transport-wide feedback for the nine numbered packets, from our SSRC about the video source.
+        let twcc = feedback
+            .iter()
+            .find(|(header, _)| header[0] == 0x8f && header[1] == 205)
+            .expect("transport-wide feedback");
+        assert_eq!(&twcc.0[4..8], &7u32.to_be_bytes());
+        assert_eq!(&twcc.1[..4], &100u32.to_be_bytes());
+        assert_eq!(
+            &twcc.1[4..8],
+            &[0, 0, 0, 10],
+            "base 0, ten statuses with 4 lost"
+        );
+        assert!(
+            receivers.feedback(7, at(450)).is_empty(),
+            "nothing due 50 ms later"
+        );
     }
 
     #[test]

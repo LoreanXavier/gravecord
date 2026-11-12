@@ -116,7 +116,7 @@ impl crate::ui::Root {
         let editor = cx.new(|cx| {
             let mut editor = crate::editor::Editor::new(field_style(), cx);
             editor.set_single_line(true);
-            editor.set_placeholder(dc_intl::tr("Search").to_owned());
+            editor.set_placeholder_message("Search");
             editor
         });
         self.settings_extra.search_sub = Some(

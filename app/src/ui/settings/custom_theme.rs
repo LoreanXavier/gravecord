@@ -1260,7 +1260,7 @@ impl Root {
                                 .line_height(px(22.))
                                 .relative()
                                 .top(px(-1.))
-                                .child("Gradient Direction"),
+                                .child(dc_intl::tr("Gradient Direction")),
                         )
                         .child(number_field(angle)),
                 )
@@ -1307,7 +1307,7 @@ impl Root {
                                         .justify_between()
                                         .child(
                                             text(20., 600., "--text-strong")
-                                                .child("New! Custom Themes"),
+                                                .child(dc_intl::tr("New! Custom Themes")),
                                         )
                                         .child(
                                             div()
@@ -1329,13 +1329,13 @@ impl Root {
                                 )
                                 // `eD`: `TRCE4g` for a Nitro subscriber, `UV/Vtv` for everyone else.
                                 .child(text(14., 500., "--text-muted").child(if nitro {
-                                    "Match your mood with endless color combinations. Try it now, only with Nitro."
+                                    dc_intl::tr("Match your mood with endless color combinations. Try it now, only with Nitro.")
                                 } else {
-                                    "Match your mood with endless color combinations. Try it now!"
+                                    dc_intl::tr("Match your mood with endless color combinations. Try it now!")
                                 })),
                         )
                         .child(
-                            section().child(label("Appearance")).child(
+                            section().child(label(dc_intl::tr("Appearance"))).child(
                                 div()
                                     .h(px(42.))
                                     .p(px(4.))
@@ -1361,7 +1361,7 @@ impl Root {
                             ),
                         )
                         .child(
-                            section().child(label("Colors")).child(
+                            section().child(label(dc_intl::tr("Colors"))).child(
                                 div()
                                     .flex()
                                     .flex_col()
@@ -1409,7 +1409,7 @@ impl Root {
                                         button(
                                             "custom-theme-add",
                                             "theme_editor_plus",
-                                            "Add Color",
+                                            dc_intl::tr("Add Color"),
                                             false,
                                         )
                                         .on_click(
@@ -1421,7 +1421,7 @@ impl Root {
                             ),
                         )
                         .child(
-                            section().child(label("Controls")).child(
+                            section().child(label(dc_intl::tr("Controls"))).child(
                                 div()
                                     .flex()
                                     .flex_col()
@@ -1443,7 +1443,7 @@ impl Root {
                                                             .line_height(px(22.))
                                                             .relative()
                                                             .top(px(-1.))
-                                                            .child("Color Intensity"),
+                                                            .child(dc_intl::tr("Color Intensity")),
                                                     )
                                                     .child(number_field(intensity)),
                                             )
@@ -1461,7 +1461,7 @@ impl Root {
                                     button(
                                         "custom-theme-surprise",
                                         "theme_editor_dice",
-                                        "Surprise Me!",
+                                        dc_intl::tr("Surprise Me!"),
                                         false,
                                     )
                                     .on_click(
@@ -1470,7 +1470,7 @@ impl Root {
                                         }),
                                     ),
                                 )
-                                .child(button("custom-theme-reset", "", "Reset", at_default).when(
+                                .child(button("custom-theme-reset", "", dc_intl::tr("Reset"), at_default).when(
                                     !at_default,
                                     |button| {
                                         button.on_click(
@@ -1543,7 +1543,7 @@ impl Root {
                                             }),
                                         )
                                         .child(mask_icon("nitro_wheel", 20., on_unlock))
-                                        .child(text(16., 500., on_unlock).child("Get Nitro")),
+                                        .child(text(16., 500., on_unlock).child(dc_intl::tr("Get Nitro"))),
                                 ),
                         )
                         .child(
@@ -1562,7 +1562,7 @@ impl Root {
                                 }))
                                 .child(
                                     text(16., 500., "--control-secondary-text-default")
-                                        .child("Back to Settings"),
+                                        .child(dc_intl::tr("Back to Settings")),
                                 ),
                         ),
                 ))
@@ -1629,7 +1629,10 @@ impl Root {
                         this.exit_theme_preview(cx);
                         this.open_settings_page("appearance", cx);
                     }))
-                    .child(label("--control-secondary-text-default", "Back")),
+                    .child(label(
+                        "--control-secondary-text-default",
+                        dc_intl::tr("Back"),
+                    )),
             )
             .child(
                 div()
@@ -1644,7 +1647,7 @@ impl Root {
                     .justify_center()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.custom_theme_apply(cx)))
-                    .child(label("--white", "Apply")),
+                    .child(label("--white", dc_intl::tr("Apply"))),
             )
             .into_any_element()
     }

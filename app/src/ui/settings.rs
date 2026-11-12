@@ -758,7 +758,7 @@ impl Row {
 }
 
 fn new_badge() -> impl IntoElement {
-    badge("NEW")
+    badge(dc_intl::tr("NEW"))
 }
 
 /// `badge_...`: a pill beside a title, NEW or BETA.
@@ -957,6 +957,10 @@ impl Root {
                 .to_owned(),
         );
         for (key, url) in preview::requests() {
+            self.request_image(key, url);
+        }
+        // The Language select's flags (module 172471).
+        for (key, url) in languages::flag_requests() {
             self.request_image(key, url);
         }
         for glyph in ["\u{1f940}", "\u{1faa4}"] {
@@ -1535,11 +1539,17 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(footnote("Privacy Policy".to_owned(), "--text-link"))
+                    .child(footnote(
+                        dc_intl::tr("Privacy Policy").to_owned(),
+                        "--text-link",
+                    ))
                     .child(footnote("\u{2022}".to_owned(), "--text-muted"))
-                    .child(footnote("Terms of Service".to_owned(), "--text-link"))
+                    .child(footnote(
+                        dc_intl::tr("Terms of Service").to_owned(),
+                        "--text-link",
+                    ))
                     .child(footnote("\u{2022}".to_owned(), "--text-muted"))
-                    .child(footnote("More".to_owned(), "--text-muted")),
+                    .child(footnote(dc_intl::tr("More").to_owned(), "--text-muted")),
             )
             .into_any_element()
     }
@@ -1655,12 +1665,12 @@ impl Root {
                                     div()
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--text-strong"))
-                                        .child("No search results found"),
+                                        .child(dc_intl::tr("No search results found")),
                                 )
                                 .child(
                                     div()
                                         .text_color(color("--text-subtle"))
-                                        .child("We tried, but came up empty."),
+                                        .child(dc_intl::tr("We tried, but came up empty.")),
                                 ),
                         )
                     }),
@@ -1735,10 +1745,10 @@ impl Root {
                 .into_any_element()
         };
         let info = category_marked(
-            "Account Info",
+            dc_intl::tr("Account Info"),
             marker(0),
             vec![
-                Row::new("Username").trailing(
+                Row::new(dc_intl::tr("Username")).trailing(
                     div()
                         .flex()
                         .items_center()
@@ -1747,12 +1757,12 @@ impl Root {
                         .child(opens(
                             "username",
                             "settings-edit",
-                            "Edit",
+                            dc_intl::tr("Edit"),
                             ButtonKind::Secondary,
                             cx,
                         )),
                 ),
-                Row::new("Email").trailing(
+                Row::new(dc_intl::tr("Email")).trailing(
                     div()
                         .flex()
                         .items_center()
@@ -1771,18 +1781,22 @@ impl Root {
                                             !this.settings_extra.reveal_email;
                                         cx.notify();
                                     }))
-                                    .child(if reveal_email { "Hide" } else { "Reveal" }),
+                                    .child(if reveal_email {
+                                        dc_intl::tr("Hide")
+                                    } else {
+                                        dc_intl::tr("Reveal")
+                                    }),
                             ),
                         )
                         .child(opens(
                             "email",
                             "settings-edit-email",
-                            "Edit",
+                            dc_intl::tr("Edit"),
                             ButtonKind::Secondary,
                             cx,
                         )),
                 ),
-                Row::new("Phone Number").trailing(
+                Row::new(dc_intl::tr("Phone Number")).trailing(
                     div()
                         .flex()
                         .items_center()
@@ -1790,7 +1804,7 @@ impl Root {
                         .child(value(match &account.phone {
                             Some(phone) if reveal_phone => phone.clone(),
                             Some(phone) => mask_phone(phone),
-                            None => "You haven't added a phone number yet.".to_owned(),
+                            None => dc_intl::tr("You haven't added a phone number yet.").to_owned(),
                         }))
                         .children(account.phone.as_ref().map(|_| {
                             div()
@@ -1805,15 +1819,19 @@ impl Root {
                                         !this.settings_extra.reveal_phone;
                                     cx.notify();
                                 }))
-                                .child(if reveal_phone { "Hide" } else { "Reveal" })
+                                .child(if reveal_phone {
+                                    dc_intl::tr("Hide")
+                                } else {
+                                    dc_intl::tr("Reveal")
+                                })
                         }))
                         .child(opens(
                             "phone",
                             "settings-phone",
                             if account.phone.is_some() {
-                                "Edit"
+                                dc_intl::tr("Edit")
                             } else {
-                                "Add"
+                                dc_intl::tr("Add")
                             },
                             ButtonKind::Secondary,
                             cx,
@@ -1827,22 +1845,22 @@ impl Root {
             .and_then(|body| body["user_sessions"].as_array())
             .map(|list| devices(list.len()));
         let security = category_marked(
-            "Password & Security",
+            dc_intl::tr("Password & Security"),
             marker(1),
             vec![
-                Row::new("Password").trailing(opens(
+                Row::new(dc_intl::tr("Password")).trailing(opens(
                     "password",
                     "settings-edit-password",
-                    "Edit",
+                    dc_intl::tr("Edit"),
                     ButtonKind::Secondary,
                     cx,
                 )),
-                Row::new("Multi-Factor Authentication")
+                Row::new(dc_intl::tr("Multi-Factor Authentication"))
                     .link(Some(
                         if account.mfa_enabled {
-                            "Enabled"
+                            dc_intl::tr("Enabled")
                         } else {
-                            "Set up"
+                            dc_intl::tr("Set up")
                         }
                         .to_owned(),
                     ))
@@ -1854,12 +1872,14 @@ impl Root {
                             cx.notify();
                         }),
                     ),
-                Row::new("Logged-in Devices").link(sessions).press(
-                    "account-sessions",
-                    cx.listener(|this, _, _, cx| {
-                        this.account_panel_open(account_panels::Panel::Sessions, cx);
-                    }),
-                ),
+                Row::new(dc_intl::tr("Logged-in Devices"))
+                    .link(sessions)
+                    .press(
+                        "account-sessions",
+                        cx.listener(|this, _, _, cx| {
+                            this.account_panel_open(account_panels::Panel::Sessions, cx);
+                        }),
+                    ),
             ],
         );
         let standing = self.standing();
@@ -1875,7 +1895,7 @@ impl Root {
                     .line_height(px(32.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Account Status"),
+                    .child(dc_intl::tr("Account Status")),
             )
             .child(div().relative().h(px(1.)).child(marker(2)))
             .child(
@@ -1906,7 +1926,7 @@ impl Root {
                         )
                     }))
                     .child(
-                        Row::new("Age Group")
+                        Row::new(dc_intl::tr("Age Group"))
                             .badge_if(!ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed))
                             .leading(tile(
                                 "settings_age_group",
@@ -1942,17 +1962,17 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .gap(px(16.))
-                                    .child(value("Unconfirmed"))
+                                    .child(value(dc_intl::tr("Unconfirmed")))
                                     .child(button(
                                         "settings-age",
-                                        "Confirm Age",
+                                        dc_intl::tr("Confirm Age"),
                                         ButtonKind::Secondary,
                                     )),
                             )
                             .render(),
                     )
                     .child(
-                        Row::new("Account Standing")
+                        Row::new(dc_intl::tr("Account Standing"))
                             .leading(tile(tile_icon, tile_background, tile_tint))
                             .description(match standing {
                                 // `x` of module 881979: the All good text's links open the terms and the
@@ -1965,14 +1985,14 @@ impl Root {
                                 )
                                 .into_any_element(),
                                 None => described(
-                                    &[("Loading your account standing...", false)],
+                                    &[(dc_intl::tr("Loading your account standing..."), false)],
                                     "--text-subtle",
                                 )
                                 .into_any_element(),
                             })
                             .link(Some(
                                 standing
-                                    .map_or("Loading", account_nested::Standing::label)
+                                    .map_or(dc_intl::tr("Loading"), account_nested::Standing::label)
                                     .to_owned(),
                             ))
                             .press(
@@ -1986,13 +2006,13 @@ impl Root {
             )
             .into_any_element();
         let family = category_marked(
-            "Family Center",
+            dc_intl::tr("Family Center"),
             marker(3),
             vec![
-                Row::new("Set up Family Center")
+                Row::new(dc_intl::tr("Set up Family Center"))
                     .description(described(
                         &[(
-                            "Connect with a parent or guardian so they can stay in the loop. Your messages stay private and you\u{2019}ll always see exactly what they see.",
+                            dc_intl::tr("Connect with a parent or guardian so they can stay in the loop. Your messages stay private and you\u{2019}ll always see exactly what they see."),
                             false,
                         )],
                         "--text-subtle",
@@ -2009,27 +2029,27 @@ impl Root {
         let removal = category(
             None,
             vec![
-                Row::new("Disable your account")
+                Row::new(dc_intl::tr("Disable your account"))
                     .description(described(
-                        &[("Temporarily disable your account.", false)],
+                        &[(dc_intl::tr("Temporarily disable your account."), false)],
                         "--text-subtle",
                     ))
                     .trailing(opens(
                         "disable",
                         "settings-disable",
-                        "Disable Account",
+                        dc_intl::tr("Disable Account"),
                         ButtonKind::CriticalSecondary,
                         cx,
                     )),
-                Row::new("Close your account")
+                Row::new(dc_intl::tr("Close your account"))
                     .description(described(
-                        &[("Permanently close your account.", false)],
+                        &[(dc_intl::tr("Permanently close your account."), false)],
                         "--text-subtle",
                     ))
                     .trailing(opens(
                         "delete",
                         "settings-delete",
-                        "Delete Account",
+                        dc_intl::tr("Delete Account"),
                         ButtonKind::CriticalPrimary,
                         cx,
                     )),

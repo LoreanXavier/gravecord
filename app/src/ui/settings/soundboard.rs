@@ -15,7 +15,7 @@ const ALL_SERVERS: &str = "All Servers";
 
 /// The options of "Choose a Server": the global one, then the guilds in the order the client lists them.
 pub(super) fn server_options(guilds: impl IntoIterator<Item = String>) -> Vec<SharedString> {
-    std::iter::once(ALL_SERVERS.to_owned())
+    std::iter::once(dc_intl::tr(ALL_SERVERS).to_owned())
         .chain(guilds)
         .map(SharedString::from)
         .collect()
@@ -38,7 +38,7 @@ impl Root {
                     .line_height(px(24.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child("Entrance Sounds"),
+                    .child(dc_intl::tr("Entrance Sounds")),
             )
             // The description sits 4px under the legend and 16px above the sections.
             .child(
@@ -51,7 +51,7 @@ impl Root {
                     .child(self.text_with_link(
                         ENTRANCE_SOUNDS,
                         "Choose a Soundboard sound to automatically play whenever you join a voice channel. Right-click on a voice channel to join without playing your entrance sound. ",
-                        "Learn More",
+                        dc_intl::tr("Learn More"),
                         ".",
                         cx,
                         |_, cx| cx.open_url(SOUNDBOARD_GUIDE),
@@ -60,7 +60,7 @@ impl Root {
             .child(
                 div()
                     .mt(px(16.))
-                    .child(section("Choose a Server", false, server)),
+                    .child(section(dc_intl::tr("Choose a Server"), false, server)),
             )
             .child(
                 div()
@@ -120,7 +120,7 @@ fn sound_button() -> impl IntoElement {
                         .text_size(px(16.))
                         .line_height(px(20.))
                         .text_color(color("--text-strong"))
-                        .child("None"),
+                        .child(dc_intl::tr("None")),
                 )
                 .child(mask_icon("sound_speaker", 20., "--text-muted")),
         )

@@ -184,7 +184,7 @@ impl Root {
         let selected = branding::selected();
         let options = [
             (IconSet::Gravecord, "Gravecord"),
-            (IconSet::Original, "Original"),
+            (IconSet::Original, dc_intl::tr("Original")),
         ]
         .into_iter()
         .map(|(set, label)| {
@@ -360,7 +360,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child("Default Themes"),
+                    .child(dc_intl::tr("Default Themes")),
             )
             .child(div().pt(px(24.)).flex().gap(px(8.)).children(swatches))
             .into_any_element()
@@ -372,8 +372,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // The text column shrinks with the card and stops at its longest word (`min-width: auto`).
-        let title = "Make your Discord look *juuusst* right";
-        let body = "Create your own custom theme to make Discord uniquely yours. Only with Nitro.";
+        let title = upsell_title();
+        let body = dc_intl::tr(
+            "Create your own custom theme to make Discord uniquely yours. Only with Nitro.",
+        );
         let widest = |window: &mut Window, text: &str, size: f32, weight: f32| {
             text.split_whitespace()
                 .map(|word| super::render::measure_text(window, word, size, weight))
@@ -414,14 +416,14 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Make your Discord look *juuusst* right"),
+                                    .child(upsell_title()),
                             )
                             .child(
                                 div()
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .text_color(color("--text-default"))
-                                    .child("Create your own custom theme to make Discord uniquely yours. Only with Nitro."),
+                                    .child(dc_intl::tr("Create your own custom theme to make Discord uniquely yours. Only with Nitro.")),
                             ),
                     )
                     // "Try it out" (`uw9zI7`, module 569386): the same Preview Theme mode a free account gets from the
@@ -431,7 +433,7 @@ impl Root {
                             .id("theme-try-click")
                             // A subscriber gets the same editor; it used to switch to a light preset instead.
                             .on_click(cx.listener(|this, _, _, cx| this.open_custom_theme_editor(cx)))
-                            .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
+                            .child(button("theme-try", dc_intl::tr("Try it out"), super::ButtonKind::Primary)),
                     ),
             )
             .into_any_element()
@@ -469,7 +471,7 @@ impl Root {
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
             .child(mask_icon("nitro_wheel", 20., "--black"))
-            .child("Unlock with Nitro")
+            .child(dc_intl::tr("Unlock with Nitro"))
             .into_any_element()
     }
 
@@ -488,7 +490,7 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
                     .child(button(
                         "icon-preview",
-                        "Preview Icon",
+                        dc_intl::tr("Preview Icon"),
                         super::ButtonKind::Secondary,
                     )),
             )
@@ -724,14 +726,17 @@ impl Root {
                                                 div()
                                                     .flex_shrink(1.)
                                                     .min_w(px(55.05))
-                                                    .child("Color Themes"),
+                                                    .child(dc_intl::tr("Color Themes")),
                                             )
                                             .child(mask_icon("nitro_wheel", 16., "--text-default")),
                                     )
                                     .child(if nitro {
                                         // `np0X/u`
                                         super::described(
-                                            &[("Make Discord yours. Only with Nitro.", false)],
+                                            &[(
+                                                dc_intl::tr("Make Discord yours. Only with Nitro."),
+                                                false,
+                                            )],
                                             "--text-subtle",
                                         )
                                         .into_any_element()
@@ -742,13 +747,16 @@ impl Root {
                                             "appearance-themes-nitro".into(),
                                             &[
                                                 ("Unlock more themes with ", false),
-                                                ("Nitro", true),
+                                                (dc_intl::tr("Nitro"), true),
                                                 (".", false),
                                             ],
                                             "--text-subtle",
                                             Box::new(move |_, cx| {
                                                 let _ = root.update(cx, |this, cx| {
-                                                    this.open_settings_section("Nitro", cx);
+                                                    this.open_settings_section(
+                                                        dc_intl::tr("Nitro"),
+                                                        cx,
+                                                    );
                                                 });
                                             }),
                                         )
@@ -765,11 +773,14 @@ impl Root {
                                             div()
                                                 .id("theme-preview-click")
                                                 .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.pick_client_theme("Mint Apple", cx)
+                                                    this.pick_client_theme(
+                                                        dc_intl::tr("Mint Apple"),
+                                                        cx,
+                                                    )
                                                 }))
                                                 .child(button(
                                                     "theme-preview",
-                                                    "Preview Theme",
+                                                    dc_intl::tr("Preview Theme"),
                                                     super::ButtonKind::Secondary,
                                                 )),
                                         )
@@ -798,6 +809,15 @@ fn hsla_from_rgb(red: f32, green: f32, blue: f32, alpha: f32) -> gpui::Hsla {
         a: alpha,
     }
     .into()
+}
+
+/// The custom theme card's title (module 569386 `x.X`): en-US and en-GB show `f/cLEi` as its source reads, every other
+/// locale `CARxAC`.
+fn upsell_title() -> &'static str {
+    match dc_intl::locale() {
+        "en-US" | "en-GB" => "Make your Discord look *juuusst* right",
+        _ => dc_intl::t("CARxAC"),
+    }
 }
 
 #[cfg(test)]

@@ -583,7 +583,7 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .child(
-                    "Well, it looks like Discord is not detecting any input from your mic. Let's fix that!",
+                    dc_intl::tr("Well, it looks like Discord is not detecting any input from your mic. Let's fix that!"),
                 )
                 .child(
                     div()
@@ -608,9 +608,9 @@ impl Root {
                         .cursor_pointer()
                         .hover(|style| style.bg(color("--background-mod-subtle")))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_settings_section("Voice & Video", cx);
+                            this.open_settings_section(dc_intl::tr("Voice & Video"), cx);
                         }))
-                        .child("Visit Settings"),
+                        .child(dc_intl::tr("Visit Settings")),
                 )
                 .child(
                     div()
@@ -691,7 +691,7 @@ impl Root {
                 return;
             }
             Some(VoiceBlock::Full) => {
-                self.put_app_toast("This channel is full.".to_owned(), false, cx);
+                self.put_app_toast(dc_intl::tr("This channel is full.").to_owned(), false, cx);
                 return;
             }
             None => {}
@@ -873,7 +873,7 @@ impl Root {
             Dialog::UploadDone
         } else {
             Dialog::UploadFailed {
-                message: "Something went wrong and we were unable to upload your debug files. Please try again."
+                message: dc_intl::tr("Something went wrong and we were unable to upload your debug files. Please try again.")
                     .to_owned(),
                 code: UPLOAD_FAILED_CODE,
             }
@@ -936,7 +936,7 @@ impl Root {
         let checked = self.always_preview_video();
         let input = self.dialog_checkbox(
             "voice-always-preview",
-            "Always preview video",
+            dc_intl::tr("Always preview video"),
             checked,
             cx,
             |this| {
@@ -957,15 +957,15 @@ impl Root {
         modal::render_with_input(
             modal::Spec {
                 id: "voice-camera-preview",
-                title: "Ready to video chat?".into(),
+                title: dc_intl::tr("Ready to video chat?").into(),
                 subtitle: None,
                 body: Some(body),
                 buttons: vec![modal::button(
                     "voice-preview-turn-on",
                     if on {
-                        "Change Background"
+                        dc_intl::tr("Change Background")
                     } else {
-                        "Turn On Camera"
+                        dc_intl::tr("Turn On Camera")
                     },
                     Tone::Primary,
                     move |this, _, cx| {
@@ -998,7 +998,7 @@ impl Root {
         let cancel = || {
             modal::button(
                 "voice-dialog-cancel",
-                "Cancel",
+                dc_intl::tr("Cancel"),
                 Tone::Secondary,
                 |this, _, cx| this.close_voice_dialog(cx),
             )
@@ -1006,7 +1006,7 @@ impl Root {
         let okay = |id: &'static str, tone: Tone, run: modal::Handler| modal::Button {
             focus: None,
             id,
-            label: "Okay".into(),
+            label: dc_intl::tr("Okay").into(),
             tone,
             run,
             icon: None,
@@ -1021,7 +1021,7 @@ impl Root {
                 let checked = self.voice.extra.switch_alert_disabled;
                 let input = self.dialog_checkbox(
                     "voice-dont-ask",
-                    "Don't ask again",
+                    dc_intl::tr("Don't ask again"),
                     checked,
                     cx,
                     |this| {
@@ -1036,7 +1036,7 @@ impl Root {
                 modal::render_with_input(
                     modal::Spec {
                         id: "voice-switch-channel",
-                        title: "You sure?".into(),
+                        title: dc_intl::tr("You sure?").into(),
                         subtitle: Some(bold_run(
                             "Looks like you're in another voice channel. Are you sure you want to switch to ",
                             &name,
@@ -1047,7 +1047,7 @@ impl Root {
                             cancel(),
                             modal::button(
                                 "voice-dialog-confirm",
-                                "Confirm",
+                                dc_intl::tr("Confirm"),
                                 Tone::Primary,
                                 move |this, _, cx| {
                                     this.close_voice_dialog(cx);
@@ -1064,7 +1064,7 @@ impl Root {
             Dialog::Silence { dont_show } => {
                 let input = self.dialog_checkbox(
                     "voice-dont-show",
-                    "Don't show me the warning again",
+                    dc_intl::tr("Don't show me the warning again"),
                     dont_show,
                     cx,
                     |this| {
@@ -1076,10 +1076,10 @@ impl Root {
                 modal::render_with_input(
                     modal::Spec {
                         id: "voice-silence-dialog",
-                        title: "We can't hear you!".into(),
-                        subtitle: Some(plain(
+                        title: dc_intl::tr("We can't hear you!").into(),
+                        subtitle: Some(plain(dc_intl::tr(
                             "Is your mic extra fancy and silencing itself? In that case you can turn off the red warning by clicking the\nteeny tiny small text below.",
-                        )),
+                        ))),
                         body: None,
                         buttons: vec![okay(
                             "voice-dialog-okay",
@@ -1106,10 +1106,10 @@ impl Root {
             Dialog::Reset => modal::render(
                 modal::Spec {
                     id: "voice-reset-dialog",
-                    title: "Reset Voice and Video Settings".into(),
-                    subtitle: Some(plain(
+                    title: dc_intl::tr("Reset Voice and Video Settings").into(),
+                    subtitle: Some(plain(dc_intl::tr(
                         "Resetting voice settings will clear all local mutes and local volumes.\nAre you sure you want to do this?",
-                    )),
+                    ))),
                     body: None,
                     buttons: vec![
                         cancel(),
@@ -1126,10 +1126,10 @@ impl Root {
             Dialog::DebugLogging { enabled } => modal::render(
                 modal::Spec {
                     id: "voice-debug-dialog",
-                    title: "Change Debug Logging".into(),
-                    subtitle: Some(plain(
+                    title: dc_intl::tr("Change Debug Logging").into(),
+                    subtitle: Some(plain(dc_intl::tr(
                         "Changing debug logging will quit and re-launch Discord.\nAre you sure you want to do this?",
-                    )),
+                    ))),
                     body: None,
                     buttons: vec![
                         cancel(),
@@ -1154,10 +1154,10 @@ impl Root {
             Dialog::UploadDone => modal::render(
                 modal::Spec {
                     id: "voice-upload-done",
-                    title: "Upload Successful".into(),
-                    subtitle: Some(plain(
+                    title: dc_intl::tr("Upload Successful").into(),
+                    subtitle: Some(plain(dc_intl::tr(
                         "Success! Your debug logs have been uploaded to Discord Support.",
-                    )),
+                    ))),
                     body: None,
                     buttons: vec![okay("voice-dialog-okay", Tone::Primary, close())],
                     close: close(),
@@ -1167,7 +1167,7 @@ impl Root {
             Dialog::UploadFailed { message, code } => modal::render(
                 modal::Spec {
                     id: "voice-upload-failed",
-                    title: "Upload Failed".into(),
+                    title: dc_intl::tr("Upload Failed").into(),
                     subtitle: Some(plain(&message)),
                     body: Some(
                         div()
@@ -1267,12 +1267,12 @@ impl Root {
                 .flex()
                 .flex_col()
                 .child(option(
-                    "Switch both input and output",
+                    dc_intl::tr("Switch both input and output"),
                     Kind::InputAndOutput,
                     0,
                 ))
-                .child(option("Switch input only", Kind::Input, 1))
-                .child(option("Switch output only", Kind::Output, 2))
+                .child(option(dc_intl::tr("Switch input only"), Kind::Input, 1))
+                .child(option(dc_intl::tr("Switch output only"), Kind::Output, 2))
                 .into_any_element()
         });
         let ignore_name = name.clone();
@@ -1296,19 +1296,19 @@ impl Root {
         modal::render_with_input(
             modal::Spec {
                 id: "voice-device-dialog",
-                title: "New Audio Device Detected".into(),
+                title: dc_intl::tr("New Audio Device Detected").into(),
                 subtitle: Some(bold_run(before, &name, after)),
                 body,
                 buttons: vec![
                     modal::button(
                         "voice-dialog-dont-switch",
-                        "Don't Switch",
+                        dc_intl::tr("Don't Switch"),
                         Tone::Secondary,
                         |this, _, cx| this.close_voice_dialog(cx),
                     ),
                     modal::button(
                         "voice-dialog-switch",
-                        "Switch Device",
+                        dc_intl::tr("Switch Device"),
                         Tone::Primary,
                         move |this, _, cx| {
                             // `handleSwitch(choice)`: `CONNECTED_DEVICE_SWITCH` sets the devices and forgets the rest.

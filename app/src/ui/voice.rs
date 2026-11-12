@@ -93,9 +93,28 @@ impl Root {
                 return;
             }
             call.controls.disconnect();
+            // Nothing of the call that is left goes on in the next one: the streams watched and sent there end.
+            self.streams_stop_all(cx);
         }
         self.soundboard_stop();
         info!("joining voice");
+        self.open_call(guild, channel);
+        if let Some(sound) = super::voice_sounds::connect_start_sound(
+            self.rtc_join_sounds(),
+            self.room(guild, channel),
+        ) {
+            crate::sounds::play_event(sound);
+        }
+        self.send_voice_state(guild, Some(channel));
+        self.video_call_started(cx);
+        self.sync_ptt_hook();
+        self.vv.invite_dismissed = false;
+        self.show_call_channel(guild, channel, cx);
+        cx.notify();
+    }
+
+    /// The call of this client, not yet connected: it waits for the voice server and our own voice state.
+    fn open_call(&mut self, guild: Id, channel: Id) {
         let controls = dc_voice::Controls::new();
         controls.set_self_mute(self.self_mute);
         controls.set_self_deaf(self.self_deaf);
@@ -113,18 +132,62 @@ impl Root {
             tracker: Default::default(),
         });
         self.stores.voice_server = None;
-        if let Some(sound) = super::voice_sounds::connect_start_sound(
-            self.rtc_join_sounds(),
-            self.room(guild, channel),
-        ) {
-            crate::sounds::play_event(sound);
+    }
+
+    /// The voice connection of the call starts over, in the same channel: the service named another voice server
+    /// (a region change, a failover), or the gateway session is a new one and the voice state has to be sent again
+    /// (`tell`). The streams of the old connection end with it, and the camera is off until it is turned on again.
+    fn restart_call(&mut self, tell: bool, cx: &mut Context<Self>) {
+        let Some(call) = self.call.take() else {
+            return;
+        };
+        info!("voice: connection starts over");
+        call.controls.disconnect();
+        self.streams_stop_all(cx);
+        self.speaking.clear();
+        let server = self.stores.voice_server.take();
+        self.open_call(call.guild, call.channel);
+        if tell {
+            self.send_voice_state(call.guild, Some(call.channel));
+        } else {
+            self.stores.voice_server = server;
         }
-        self.send_voice_state(guild, Some(channel));
         self.video_call_started(cx);
         self.sync_ptt_hook();
-        self.vv.invite_dismissed = false;
-        self.show_call_channel(guild, channel, cx);
         cx.notify();
+    }
+
+    /// After a dispatch reached the stores: what it means for the voice connection of the call here.
+    pub(super) fn voice_after_dispatch(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(call) = &self.call else {
+            return;
+        };
+        match name {
+            // A session that could not be resumed: the service has dropped its voice state, and a call in a
+            // direct message is asked for again, whichever channel is open.
+            "READY" => {
+                let (guild, channel) = (call.guild, call.channel);
+                self.restart_call(true, cx);
+                if guild == 0 {
+                    let private = self
+                        .stores
+                        .private_channels
+                        .iter()
+                        .any(|dm| dm.id == channel);
+                    self.stores.calls.connect_channel(channel, private, true);
+                }
+            }
+            "VOICE_SERVER_UPDATE"
+                if call.started
+                    && self.stores.voice_server.as_ref().is_some_and(|server| {
+                        server.guild_id == call.guild
+                            && (call.guild != 0 || server.channel_id == Some(call.channel))
+                    }) =>
+            {
+                self.restart_call(false, cx);
+            }
+            _ => {}
+        }
     }
 
     /// Harness only: this account "in" the call of a DM without any voice state sent anywhere or any media opened,
@@ -202,6 +265,13 @@ impl Root {
         ) else {
             return;
         };
+        // The service took this session out of voice (disconnected by a moderator, removed from the group, the
+        // call ended): the call here is over. A call that has not connected yet may still see the state of the one
+        // left before it, which is not about it.
+        if own == theirs && call.started && id(&data["channel_id"]).is_none() {
+            self.end_voice(false, cx);
+            return;
+        }
         if taken_elsewhere(
             own,
             theirs,
@@ -215,7 +285,7 @@ impl Root {
     /// Ends the call here; `tell` sends the voice state that leaves the channel.
     fn end_voice(&mut self, tell: bool, cx: &mut Context<Self>) {
         self.soundboard_stop();
-        self.stream_stop(cx);
+        self.streams_stop_all(cx);
         self.leave_activity_on_call_end(cx);
         if let Some(call) = self.call.take() {
             if call.connected
@@ -230,6 +300,12 @@ impl Root {
             }
             self.voice_call_ended();
         }
+        // The layout chosen in a call is that call's: the next one starts with its chat, its people and the grid.
+        self.dmc.no_chat = false;
+        self.vv.members_hidden = false;
+        self.vv.focus.tile = None;
+        // The popped-out window and what was dragged belong to the call, whether or not the main window draws.
+        self.call_popout_frame(cx);
         self.sync_ptt_hook();
         cx.notify();
     }
@@ -290,11 +366,13 @@ impl Root {
         }) else {
             return;
         };
+        // Another device of this account may be in the same channel: only this client's own state names its session.
+        let own = self.stores.session_id.as_deref();
         let Some(session) = self
             .stores
             .voice_members(call.guild, call.channel)
             .into_iter()
-            .find(|state| state.user_id == me)
+            .find(|state| state.user_id == me && own.is_none_or(|own| own == state.session_id))
             .map(|state| state.session_id.clone())
         else {
             return;
@@ -406,6 +484,22 @@ impl Root {
                 self.voice_call_ended();
                 self.rtc_step();
                 self.sync_ptt_hook();
+                // Close code 4014: the service removed this session from the channel, and nothing rejoins it.
+                // A move to another channel closes with the same code, and then our voice state is in that channel.
+                let own = self.stores.session_id.as_deref();
+                let me = self.stores.current_user.as_ref().map(|me| me.id);
+                let still_in = self.call.as_ref().is_some_and(|call| {
+                    self.stores
+                        .voice_members(call.guild, call.channel)
+                        .into_iter()
+                        .any(|state| {
+                            Some(state.user_id) == me
+                                && own.is_none_or(|own| own == state.session_id)
+                        })
+                });
+                if reason == dc_voice::DisconnectReason::Kicked && !still_in {
+                    self.end_voice(false, cx);
+                }
             }
             other => {
                 self.on_video_event(&other);

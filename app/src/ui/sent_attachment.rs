@@ -109,28 +109,28 @@ impl Root {
                 let message = message.clone();
                 let spec = modal::Spec {
                     id: "remove-attachment",
-                    title: "Are you sure?".into(),
+                    title: dc_intl::tr("Are you sure?").into(),
                     subtitle: None,
                     body: Some(
                         div()
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-default"))
-                            .child(
+                            .child(dc_intl::tr(
                                 "This will remove this attachment from this message permanently.",
-                            )
+                            ))
                             .into_any_element(),
                     ),
                     buttons: vec![
                         modal::button(
                             "remove-attachment-cancel",
-                            "Cancel",
+                            dc_intl::tr("Cancel"),
                             Tone::Secondary,
                             |this, _, _| this.sent_edit = None,
                         ),
                         modal::button(
                             "remove-attachment-confirm",
-                            "Remove Attachment",
+                            dc_intl::tr("Remove Attachment"),
                             Tone::Primary,
                             move |this, _, _| {
                                 this.sent_edit = None;
@@ -155,7 +155,7 @@ impl Root {
                     .line_height(px(20.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child("Filename");
+                    .child(dc_intl::tr("Filename"));
                 // `disableFilename`: the field shows the name and cannot be typed in (disabled look assumed).
                 let field = div()
                     .mt(px(8.))
@@ -201,7 +201,7 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(20.))
                             .text_color(color("--text-default"))
-                            .child("Mark as spoiler"),
+                            .child(dc_intl::tr("Mark as spoiler")),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if forced {
@@ -224,19 +224,19 @@ impl Root {
                 let (message, edited) = (message.clone(), attachment.id);
                 let spec = modal::Spec {
                     id: "modify-sent-attachment",
-                    title: "Modify Attachment".into(),
+                    title: dc_intl::tr("Modify Attachment").into(),
                     subtitle: None,
                     body: Some(body.into_any_element()),
                     buttons: vec![
                         modal::button(
                             "modify-sent-cancel",
-                            "Cancel",
+                            dc_intl::tr("Cancel"),
                             Tone::Secondary,
                             |this, _, _| this.sent_edit = None,
                         ),
                         modal::button(
                             "modify-sent-save",
-                            "Save",
+                            dc_intl::tr("Save"),
                             Tone::Primary,
                             move |this, _, _| {
                                 let spoiler = match this.sent_edit.as_ref() {

@@ -364,3 +364,34 @@ fn numbers_follow_the_locale_like_intl_number_format() {
     assert_eq!(category("ja", 1.0), "other");
     assert_eq!(category("fr", 0.0), "one");
 }
+
+/// "{count}+ new messages since {timestamp, time, short} on {timestamp, date, long}" (`tHqbtg`): one value, its time
+/// in the Time node and its date in the Date node.
+#[test]
+fn a_moment_prints_its_time_and_its_date_where_the_message_asks() {
+    let when = Arg::When {
+        date: "November 8, 2026".into(),
+        time: "7:36 AM".into(),
+    };
+    let text = format("tHqbtg", &[("count", Arg::Num(50.0)), ("timestamp", when)]);
+    assert_eq!(text, "50+ new messages since 7:36 AM on November 8, 2026");
+}
+
+/// "**{a}** and **{b}** are typing..." (`rB0CUa`): the names in bold runs, the rest plain.
+#[test]
+fn runs_keep_the_bold_names_apart() {
+    let runs = format_runs("rB0CUa", &[("a", Arg::from("Ann")), ("b", Arg::from("Bo"))]);
+    let shown: Vec<(&str, Option<&str>)> = runs
+        .iter()
+        .map(|(text, tag)| (text.as_str(), tag.as_deref()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Ann", Some("$b")),
+            (" and ", None),
+            ("Bo", Some("$b")),
+            (" are typing...", None)
+        ]
+    );
+}

@@ -31,7 +31,7 @@ pub(super) fn choices(
 ) -> Vec<Choice> {
     let mut out = vec![Choice {
         guild: None,
-        label: "Main Profile".to_owned(),
+        label: dc_intl::tr("Main Profile").to_owned(),
         nick: None,
     }];
     let rest = guilds.iter().filter(|(id, _)| Some(*id) != current);
@@ -270,7 +270,7 @@ impl Root {
                         .line_height(px(18.))
                         .text_color(color("--text-default"))
                         .child(
-                            "You can customize styles, display name, pronouns, and bio for each server.",
+                            dc_intl::tr("You can customize styles, display name, pronouns, and bio for each server."),
                         ),
                 )
                 .child(
@@ -297,7 +297,7 @@ impl Root {
             .flex_col()
             .gap(px(4.))
             .child(text(
-                "Customize more with Nitro",
+                dc_intl::tr("Customize more with Nitro"),
                 16.,
                 20.,
                 500.,
@@ -317,7 +317,7 @@ impl Root {
                             .id("profile-editor-server-nitro-link")
                             .cursor_pointer()
                             .text_color(color("--text-link"))
-                            .child("Nitro")
+                            .child(dc_intl::tr("Nitro"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
                     ),
             );
@@ -337,7 +337,7 @@ impl Root {
                 "--control-primary-text-default",
             ))
             .child(text(
-                "Unlock with Nitro",
+                dc_intl::tr("Unlock with Nitro"),
                 14.,
                 18.,
                 500.,

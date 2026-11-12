@@ -134,6 +134,26 @@ impl Capture {
             worker.hold(held);
         }
     }
+    /// The owner's own tile shows what the encoder takes, every picture, as the native engine's local video sink does
+    /// (the self stream tile of module 555148 renders the stream's own video). Only the test pattern keeps the timed
+    /// preview of `LOCAL_PREVIEW_INTERVAL`.
+    fn show_locally(&self, hub: VideoHub, owner: u64) -> bool {
+        match self {
+            Self::Screen(worker) => {
+                worker.set_local_sink(Some(Arc::new(move |picture| {
+                    if hub.has_sink() {
+                        hub.deliver(RemoteFrame {
+                            user: owner,
+                            source: VideoSource::Stream(owner),
+                            picture,
+                        });
+                    }
+                })));
+                true
+            }
+            Self::Synthetic(..) => false,
+        }
+    }
     fn preview(&self) -> Option<dc_media::Picture> {
         match self {
             Self::Screen(worker) => worker.take_preview(),
@@ -255,16 +275,27 @@ pub(crate) fn jpeg_thumbnail(picture: &dc_media::Picture) -> Option<Vec<u8>> {
 const PREVIEW_FIRST: Duration = Duration::from_millis(500);
 const PREVIEW_INTERVAL: Duration = Duration::from_secs(300);
 const PREVIEW_PAUSED_INTERVAL: Duration = Duration::from_secs(60);
-/// How often the sender's own tile gets a new picture.
+/// How often the sender's own tile gets a new picture of the test pattern (a real share shows every picture).
 const LOCAL_PREVIEW_INTERVAL: Duration = Duration::from_millis(200);
 /// A watcher refreshes its sink wants while video stalls or before the server forgets them (Serein: five seconds).
 const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
+/// The lowest rate a share is steered to (`desktopBitrate.min` of module 731854).
+const STREAM_MIN_BITRATE: u32 = screen::BITRATE_MIN;
 /// Encoded pictures the sender keeps while its pacer is busy (a keyframe at a reduced rate takes several frame times).
 const FRAME_QUEUE: usize = 8;
 /// Waiting pictures from which the capture is held.
 const HOLD_AT: usize = 2;
 /// Longest stream audio backlog before the oldest frame goes.
 const AUDIO_BACKLOG: usize = 1920 * 6;
+
+/// Drops a watched stream's audio queue from the hub when its connection ends.
+struct ForgetAudio(VideoHub, u64);
+
+impl Drop for ForgetAudio {
+    fn drop(&mut self) {
+        self.0.forget_stream_audio(self.1);
+    }
+}
 
 pub(crate) async fn run(
     join: StreamJoin,
@@ -276,6 +307,8 @@ pub(crate) async fn run(
     let url = signal::endpoint_url(&join.endpoint)?;
     let own = join.user_id;
     let owner = join.key.owner();
+    // However this connection ends, the audio that waited for the call goes with it.
+    let _audio = ForgetAudio(hub.clone(), owner);
     let sending = join.role == Role::Send;
     if sending && source.is_none() {
         return Err("A stream sender needs a source");
@@ -339,6 +372,8 @@ pub(crate) async fn run(
     // The clip buffer's tap while this sender runs; dropping it, on any exit, frees the buffer.
     let mut _clip_guard: Option<dc_clips::TapGuard> = None;
     let mut sender: Option<VideoSender> = None;
+    // The server's keyframe interval (op 4 or 14), applied to the sender when it starts.
+    let mut keyframe_interval = 0u64;
     let mut announced = false;
     let mut awaiting_keyframe = true;
     let mut live_announced = false;
@@ -369,12 +404,15 @@ pub(crate) async fn run(
     // reads the same picture, because taking a preview from the capture consumes it.
     let mut local_preview_at = Instant::now();
     let mut last_preview: Option<dc_media::Picture> = None;
+    // Whether the capture hands its pictures to the owner's tile itself.
+    let mut shown_locally = false;
 
     // Watcher state.
     let mut receivers = Receivers::default();
     let mut decoders = Decoders::new(hub.clone(), VideoSource::Stream);
     // The owner's soundshare is stereo; a mono decoder folded it down.
     let mut mixer = Mixer::stereo();
+    let mut audio_clock = clock::FrameClock::default();
     let mut sink_wants_at = Instant::now();
     let mut tally = [0u32; 4];
     let mut tally_at = Instant::now() + Duration::from_secs(5);
@@ -523,7 +561,9 @@ pub(crate) async fn run(
                     }
                     if capture_task.as_ref().is_some_and(|task| task.is_finished()) {
                         let task = capture_task.take().ok_or("Capture task missing")?;
-                        capture = Some(task.await.map_err(|_| "Capture task failed")??);
+                        let started = task.await.map_err(|_| "Capture task failed")??;
+                        shown_locally = started.show_locally(hub.clone(), owner);
+                        capture = Some(started);
                     }
                     if let Some(capture) = &capture && let Some(reason) = capture.finished() {
                         debug!(reason, "stream capture ended");
@@ -533,7 +573,9 @@ pub(crate) async fn run(
                     // Announce the source once, as soon as both ends are ready for it.
                     if !announced && capture.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {
                         let bitrate = source.limits().bitrate;
-                        sender = Some(VideoSender::new(video_ssrc, rtx_ssrc, bitrate));
+                        let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, bitrate);
+                        video.set_keyframe_interval(keyframe_interval);
+                        sender = Some(video);
                         text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Stream, Some(source.limits()))))).await?;
                         announced = true;
                         debug!("stream source announced");
@@ -568,6 +610,12 @@ pub(crate) async fn run(
                         capture.set_bitrate(bitrate);
                         debug!(bitrate, "stream bit rate steered");
                     }
+                    if let (Some(sender), Some(capture)) = (sender.as_ref(), &capture)
+                        && secure
+                        && sender.periodic_keyframe_due(now)
+                    {
+                        capture.force_keyframe();
+                    }
                     // System audio: stereo 20 ms frames into Opus, DAVE, soundshare.
                     while let Ok(chunk) = sound.try_recv() {
                         pending_audio.extend(chunk.samples);
@@ -597,7 +645,7 @@ pub(crate) async fn run(
                     if !secure {
                         pending_audio.clear();
                     }
-                    if now >= local_preview_at && let Some(capture) = &capture {
+                    if !shown_locally && now >= local_preview_at && let Some(capture) = &capture {
                         local_preview_at = now + LOCAL_PREVIEW_INTERVAL;
                         if let Some(picture) = capture.preview() {
                             if hub.has_sink() {
@@ -611,21 +659,27 @@ pub(crate) async fn run(
                         }
                     }
                     // Preview: the official client waits for a real picture, then uploads every five minutes.
-                    if secure && sent_keyframe && controls.borrow().previews && now >= preview_at && capture.is_some() {
-                        if let Some(picture) = last_preview.as_ref()
-                            && let Some(jpeg) = jpeg_thumbnail(picture)
-                        {
-                            let _ = events.send(StreamEvent::Preview { jpeg });
-                            previewed = true;
+                    if secure && sent_keyframe && controls.borrow().previews && now >= preview_at && let Some(capture) = &capture {
+                        // A real share cuts the thumbnail only while one is asked for: the first ask starts it, a
+                        // later tick finds it.
+                        let picture = if shown_locally { capture.preview() } else { last_preview.clone() };
+                        if let Some(picture) = picture {
+                            if let Some(jpeg) = jpeg_thumbnail(&picture) {
+                                let _ = events.send(StreamEvent::Preview { jpeg });
+                                previewed = true;
+                            }
+                            let paused = controls.borrow().paused;
+                            preview_at = now + if previewed && !paused { PREVIEW_INTERVAL } else if paused { PREVIEW_PAUSED_INTERVAL } else { PREVIEW_FIRST * 20 };
                         }
-                        let paused = controls.borrow().paused;
-                        preview_at = now + if previewed && !paused { PREVIEW_INTERVAL } else if paused { PREVIEW_PAUSED_INTERVAL } else { PREVIEW_FIRST * 20 };
                     }
                 } else {
                     // Watching: audio from the mixer into the call's bus; keep the sink wants alive; feedback upstream.
                     if secure {
-                        if let Some(frame) = mixer.pop_stereo() {
-                            hub.push_stream_audio(frame);
+                        // One frame per 20 ms of real time: a late tick that the clock skipped owes two.
+                        for _ in 0..audio_clock.due(now.into_std()) {
+                            if let Some(frame) = mixer.pop_stereo() {
+                                hub.push_stream_audio(owner, frame);
+                            }
                         }
                         // Repairs that expired since the last packet; arrivals are handed over as they come.
                         tally[3] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
@@ -640,10 +694,12 @@ pub(crate) async fn run(
                         }
                     } else {
                         mixer.clear();
-                        hub.clear_stream_audio();
+                        hub.clear_stream_audio_of(owner);
+                        audio_clock.reset();
                     }
                 }
                 if now >= tally_at {
+                    let (numbered, unnumbered) = receivers.transport_counts();
                     debug!(
                         received = tally[0],
                         opened = tally[1],
@@ -651,6 +707,12 @@ pub(crate) async fn run(
                         pictures = tally[3],
                         sending,
                         ready = dave.ready,
+                        transport_cc_packets = numbered,
+                        without_transport_cc = unnumbered,
+                        stream_audio_underruns = hub.stream_audio_counts(owner).0,
+                        stream_audio_trimmed = hub.stream_audio_counts(owner).1,
+                        repairs_sent = sender.as_ref().map_or(0, |sender| sender.repairs),
+                        bitrate = sender.as_ref().map_or(0, VideoSender::bitrate),
                         "stream packet tally"
                     );
                     tally = [0; 4];
@@ -676,8 +738,12 @@ pub(crate) async fn run(
                 tally[0] += 1;
                 let Some(crypto) = &transport else { continue };
                 if rtp::is_rtcp(&packet[..length]) {
+                    let Some(compound) = crypto.open_rtcp(&packet[..length]) else { continue };
+                    if !sending {
+                        receivers.sender_reports(&compound, Instant::now());
+                    }
                     if let Some(sender) = sender.as_mut()
-                        && let Some(feedback) = crypto.feedback(&packet[..length], video_ssrc)
+                        && let Some(feedback) = rtp::feedback(&compound, video_ssrc)
                         && announced
                         && dave.ready
                         && !dave.transitioning()
@@ -693,11 +759,14 @@ pub(crate) async fn run(
                 }
                 let Some(rtp) = crypto.open(&packet[..length]) else { continue };
                 tally[1] += 1;
+                let arrived = Instant::now();
+                receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
                 if !dave.ready {
                     continue;
                 }
                 match rtp.payload_type {
                     rtp::OPUS_PAYLOAD_TYPE => {
+                        receivers.observe_audio(rtp.ssrc, rtp.sequence, rtp.timestamp, arrived);
                         let Some(user) = mixer.user(rtp.ssrc) else { continue };
                         if !dave.contains(user) {
                             continue;
@@ -707,10 +776,16 @@ pub(crate) async fn run(
                     }
                     rtp::H264_PAYLOAD_TYPE | rtp::H264_RTX_PAYLOAD_TYPE => {
                         tally[2] += 1;
-                        let now = Instant::now();
+                        let now = arrived;
                         receivers.push(rtp, now);
                         if dave.session.is_ready() && !dave.transitioning() {
                             tally[3] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
+                            // NACK for a hole and PLI for a lost chain go as soon as they are due, not on the tick.
+                            if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
+                                for (header, body) in receivers.feedback(ssrc, now) {
+                                    udp_failures.send(socket, &crypto.seal_rtcp(&header, &body)?, "Stream feedback send failed")?;
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -794,6 +869,10 @@ pub(crate) async fn run(
                                     return Err("Unexpected stream session description");
                                 }
                                 let mode = mode.ok_or("Unexpected stream session description")?;
+                                if let Some(interval) = signal::keyframe_interval(data) {
+                                    keyframe_interval = interval;
+                                    debug!(interval, "stream keyframe interval");
+                                }
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
@@ -802,6 +881,15 @@ pub(crate) async fn run(
                                 if !sending && hub.has_sink() {
                                     text(&mut ws, signal::media_sink_wants(100)).await?;
                                     sink_wants_at = Instant::now() + SINK_WANTS_INTERVAL;
+                                }
+                            }
+                            Some(VoiceOp::SessionUpdate) => {
+                                if let Some(interval) = signal::keyframe_interval(data) {
+                                    keyframe_interval = interval;
+                                    if let Some(sender) = sender.as_mut() {
+                                        sender.set_keyframe_interval(interval);
+                                    }
+                                    debug!(interval, "stream keyframe interval");
                                 }
                             }
                             Some(VoiceOp::Speaking) => {

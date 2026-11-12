@@ -76,7 +76,7 @@ impl Root {
     /// `header_cuaHiV`: the profile select and the collapse button.
     fn profile_editor_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let name = match self.profile_editor.as_ref().and_then(|open| open.guild) {
-            None => "Main Profile".to_owned(),
+            None => dc_intl::tr("Main Profile").to_owned(),
             Some(guild) => self
                 .stores
                 .guilds
@@ -386,12 +386,12 @@ impl Root {
         }
         groups = groups
             .child(section(
-                servers::group_label("Nameplate", locked),
+                servers::group_label(dc_intl::tr("Nameplate"), locked),
                 div().child(nameplate),
                 locked,
             ))
             .child(section(
-                servers::group_label("Avatar & Decoration", locked),
+                servers::group_label(dc_intl::tr("Avatar & Decoration"), locked),
                 div()
                     .flex()
                     .gap(px(8.))
@@ -402,12 +402,12 @@ impl Root {
         if nitro_groups {
             groups = groups
                 .child(section(
-                    servers::nitro_label("Display Name Style", locked),
+                    servers::nitro_label(dc_intl::tr("Display Name Style"), locked),
                     div().child(name_bar),
                     locked,
                 ))
                 .child(section(
-                    servers::nitro_label("Theme & Banner", locked),
+                    servers::nitro_label(dc_intl::tr("Theme & Banner"), locked),
                     div()
                         .flex()
                         .gap(px(8.))
@@ -419,7 +419,7 @@ impl Root {
             groups = groups.child(group("Banner Color").child(banner_tile));
         }
         groups = groups.child(section(
-            servers::group_label("Profile Effect & Frame", locked),
+            servers::group_label(dc_intl::tr("Profile Effect & Frame"), locked),
             div()
                 .flex()
                 .gap(px(8.))
@@ -487,7 +487,7 @@ impl Root {
                             .id("profile-editor-nitro-link")
                             .cursor_pointer()
                             .text_color(color("--text-link"))
-                            .child("Nitro")
+                            .child(dc_intl::tr("Nitro"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
                     ),
             )
@@ -508,7 +508,7 @@ impl Root {
                         "--control-primary-text-default",
                     ))
                     .child(text(
-                        "Preview Nitro",
+                        dc_intl::tr("Preview Nitro"),
                         14.,
                         18.,
                         500.,
@@ -558,7 +558,13 @@ impl Root {
                         cx.notify();
                     })),
             )
-            .child(text("Preview Nitro", 16., 20., 500., "--text-default"));
+            .child(text(
+                dc_intl::tr("Preview Nitro"),
+                16.,
+                20.,
+                500.,
+                "--text-default",
+            ));
         let name_preview = tile("profile-editor-try-name", 208., 42.)
             .flex()
             .items_center()
@@ -645,7 +651,7 @@ impl Root {
                     .text_color(color("--control-secondary-text-default")),
             )
             .child(text(
-                "Surprise Me!",
+                dc_intl::tr("Surprise Me!"),
                 14.,
                 18.,
                 500.,
@@ -673,9 +679,9 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-default"))
-                            .child(
+                            .child(dc_intl::tr(
                                 "You're previewing what your profile could look like with Nitro",
-                            ),
+                            )),
                     )
                     .child(surprise),
             )
