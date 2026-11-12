@@ -199,7 +199,9 @@ impl Default for Identity {
 pub struct IdentifyState {
     pub focused: bool,
     pub active: bool,
-    /// Module 894768 starts at `online` and follows the settings proto once it arrives.
+    /// Module 894768 (`SelfPresenceStore`): until the connection opens the local status is `unknown`, so the
+    /// server keeps the status saved on the account; `online` here would show an invisible or do-not-disturb
+    /// account as online at every login.
     pub status: String,
     pub qos_derived: Option<String>,
     pub installation_id: Option<String>,
@@ -210,7 +212,7 @@ impl Default for IdentifyState {
         Self {
             focused: false,
             active: false,
-            status: "online".to_owned(),
+            status: "unknown".to_owned(),
             qos_derived: None,
             installation_id: None,
         }
@@ -270,6 +272,13 @@ mod tests {
             .collect();
         assert_eq!(keys, RECORDED_ORDER);
         assert_eq!(value["client_build_number"], 667580);
+    }
+
+    #[test]
+    fn a_login_leaves_the_saved_status_to_the_server() {
+        let value = identity().identify(&Token::new("t"), &IdentifyState::default());
+        assert_eq!(value["presence"]["status"], "unknown");
+        assert_eq!(value["presence"]["activities"], json!([]));
     }
 
     #[test]

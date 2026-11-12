@@ -68,6 +68,7 @@ impl Root {
             confirm_pin,
             confirm_unpin,
             leave_guild,
+            destructive,
             leaving,
             poll,
             editing,

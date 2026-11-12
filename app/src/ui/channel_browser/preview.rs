@@ -101,7 +101,7 @@ impl Root {
     pub(in crate::ui) fn end_browser_resize(&mut self) {
         if let Some(browser) = self.channel_browser.as_mut()
             && browser.resize_from.take().is_some()
-            && std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() != Ok("1")
+            && !crate::storage::settings_writes_blocked()
         {
             crate::storage::set(
                 "threadSidebarWidth",

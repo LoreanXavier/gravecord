@@ -1638,7 +1638,7 @@ impl Root {
     }
 
     /// "Delete '{name}'" (`design/dom/modals/delete-server-darker-cozy.json`): the server's name typed back under
-    /// "Enter server name", then `DELETE /guilds/{id}`; a wrong name says `c2/DS/`.
+    /// "Enter server name", then `POST /guilds/{id}/delete`; a wrong name says `c2/DS/`.
     pub(super) fn delete_server_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;
         let (field, _) = open.delete_name.as_ref()?;
@@ -1726,12 +1726,7 @@ impl Root {
                                 open.delete_wrong = true;
                                 return;
                             }
-                            let _ = this.requests.send(Request::Rest {
-                                key: None,
-                                method: reqwest::Method::DELETE,
-                                route: format!("/guilds/{guild}"),
-                                body: None,
-                            });
+                            let _ = this.requests.send(delete_guild_request(guild));
                             this.server_settings = None;
                             this.select_home(None);
                         },
@@ -1749,8 +1744,35 @@ impl Root {
     }
 }
 
+/// `deleteGuild` (module 727419): `POST /guilds/{id}/delete` (`GUILD_DELETE`, module 652215), which is the route that
+/// takes the MFA step; the plain `DELETE /guilds/{id}` is not what the official client sends.
+fn delete_guild_request(guild: Id) -> Request {
+    Request::Rest {
+        key: None,
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild}/delete"),
+        body: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deleting_a_server_is_the_official_post() {
+        let super::Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = super::delete_guild_request(42)
+        else {
+            panic!("not rest");
+        };
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/guilds/42/delete");
+        assert!(body.is_none());
+    }
+
     use super::*;
 
     #[test]

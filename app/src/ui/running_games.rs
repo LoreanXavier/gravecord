@@ -33,6 +33,11 @@ pub(super) struct Games {
     /// The status and activities of the last presence update. The status is empty until one pass has seen it: the
     /// connection's own handshake already carried it.
     sent: (String, Vec<Value>),
+    /// The `since` and `afk` of the last presence update (the handshake carries zero and false).
+    sent_idle: (u64, bool),
+    /// `IdleStore` now (module 885576), sampled every ten seconds, and the last moment the app saw the account act.
+    idle: crate::idle::Idle,
+    app_activity_ms: u64,
     limiter: SendLimiter,
     /// `LocalActivityStore`: the activities games set over the local RPC pipe.
     local: dc_state::local_activity::LocalActivityStore,
@@ -63,6 +68,9 @@ impl Games {
             saved: store.to_json(),
             store,
             sent: (String::new(), Vec::new()),
+            sent_idle: (0, false),
+            idle: crate::idle::Idle::default(),
+            app_activity_ms: now_ms(),
             limiter: SendLimiter::default(),
             local: dc_state::local_activity::LocalActivityStore::default(),
             connected: false,
@@ -285,7 +293,11 @@ impl Root {
     /// changed activity list goes to the gateway as op 3 (never in a harness run, see `Request::Presence`).
     pub(super) fn refresh_own_presence(&mut self) {
         let show = self.pref_on("activity_privacy_setting", true);
-        let status = self.stores.status.clone();
+        // A status set for a time that has run out is online again, even when the server's update was missed.
+        let status = self.stores.status_at(now_ms());
+        if status != self.stores.status && !status.is_empty() {
+            self.stores.status = status.clone();
+        }
         // What a game's handshake and `SET_ACTIVITY` read: the account, and the party privacy settings.
         crate::rpc::set_user(self.stores.current_user.as_ref().map(crate::rpc::user_json));
         crate::rpc::set_party_privacy(
@@ -308,13 +320,22 @@ impl Root {
             };
             self.stores
                 .presence
-                .set_own(games::presence_status(&status), shown);
+                .set_own(crate::idle::wire_status(&status, &self.detect.idle), shown);
         }
-        if status.is_empty() || !self.detect.connected || self.stores.current_user.is_none() {
+        // Without the account's own settings its saved status is unknown: nothing goes out that would guess it.
+        if status.is_empty()
+            || !self.detect.connected
+            || self.stores.current_user.is_none()
+            || !self.stores.settings_loaded()
+        {
             return;
         }
-        let wire = games::presence_status(&status).to_owned();
-        if !games::presence_changed(&self.detect.sent, &wire, &activities) {
+        // Module 894768: an online account that is idle goes out as `idle`, with `since` and `afk`.
+        let wire = crate::idle::wire_status(&status, &self.detect.idle).to_owned();
+        let idle = (self.detect.idle.since(), self.detect.idle.afk);
+        if !games::presence_changed(&self.detect.sent, &wire, &activities)
+            && self.detect.sent_idle == idle
+        {
             self.detect.sent.0 = wire;
             return;
         }
@@ -322,10 +343,43 @@ impl Root {
             return;
         }
         self.detect.sent = (wire.clone(), activities.clone());
+        self.detect.sent_idle = idle;
         let _ = self.requests.send(Request::Presence {
             status: wire,
             activities,
+            since: idle.0,
+            afk: idle.1,
         });
+    }
+
+    /// `IdleStore` (module 885576): every ten seconds the system's input age, with what the app saw the account do,
+    /// says whether it is idle or AFK; a change goes out as op 3 (`refresh_own_presence`). A lapsed timed status is
+    /// noticed on the same beat.
+    pub(super) fn idle_beat(&mut self, system_idle_ms: u64, cx: &mut Context<Self>) {
+        let now = now_ms();
+        let afk_seconds = self
+            .stores
+            .prefs
+            .get("mobile_notification_delay")
+            .copied()
+            .unwrap_or(crate::idle::DEFAULT_AFK_SECONDS);
+        let idle = crate::idle::Idle::sample(
+            now,
+            system_idle_ms,
+            self.detect.app_activity_ms,
+            afk_seconds,
+        );
+        let lapsed = self.stores.status_at(now) != self.stores.status;
+        if idle != self.detect.idle || lapsed {
+            self.detect.idle = idle;
+            self.refresh_own_presence();
+            cx.notify();
+        }
+    }
+
+    /// The account did something here (a channel opened, a word spoken): the idle clock starts over.
+    pub(super) fn note_activity(&mut self) {
+        self.detect.app_activity_ms = now_ms();
     }
 
     /// The category's subtitle (`useSubtitle` of `REGISTERED_GAMES_ADDED_GAMES_CATEGORY`).

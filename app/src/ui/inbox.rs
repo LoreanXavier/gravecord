@@ -520,6 +520,17 @@ impl Root {
         cx: &mut Context<Self>,
         run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
     ) -> AnyElement {
+        self.inbox_button_shift(id, name, cx, move |this, _, cx| run(this, cx))
+    }
+
+    /// The same button, told whether Shift was held (Mark All as Read skips its question then, module 713024).
+    fn inbox_button_shift(
+        &self,
+        id: String,
+        name: &'static str,
+        cx: &mut Context<Self>,
+        run: impl Fn(&mut Root, bool, &mut Context<Root>) + 'static,
+    ) -> AnyElement {
         div()
             .id(SharedString::from(id))
             .size(px(32.))
@@ -532,11 +543,13 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.click_at = window.mouse_position();
-                run(this, cx);
-                cx.notify();
-            }))
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    this.click_at = window.mouse_position();
+                    run(this, event.modifiers().shift, cx);
+                    cx.notify();
+                }),
+            )
             .child(icon(name, 16., "--control-secondary-text-default"))
             .into_any_element()
     }
@@ -1251,10 +1264,31 @@ impl Root {
         });
     }
 
-    /// Mark All as Read: every card's channel at once.
-    fn ack_all_unreads(&mut self) {
-        let listed: Vec<(Id, Id)> = self
-            .unread_channels()
+    /// Mark All as Read (module 713024 `tI`): asks first, unless Shift is held; then every card's channel is acked
+    /// at once through the bulk route (module 182179 `K`: `P.Uq`).
+    fn ask_ack_all_unreads(&mut self, shift: bool, cx: &mut Context<Self>) {
+        let listed = self.unread_reads();
+        if listed.is_empty() {
+            return;
+        }
+        if shift {
+            self.ack_all_unreads(cx);
+        } else {
+            self.ask_destructive(super::destructive::Pending::mark_all_read(listed), cx);
+        }
+    }
+
+    fn ack_all_unreads(&mut self, cx: &mut Context<Self>) {
+        let listed = self.unread_reads();
+        for (channel, _) in &listed {
+            self.inbox_read.insert(*channel);
+        }
+        self.mark_read_bulk(&listed, cx);
+    }
+
+    /// The `(channel, newest message)` of every card of the Unreads tab.
+    fn unread_reads(&self) -> Vec<(Id, Id)> {
+        self.unread_channels()
             .into_iter()
             .filter_map(|(_, channel)| {
                 let newest = self
@@ -1266,12 +1300,10 @@ impl Root {
                     .filter_map(Message::from_value)
                     .map(|message| message.id)
                     .max()?;
-                Some((channel, newest))
+                let known = self.stores.read_states.latest.get(&channel).copied();
+                Some((channel, known.map_or(newest, |known| known.max(newest))))
             })
-            .collect();
-        for (channel, newest) in listed {
-            self.ack_channel(channel, newest);
-        }
+            .collect()
     }
 
     fn inbox_page(&self, tab: InboxTab, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1483,11 +1515,11 @@ impl Root {
                                 )
                             })
                             .when(tab == InboxTab::Unreads, |this| {
-                                this.child(div().mr(px(8.)).child(self.inbox_button(
+                                this.child(div().mr(px(8.)).child(self.inbox_button_shift(
                                     "inbox-mark-all".to_owned(),
                                     "inbox_mark_all",
                                     cx,
-                                    |this, _| this.ack_all_unreads(),
+                                    |this, shift, cx| this.ask_ack_all_unreads(shift, cx),
                                 )))
                             })
                             .child(

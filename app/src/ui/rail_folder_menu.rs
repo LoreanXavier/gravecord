@@ -130,23 +130,19 @@ impl Root {
     }
 
     /// "Mark Folder As Read": every server of the folder is acknowledged (`ackGuilds`, module 567035).
-    fn mark_folder_read(&mut self, folder: u64) {
+    fn mark_folder_read(&mut self, folder: u64, cx: &mut Context<Self>) {
         let guilds = self
             .stores
             .folders
             .folder(folder)
             .map(|folder| folder.guilds.clone())
             .unwrap_or_default();
-        for guild in guilds {
-            let channels: Vec<u64> = self
-                .stores
-                .guild(guild)
-                .map(|guild| guild.channels.iter().map(|channel| channel.id).collect())
-                .unwrap_or_default();
-            for channel in channels {
-                self.mark_channel_read(channel);
-            }
-        }
+        // One bulk ack for all the folder's servers, as `A([guildIds])` of module 567035 builds it.
+        let reads: Vec<(u64, u64)> = guilds
+            .into_iter()
+            .flat_map(|guild| self.guild_unread_reads(guild))
+            .collect();
+        self.mark_read_bulk(&reads, cx);
     }
 
     pub(super) fn folder_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -196,7 +192,7 @@ impl Root {
             row("folder-menu-read", "Mark Folder As Read", !unread)
                 .when(unread, |this| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.mark_folder_read(folder);
+                        this.mark_folder_read(folder, cx);
                         this.rail_folders.menu = None;
                         cx.notify();
                     }))

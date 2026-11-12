@@ -234,9 +234,11 @@ impl Root {
         match relationship {
             1 => list.push(
                 small_button("welcome-remove", "Remove Friend", Tone::Secondary, true)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)),
-                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // The same question the menu row asks before a friend is removed.
+                        this.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(id));
+                        cx.notify();
+                    }))
                     .into_any_element(),
             ),
             2 => list.push(

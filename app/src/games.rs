@@ -433,6 +433,15 @@ pub fn presence_body(status: &str, activities: &[Value]) -> Value {
     })
 }
 
+/// Op 3 with the idle rule (module 894768 `getLocalPresence`): `since` is when the idle began (zero while active),
+/// `afk` whether the account is AFK; the status is already the wire one (`idle::wire_status`).
+pub fn presence_body_idle(status: &str, activities: &[Value], since: u64, afk: bool) -> Value {
+    let mut body = presence_body(status, activities);
+    body["since"] = json!(since);
+    body["afk"] = json!(afk);
+    body
+}
+
 /// A harness run never sends a presence update, whatever it carries: the test account's visible status must not
 /// change (`account_write_refused` in `net.rs` is the same guard for REST writes).
 pub fn presence_refused(capture: bool) -> bool {
@@ -481,6 +490,15 @@ mod tests {
         // Anything that is not one of the four statuses goes out as online.
         assert_eq!(presence_body("", &[])["status"], "online");
         assert_eq!(presence_body("dnd", &[])["status"], "dnd");
+    }
+
+    #[test]
+    fn an_idle_account_sends_since_and_afk() {
+        let body = presence_body_idle("idle", &[], 1_700_000_000_000, true);
+        assert_eq!(body["status"], "idle");
+        assert_eq!(body["since"], 1_700_000_000_000u64);
+        assert_eq!(body["afk"], true);
+        assert_eq!(presence_body_idle("online", &[], 0, false)["since"], 0);
     }
 
     #[test]

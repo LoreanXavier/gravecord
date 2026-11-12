@@ -28,6 +28,12 @@ pub fn is_capture_run() -> bool {
     cfg!(feature = "capture") || std::env::args().any(|arg| arg == "--capture")
 }
 
+/// Harness runs set `GRAVECORD_NO_SETTINGS_WRITE` so a scripted click never changes the account's settings. The
+/// switch only exists in a capture build; a shipped build ignores the variable and always writes.
+pub fn settings_writes_blocked() -> bool {
+    cfg!(feature = "capture") && std::env::var_os("GRAVECORD_NO_SETTINGS_WRITE").is_some()
+}
+
 /// `%LOCALAPPDATA%\gravecord` (or `gravecord-capture`): where this run keeps its files.
 pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join(folder(is_capture_run())))

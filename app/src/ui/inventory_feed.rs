@@ -113,6 +113,7 @@ impl Root {
                 if this
                     .update(cx, |this, cx| {
                         this.inventory.idle_ms = idle_ms;
+                        this.idle_beat(idle_ms, cx);
                         this.schedule_inventory(cx);
                     })
                     .is_err()

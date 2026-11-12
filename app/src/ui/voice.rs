@@ -275,6 +275,10 @@ impl Root {
                 self.sync_ptt_hook();
             }
             dc_voice::Event::SpeakingChanged { user_id, speaking } => {
+                // `SPEAKING` of the account itself is activity to `IdleStore` (module 885576).
+                if speaking && self.stores.current_user.as_ref().map(|me| me.id) == Some(user_id) {
+                    self.note_activity();
+                }
                 if speaking {
                     self.speaking.insert(user_id);
                 } else {

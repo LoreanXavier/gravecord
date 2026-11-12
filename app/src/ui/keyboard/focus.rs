@@ -258,6 +258,7 @@ impl Root {
                 self.confirm_unpin.is_some(),
                 self.leaving.is_some(),
                 self.leave_guild.is_some(),
+                self.destructive.is_some(),
                 self.logout_confirm,
                 self.rail_folders.settings.is_some(),
                 self.account_switcher_open(),

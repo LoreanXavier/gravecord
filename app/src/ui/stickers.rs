@@ -697,13 +697,7 @@ impl Root {
                 .replying
                 .take()
                 .map(|message| (self.guild, message.id, self.reply_ping));
-            let _ = self.requests.send(Request::SendSticker {
-                channel,
-                content: String::new(),
-                files: Vec::new(),
-                reply,
-                sticker_ids: vec![id],
-            });
+            self.start_local_sticker(channel, reply, id);
             // `STICKER_TRACK_USAGE`.
             self.stores.stickers.track(&[id], super::picker::now_ms());
         }
@@ -714,6 +708,9 @@ impl Root {
     /// `uK` and `vr`: the sticker joins the favourites or leaves them, and the whole list goes to the account's
     /// settings (limit 250, as the official strings say).
     fn toggle_favorite_sticker(&mut self, id: Id, cx: &mut Context<Self>) {
+        if self.sticker_ui.favorites.is_none() && !self.frecency_arrived() {
+            return;
+        }
         let mut list = self.favorite_sticker_ids();
         if let Some(at) = list.iter().position(|known| *known == id) {
             list.remove(at);
@@ -722,7 +719,7 @@ impl Root {
         } else {
             return;
         }
-        if std::env::var_os("GRAVECORD_NO_SETTINGS_WRITE").is_none() {
+        if !crate::storage::settings_writes_blocked() {
             let patch = dc_proto::frecency::favorite_stickers_patch(&list);
             let _ = self.requests.send(Request::Rest {
                 key: None,

@@ -378,6 +378,13 @@ pub fn pref_patch(pref: &ProtoPref, value: u64) -> String {
 }
 
 /// The theme, which the Appearance page's swatches set; kept here so a test and the harness can write it back.
+/// "Don't show this again" on an ignored profile (`ignoreProfileSpeedbumpDisabled`), written with the rest of the
+/// safety settings the account holds: a message with this one field would replace the whole safety message.
+pub const IGNORE_SPEEDBUMP_DISABLED: ProtoPref = pref(
+    "ignore_profile_speedbump_disabled",
+    &[FIELD_SAFETY],
+    SAFETY_IGNORE_SPEEDBUMP_DISABLED,
+);
 pub const THEME: ProtoPref = pref("appearance_theme", &[13], 1);
 /// `appearance.client_theme_settings.background_gradient_preset_id`: the Nitro colour theme (see `PROTO_PREFS`).
 pub const CLIENT_THEME_PRESET: ProtoPref = pref("appearance_client_theme_preset", &[13, 3, 2], 1);

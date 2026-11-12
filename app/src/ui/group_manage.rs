@@ -351,7 +351,6 @@ impl Root {
                     cx.notify();
                 }
             }))
-            .ml(px(-7.))
             .h(px(32.))
             .flex()
             .flex_row()
@@ -405,10 +404,14 @@ impl Root {
             });
         self.with_tip(
             "group-header-name-tip",
-            Tip::text("Edit Group", Side::Bottom),
+            // The pencil is laid out when the pointer arrives, and the official tooltip is placed against the widened
+            // pill; one frame's wait lets the anchor be re-read after that layout.
+            Tip::text("Edit Group", Side::Bottom).after(16),
             button,
             cx,
         )
+        // The pill starts 7px left of the text column; the offset sits outside the tooltip's anchor.
+        .ml(px(-7.))
         .into_any_element()
     }
 
@@ -649,7 +652,7 @@ impl Root {
             return;
         }
         let patch = self.stores.dismiss_content(GDM_COACHMARK);
-        if patch.is_empty() || std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() == Ok("1") {
+        if patch.is_empty() || crate::storage::settings_writes_blocked() {
             return;
         }
         let _ = self.requests.send(Request::Rest {

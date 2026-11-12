@@ -153,6 +153,15 @@ impl Root {
             .unwrap_or_default()
     }
 
+    /// Whether the account's frecency settings (favourite GIFs and stickers) have arrived. Their writers send a
+    /// whole list that replaces the account's, so a list built before the fetch answered (or after it failed)
+    /// would erase every favourite the account holds.
+    pub(super) fn frecency_arrived(&self) -> bool {
+        self.fetched
+            .get(super::actions::FRECENCY_KEY)
+            .is_some_and(|body| body["settings"].is_string())
+    }
+
     fn favorites_as_gifs(&self) -> Vec<Gif> {
         self.favorite_gif_list()
             .into_iter()
@@ -170,6 +179,9 @@ impl Root {
     /// `toggle` in module 497685: the GIF joins the favourites or leaves them, and the whole message goes to the
     /// account's frecency settings (the server replaces `favorite_gifs` as one).
     fn toggle_favorite_gif(&mut self, gif: &Gif, cx: &mut Context<Self>) {
+        if self.favorite_gifs.is_none() && !self.frecency_arrived() {
+            return;
+        }
         let video = gif.picture.contains(".mp4") || gif.picture.contains(".webm");
         let favorite = dc_proto::frecency::FavoriteGif {
             url: gif.url.clone(),
@@ -180,7 +192,7 @@ impl Root {
             order: 0,
         };
         let list = dc_proto::frecency::toggle_favorite_gif(self.favorite_gif_list(), favorite);
-        if std::env::var_os("GRAVECORD_NO_SETTINGS_WRITE").is_none() {
+        if !crate::storage::settings_writes_blocked() {
             let patch = dc_proto::frecency::favorite_gifs_patch(&list, list.len() > 2);
             let _ = self.requests.send(Request::Rest {
                 key: None,
@@ -352,12 +364,7 @@ impl Root {
             route: "/gifs/select".to_owned(),
             body: Some(json!({"id": gif.id, "q": query})),
         });
-        let _ = self.requests.send(Request::Send {
-            channel,
-            content: gif.url.clone(),
-            files: Vec::new(),
-            reply: None,
-        });
+        self.start_local_text(channel, gif.url.clone());
         self.picker = None;
         cx.notify();
     }

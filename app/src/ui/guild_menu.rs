@@ -50,6 +50,29 @@ const CREATE_EVENTS: u64 = 1 << 44;
 /// `OPT_IN_ENABLED` of a server's notification settings flags (module 395504 `WW`).
 const OPT_IN_ENABLED: u64 = 16384;
 
+/// The flags Show All Channels writes: the cached ones with the opt-in bit turned. With no settings loaded at all
+/// the other bits are unknown, so nothing is written; a server missing from loaded settings holds the default 0.
+fn toggled_opt_in(cached: Option<u64>, settings_loaded: bool) -> Option<u64> {
+    match cached {
+        Some(flags) => Some(flags ^ OPT_IN_ENABLED),
+        None if settings_loaded => Some(OPT_IN_ENABLED),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod opt_in_tests {
+    use super::*;
+
+    #[test]
+    fn show_all_keeps_the_other_flag_bits_and_never_guesses() {
+        assert_eq!(toggled_opt_in(Some(5), true), Some(5 | OPT_IN_ENABLED));
+        assert_eq!(toggled_opt_in(Some(5 | OPT_IN_ENABLED), true), Some(5));
+        assert_eq!(toggled_opt_in(None, true), Some(OPT_IN_ENABLED));
+        assert_eq!(toggled_opt_in(None, false), None);
+    }
+}
+
 /// Members who are not the owner can leave: the owner has to transfer or delete the server instead.
 const LEAVE: &[(Entry, &str, &str)] = &[(Entry::Leave, "guild_menu_leave", "Leave Server")];
 
@@ -176,7 +199,16 @@ impl Root {
             // `Lu` of module 234053 turns the opt-in flag of the server's notification settings (`d.e4`). Its other
             // branch, a member who never finished onboarding, onboards them instead and is not built.
             Entry::ShowAll => {
-                let flags = self.opt_in_flags(guild) ^ OPT_IN_ENABLED;
+                let known = self
+                    .stores
+                    .guild_settings
+                    .guilds
+                    .get(&guild)
+                    .map(|s| s.flags);
+                let loaded = !self.stores.guild_settings.guilds.is_empty();
+                let Some(flags) = toggled_opt_in(known, loaded) else {
+                    return;
+                };
                 self.stores
                     .guild_settings
                     .guilds

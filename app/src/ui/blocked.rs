@@ -276,12 +276,18 @@ impl Root {
 impl Root {
     /// `j0.updateSetting(true)`: the settings-proto PATCH, kept locally at once, and this profile shown.
     fn disable_ignore_speedbump(&mut self, user: Id) {
-        let _ = self.requests.send(crate::net::Request::Rest {
-            key: None,
-            method: reqwest::Method::PATCH,
-            route: "/users/@me/settings-proto/1".to_owned(),
-            body: Some(serde_json::json!({"settings": dc_proto::settings::ignore_speedbump_disabled_patch()})),
-        });
+        // Built from the account's whole safety message; nothing is sent before the settings have arrived.
+        let patch = self
+            .stores
+            .set_pref(&dc_proto::settings::IGNORE_SPEEDBUMP_DISABLED, 1);
+        if !patch.is_empty() {
+            let _ = self.requests.send(crate::net::Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route: "/users/@me/settings-proto/1".to_owned(),
+                body: Some(serde_json::json!({"settings": patch})),
+            });
+        }
         self.stores.ignore_speedbump_disabled = true;
         self.shown_blocked_profiles.insert(user);
     }

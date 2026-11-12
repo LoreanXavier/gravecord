@@ -87,6 +87,16 @@ pub(in crate::ui) struct Device {
     pub used: i64,
 }
 
+/// Takes this client's own device out of the list: the one whose hash READY gave as `auth_session_id_hash` (module
+/// 158935 `NF`), so that "Log Out All Known Devices" never includes it. READY's hash missing, the newest device stands in.
+pub(in crate::ui) fn take_current(devices: &mut Vec<Device>, own: Option<&str>) -> Option<Device> {
+    let index = match own {
+        Some(hash) => devices.iter().position(|device| device.hash == hash),
+        None => (!devices.is_empty()).then_some(0),
+    }?;
+    Some(devices.remove(index))
+}
+
 pub(in crate::ui) fn devices_of(list: &[Value], now: i64) -> Vec<Device> {
     let mut devices: Vec<Device> = list
         .iter()
@@ -173,7 +183,7 @@ impl Root {
         };
         let now = chrono::Utc::now().timestamp();
         let mut devices = devices_of(list, now);
-        let current = (!devices.is_empty()).then(|| devices.remove(0));
+        let current = take_current(&mut devices, self.stores.auth_session_id_hash.as_deref());
         let row = |device: &Device, removable: bool, cx: &mut Context<Self>| {
             let hash = device.hash.clone();
             let description = [
@@ -824,6 +834,26 @@ mod tests {
         };
         assert_eq!(route, "/auth/sessions/logout");
         assert_eq!(body, Some(json!({"session_id_hashes": ["a", "b"]})));
+    }
+
+    #[test]
+    fn the_current_device_is_the_one_ready_names() {
+        let list = vec![
+            json!({"id_hash": "phone", "approx_last_used_time": "2026-11-01T00:00:00+00:00", "client_info": {"os": "iOS"}}),
+            json!({"id_hash": "me", "approx_last_used_time": "2026-10-01T00:00:00+00:00", "client_info": {"os": "Windows"}}),
+        ];
+        let mut devices = devices_of(&list, chrono::Utc::now().timestamp());
+        let current = take_current(&mut devices, Some("me")).expect("current");
+        assert_eq!(current.hash, "me");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].hash, "phone");
+        let mut devices = devices_of(&list, chrono::Utc::now().timestamp());
+        assert!(take_current(&mut devices, Some("gone")).is_none());
+        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            take_current(&mut devices, None).expect("fallback").hash,
+            "phone"
+        );
     }
 
     #[test]

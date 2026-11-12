@@ -37,6 +37,14 @@ fn with_role(mut roles: Vec<Id>, role: Id) -> Vec<Id> {
     roles
 }
 
+/// The roles of a member the store holds; `None` for a member it does not know.
+fn known_roles(stores: &dc_state::Stores, guild: Id, user: Id) -> Option<Vec<Id>> {
+    stores
+        .members
+        .get(guild, user)
+        .map(|member| member.roles.clone())
+}
+
 /// The member's role list after `role` is taken (`filter(e=>e!==t.id)`).
 fn without_role(roles: Vec<Id>, role: Id) -> Vec<Id> {
     roles.into_iter().filter(|id| *id != role).collect()
@@ -311,27 +319,25 @@ impl Root {
         role: Id,
         cx: &mut Context<Self>,
     ) {
-        let roles = self
-            .stores
-            .members
-            .get(guild, user)
-            .map(|member| member.roles.clone())
-            .unwrap_or_default();
-        self.send_member_roles(guild, user, with_role(roles, role));
         self.role_picker = None;
+        // The request carries the whole list: without the member's known roles it would replace them all.
+        if let Some(roles) = self.known_member_roles(guild, user) {
+            self.send_member_roles(guild, user, with_role(roles, role));
+        }
         cx.notify();
     }
 
     /// The chip's X: the list goes back without the role (`F` of module 166005).
     fn remove_member_role(&mut self, guild: Id, user: Id, role: Id, cx: &mut Context<Self>) {
-        let roles = self
-            .stores
-            .members
-            .get(guild, user)
-            .map(|member| member.roles.clone())
-            .unwrap_or_default();
-        self.send_member_roles(guild, user, without_role(roles, role));
+        if let Some(roles) = self.known_member_roles(guild, user) {
+            self.send_member_roles(guild, user, without_role(roles, role));
+        }
         cx.notify();
+    }
+
+    /// The roles the member has now, or `None` when the member is not known (nothing may be written then).
+    fn known_member_roles(&self, guild: Id, user: Id) -> Option<Vec<Id>> {
+        known_roles(&self.stores, guild, user)
     }
 
     fn send_member_roles(&mut self, guild: Id, user: Id, roles: Vec<Id>) {
@@ -457,6 +463,11 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_member_has_no_list_to_write_back() {
+        assert_eq!(known_roles(&dc_state::Stores::default(), 1, 2), None);
+    }
 
     #[test]
     fn giving_a_role_keeps_the_list_and_adds_it_once() {

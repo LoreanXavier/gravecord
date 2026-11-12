@@ -272,7 +272,7 @@ impl Root {
             return;
         }
         let patch = self.stores.dismiss_content(content);
-        if std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() != Ok("1") {
+        if !crate::storage::settings_writes_blocked() {
             let _ = self.requests.send(Request::Rest {
                 key: None,
                 method: reqwest::Method::PATCH,
@@ -548,7 +548,7 @@ impl Root {
         if enable {
             update["flags"] = json!(entry.flags);
         }
-        if std::env::var("GRAVECORD_NO_SETTINGS_WRITE").as_deref() != Ok("1") {
+        if !crate::storage::settings_writes_blocked() {
             let _ = self.requests.send(Request::GuildSettings {
                 body: json!({"guilds":{guild.to_string():update}}),
             });

@@ -125,6 +125,8 @@ mod tests {
                 Request::Presence {
                     status: "online".into(),
                     activities: Vec::new(),
+                    since: 0,
+                    afk: false,
                 },
                 Inert::Deny,
             ),

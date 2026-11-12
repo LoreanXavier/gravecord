@@ -55,9 +55,6 @@ pub enum Error {
     Header,
 }
 
-/// 401 with this code is a step-up (MFA) request for a sensitive action, not a dead token.
-const MFA_REQUIRED: u64 = 60003;
-
 pub struct Client {
     http: reqwest::Client,
     /// Replaced when the account's token is renewed (`UPDATE_TOKEN`, module 631670 `KD`).
@@ -146,8 +143,11 @@ impl Client {
     }
 
     fn note_status(&self, status: StatusCode, body: &Value) {
+        // Only the plain answer to a token the server no longer accepts (`{"message": "401: Unauthorized",
+        // "code": 0}`, or no code at all) ends the login. A 401 with any other code is about that one request (a
+        // step-up, a route's own refusal) and must not throw away the stored login of the account.
         if status == StatusCode::UNAUTHORIZED
-            && body["code"].as_u64() != Some(MFA_REQUIRED)
+            && body["code"].as_u64().unwrap_or(0) == 0
             && let Some(hook) = &self.unauthorized
         {
             hook();
@@ -526,6 +526,7 @@ mod tests {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             });
         client.note_status(StatusCode::UNAUTHORIZED, &json!({"code": 60003}));
+        client.note_status(StatusCode::UNAUTHORIZED, &json!({"code": 50014}));
         client.note_status(StatusCode::FORBIDDEN, &json!({}));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         client.note_status(

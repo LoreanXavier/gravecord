@@ -499,10 +499,9 @@ impl Root {
         if !self.stores.guild_unread(known) {
             return;
         }
-        let channels: Vec<Id> = known.channels.iter().map(|channel| channel.id).collect();
-        for channel in channels {
-            self.mark_channel_read(channel);
-        }
+        // One bulk request per hundred channels, not one ack per channel (module 567035 through BULK_ACK).
+        let reads = self.guild_unread_reads(guild);
+        self.mark_read_bulk(&reads, cx);
         self.unread_from = None;
         self.list.scroll_to_end();
         cx.notify();
