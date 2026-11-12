@@ -2,8 +2,9 @@
 //! compared with `design/golden/windows/login/*@1.png`. Everything that talks to Discord is `dc-auth`; this file only
 //! draws the states it reports and turns clicks and typing into its commands.
 //!
-//! Left out here, on purpose: the passkey sign in and the WebAuthn second factor (both need the platform's WebAuthn
-//! dialog; `BLOCKED.md`). The captcha is hCaptcha's own widget in a `dc-webhost` surface over the dialog's slot.
+//! Left out here, on purpose: the passkey sign in with no password (`BLOCKED.md`). The WebAuthn second factor runs the
+//! system's prompt through `dc-webauthn`. The captcha is hCaptcha's own widget in a `dc-webhost` surface over the
+//! dialog's slot.
 
 use super::{color, editor_style, icon, window_controls};
 use crate::editor::{Editor, EditorEvent};
@@ -383,6 +384,7 @@ impl LoginView {
             }
             "mfa-webauthn"
             | "mfa-webauthn-failed"
+            | "mfa-webauthn-waiting"
             | "mfa-webauthn-only"
             | "mfa-select-webauthn" => {
                 let key = MfaMethod::WebAuthn("{}".to_owned());
@@ -393,7 +395,13 @@ impl LoginView {
                 };
                 self.apply(Event::Mfa(challenge(methods)), cx);
                 match state {
-                    "mfa-webauthn-failed" => self.authenticate_with_key(cx),
+                    // The state after the prompt closed without a credential (the stub answers on a timer, which a
+                    // frame taken at once would miss).
+                    "mfa-webauthn-failed" => {
+                        self.key_answered(Err(dc_webauthn::Error::Cancelled), cx)
+                    }
+                    // The prompt is open: the button waits.
+                    "mfa-webauthn-waiting" => self.authenticate_with_key(0, cx),
                     "mfa-select-webauthn" => self.goto_step(Step::Select, cx),
                     _ => {}
                 }
@@ -728,13 +736,64 @@ impl LoginView {
         cx.notify();
     }
 
-    /// "Authenticate with a passkey or security key". The platform's WebAuthn dialog is not built (`BLOCKED.md`), so
-    /// the attempt ends the way the official slide ends one the browser cannot complete: its own error sentence.
-    fn authenticate_with_key(&mut self, cx: &mut Context<Self>) {
-        if let Dialog::Mfa(mfa) = &mut self.dialog {
+    /// "Authenticate with a passkey or security key" (`Z` in module 397404): the challenge of the method goes to the
+    /// system's prompt over `window` (a handle, 0 for none), and its credential goes back as the code of
+    /// `POST /auth/mfa/webauthn`. A prompt that ends without a credential shows the slide's one error sentence.
+    fn authenticate_with_key(&mut self, window: isize, cx: &mut Context<Self>) {
+        let Dialog::Mfa(mfa) = &mut self.dialog else {
+            return;
+        };
+        if mfa.busy {
+            return;
+        }
+        let challenge = mfa
+            .challenge
+            .methods
+            .iter()
+            .find_map(|method| match method {
+                MfaMethod::WebAuthn(challenge) => Some(challenge.clone()),
+                _ => None,
+            });
+        let Some(challenge) = challenge else {
             mfa.error = Some(WEBAUTHN_FAILED.to_owned());
             cx.notify();
+            return;
+        };
+        mfa.busy = true;
+        mfa.error = None;
+        let answer = crate::webauthn::start(crate::webauthn::Kind::Get, window, challenge);
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await.unwrap_or(Err(dc_webauthn::Error::Cancelled));
+            this.update(cx, |this, cx| this.key_answered(answer, cx))
+                .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The prompt closed: its credential is posted as the second factor, anything else ends the attempt.
+    fn key_answered(&mut self, answer: crate::webauthn::Answer, cx: &mut Context<Self>) {
+        let Dialog::Mfa(mfa) = &mut self.dialog else {
+            return;
+        };
+        if mfa.step != Step::WebAuthn {
+            // The person went elsewhere while the prompt was open.
+            mfa.busy = false;
+            return;
         }
+        match answer {
+            Ok(credential) => {
+                let _ = self.commands.send(Command::Mfa {
+                    kind: MfaKind::WebAuthn,
+                    code: credential,
+                });
+            }
+            Err(_) => {
+                mfa.busy = false;
+                mfa.error = Some(WEBAUTHN_FAILED.to_owned());
+            }
+        }
+        cx.notify();
     }
 
     fn goto_step(&mut self, step: Step, cx: &mut Context<Self>) {
@@ -1798,12 +1857,20 @@ impl LoginView {
                     .into_any_element()
             }
             Step::WebAuthn => {
-                let authenticate = button(
+                // The button waits (`loading`) while the system prompt is open.
+                let authenticate = button_with(
                     "mfa-webauthn",
-                    "Authenticate with a passkey or security key",
+                    if mfa.busy {
+                        dots()
+                    } else {
+                        "Authenticate with a passkey or security key".into_any_element()
+                    },
                     Look::Primary,
                 )
-                .on_click(cx.listener(|this, _, _, cx| this.authenticate_with_key(cx)));
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let parent = crate::webauthn::parent(window);
+                    this.authenticate_with_key(parent, cx)
+                }));
                 div()
                     .child(div().px(px(24.)).pt(px(24.)).child(title))
                     .children(error.map(|error| div().px(px(24.)).pt(px(16.)).child(error)))

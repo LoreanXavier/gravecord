@@ -131,6 +131,11 @@ impl Root {
     pub(super) fn open_channel_messages(&mut self, channel: Id) {
         self.jump.pending = None;
         self.jump.flash = None;
+        // Mark Unread holds a channel only while it stays open: coming back to it reads it again (module 218461,
+        // `eZ` takes the channel out of the held set when another one is selected).
+        if let Some(state) = self.stores.read_states.states.get_mut(&channel) {
+            state.manual = false;
+        }
         if let Some(window) = self.stores.windows.get_mut(&channel) {
             window.jump_target_id = None;
             window.jumped = false;

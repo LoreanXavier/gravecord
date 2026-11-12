@@ -366,6 +366,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.gift_focus(window, cx);
         let (editor, focused, pending) = match self.settings_extra.conn.as_mut() {
             Some(Dlg::Handle(form)) => (
                 form.editor.clone(),

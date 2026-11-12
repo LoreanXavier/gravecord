@@ -178,6 +178,13 @@ impl Root {
         self.server_settings.as_mut().map(|open| &mut open.safety)
     }
 
+    /// Escape: an open verification or content-filter list closes before the page does.
+    pub(super) fn close_safety_select(&mut self) -> bool {
+        self.safety_mut().is_some_and(|state| {
+            state.open_picker.take().is_some() || std::mem::take(&mut state.select_open)
+        })
+    }
+
     /// The filter level the guild has, for the AutoMod page's `th`.
     pub(super) fn safety_content(&self) -> u64 {
         self.server_settings

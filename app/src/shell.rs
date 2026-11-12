@@ -138,7 +138,7 @@ impl Shell {
 
     fn start_session(&mut self, token: Token, window: &mut Window, cx: &mut Context<Self>) {
         let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (request_tx, request_rx) = net::request_channel();
         let hook_tx = update_tx.clone();
         if let Some(cached) = crate::ui::start_cache::load() {
             let _ = update_tx.send(net::Update::Cached(Box::new(cached)));

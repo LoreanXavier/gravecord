@@ -834,6 +834,12 @@ impl Root {
         self.server_settings.as_mut().map(|open| &mut open.audit)
     }
 
+    /// Escape: the Filter by User / Filter by Action list closes before the page does.
+    pub(super) fn close_audit_layer(&mut self) -> bool {
+        self.audit_mut()
+            .is_some_and(|state| state.open_select.take().is_some())
+    }
+
     /// `ci`.
     pub(super) fn request_audit(&mut self, guild: Id) {
         let Some(state) = self.audit_mut() else {

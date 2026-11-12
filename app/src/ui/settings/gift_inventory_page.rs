@@ -2,8 +2,7 @@
 //! purchased. Measured in `design/dom/settings/gift-inventory-darker-cozy.json`; the category headings come from the
 //! generated page.
 //!
-//! "Redeem" is drawn disabled and the field is a placeholder: redeeming a code spends it, so the client never sends it
-//! from here. The list of purchased gifts draws only its empty state: the record layout of a gift code is not in the
+//! The redeem field, its lookup and accept dialog are in `gift_redeem.rs`. The list of purchased gifts draws only its empty state: the record layout of a gift code is not in the
 //! captured traffic.
 
 use super::Root;
@@ -46,66 +45,11 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         Some(match key {
-            "redeem_code_input" => self.redeem_body(),
+            "redeem_code_input" => self.gift_redeem_row(cx),
             "gifting_badge_content" => self.gifting_badge_body(cx),
             "purchased_gifts_content" => self.purchased_gifts_body(cx),
             _ => return None,
         })
-    }
-
-    fn redeem_body(&self) -> AnyElement {
-        div()
-            .relative()
-            .w_full()
-            .h(px(106.))
-            .child(at(0., 8.).child(text(
-                "Received a code for Nitro or a game?",
-                16.,
-                20.,
-                500.,
-                "--text-strong",
-            )))
-            .child(at(0., 33.).child(text(
-                "That\u{2019}s exciting! Enter it below.",
-                14.,
-                18.,
-                400.,
-                "--text-muted",
-            )))
-            .child(
-                at(0., 59.)
-                    .w(px(588.))
-                    .h(px(40.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--border-subtle"))
-                    .bg(gpui::hsla(0., 0., 0., 0.12))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .child(text(
-                        "WUMP-AAAAA-BBBBB-CCCCC",
-                        16.,
-                        20.,
-                        400.,
-                        "--text-muted",
-                    )),
-            )
-            .child(
-                at(596., 59.)
-                    .w(px(100.))
-                    .h(px(40.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(gpui::hsla(0., 0., 1., 0.08))
-                    .bg(color("--control-primary-background-default"))
-                    .opacity(0.5)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(text("Redeem", 16., 20., 500., "--white")),
-            )
-            .into_any_element()
     }
 
     fn gifting_badge_body(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -22,6 +22,7 @@ mod content_filters;
 mod controls;
 mod custom_theme;
 mod gift_inventory_page;
+pub(in crate::ui) mod gift_redeem;
 mod keybinds;
 mod languages;
 mod model;
@@ -780,6 +781,7 @@ impl Root {
         self.settings = Some(Open::new(Page::Account));
         self.guild_search_ready(cx);
         self.settings_search_ready(cx);
+        self.gift_field_ready(cx);
         self.request_nitro();
         // The custom theme card's banner (`bannerImage_yH_g_W`).
         self.request_image(
@@ -1975,6 +1977,9 @@ impl Root {
                 }))
                 .flex()
                 .justify_center()
+                // A press on the scrim beside the dialog closes User Settings, as the X does (module 521489: the
+                // modal's backdrop). The dialog occludes, so a press inside it never reaches this.
+                .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
                 .child(modal),
         )
         .with_priority(1);

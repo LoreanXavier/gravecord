@@ -20,6 +20,7 @@ use super::swatches::SWATCHES;
 use super::{Root, color};
 use crate::net::Request;
 use crate::storage;
+use dc_proto::settings::CustomTheme;
 use dc_tokens::Theme;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, StatefulInteractiveElement, div,
@@ -98,6 +99,33 @@ pub(super) struct ThemeState {
     pub synced_dark: Option<Pick>,
     pub local: Option<Pick>,
     pub account: Option<Pick>,
+    /// `customUserThemeSettings` of the appearance settings kept here while syncing is off, and the last one the
+    /// account held (for a start before the account has answered).
+    pub local_custom: Option<CustomTheme>,
+    pub account_custom: Option<CustomTheme>,
+}
+
+fn custom_json(custom: &Option<CustomTheme>) -> Value {
+    custom.as_ref().map_or(
+        Value::Null,
+        |custom| json!({"colors": custom.colors, "angle": custom.angle, "mix": custom.base_mix}),
+    )
+}
+
+fn custom_from_json(value: &Value) -> Option<CustomTheme> {
+    let colors: Vec<String> = value["colors"]
+        .as_array()?
+        .iter()
+        .filter_map(|colour| colour.as_str().map(str::to_owned))
+        .collect();
+    if colors.is_empty() {
+        return None;
+    }
+    Some(CustomTheme {
+        colors,
+        angle: u32::try_from(value["angle"].as_u64().unwrap_or(0)).unwrap_or(0),
+        base_mix: u32::try_from(value["mix"].as_u64().unwrap_or(0)).unwrap_or(0),
+    })
 }
 
 impl Default for ThemeState {
@@ -110,6 +138,8 @@ impl Default for ThemeState {
             synced_dark: None,
             local: None,
             account: None,
+            local_custom: None,
+            account_custom: None,
         }
     }
 }
@@ -125,6 +155,8 @@ impl ThemeState {
             "synced_dark": pick(&self.synced_dark),
             "local": pick(&self.local),
             "account": pick(&self.account),
+            "local_custom": custom_json(&self.local_custom),
+            "account_custom": custom_json(&self.account_custom),
         })
     }
 
@@ -145,6 +177,8 @@ impl ThemeState {
             synced_dark: Pick::from_json(&value["synced_dark"]),
             local: Pick::from_json(&value["local"]),
             account: Pick::from_json(&value["account"]),
+            local_custom: custom_from_json(&value["local_custom"]),
+            account_custom: custom_from_json(&value["account_custom"]),
         }
     }
 
@@ -218,7 +252,8 @@ fn update(change: impl FnOnce(&mut ThemeState)) {
 }
 
 /// What the last frame applied, so a change of any input is applied once.
-static APPLIED: Mutex<Option<(Pick, bool)>> = Mutex::new(None);
+type Applied = (Pick, bool, Option<CustomTheme>);
+static APPLIED: Mutex<Option<Applied>> = Mutex::new(None);
 
 impl Root {
     pub(super) fn theme_same_as_device(&self) -> bool {
@@ -274,19 +309,79 @@ impl Root {
         if self.stores.theme != 0 && state.account != Some(account) {
             update(|next| next.account = Some(account));
         }
+        if self.stores.theme != 0 && state.account_custom != self.stores.custom_theme() {
+            let held = self.stores.custom_theme();
+            update(|next| next.account_custom = held);
+        }
         let wanted = self.theme_wanted();
+        let custom = self.custom_wanted();
         let key = (
             wanted,
             self.premium() == dc_state::premium::PremiumType::None,
+            custom.clone(),
         );
         let mut applied = APPLIED.lock().unwrap_or_else(|e| e.into_inner());
-        if *applied == Some(key) {
+        if applied.as_ref() == Some(&key) {
             return;
         }
         *applied = Some(key);
         drop(applied);
         crate::ui::set_theme(wanted.palette());
-        super::client_theme::show_preset(wanted.preset);
+        match custom
+            .as_ref()
+            .and_then(|custom| super::custom_theme::to_editor(custom, wanted.theme))
+        {
+            Some(custom) => super::client_theme::show_custom(&custom),
+            None => super::client_theme::show_preset(wanted.preset),
+        }
+    }
+
+    /// The custom theme worn now (`customUserThemeSettings` of `SelectivelySyncedUserSettingsStore`): this device's
+    /// while syncing is off, the account's otherwise (the last one it held until it has answered). None while "Same as
+    /// Device Theme" is on: per-mode theming ignores it (module 590703).
+    pub(super) fn custom_wanted(&self) -> Option<CustomTheme> {
+        if self.theme_same_as_device() {
+            return None;
+        }
+        let state = state();
+        if !self.theme_sync_on() && state.local.is_some() {
+            return state.local_custom;
+        }
+        if self.stores.theme == 0 {
+            return state.account_custom;
+        }
+        self.stores.custom_theme()
+    }
+
+    /// "Apply" of the custom theme editor (`G` of module 500779 through `u_`): the theme and the custom theme are
+    /// written together, to the account while syncing is on, else kept on this device.
+    pub(super) fn theme_apply_custom(&mut self, custom: &CustomTheme, theme: u8) {
+        if self.theme_same_as_device() {
+            self.set_switch(SAME_AS_DEVICE, false);
+        }
+        update(|next| {
+            next.use_system = false;
+            if is_dark(theme) {
+                next.dark = theme;
+            }
+        });
+        self.write_custom(custom, theme);
+        self.reset_theme_sync();
+    }
+
+    fn write_custom(&mut self, custom: &CustomTheme, theme: u8) {
+        if self.theme_sync_on() {
+            let patch = self.stores.set_custom_theme(u64::from(theme), custom);
+            self.send_theme_patch(patch);
+        } else {
+            update(|next| {
+                next.local = Some(Pick {
+                    theme,
+                    preset: None,
+                });
+                next.local_custom = Some(custom.clone());
+            });
+        }
     }
 
     /// The account's theme is read again at the next frame (READY).
@@ -302,7 +397,9 @@ impl Root {
     /// Writes the account's `appearance` the way `u_` does: the theme set and the colour theme set or taken out, in
     /// one PATCH of the whole message. Only while syncing is on; with it off the choice stays in `local`.
     fn write_account_theme(&mut self, pick: Pick) {
-        use dc_proto::settings::{CLIENT_THEME_PRESET, THEME};
+        use dc_proto::settings::{CLIENT_THEME_PRESET, CUSTOM_THEME_PREF, THEME};
+        // `u_` writes the whole client theme settings: a colour theme or a default theme takes the custom one out.
+        self.stores.clear_pref(&CUSTOM_THEME_PREF);
         let theme_value = u64::from(pick.theme);
         match pick.preset {
             Some(id) => {
@@ -337,7 +434,10 @@ impl Root {
         if self.theme_sync_on() {
             self.write_account_theme(pick);
         } else {
-            update(|next| next.local = Some(pick));
+            update(|next| {
+                next.local = Some(pick);
+                next.local_custom = None;
+            });
         }
     }
 
@@ -409,11 +509,21 @@ impl Root {
             if self.theme_sync_on() {
                 // `setShouldSyncAppearanceSettings(true)`: the theme worn now becomes the account's.
                 let pick = self.theme_wanted();
-                self.write_account_theme(pick);
-                update(|next| next.local = None);
+                match state().local_custom.clone() {
+                    Some(custom) => self.write_custom(&custom, pick.theme),
+                    None => self.write_account_theme(pick),
+                }
+                update(|next| {
+                    next.local = None;
+                    next.local_custom = None;
+                });
             } else {
                 let pick = self.theme_wanted();
-                update(|next| next.local = Some(pick));
+                let held = self.stores.custom_theme();
+                update(|next| {
+                    next.local = Some(pick);
+                    next.local_custom = held;
+                });
             }
             self.reset_theme_sync();
         }
@@ -680,6 +790,12 @@ mod tests {
                 theme: DARK,
                 preset: Some(3),
             }),
+            local_custom: Some(CustomTheme {
+                colors: vec!["#5865f2".to_owned(), "#ff0000".to_owned()],
+                angle: 90,
+                base_mix: 74,
+            }),
+            account_custom: None,
         };
         assert_eq!(ThemeState::from_json(&state.to_json()), state);
         assert_eq!(ThemeState::from_json(&json!({})), ThemeState::default());

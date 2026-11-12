@@ -100,6 +100,21 @@ fn search_body(query: &str, sort: u64) -> Value {
 }
 
 impl Root {
+    /// Escape: the Prune Members role list, the dialog and the sort list close one at a time (top first).
+    pub(super) fn close_members_layer(&mut self) -> bool {
+        let Some(state) = self.members_state_mut() else {
+            return false;
+        };
+        if let Some(prune) = state.prune.as_mut() {
+            if std::mem::take(&mut prune.roles_open) {
+                return true;
+            }
+            state.prune = None;
+            return true;
+        }
+        std::mem::take(&mut state.sort_open)
+    }
+
     /// The members table's state: the search box and the order, shared by the settings page and the Members view.
     fn new_members_state(guild: Id, cx: &mut Context<Self>) -> MembersState {
         let search = cx.new(|cx| {

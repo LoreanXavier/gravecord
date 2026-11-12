@@ -118,6 +118,13 @@ impl Values {
 }
 
 impl Root {
+    /// Escape: an open select closes before the page does.
+    pub(super) fn close_engagement_layer(&mut self) -> bool {
+        self.server_settings
+            .as_mut()
+            .is_some_and(|open| open.engagement.open_select.take().is_some())
+    }
+
     pub(super) fn request_engagement(&mut self, guild: Id) {
         let _ = self.requests.send(Request::Fetch {
             key: format!("{ENGAGEMENT_PREFIX}{guild}"),

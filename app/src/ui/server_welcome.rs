@@ -91,6 +91,15 @@ impl Root {
         self.server_settings.as_mut().map(|open| &mut open.welcome)
     }
 
+    /// Escape: the row menu, the remove confirmation and the preview close one at a time before the page does.
+    pub(super) fn close_welcome_layer(&mut self) -> bool {
+        self.welcome_mut().is_some_and(|state| {
+            state.menu.take().is_some()
+                || state.remove.take().is_some()
+                || std::mem::take(&mut state.preview)
+        })
+    }
+
     pub(super) fn request_welcome(&mut self, guild: Id) {
         for (key, route) in [
             (

@@ -39,6 +39,14 @@ fn link_of(code: &str) -> String {
 }
 
 impl Root {
+    /// Escape: the Delete Template confirmation closes before the page does.
+    pub(super) fn close_template_layer(&mut self) -> bool {
+        self.server_settings
+            .as_mut()
+            .and_then(|open| open.template.as_mut())
+            .is_some_and(|state| std::mem::take(&mut state.confirm_delete))
+    }
+
     pub(super) fn request_template_page(&mut self, guild: Id, cx: &mut Context<Self>) {
         let _ = self.requests.send(Request::Fetch {
             key: format!("{TEMPLATES_PREFIX}{guild}"),

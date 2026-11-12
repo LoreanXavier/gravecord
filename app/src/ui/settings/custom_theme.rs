@@ -66,6 +66,83 @@ fn hex_text(rgb: u32) -> String {
     format!("#{rgb:06X}")
 }
 
+/// What the account holds as the editor shows it: the colours parsed (those that are not colours are dropped), the
+/// direction and `baseMix` clamped to their ranges, the Appearance pair from the account's theme.
+pub(super) fn to_editor(saved: &dc_proto::settings::CustomTheme, theme: u8) -> Option<Custom> {
+    let colors: Vec<u32> = saved
+        .colors
+        .iter()
+        .filter_map(|colour| parse_hex(colour))
+        .take(MAX_COLOURS)
+        .collect();
+    if colors.is_empty() {
+        return None;
+    }
+    Some(Custom {
+        colors,
+        angle: (saved.angle as f32).clamp(0., 360.),
+        base_mix: (saved.base_mix as f32).clamp(0., 100.),
+        light: theme == super::theme_state::LIGHT,
+    })
+}
+
+/// The custom tile of the Appearance page while the account holds a custom theme (`Q` of module 270746): the
+/// colours as `linear-gradient(<angle>deg, ...)` (one colour as it is), on a 48 px rounded square.
+pub(super) fn tile_image(
+    saved: &dc_proto::settings::CustomTheme,
+) -> Option<std::sync::Arc<gpui::Image>> {
+    let colors: Vec<u32> = saved
+        .colors
+        .iter()
+        .filter_map(|colour| parse_hex(colour))
+        .collect();
+    let first = *colors.first()?;
+    let size = 48.0_f32;
+    let angle = (saved.angle as f32).to_radians();
+    let (sin, cos) = (angle.sin(), angle.cos());
+    // CSS gradient line: through the centre, `|w sin a| + |h cos a|` long.
+    let half = size * (sin.abs() + cos.abs()) / 2.;
+    let centre = size / 2.;
+    let (x1, y1) = (centre - sin * half, centre + cos * half);
+    let (x2, y2) = (centre + sin * half, centre - cos * half);
+    let last = colors.len().saturating_sub(1).max(1) as f32;
+    let stops: String = if colors.len() == 1 {
+        format!(r##"<stop offset="0" stop-color="#{first:06x}"/>"##)
+    } else {
+        colors
+            .iter()
+            .enumerate()
+            .map(|(index, rgb)| {
+                format!(
+                    r##"<stop offset="{}" stop-color="#{rgb:06x}"/>"##,
+                    index as f32 / last
+                )
+            })
+            .collect()
+    };
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}">{stops}</linearGradient></defs><rect width="{size}" height="{size}" rx="8" fill="url(#g)"/></svg>"#
+    );
+    Some(std::sync::Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Svg,
+        svg.into_bytes(),
+    )))
+}
+
+/// `customUserThemeSettings` of "Apply" (`G` of module 500779): the hex strings of the picker, `gradientAngle` and
+/// `baseMix` as whole numbers (int32 fields).
+pub(super) fn from_editor(custom: &Custom) -> dc_proto::settings::CustomTheme {
+    dc_proto::settings::CustomTheme {
+        colors: custom
+            .colors
+            .iter()
+            .map(|rgb| format!("#{rgb:06x}"))
+            .collect(),
+        angle: custom.angle.round() as u32,
+        base_mix: custom.base_mix.round() as u32,
+    }
+}
+
 /// `chroma.valid("#" + text)` for what the field can hold (7 characters): three, four or six hex digits; a fourth
 /// digit is an alpha the editor drops.
 fn parse_hex(text: &str) -> Option<u32> {
@@ -462,7 +539,17 @@ fn custom_slider(
 impl Root {
     /// Opens the editor from "Try it out": the whole app takes the theme, the panel goes on the right.
     pub(super) fn open_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
-        let custom = default_custom();
+        // The editor opens on the custom theme worn now (`customUserThemeSettings` fills its store, module 590703), else
+        // on the defaults; its Appearance pair follows the theme of the app.
+        let theme = self.theme_wanted().theme;
+        let custom = self
+            .custom_wanted()
+            .and_then(|saved| to_editor(&saved, theme))
+            .unwrap_or_else(|| Custom {
+                light: theme == super::theme_state::LIGHT,
+                ..default_custom()
+            });
+        let first = custom.colors.first().copied().unwrap_or(DEFAULT_COLOUR);
         let field = |cx: &mut Context<Self>, limit: usize, end: bool, text: &str| {
             let text = text.to_owned();
             cx.new(|cx| {
@@ -477,9 +564,14 @@ impl Root {
                 editor
             })
         };
-        let hex = field(cx, 7, false, &hex_text(DEFAULT_COLOUR));
-        let intensity = field(cx, 4, true, &format!("{}%", DEFAULT_MIX as u32));
-        let angle = field(cx, 4, true, "0\u{b0}");
+        let hex = field(cx, 7, false, &hex_text(first));
+        let intensity = field(cx, 4, true, &format!("{}%", custom.base_mix.round() as u32));
+        let angle = field(
+            cx,
+            4,
+            true,
+            &format!("{}\u{b0}", custom.angle.round() as u32),
+        );
         let angle_events = cx.subscribe(&angle, |this, editor, event: &EditorEvent, cx| {
             if matches!(event, EditorEvent::Edited | EditorEvent::Submit(_)) {
                 this.custom_theme_typed_number(&editor, '\u{b0}', 360., true, cx);
@@ -512,7 +604,7 @@ impl Root {
                 this.custom_theme_typed_number(&editor, '%', 100., false, cx);
             }
         });
-        let (hue, saturation, value) = to_hsv(DEFAULT_COLOUR);
+        let (hue, saturation, value) = to_hsv(first);
         STATE.with(|state| {
             *state.borrow_mut() = Some(State {
                 custom: custom.clone(),
@@ -781,6 +873,14 @@ impl Root {
         if !client_theme::editing() {
             return None;
         }
+        // `eV`: the footer of a Nitro subscriber (`_.L(TIER_2)`) is Share, Back and Apply, in one row.
+        let nitro = self.premium() == dc_state::premium::PremiumType::Nitro;
+        let footer_height = if nitro { 72. } else { 125. };
+        let nitro_footer = if nitro {
+            Some(self.custom_theme_footer(cx))
+        } else {
+            None
+        };
         let (custom, selected, hue, saturation, value, fields, bounds, scroll) =
             with_state(|state| {
                 (
@@ -1190,7 +1290,7 @@ impl Root {
                         .pl(px(12.))
                         .pr(px(12.))
                         .pt(px(16.))
-                        .pb(px(125.))
+                        .pb(px(footer_height))
                         .flex()
                         .flex_col()
                         .gap(px(32.))
@@ -1227,9 +1327,12 @@ impl Root {
                                                 )),
                                         ),
                                 )
-                                .child(text(14., 500., "--text-muted").child(
-                                    "Match your mood with endless color combinations. Try it now!",
-                                )),
+                                // `eD`: `TRCE4g` for a Nitro subscriber, `UV/Vtv` for everyone else.
+                                .child(text(14., 500., "--text-muted").child(if nitro {
+                                    "Match your mood with endless color combinations. Try it now, only with Nitro."
+                                } else {
+                                    "Match your mood with endless color combinations. Try it now!"
+                                })),
                         )
                         .child(
                             section().child(label("Appearance")).child(
@@ -1386,10 +1489,11 @@ impl Root {
                         .top_0()
                         .left_0()
                         .w_full()
-                        .h(px(593.))
+                        .h(px(718. - footer_height))
                         .child(crate::ui::menu::menu_scrollbar(scroll)),
                 )
-                .child(
+                .children(nitro_footer)
+                .when(!nitro, |panel| panel.child(
                     div()
                         .absolute()
                         .left_0()
@@ -1461,9 +1565,106 @@ impl Root {
                                         .child("Back to Settings"),
                                 ),
                         ),
-                )
+                ))
                 .into_any_element(),
         )
+    }
+
+    /// `eV` for a Nitro subscriber: Share (`ej`), the secondary Back (`13/7kX`, which closes the editor for the
+    /// Appearance page it came from) and the primary Apply (`1Qm822`, `u_` with the editor's custom theme).
+    /// No capture of this footer exists: the sizes are the panel's other controls'.
+    fn custom_theme_footer(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let label = |tint: &'static str, words: &'static str| {
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(color(tint))
+                .child(words)
+        };
+        div()
+            .absolute()
+            .left_0()
+            .bottom_0()
+            .w_full()
+            .h(px(72.))
+            .px(px(20.))
+            .py(px(16.))
+            .border_t_1()
+            .border_color(color("--border-subtle"))
+            .bg(tinted("--background-base-low"))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("custom-theme-share")
+                    .size(px(40.))
+                    .flex_none()
+                    .rounded(px(8.))
+                    .bg(color("--control-secondary-background-default"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(mask_icon(
+                        "clips_share",
+                        20.,
+                        "--control-secondary-text-default",
+                    )),
+            )
+            .child(
+                div()
+                    .id("custom-theme-back")
+                    .h(px(40.))
+                    .px(px(16.))
+                    .flex_1()
+                    .rounded(px(8.))
+                    .bg(color("--control-secondary-background-default"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.exit_theme_preview(cx);
+                        this.open_settings_page("appearance", cx);
+                    }))
+                    .child(label("--control-secondary-text-default", "Back")),
+            )
+            .child(
+                div()
+                    .id("custom-theme-apply")
+                    .h(px(40.))
+                    .px(px(16.))
+                    .flex_1()
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.custom_theme_apply(cx)))
+                    .child(label("--white", "Apply")),
+            )
+            .into_any_element()
+    }
+
+    /// "Apply": the editor's theme goes to the settings (the account, or this device while syncing is off) and the
+    /// preview ends with the theme kept.
+    fn custom_theme_apply(&mut self, cx: &mut Context<Self>) {
+        let Some(custom) = with_state(|state| state.custom.clone()) else {
+            return;
+        };
+        if custom.colors.is_empty() {
+            return;
+        }
+        let theme = if custom.light {
+            super::theme_state::LIGHT
+        } else {
+            super::theme_state::DARK
+        };
+        self.theme_apply_custom(&from_editor(&custom), theme);
+        self.end_custom_theme_editor(cx);
     }
 
     /// Drops the editor's state: the preview is over.

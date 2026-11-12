@@ -168,6 +168,13 @@ fn links(meta: &Meta) -> Vec<String> {
 }
 
 impl Root {
+    /// Escape: an open social-link platform list closes before the page does.
+    pub(super) fn close_landing_layer(&mut self) -> bool {
+        self.server_settings
+            .as_mut()
+            .is_some_and(|open| open.landing.platform_open.take().is_some())
+    }
+
     fn landing_meta_mut(&mut self) -> Option<&mut Meta> {
         self.server_settings
             .as_mut()

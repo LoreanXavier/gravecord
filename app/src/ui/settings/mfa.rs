@@ -32,6 +32,16 @@ pub(in crate::ui) struct Draft {
     pub skip_ask: bool,
     /// The "Verification email resent" line is showing.
     pub resent: bool,
+    /// Security key registration (module 245329): the ticket and challenge of the start request, the credential the
+    /// system prompt returned, whether that prompt is open, and the sentence the register step shows after a failure.
+    pub ticket: String,
+    pub challenge: String,
+    pub credential: String,
+    pub waiting: bool,
+    pub error: Option<String>,
+    /// The key a rename or a removal is about, and its name now.
+    pub key_id: String,
+    pub key_name: String,
 }
 
 impl Draft {
@@ -219,6 +229,92 @@ pub(in crate::ui) fn credentials() -> Request {
     }
 }
 
+/// The answer keys of the requests about one security key made outside a dialog (a removal that needs no question).
+#[cfg_attr(
+    not(feature = "capture"),
+    expect(
+        dead_code,
+        reason = "read by the route of the per-key menu's answers, which is not wired yet"
+    )
+)]
+pub(in crate::ui) const KEY_PREFIX: &str = "settings-mfa-key:";
+
+const CREDENTIALS_ROUTE: &str = "/users/@me/mfa/webauthn/credentials";
+
+/// `startRegisterWebAuthnCredential` (module 917136): an empty POST answers `{ticket, challenge}`, the challenge a
+/// JSON string of `publicKey` creation options.
+pub(in crate::ui) fn key_start_request(key: &str) -> Request {
+    Request::Rest {
+        key: Some(key.to_owned()),
+        method: reqwest::Method::POST,
+        route: CREDENTIALS_ROUTE.to_owned(),
+        body: Some(json!({})),
+    }
+}
+
+/// `AF` (module 917136): the key's name, the ticket of the start request and the credential JSON as a string.
+pub(in crate::ui) fn key_register_body(name: &str, ticket: &str, credential: &str) -> Value {
+    json!({"name": name, "ticket": ticket, "credential": credential})
+}
+
+pub(in crate::ui) fn key_register_request(
+    key: &str,
+    name: &str,
+    ticket: &str,
+    credential: &str,
+) -> Request {
+    Request::Rest {
+        key: Some(key.to_owned()),
+        method: reqwest::Method::POST,
+        route: CREDENTIALS_ROUTE.to_owned(),
+        body: Some(key_register_body(name, ticket, credential)),
+    }
+}
+
+/// `MFA_WEBAUTHN_CREDENTIAL(id)`.
+pub(in crate::ui) fn key_route(id: &str) -> String {
+    format!("{CREDENTIALS_ROUTE}/{id}")
+}
+
+/// `c6` (module 917136): `PATCH` with the new name.
+pub(in crate::ui) fn key_rename_request(key: &str, id: &str, name: &str) -> Request {
+    Request::Rest {
+        key: Some(key.to_owned()),
+        method: reqwest::Method::PATCH,
+        route: key_route(id),
+        body: Some(json!({"name": name})),
+    }
+}
+
+/// `fR` (module 917136): `DELETE`.
+pub(in crate::ui) fn key_delete_request(key: &str, id: &str) -> Request {
+    Request::Rest {
+        key: Some(key.to_owned()),
+        method: reqwest::Method::DELETE,
+        route: key_route(id),
+        body: None,
+    }
+}
+
+/// The text the register steps show when the prompt or the request fails (`xSCvBf`, and `fEptJP` for the name step).
+pub(in crate::ui) const KEY_PROMPT_FAILED: &str = "An error occurred. Please try again.";
+pub(in crate::ui) const KEY_REGISTER_FAILED: &str = "An error occurred, please try again.";
+/// `IMKkcn`: what the question before the last passkey goes says.
+pub(in crate::ui) const LAST_KEY_TEXT: &str = "Heads up, removing your Passkey means your account will no longer require Multi-Factor Authentication to sign in. If you have not reached out to Discord support for help with removing your Passkey and someone reached out to you instead, back out and report them. Discord support will never contact you first in a direct message.";
+/// The name the new key starts with (`I/sJtJ`).
+pub(in crate::ui) const KEY_DEFAULT_NAME: &str = "My Key";
+
+/// Module 705147 `k("webauthn")`: removing the last passkey of an account without an authenticator app also ends
+/// two-factor authentication, so that removal asks first.
+pub(in crate::ui) fn last_key_needs_question(keys: usize, totp: bool) -> bool {
+    keys == 1 && !totp
+}
+
+/// The credential id the name step's request names: `id` of a list entry.
+pub(in crate::ui) fn key_id_of(entry: &Value) -> String {
+    entry["id"].as_str().unwrap_or_default().to_owned()
+}
+
 /// `bc` of the panel: `abcdefgh` shows as `abcd-efgh`.
 pub(in crate::ui) fn code_text(code: &str) -> String {
     let split = code.char_indices().nth(4).map_or(code.len(), |(at, _)| at);
@@ -337,6 +433,71 @@ mod tests {
             backup_file("me@example.com", &codes),
             "These are your Discord backup codes for account me@example.com.  Keep them safe!\r\n\r\n* abcd-1234\r\n* wxyz-9876 (used)"
         );
+    }
+
+    #[test]
+    fn the_security_key_requests_have_the_shapes_of_module_917136() {
+        let Request::Rest {
+            key,
+            method,
+            route,
+            body,
+        } = key_start_request("k")
+        else {
+            panic!("rest")
+        };
+        assert_eq!(key.as_deref(), Some("k"));
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/users/@me/mfa/webauthn/credentials");
+        assert_eq!(body, Some(json!({})));
+        let Request::Rest { body, route, .. } =
+            key_register_request("k", "My Key", "t", "{\"id\":1}")
+        else {
+            panic!("rest")
+        };
+        assert_eq!(route, "/users/@me/mfa/webauthn/credentials");
+        // The credential travels as the JSON text the prompt produced, not as an object.
+        assert_eq!(
+            body,
+            Some(json!({"name": "My Key", "ticket": "t", "credential": "{\"id\":1}"}))
+        );
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = key_rename_request("k", "123", "New")
+        else {
+            panic!("rest")
+        };
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(route, "/users/@me/mfa/webauthn/credentials/123");
+        assert_eq!(body, Some(json!({"name": "New"})));
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = key_delete_request("k", "123")
+        else {
+            panic!("rest")
+        };
+        assert_eq!(
+            (method, route.as_str(), body),
+            (
+                reqwest::Method::DELETE,
+                "/users/@me/mfa/webauthn/credentials/123",
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn only_the_last_passkey_of_an_account_without_an_app_asks_first() {
+        assert!(last_key_needs_question(1, false));
+        assert!(!last_key_needs_question(1, true));
+        assert!(!last_key_needs_question(2, false));
+        assert!(!last_key_needs_question(0, false));
     }
 
     #[test]

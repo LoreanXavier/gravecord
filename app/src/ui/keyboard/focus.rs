@@ -297,6 +297,15 @@ impl Root {
                 self.invite.is_some(),
                 self.create_channel.is_some(),
                 self.report.is_some(),
+                self.member_action.is_some(),
+                self.group_edit.is_some(),
+                self.group_leave.is_some(),
+                self.security_actions.is_some(),
+                self.sent_edit.is_some(),
+                self.upload_error.is_some(),
+                self.shop.modal.is_some(),
+                self.screening.is_some(),
+                self.inventory.about,
                 self.thread_modal,
                 self.guild_notifications.is_some(),
                 self.channel_status.is_some(),
@@ -735,6 +744,10 @@ impl Root {
 impl State {
     pub(in crate::ui) fn pointer_used(&mut self) {
         self.set_modality(false);
+    }
+
+    pub(in crate::ui) fn keyboard_mode_is_on(&self) -> bool {
+        self.keyboard_modality
     }
 }
 

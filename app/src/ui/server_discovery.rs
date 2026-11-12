@@ -777,6 +777,17 @@ impl Root {
             .map(|open| &mut open.discovery)
     }
 
+    /// Escape: an open category or language list closes before the page does.
+    pub(super) fn close_discovery_layer(&mut self) -> bool {
+        self.discovery_mut().is_some_and(|discovery| {
+            let was = discovery.open.take().is_some();
+            if was {
+                discovery.filter = None;
+            }
+            was
+        })
+    }
+
     /// `i` in `Ie`: the page asks again every time Discoverable is chosen.
     pub(super) fn request_discovery(&mut self, guild: Id) {
         use crate::net::Request;

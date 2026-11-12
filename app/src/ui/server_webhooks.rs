@@ -65,6 +65,20 @@ fn created_on(id: &str) -> String {
 }
 
 impl Root {
+    /// Escape: the Delete Webhook confirmation, then the channel list of an open webhook, close before the page.
+    pub(super) fn close_webhook_layer(&mut self) -> bool {
+        let Some(open) = self.server_settings.as_mut() else {
+            return false;
+        };
+        if open.webhooks.confirm_delete.take().is_some() {
+            return true;
+        }
+        open.webhooks
+            .open
+            .as_mut()
+            .is_some_and(|hook| std::mem::take(&mut hook.select_open))
+    }
+
     fn guild_webhooks(&self, guild: Id) -> Vec<Value> {
         self.stores
             .integrations

@@ -3,9 +3,10 @@
 
 use gpui::{
     App, Background, BorderStyle, Bounds, Corners, DispatchPhase, Edges, Element, ElementId, Font,
-    GlobalElementId, Hsla, Image, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size,
-    Style, TextAlign, TextRun, TransformationMatrix, Window, fill, point, px, quad, size,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
+    SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix, Window, fill, point, px,
+    quad, size,
 };
 use std::cell::RefCell;
 use std::cmp::{max, min};
@@ -451,7 +452,22 @@ impl Inline {
         }
     }
 
-    fn listen(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+    /// Whether the text answers the mouse at all: only then it gets a hitbox.
+    fn listens(&self) -> bool {
+        self.selectable.is_some()
+            || self.on_piece_click.is_some()
+            || self.on_piece_click_at.is_some()
+            || self.on_piece_hover.is_some()
+            || self.on_piece_context.is_some()
+            || self
+                .pieces
+                .iter()
+                .any(|piece| piece.hover.is_some() || piece.hover_underline)
+    }
+
+    /// The listeners ask the hitbox, not the bounds: a layer above the text (User Settings, a dialog, a menu) takes
+    /// the mouse, and a link under it must not open or light up.
+    fn listen(&self, bounds: Bounds<Pixels>, hitbox: &Hitbox, window: &mut Window) {
         if self
             .pieces
             .iter()
@@ -460,11 +476,12 @@ impl Inline {
             let laid = self.laid.clone();
             let pieces = self.pieces.clone();
             let line_height = self.line_height;
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
-                let over = bounds.contains(&event.position).then(|| {
+                let over = hitbox.is_hovered(window).then(|| {
                     laid.borrow()
                         .hover_piece_at(event.position - bounds.origin, line_height)
                 });
@@ -488,11 +505,12 @@ impl Inline {
             let laid = self.laid.clone();
             let line_height = self.line_height;
             let last: Rc<RefCell<Option<(usize, usize)>>> = Rc::default();
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
-                let over = if bounds.contains(&event.position) {
+                let over = if hitbox.is_hovered(window) {
                     laid.borrow()
                         .fragment_at(event.position - bounds.origin, line_height)
                 } else {
@@ -515,10 +533,11 @@ impl Inline {
         if let Some(handler) = self.on_piece_click_at.clone() {
             let laid = self.laid.clone();
             let line_height = self.line_height;
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == MouseButton::Left
-                    && bounds.contains(&event.position)
+                    && hitbox.is_hovered(window)
                     && let Some((piece, _, rect)) = laid
                         .borrow()
                         .fragment_at(event.position - bounds.origin, line_height)
@@ -535,10 +554,11 @@ impl Inline {
         if let Some(handler) = self.on_piece_context.clone() {
             let laid = self.laid.clone();
             let line_height = self.line_height;
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == MouseButton::Right
-                    && bounds.contains(&event.position)
+                    && hitbox.is_hovered(window)
                     && let Some(piece) = laid
                         .borrow()
                         .piece_at(event.position - bounds.origin, line_height)
@@ -550,10 +570,11 @@ impl Inline {
         if let Some(handler) = self.on_piece_click.clone() {
             let laid = self.laid.clone();
             let line_height = self.line_height;
+            let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == MouseButton::Left
-                    && bounds.contains(&event.position)
+                    && hitbox.is_hovered(window)
                 {
                     let hit = laid
                         .borrow()
@@ -575,10 +596,11 @@ impl Inline {
         };
         let down = selectable.clone();
         let down_laid = laid.clone();
+        let hitbox = hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
-                && bounds.contains(&event.position)
+                && hitbox.is_hovered(window)
             {
                 let at = position_at(event.position, &down_laid.borrow(), down.key);
                 down.selection.borrow_mut().begin(at);
@@ -614,7 +636,7 @@ impl IntoElement for Inline {
 
 impl Element for Inline {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -653,11 +675,13 @@ impl Element for Inline {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut App,
-    ) {
+    ) -> Option<Hitbox> {
+        self.listens()
+            .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -666,11 +690,13 @@ impl Element for Inline {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.listen(bounds, window);
+        if let Some(hitbox) = hitbox.as_ref() {
+            self.listen(bounds, hitbox, window);
+        }
         self.paint_selection(bounds, window);
         let laid = self.laid.borrow();
         // Plain text of different sizes shares a baseline, set by the line's largest text, as inline boxes do.

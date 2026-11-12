@@ -73,6 +73,7 @@ dc-proto = { path = "crates/dc-proto" }
 dc-rpc = { path = "crates/dc-rpc" }
 dc-voice = { path = "crates/dc-voice" }
 dc-webhost = { path = "crates/dc-webhost" }
+dc-webauthn = { path = "crates/dc-webauthn" }
 dc-winaudio = { path = "crates/dc-winaudio" }
 
 [profile.dev]

@@ -293,6 +293,28 @@ impl Root {
         }
     }
 
+    /// Escape inside the server settings: the dialogs and lists of its pages close one at a time, so the key never
+    /// leaves the settings while one of them is open. True when something closed.
+    pub(in crate::ui) fn close_server_settings_layer(&mut self) -> bool {
+        if let Some(actions) = self.security_actions.as_mut() {
+            if !std::mem::take(&mut actions.select_open) {
+                self.security_actions = None;
+            }
+            return true;
+        }
+        self.close_roles_layer()
+            || self.close_template_layer()
+            || self.close_webhook_layer()
+            || self.close_members_layer()
+            || self.close_audit_layer()
+            || self.close_safety_select()
+            || self.close_overview_layer()
+            || self.close_discovery_layer()
+            || self.close_landing_layer()
+            || self.close_engagement_layer()
+            || self.close_welcome_layer()
+    }
+
     /// A press outside `layer`'s card: closes it when it is the top layer. True when it did.
     pub(in crate::ui) fn press_outside(&mut self, layer: Layer, cx: &mut Context<Self>) -> bool {
         let open = self.open_layers();

@@ -519,6 +519,65 @@ pub fn clear_pref(current: &[u8], pref: &ProtoPref) -> (String, Vec<u8>) {
     whole_message_patch(updated, top)
 }
 
+/// `appearance.client_theme_settings.custom_user_theme_settings` (module 873298 `CustomUserThemeSettings`): the
+/// account's own colour theme. A path only, for taking it out (`clear_pref`); it is not a varint.
+pub const CUSTOM_THEME_PREF: ProtoPref = pref("appearance_custom_theme", &[13, 3, 4], 1);
+
+/// `CustomUserThemeSettings`: `colors` 1 (hex strings), `gradient_color_stops` 2 (floats, always empty from the
+/// editor), `gradient_angle` 3 and `base_mix` 4 (int32).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomTheme {
+    pub colors: Vec<String>,
+    pub angle: u32,
+    pub base_mix: u32,
+}
+
+/// The account's custom theme, if it holds one with at least one colour (`customUserThemeSettings?.colors.length`).
+pub fn custom_theme_in(settings: &[u8]) -> Option<CustomTheme> {
+    let appearance = fields(settings)
+        .find(|(number, _)| *number == FIELD_APPEARANCE)?
+        .1;
+    let client = fields(appearance).find(|(number, _)| *number == 3)?.1;
+    let custom = fields(client).find(|(number, _)| *number == 4)?.1;
+    let colors: Vec<String> = fields(custom)
+        .filter(|(number, _)| *number == 1)
+        .filter_map(|(_, text)| String::from_utf8(text.to_vec()).ok())
+        .collect();
+    if colors.is_empty() {
+        return None;
+    }
+    Some(CustomTheme {
+        colors,
+        angle: varint_of(custom, 3).unwrap_or(0) as u32,
+        base_mix: varint_of(custom, 4).unwrap_or(0) as u32,
+    })
+}
+
+/// Applying a custom theme the way `u_` of module 817281 does: `appearance.theme` and the whole of
+/// `client_theme_settings` are written together (the colour theme preset goes, the custom theme comes), the rest of
+/// `appearance` stays. Returns the PATCH body value (the whole `appearance` message) and the settings from now on.
+pub fn set_custom_theme(current: &[u8], theme: u64, custom: &CustomTheme) -> (String, Vec<u8>) {
+    let mut message = Vec::new();
+    for colour in &custom.colors {
+        push_bytes_field(&mut message, 1, colour.as_bytes());
+    }
+    if custom.angle != 0 {
+        push_varint(&mut message, 3 << 3 | WIRE_VARINT);
+        push_varint(&mut message, u64::from(custom.angle));
+    }
+    if custom.base_mix != 0 {
+        push_varint(&mut message, 4 << 3 | WIRE_VARINT);
+        push_varint(&mut message, u64::from(custom.base_mix));
+    }
+    let mut client = Vec::new();
+    push_bytes_field(&mut client, 4, &message);
+    let mut encoded = Vec::new();
+    push_bytes_field(&mut encoded, 3, &client);
+    let with_theme = with_varint(current, &[FIELD_APPEARANCE], APPEARANCE_THEME, theme);
+    let updated = with_encoded(&with_theme, &[FIELD_APPEARANCE], 3, &encoded);
+    whole_message_patch(updated, FIELD_APPEARANCE)
+}
+
 /// `privacy.friend_source_flags` (a `UInt32Value`): who may send the account a friend request. The bits are
 /// `MUTUAL_FRIENDS` 2, `MUTUAL_GUILDS` 4 and `NO_RELATION` 8 (module 652215); all three is "Everyone".
 pub const FRIEND_SOURCE_FLAGS: ProtoPref = pref("friend_source_flags", &[8, 11], 1);
@@ -1582,6 +1641,42 @@ mod tests {
             bytes_field(13, &bytes_field(3, &bytes_field(2, &[8, 8])))
         );
         assert_eq!(STANDARD.encode(&updated), patch);
+    }
+
+    #[test]
+    fn a_custom_theme_is_written_with_the_theme_and_replaces_the_colour_theme() {
+        // appearance { theme 3, client_theme_settings { preset { 8 }, other 5 }, other 9 }
+        let mut client = bytes_field(2, &[8, 8]);
+        client.extend_from_slice(&[0x28, 5]);
+        let mut appearance = vec![8, 3];
+        appearance.extend(bytes_field(3, &client));
+        appearance.extend_from_slice(&[0x48, 1]);
+        let current = bytes_field(13, &appearance);
+        let custom = CustomTheme {
+            colors: vec!["#5865f2".to_owned(), "#ff0000".to_owned()],
+            angle: 90,
+            base_mix: 74,
+        };
+        let (patch, updated) = set_custom_theme(&current, 2, &custom);
+        assert_eq!(STANDARD.encode(&updated), patch);
+        assert_eq!(custom_theme_in(&updated), Some(custom));
+        // The theme is the new one, the preset and the old message are gone, the rest of `appearance` stays.
+        assert_eq!(varint_at(&patch, &[13], 1), Some(2));
+        assert_eq!(varint_at(&patch, &[13, 3, 2], 1), None);
+        assert!(!updated.windows(2).any(|pair| pair == [0x28, 5]));
+        assert_eq!(varint_at(&patch, &[13], 9), Some(1));
+        // Taking it out again leaves an empty client theme message.
+        let (_, cleared) = clear_pref(&updated, &CUSTOM_THEME_PREF);
+        assert_eq!(custom_theme_in(&cleared), None);
+        // Nothing saved reads as none, and zero angle and mix are left out of the encoding (proto3 defaults).
+        let plain = CustomTheme {
+            colors: vec!["#5865f2".to_owned()],
+            angle: 0,
+            base_mix: 0,
+        };
+        let (_, written) = set_custom_theme(&[], 3, &plain);
+        assert_eq!(custom_theme_in(&written), Some(plain));
+        assert_eq!(custom_theme_in(&[]), None);
     }
 
     #[test]

@@ -57,6 +57,14 @@ pub(in crate::ui) enum Step {
     MfaCodesKey,
     /// Module 549404: the codes of a new authenticator app.
     MfaCodes,
+    /// Module 245329 `INIT`: the register dialog that starts the system's prompt for a new security key or passkey.
+    KeyRegister,
+    /// Module 245329 `NAME`: the name of the key the prompt just made.
+    KeyName,
+    /// Module 428726: renames a key.
+    KeyRename,
+    /// The question before the last passkey goes (module 41000, `J/x6ns` over `IMKkcn`).
+    KeyDelete,
 }
 
 /// A request in the shape the official client sends it.
@@ -911,6 +919,9 @@ impl Root {
             "mfa-remove" => Step::MfaRemove,
             "mfa-sms-remove" => Step::MfaSmsPassword,
             "mfa-codes" => Step::MfaCodesPassword,
+            "mfa-key-register" => Step::KeyRegister,
+            "mfa-key-rename" => Step::KeyRename,
+            "mfa-key-delete" => Step::KeyDelete,
             "disable" | "delete" => {
                 form.delete = kind == "delete";
                 // `b3`: an owner of servers is told to transfer them first.
@@ -1016,7 +1027,27 @@ impl Root {
                 // `TjGb4Q`, `maxLength: 8`.
                 fields.push(self.account_field("code", "Verification key", false, cx));
             }
-            Step::MfaRemove | Step::MfaCodes => {}
+            Step::MfaRemove | Step::MfaCodes | Step::KeyRegister | Step::KeyDelete => {}
+            Step::KeyName => {
+                // `Jzd+z/` over the box, which starts with `I/sJtJ`.
+                let field = self.account_field("name", "Choose a name for your new key", false, cx);
+                field
+                    .editor
+                    .update(cx, |e, _| e.set_text(mfa::KEY_DEFAULT_NAME));
+                fields.push(field);
+            }
+            Step::KeyRename => {
+                // `7yEgJY` over the box; `placeholder: credential.name`, `maxLength: 32`.
+                let field = self.account_field("name", "New Key Name", false, cx);
+                let current = self
+                    .settings_extra
+                    .form
+                    .as_ref()
+                    .map(|form| form.mfa.key_name.clone())
+                    .unwrap_or_default();
+                field.editor.update(cx, |e, _| e.set_placeholder(current));
+                fields.push(field);
+            }
             Step::EmailSend
             | Step::EmailReason
             | Step::EmailScam
@@ -1141,6 +1172,14 @@ impl Root {
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default()
         };
+        if matches!(
+            form.step,
+            Step::KeyRegister | Step::KeyName | Step::KeyRename | Step::KeyDelete
+        ) {
+            let name = text("name");
+            self.key_submit(name.trim().to_owned(), cx);
+            return;
+        }
         let call = match form.step {
             Step::Username => {
                 let name = text("username");
@@ -1226,7 +1265,11 @@ impl Root {
             | Step::EmailScam
             | Step::EmailDone
             | Step::PhoneManage
-            | Step::MfaCodes => return,
+            | Step::MfaCodes
+            | Step::KeyRegister
+            | Step::KeyName
+            | Step::KeyRename
+            | Step::KeyDelete => return,
         };
         let _ = user;
         form.working = true;
@@ -1242,6 +1285,13 @@ impl Root {
         form.working = false;
         let ok = body["ok"].as_bool() == Some(true);
         let answer = &body["body"];
+        if matches!(
+            form.step,
+            Step::KeyRegister | Step::KeyName | Step::KeyRename | Step::KeyDelete
+        ) {
+            self.key_fetched(ok, answer, cx);
+            return;
+        }
         if !ok {
             form.last = Some(if body["refused"].as_bool() == Some(true) {
                 "refused in this run".to_owned()
@@ -1411,7 +1461,11 @@ impl Root {
             | Step::EmailScam
             | Step::EmailDone
             | Step::PhoneManage
-            | Step::MfaCodes => {}
+            | Step::MfaCodes
+            | Step::KeyRegister
+            | Step::KeyName
+            | Step::KeyRename
+            | Step::KeyDelete => {}
         }
         if let Some(step) = next {
             self.account_form_step(step, cx);
@@ -1734,6 +1788,103 @@ impl Root {
                     Some("Here is something you should do!".to_owned()),
                     vec![self.mfa_codes_body(form, cx)],
                     Vec::new(),
+                ),
+                // Module 245329 `INIT`: `vrOCCk` (`wePEBF` while the prompt is open) over `Lh5vTW` (`aVMiX3`), the
+                // critical notice of a failed attempt above, and `oibaQa` as the one button.
+                Step::KeyRegister => (
+                    if form.mfa.waiting {
+                        "Interact with your security key"
+                    } else {
+                        "Register a Security Key"
+                    },
+                    None,
+                    {
+                        let mut parts = Vec::new();
+                        if let Some(error) = form.mfa.error.as_deref() {
+                            parts.push(self.critical_notice(error));
+                        }
+                        parts.push(
+                            text(
+                                if form.mfa.waiting {
+                                    "You may need to tap your device or confirm a prompt."
+                                } else {
+                                    "When you are ready to authenticate, press the button below."
+                                },
+                                false,
+                            )
+                            .into_any_element(),
+                        );
+                        parts
+                    },
+                    vec![modal::button(
+                        "account-ok",
+                        "Let\u{2019}s go",
+                        if form.working || form.mfa.waiting || form.mfa.challenge.is_empty() {
+                            modal::Tone::PrimaryLoading
+                        } else {
+                            modal::Tone::Primary
+                        },
+                        |this, window, cx| {
+                            let parent = crate::webauthn::parent(window);
+                            this.key_begin(parent, cx)
+                        },
+                    )],
+                ),
+                // Module 245329 `NAME`: `cY/IOu`, the box under `Jzd+z/` and `5dyZ1S`.
+                Step::KeyName => (
+                    "Name your security key",
+                    None,
+                    Vec::new(),
+                    vec![primary(
+                        "account-ok",
+                        "Finish",
+                        if form
+                            .fields
+                            .iter()
+                            .all(|f| f.name != "name" || f.editor.read(cx).text().trim().is_empty())
+                        {
+                            modal::Tone::PrimaryDisabled
+                        } else if form.working {
+                            modal::Tone::PrimaryLoading
+                        } else {
+                            modal::Tone::Primary
+                        },
+                    )],
+                ),
+                // Module 428726: `YjuMsf`, the `7yEgJY` box (at most 32 characters) and `ETE/oC` / `i4jeWR`.
+                Step::KeyRename => (
+                    "Rename your security key",
+                    None,
+                    Vec::new(),
+                    vec![
+                        cancel("account-cancel"),
+                        primary(
+                            "account-ok",
+                            "Done",
+                            {
+                                let typed = form
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == "name")
+                                    .map_or(0, |f| f.editor.read(cx).text().chars().count());
+                                if typed == 0 || typed > 32 {
+                                    modal::Tone::PrimaryDisabled
+                                } else {
+                                    busy(modal::Tone::Primary)
+                                }
+                            },
+                        ),
+                    ],
+                ),
+                // Module 41000: `J/x6ns` over `IMKkcn`, a critical `+xgS+L`.
+                Step::KeyDelete => (
+                    "This is your last Passkey",
+                    Some(mfa::LAST_KEY_TEXT.to_owned()),
+                    Vec::new(),
+                    vec![
+                        cancel("account-cancel"),
+                        primary("account-ok", "Delete", busy(modal::Tone::Critical)),
+                    ],
                 ),
             };
         // Fields: a column, or the username and its tag in one row.
@@ -2191,11 +2342,10 @@ impl Root {
                     "Add a Passkey",
                     "connected",
                     cx,
-                    // `handleAddPasskey`: the dialog closes and the browser's key creation starts; the platform
-                    // dialog is blocked (BLOCKED.md, "Login passkey and WebAuthn second factor").
+                    // `handleAddPasskey`: the dialog closes and the key registration starts (module 665671).
                     |this, cx| {
                         this.settings_extra.form = None;
-                        cx.notify();
+                        this.security_key_register(cx);
                     },
                 )))
                 .into_any_element()
@@ -2225,6 +2375,283 @@ impl Root {
                     .child(div().flex().child(download)),
             )
             .into_any_element()
+    }
+
+    /// A critical notice (`inlinenotice` of type `critical`), as the register dialog shows a failed attempt.
+    fn critical_notice(&self, message: &str) -> AnyElement {
+        div()
+            .p(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--inlinenotice-border-critical"))
+            .bg(color("--background-feedback-mod-critical"))
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .text_color(color("--text-strong"))
+            .child(message.to_owned())
+            .into_any_element()
+    }
+
+    /// "Add Security Key" (module 665671): an empty POST asks for the ticket and the challenge, and the register
+    /// dialog opens on them. The dialog shows at once with its button waiting; a refused request closes it with the
+    /// critical toast `xSCvBf` (the official client opens it only once the answer is in).
+    pub(in crate::ui) fn security_key_register(&mut self, cx: &mut Context<Self>) {
+        self.open_account_form("mfa-key-register", cx);
+        if let Some(form) = self.settings_extra.form.as_mut() {
+            form.working = true;
+        }
+        let _ = self.requests.send(mfa::key_start_request(FORM_KEY));
+        cx.notify();
+    }
+
+    /// The register dialog's button: the challenge goes to the system's prompt over the window `parent`.
+    pub(in crate::ui) fn key_begin(&mut self, parent: isize, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        if form.step != Step::KeyRegister
+            || form.mfa.waiting
+            || form.working
+            || form.mfa.challenge.is_empty()
+        {
+            return;
+        }
+        form.mfa.waiting = true;
+        form.mfa.error = None;
+        let answer = crate::webauthn::start(
+            crate::webauthn::Kind::Create,
+            parent,
+            form.mfa.challenge.clone(),
+        );
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await.unwrap_or(Err(dc_webauthn::Error::Cancelled));
+            this.update(cx, |this, cx| this.key_prompt_answered(answer, cx))
+                .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The prompt closed (`H` of module 245329): the credential moves the dialog to the name step, anything else
+    /// leaves `xSCvBf` on the first one.
+    fn key_prompt_answered(&mut self, answer: crate::webauthn::Answer, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        // A dialog closed (and maybe opened again) while the prompt was open is not the one that asked.
+        if form.step != Step::KeyRegister || !form.mfa.waiting {
+            return;
+        }
+        form.mfa.waiting = false;
+        match answer {
+            Ok(credential) => {
+                form.mfa.credential = credential;
+                self.account_form_step(Step::KeyName, cx);
+            }
+            Err(_) => form.mfa.error = Some(mfa::KEY_PROMPT_FAILED.to_owned()),
+        }
+        cx.notify();
+    }
+
+    /// The primary button of the key dialogs.
+    fn key_submit(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        if form.working {
+            return;
+        }
+        match form.step {
+            Step::KeyName => {
+                if name.is_empty() {
+                    return;
+                }
+                form.mfa.key_name = name.clone();
+                form.working = true;
+                let _ = self.requests.send(mfa::key_register_request(
+                    FORM_KEY,
+                    &name,
+                    &form.mfa.ticket,
+                    &form.mfa.credential,
+                ));
+            }
+            Step::KeyRename => {
+                let length = name.chars().count();
+                if length == 0 || length > 32 {
+                    return;
+                }
+                form.working = true;
+                let _ =
+                    self.requests
+                        .send(mfa::key_rename_request(FORM_KEY, &form.mfa.key_id, &name));
+                form.mfa.key_name = name;
+            }
+            Step::KeyDelete => {
+                form.working = true;
+                let _ = self
+                    .requests
+                    .send(mfa::key_delete_request(FORM_KEY, &form.mfa.key_id));
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The answer of the request a key dialog sent.
+    fn key_fetched(&mut self, ok: bool, answer: &Value, cx: &mut Context<Self>) {
+        let Some(form) = self.settings_extra.form.as_mut() else {
+            return;
+        };
+        let message = answer["message"]
+            .as_str()
+            .unwrap_or(mfa::KEY_REGISTER_FAILED)
+            .to_owned();
+        match form.step {
+            Step::KeyRegister => {
+                let ticket = answer["ticket"].as_str();
+                let challenge = answer["challenge"].as_str();
+                match (ok, ticket, challenge) {
+                    (true, Some(ticket), Some(challenge)) => {
+                        form.mfa.ticket = ticket.to_owned();
+                        form.mfa.challenge = challenge.to_owned();
+                    }
+                    _ => {
+                        // `xSCvBf` as a critical toast, and no dialog.
+                        self.settings_extra.form = None;
+                        self.show_app_toast(mfa::KEY_PROMPT_FAILED, cx);
+                    }
+                }
+            }
+            Step::KeyName if !ok => {
+                // The register request failed: back to the first step with `fEptJP`, the draft kept.
+                form.mfa.error = Some(mfa::KEY_REGISTER_FAILED.to_owned());
+                self.account_form_step(Step::KeyRegister, cx);
+            }
+            Step::KeyName => {
+                // `AUTHENTICATOR_CREATE` and `MFA_ENABLE_SUCCESS`: the key joins the list, two-factor is on and the
+                // answer's backup codes are the account's codes now.
+                let mut entry = answer.clone();
+                if let Some(object) = entry.as_object_mut() {
+                    object.remove("backup_codes");
+                }
+                self.key_listed(entry);
+                self.stores.account.mfa_enabled = true;
+                if answer["backup_codes"].is_array() {
+                    self.fetched.insert(
+                        mfa::CODES_KEY.to_owned(),
+                        json!({"backup_codes": answer["backup_codes"], "key": ""}),
+                    );
+                }
+                self.settings_extra.form = None;
+            }
+            Step::KeyRename if !ok => form.set_error("name", Some(message)),
+            Step::KeyRename => {
+                let id = form.mfa.key_id.clone();
+                let name = answer["name"]
+                    .as_str()
+                    .map_or_else(|| form.mfa.key_name.clone(), str::to_owned);
+                self.key_renamed(&id, &name);
+                self.settings_extra.form = None;
+            }
+            Step::KeyDelete if !ok => form.notice = Some(message),
+            Step::KeyDelete => {
+                let id = form.mfa.key_id.clone();
+                self.key_forget(&id);
+                // The question only comes up when no authenticator app stands behind the passkey.
+                self.stores.account.mfa_enabled = false;
+                self.settings_extra.form = None;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// `AUTHENTICATOR_CREATE`: the store keeps a key once.
+    fn key_listed(&mut self, entry: Value) {
+        let id = mfa::key_id_of(&entry);
+        let list = self
+            .fetched
+            .entry(mfa::CREDENTIALS_KEY.to_owned())
+            .or_insert_with(|| json!([]));
+        if let Some(list) = list.as_array_mut()
+            && !list.iter().any(|known| mfa::key_id_of(known) == id)
+        {
+            list.push(entry);
+        }
+    }
+
+    /// `AUTHENTICATOR_UPDATE`: the name the server kept.
+    fn key_renamed(&mut self, id: &str, name: &str) {
+        if let Some(list) = self
+            .fetched
+            .get_mut(mfa::CREDENTIALS_KEY)
+            .and_then(Value::as_array_mut)
+        {
+            for entry in list.iter_mut().filter(|e| mfa::key_id_of(e) == id) {
+                entry["name"] = json!(name);
+            }
+        }
+    }
+
+    /// `AUTHENTICATOR_DELETE`.
+    pub(in crate::ui) fn key_forget(&mut self, id: &str) {
+        if let Some(list) = self
+            .fetched
+            .get_mut(mfa::CREDENTIALS_KEY)
+            .and_then(Value::as_array_mut)
+        {
+            list.retain(|entry| mfa::key_id_of(entry) != id);
+        }
+    }
+
+    /// The options menu's "Edit" (module 41000 opens module 428726).
+    #[cfg_attr(
+        not(feature = "capture"),
+        expect(
+            dead_code,
+            reason = "called by the per-key options menu, which is not wired yet"
+        )
+    )]
+    pub(in crate::ui) fn security_key_rename(
+        &mut self,
+        id: String,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_account_form("mfa-key-rename", cx);
+        if let Some(form) = self.settings_extra.form.as_mut() {
+            form.mfa.key_id = id;
+            form.mfa.key_name = name;
+        }
+        self.account_form_step(Step::KeyRename, cx);
+    }
+
+    /// The options menu's "Delete": the last passkey of an account asks first, any other goes at once.
+    #[cfg_attr(
+        not(feature = "capture"),
+        expect(
+            dead_code,
+            reason = "called by the per-key options menu, which is not wired yet"
+        )
+    )]
+    pub(in crate::ui) fn security_key_delete(&mut self, id: String, cx: &mut Context<Self>) {
+        let keys = self
+            .fetched
+            .get(mfa::CREDENTIALS_KEY)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        // Whether an authenticator app stands behind the keys is not known here (READY's `authenticator_types` is
+        // not kept), so a single key always asks.
+        if mfa::last_key_needs_question(keys, false) {
+            self.open_account_form("mfa-key-delete", cx);
+            if let Some(form) = self.settings_extra.form.as_mut() {
+                form.mfa.key_id = id;
+            }
+        } else {
+            let key = format!("{}delete:{id}", mfa::KEY_PREFIX);
+            let _ = self.requests.send(mfa::key_delete_request(&key, &id));
+        }
+        cx.notify();
     }
 
     /// Capture only, the harness's `mfa <state>` steps: every dialog of the two-factor flow with the answers of the
@@ -2268,8 +2695,60 @@ impl Root {
             ["keys"] => {
                 self.fetched.insert(
                     mfa::CREDENTIALS_KEY.to_owned(),
-                    json!([{"name": "Placeholder key", "last_used": null}]),
+                    json!([{"id": "100", "type": 2, "name": "Placeholder key", "last_used": null}]),
                 );
+            }
+            // Two keys, one used a while ago: the list with its options buttons.
+            ["keys2"] => {
+                let used = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+                self.fetched.insert(
+                    mfa::CREDENTIALS_KEY.to_owned(),
+                    json!([
+                        {"id": "100", "type": 2, "name": "Placeholder key", "last_used": null},
+                        {"id": "101", "type": 2, "name": "Second placeholder", "last_used": used}
+                    ]),
+                );
+                self.stores.account.mfa_enabled = true;
+                self.stores.account.verified = true;
+                self.settings_extra.panel = Some(super::account_panels::Panel::Mfa);
+            }
+            // The register dialog on a made-up challenge: nothing is asked of the service.
+            ["key-start"] | ["key-wait"] | ["key-error"] | ["key-name"] => {
+                self.open_account_form("mfa-key-register", cx);
+                if let Some(form) = self.settings_extra.form.as_mut() {
+                    form.mfa.ticket = "placeholder-ticket".to_owned();
+                    form.mfa.challenge = json!({"publicKey": {
+                        "challenge": "Zm9vYmFy",
+                        "rp": {"id": "discord.com", "name": "Discord"},
+                        "user": {"id": "AQID", "name": "tester", "displayName": "tester"},
+                        "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+                    }})
+                    .to_string();
+                    form.working = false;
+                    if words[0] == "key-error" {
+                        form.mfa.error = Some(mfa::KEY_PROMPT_FAILED.to_owned());
+                    }
+                }
+                match words[0] {
+                    "key-wait" => self.key_begin(0, cx),
+                    "key-name" => {
+                        if let Some(form) = self.settings_extra.form.as_mut() {
+                            form.mfa.credential = "{}".to_owned();
+                        }
+                        self.account_form_step(Step::KeyName, cx);
+                    }
+                    _ => {}
+                }
+            }
+            ["key-rename"] => {
+                self.security_key_rename("100".to_owned(), "Placeholder key".to_owned(), cx);
+            }
+            ["key-delete"] => {
+                self.fetched.insert(
+                    mfa::CREDENTIALS_KEY.to_owned(),
+                    json!([{"id": "100", "type": 2, "name": "Placeholder key", "last_used": null}]),
+                );
+                self.security_key_delete("100".to_owned(), cx);
             }
             ["panel"] | ["panel-sms"] => {
                 self.stores.account.mfa_enabled = true;

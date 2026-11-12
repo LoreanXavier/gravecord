@@ -30,6 +30,7 @@ dc-state.workspace = true
 dc-tokens.workspace = true
 dc-voice.workspace = true
 dc-webhost.workspace = true
+dc-webauthn.workspace = true
 gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features = ["windows-manifest"] }
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }

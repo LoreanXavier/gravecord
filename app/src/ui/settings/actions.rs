@@ -135,18 +135,21 @@ pub(in crate::ui) struct State {
     pub(in crate::ui) connections_asked: bool,
     /// The dialog a connection button opens first (`connection_dialogs.rs`).
     pub(in crate::ui) conn: Option<super::connection_dialogs::Dlg>,
+    /// The Gift Inventory code box and its accept dialog (`gift_redeem.rs`).
+    pub(in crate::ui) gift: super::gift_redeem::State,
 }
 
 impl State {
     /// A dialog of this module is open: it takes the keys and the focus like every modal.
     pub(in crate::ui) fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.form.is_some() || self.conn.is_some()
+        self.dialog.is_some() || self.form.is_some() || self.conn.is_some() || self.gift.open()
     }
 
     /// Escape or an outside press: the dialog goes away and nothing it asked for happens.
     pub(in crate::ui) fn close_dialog(&mut self) {
         self.dialog = None;
         self.conn = None;
+        self.gift.close();
         self.close_form();
     }
 }
@@ -609,6 +612,9 @@ impl Root {
     pub(in crate::ui) fn settings_dialogs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.settings_extra.conn.is_some() {
             return self.connection_dialog(cx);
+        }
+        if let Some(spec) = self.gift_dialog(cx) {
+            return Some(modal::render(spec, cx));
         }
         if self.settings_extra.form.is_some() {
             return self.account_form_dialog(cx);

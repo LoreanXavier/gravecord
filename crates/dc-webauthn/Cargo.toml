@@ -1,0 +1,17 @@
+[package]
+name = "dc-webauthn"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# WebAuthn security keys and passkeys through the Windows system API (webauthn.dll), the way the official client's
+# browser does it: PublicKeyCredential request options as JSON in, the credential JSON the Discord API takes out.
+# The encoding and the JSON shapes are plain safe Rust and unit tested; the one `unsafe` module is `win.rs`.
+
+[dependencies]
+base64.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Networking_WindowsWebServices"] }

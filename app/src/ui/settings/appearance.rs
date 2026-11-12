@@ -359,13 +359,8 @@ impl Root {
                     .child(
                         div()
                             .id("theme-try-click")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.premium() == dc_state::premium::PremiumType::None {
-                                    this.open_custom_theme_editor(cx);
-                                } else {
-                                    this.pick_client_theme("Mint Apple", cx);
-                                }
-                            }))
+                            // A subscriber gets the same editor; it used to switch to a light preset instead.
+                            .on_click(cx.listener(|this, _, _, cx| this.open_custom_theme_editor(cx)))
                             .child(button("theme-try", "Try it out", super::ButtonKind::Primary)),
                     ),
             )
@@ -410,6 +405,10 @@ impl Root {
 
     /// The App Icon header's buttons (`useHeaderDecoration`): Preview Icon, then Unlock with Nitro.
     pub(super) fn app_icon_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `isUpsellPreview` of `AppIconPersistedStore` (module 526162) is `!canUsePremiumAppIcons`: a subscriber has no
+        // upsell button, only Preview Icon.
+        let unlock = (self.premium() == dc_state::premium::PremiumType::None)
+            .then(|| self.unlock_with_nitro("icon-unlock", cx));
         div()
             .flex()
             .gap(px(12.))
@@ -423,7 +422,7 @@ impl Root {
                         super::ButtonKind::Secondary,
                     )),
             )
-            .child(self.unlock_with_nitro("icon-unlock", cx))
+            .children(unlock)
             .into_any_element()
     }
 
@@ -488,12 +487,16 @@ impl Root {
 
     pub(super) fn color_themes(&self, cx: &mut Context<Self>) -> AnyElement {
         let nitro = self.premium() != dc_state::premium::PremiumType::None;
+        let saved_tile = self
+            .custom_wanted()
+            .and_then(|saved| super::custom_theme::tile_image(&saved));
         let swatches: Vec<AnyElement> = SWATCHES
             .iter()
             .filter(|swatch| swatch.group == "client")
             .map(|swatch| {
                 if swatch.name == "Custom Theme" {
                     div()
+                        .id("theme-custom-tile")
                         .relative()
                         .flex_none()
                         .size(px(48.))
@@ -503,13 +506,52 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(mask_icon("theme_palette", 24., "--text-default"))
+                        .cursor_pointer()
+                        // The tile opens the custom theme editor for every account (module 569386).
+                        .on_click(cx.listener(|this, _, _, cx| this.open_custom_theme_editor(cx)))
+                        // An account that holds a custom theme: its colours fill the tile, the palette is white and
+                        // the selection circle sits on the corner (`Q` of module 270746, `showSelectionCircle`).
+                        .children(saved_tile.clone().map(|picture| {
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .child(img(picture).size(px(48.)).rounded(px(8.)))
+                        }))
+                        .child(mask_icon(
+                            "theme_palette",
+                            24.,
+                            if saved_tile.is_some() {
+                                "--white"
+                            } else {
+                                "--text-default"
+                            },
+                        ))
+                        .children(saved_tile.is_some().then(|| {
+                            div()
+                                .absolute()
+                                .top(px(-8.))
+                                .left(px(32.))
+                                .size(px(24.))
+                                .child(div().absolute().child(mask_icon(
+                                    "theme_check_disc",
+                                    24.,
+                                    "--white",
+                                )))
+                                .child(div().absolute().child(mask_icon(
+                                    "theme_check",
+                                    24.,
+                                    "--background-brand",
+                                )))
+                        }))
                         // `badgeContainer_lUEm2A`: a brand ring 4px out and a NEW badge over the top edge.
-                        .child(div().absolute().top(px(-5.)).left(px(-5.)).child(mask_icon(
-                            "theme_new_ring",
-                            56.,
-                            "--background-brand",
-                        )))
+                        .children(saved_tile.is_none().then(|| {
+                            div().absolute().top(px(-5.)).left(px(-5.)).child(mask_icon(
+                                "theme_new_ring",
+                                56.,
+                                "--background-brand",
+                            ))
+                        }))
                         .child(
                             div()
                                 .absolute()

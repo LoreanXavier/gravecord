@@ -94,6 +94,9 @@ pub enum Update {
     ImageFailed {
         key: String,
     },
+    /// A settings write ended (`PATCH /users/@me/settings-proto/1`), with the whole settings message the server
+    /// answered (base64) when it did.
+    SettingsWritten(Option<String>),
     /// The body of a `Request::Fetch`. A failed fetch arrives here too, with the body `fetch_failure` builds.
     Fetched {
         key: String,
@@ -391,6 +394,90 @@ pub(crate) static SHOP_IMAGE_SIDE: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1920);
 
 static SETTINGS_PROTO_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `PATCH /users/@me/settings-proto/1`: a write of the account's settings.
+fn is_settings_write(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Rest { method, route, .. }
+            if *method == reqwest::Method::PATCH && route == "/users/@me/settings-proto/1"
+    )
+}
+
+/// The app's end of the request channel. It counts the settings writes on their way to the server: the server answers
+/// every one of them with a `USER_SETTINGS_PROTO_UPDATE`, and writes go one after the other, so the answer to an older
+/// write arrives while a newer choice is already on screen. Applied, it put the older choice back for a moment (a
+/// theme picked three times in a row walked through all three again). While the count is above zero those answers are
+/// left out, and the answer of the last write brings the server's settings in (`Update::SettingsWritten`).
+#[derive(Clone)]
+pub struct Requests {
+    sender: mpsc::UnboundedSender<Request>,
+    settings_writes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// The network side is gone: the request was not sent.
+#[derive(Debug)]
+pub struct Closed;
+
+/// The network's end of the request channel.
+pub struct RequestQueue {
+    receiver: mpsc::UnboundedReceiver<Request>,
+    settings_writes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+pub fn request_channel() -> (Requests, RequestQueue) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let settings_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (
+        Requests {
+            sender,
+            settings_writes: settings_writes.clone(),
+        },
+        RequestQueue {
+            receiver,
+            settings_writes,
+        },
+    )
+}
+
+impl Requests {
+    pub fn send(&self, request: Request) -> Result<(), Closed> {
+        use std::sync::atomic::Ordering;
+        let counted = is_settings_write(&request);
+        if counted {
+            self.settings_writes.fetch_add(1, Ordering::SeqCst);
+        }
+        let sent = self.sender.send(request).map_err(|_| Closed);
+        if counted && sent.is_err() {
+            self.settings_writes.fetch_sub(1, Ordering::SeqCst);
+        }
+        sent
+    }
+
+    /// Whether a settings write is still on its way.
+    pub fn settings_writes_pending(&self) -> bool {
+        self.settings_writes
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+    }
+}
+
+/// One counted settings write on the network side. However the request ends (answered, failed, refused), dropping
+/// this takes it off the count and tells the app, with the settings the server answered if it did.
+struct SettingsWrite {
+    count: Arc<std::sync::atomic::AtomicUsize>,
+    updates: mpsc::UnboundedSender<Update>,
+    answer: Option<String>,
+}
+
+impl Drop for SettingsWrite {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self
+            .updates
+            .send(Update::SettingsWritten(self.answer.take()));
+    }
+}
 
 /// The routes that change the account itself: its settings, its per-server notification settings, its relationships,
 /// its profile, its server memberships, and anything that spends or grants.
@@ -1144,11 +1231,11 @@ impl Drop for Shutdown {
     }
 }
 
-pub async fn run(
-    token: Token,
-    updates: mpsc::UnboundedSender<Update>,
-    mut requests: mpsc::UnboundedReceiver<Request>,
-) {
+pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests: RequestQueue) {
+    let RequestQueue {
+        receiver: mut requests,
+        settings_writes,
+    } = requests;
     let identity = Identity::new();
     let dead = updates.clone();
     let client = match Client::new(token.clone(), identity.clone()).map(|client| {
@@ -1203,6 +1290,11 @@ pub async fn run(
     });
 
     while let Some(request) = requests.recv().await {
+        let mut settings_write = is_settings_write(&request).then(|| SettingsWrite {
+            count: settings_writes.clone(),
+            updates: updates.clone(),
+            answer: None,
+        });
         if inert_refuses(&request, &updates) {
             continue;
         }
@@ -1506,6 +1598,11 @@ pub async fn run(
                     };
                     let method_name = method.to_string();
                     let outcome = client.request(method, &route, body.as_ref()).await;
+                    if let (Some(write), Ok(value)) = (settings_write.as_mut(), outcome.as_ref()) {
+                        write.answer = value["settings"].as_str().map(str::to_owned);
+                    }
+                    // The count goes down before the answer reaches the app, so the app sees "none pending" with it.
+                    drop(settings_write);
                     let report = match outcome {
                         Ok(mut value) => {
                             if let Some(token) =

@@ -670,6 +670,11 @@ pub async fn run(
                 let _ = writeln!(output, "dmcall: {line}");
             }
             // Capture only: the dialogs of the two-factor flow with injected answers (see `script_mfa`).
+            // Capture only: the Gift Inventory code box (`gift type <text>`, `gift submit`, `gift accept`, `gift state`).
+            ["gift", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_gift(rest, cx));
+                let _ = writeln!(output, "gift: {line}");
+            }
             ["mfa", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_mfa(rest, cx));
                 let _ = writeln!(output, "mfa: {line}");

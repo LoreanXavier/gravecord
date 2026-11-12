@@ -1507,6 +1507,20 @@ impl Root {
         self.server_settings.as_mut()?.overview.as_mut()
     }
 
+    /// Escape: an open select of the Community page or its Disable Community confirmation, then a select of the
+    /// wizard, close one at a time before the page does.
+    pub(super) fn close_overview_layer(&mut self) -> bool {
+        if self
+            .wizard_mut()
+            .is_some_and(|wizard| wizard.open_select.take().is_some())
+        {
+            return true;
+        }
+        self.overview_mut().is_some_and(|overview| {
+            overview.open_select.take().is_some() || std::mem::take(&mut overview.confirm_disable)
+        })
+    }
+
     fn request_overview(&mut self, guild: Id) {
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{OVERVIEW_PREFIX}{guild}")),

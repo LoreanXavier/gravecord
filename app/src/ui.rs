@@ -3,7 +3,7 @@
 
 use crate::editor::{Editor, EditorEvent, EditorStyle};
 use crate::inline::{BoxStyle, Inline, Piece, SharedSelection, inline};
-use crate::net::{Request, Update};
+use crate::net::{Request, Requests, Update};
 use crate::parity::Parity;
 use chrono::Datelike;
 use dc_markdown::highlight::highlight;
@@ -385,7 +385,7 @@ enum Row {
 
 pub struct Root {
     stores: Stores,
-    requests: UnboundedSender<Request>,
+    requests: Requests,
     guild: Option<Id>,
     channel: Option<Id>,
     screening: Option<screening::Screening>,
@@ -743,7 +743,7 @@ pub struct Root {
 
 impl Root {
     pub fn new(
-        requests: UnboundedSender<Request>,
+        requests: Requests,
         updates: UnboundedSender<Update>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1106,6 +1106,15 @@ impl Root {
                 if self.expand_voice_batch(&name, &data, cx) {
                     return;
                 }
+                // The server's answer to an older settings write of this app, arriving while a newer one is on its
+                // way: applying it put the older choice back on screen (`net::Requests`). The last write's answer
+                // brings the server's settings in (`Update::SettingsWritten`).
+                if name == "USER_SETTINGS_PROTO_UPDATE"
+                    && data["settings"]["type"].as_u64() == Some(1)
+                    && self.requests.settings_writes_pending()
+                {
+                    return;
+                }
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
                 if name == "MESSAGE_CREATE" {
@@ -1298,6 +1307,21 @@ impl Root {
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
+            Update::SettingsWritten(answer) => {
+                // The last write was answered: what the server holds now, the changes of other sessions that were
+                // left out in between included. Merged, since everything this app wrote is in it already.
+                if let Some(proto) = answer
+                    && !self.requests.settings_writes_pending()
+                {
+                    self.apply_update(
+                        Update::Dispatch {
+                            name: "USER_SETTINGS_PROTO_UPDATE".to_owned(),
+                            data: serde_json::json!({"settings": {"type": 1, "proto": proto}, "partial": true}),
+                        },
+                        cx,
+                    );
+                }
+            }
             Update::Fetched { key, body } => {
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
@@ -8292,7 +8316,8 @@ impl Render for Root {
                     return;
                 }
                 if this.server_settings.is_some() && keys.key == "escape" {
-                    if let Some(open) = this.server_settings.as_mut()
+                    if this.close_server_settings_layer() {
+                    } else if let Some(open) = this.server_settings.as_mut()
                         && open.delete_name.is_some()
                     {
                         open.delete_name = None;
@@ -8560,6 +8585,30 @@ impl Render for Root {
             .children({
                 let size = window.viewport_size();
                 self.theme_backdrop(f32::from(size.width), f32::from(size.height))
+            })
+            // Any mouse press ends keyboard mode (module 203480 listens on the window). The listener above is tied
+            // to this element's hitbox, which a layer that takes the mouse (User Settings, a dialog) covers: a press
+            // inside such a layer left the ring on. This one asks no hitbox.
+            .child({
+                let root = cx.entity().downgrade();
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
+                            if phase != gpui::DispatchPhase::Capture {
+                                return;
+                            }
+                            let _ = root.update(cx, |this, _| {
+                                if this.keys.keyboard_mode_is_on() {
+                                    this.keys.pointer_used();
+                                    window.refresh();
+                                }
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .size_0()
             })
             .children(self.theme_preview_panel(cx))
             .children(self.custom_theme_panel(cx))

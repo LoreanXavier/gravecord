@@ -120,6 +120,21 @@ fn rgb(value: u32) -> gpui::Rgba {
 }
 
 impl Root {
+    /// Escape: the Delete Role confirmation, the Add members dialog and the "..." menu close one at a time (top
+    /// first) before the page does.
+    pub(super) fn close_roles_layer(&mut self) -> bool {
+        let Some(state) = self
+            .server_settings
+            .as_mut()
+            .and_then(|open| open.roles.as_mut())
+        else {
+            return false;
+        };
+        state.confirm_delete.take().is_some()
+            || state.adding.take().is_some()
+            || state.menu.take().is_some()
+    }
+
     pub(super) fn request_roles(&mut self, guild: Id, cx: &mut Context<Self>) {
         let _ = self.requests.send(Request::Fetch {
             key: format!("{ROLES_PREFIX}{guild}"),

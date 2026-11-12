@@ -2315,6 +2315,25 @@ impl Stores {
         patch
     }
 
+    /// The custom theme the account holds (`customUserThemeSettings`), if it has colours.
+    pub fn custom_theme(&self) -> Option<settings::CustomTheme> {
+        settings::custom_theme_in(&self.settings_raw)
+    }
+
+    /// Applies a custom theme to the account the way `u_` does (the theme and the client theme settings together,
+    /// the colour theme preset goes): the PATCH body value comes back, empty until the account's settings have
+    /// arrived.
+    pub fn set_custom_theme(&mut self, theme: u64, custom: &settings::CustomTheme) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_custom_theme(&self.settings_raw, theme, custom);
+        self.settings_raw = updated;
+        self.theme = theme;
+        self.prefs.remove(settings::CLIENT_THEME_PRESET.key);
+        patch
+    }
+
     /// Takes the consents object (`{"usage_statistics": {"consented": true}, ...}`): the names it lists replace the
     /// store's, as `UPDATE_CONSENTS` does. Anything else is ignored.
     pub fn set_consents(&mut self, consents: &Value) {

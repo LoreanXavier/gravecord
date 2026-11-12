@@ -155,19 +155,24 @@ impl Root {
     }
 
     /// The blue bar over the messages (`NewMessagesBar`, module 383055, built in module 891522 when
-    /// `unreadCount > 0`): shown while the open channel has unread messages, which the NEW divider keeps after the
-    /// automatic ack, and while Mark Unread holds one.
+    /// `unreadCount > 0`): shown while the open channel has unread messages (the window was away, or the view is
+    /// not at the newest message), and while Mark Unread holds one.
     pub(super) fn new_messages_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.channel?;
+        // `unreadCount > 0`: an ack sets the count to zero (`ack` of module 218461), so the bar goes the moment the
+        // channel is read, while the NEW divider stays. Mark Unread holds the count.
+        let manual = self
+            .stores
+            .read_states
+            .states
+            .get(&channel)
+            .is_some_and(|state| state.manual);
+        if !manual && !self.stores.is_unread(channel) {
+            return None;
+        }
         let acked = match self.divider_after() {
-            Some(acked) => acked,
-            None => {
-                let state = self.stores.read_states.states.get(&channel)?;
-                if !state.manual {
-                    return None;
-                }
-                state.acked
-            }
+            Some(acked) if !manual => acked,
+            _ => self.stores.read_states.states.get(&channel)?.acked,
         };
         let list = self.stores.messages.get(&channel)?;
         let ids: Vec<Id> = list.iter().map(|message| message.id).collect();

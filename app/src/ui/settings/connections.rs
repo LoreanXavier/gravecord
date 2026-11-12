@@ -527,6 +527,9 @@ impl Root {
         body: &Value,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.gift_answered(key, body, cx) {
+            return true;
+        }
         if key == super::connection_dialogs::DOMAIN_KEY {
             self.connection_domain_answered(body, cx);
             return true;

@@ -719,6 +719,16 @@ impl Root {
         cx.refresh_windows();
     }
 
+    /// "Apply" of the custom theme editor: the preview mode ends and the theme it showed is the one kept (the next
+    /// frame puts the saved theme on screen), where "Exit Preview" would put the old one back.
+    pub(super) fn end_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
+        PREVIEW.store(false, Ordering::Relaxed);
+        EDITING.store(false, Ordering::Relaxed);
+        self.custom_theme_closed();
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     /// "Exit Preview": the palette and colour theme from before.
     pub(in crate::ui) fn exit_theme_preview(&mut self, cx: &mut Context<Self>) {
         if !PREVIEW.swap(false, Ordering::Relaxed) {
@@ -726,6 +736,8 @@ impl Root {
         }
         EDITING.store(false, Ordering::Relaxed);
         self.custom_theme_closed();
+        // The saved theme (a custom one included) is put on screen again by the next frame.
+        self.reset_theme_sync();
         ACTIVE.store(SAVED_ACTIVE.load(Ordering::Relaxed), Ordering::Relaxed);
         set_theme(theme_from(SAVED_THEME.load(Ordering::Relaxed)));
         cx.refresh_windows();

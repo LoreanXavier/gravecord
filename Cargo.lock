@@ -1856,6 +1856,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-webauthn"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "dc-webhost"
 version = "0.1.0"
 dependencies = [
@@ -3364,6 +3374,7 @@ dependencies = [
  "dc-state",
  "dc-tokens",
  "dc-voice",
+ "dc-webauthn",
  "dc-webhost",
  "embed-resource",
  "gpui",
