@@ -593,6 +593,7 @@ impl Root {
                     .child(names)
                     .child(div().mt(px(6.)).child(super::profile::upsell_card_for(
                         self.premium().is_subscriber(),
+                        cx,
                     )))
                     .child(div().mt(px(12.)).child(first))
                     .child(div().mt(px(12.)).child(second)),

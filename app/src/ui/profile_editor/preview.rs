@@ -107,7 +107,9 @@ impl Root {
             .profile_effect
             .unwrap_or(open.saved.equipped.profile_effect);
         let styled_name = user.display_name_styles.is_some();
-        let upsell = !premium && !nitro && !open.upsell_closed;
+        // Module 927071 renders the same card as the popout (module 560296) on the user's own profile except in the
+        // try-it-out view, for every account: a subscriber's first button reads View Perks.
+        let upsell = shows_upsell(nitro, open.upsell_closed);
         let (name, pronouns, bio) = (open.name.clone(), open.pronouns.clone(), open.bio.clone());
         let username = user.username.clone();
         let since = dm_profile::member_since(user.id);
@@ -319,18 +321,31 @@ impl Root {
                                 .gap(px(4.))
                                 .cursor_pointer()
                                 .child(icon(
-                                    "settings_nitro",
+                                    if premium {
+                                        "nitro_wheel"
+                                    } else {
+                                        "settings_nitro"
+                                    },
                                     16.,
                                     "--control-secondary-text-default",
                                 ))
                                 .child(text(
-                                    "Get Nitro",
+                                    if premium { "View Perks" } else { "Get Nitro" },
                                     14.,
                                     18.,
                                     500.,
                                     "--control-secondary-text-default",
                                 ))
-                                .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if premium {
+                                        // `openApplicationStore` (module 560296 `$`).
+                                        this.profile_editor = None;
+                                        this.close_settings(cx);
+                                        this.open_shop(cx);
+                                    } else {
+                                        this.open_purchase(false, cx);
+                                    }
+                                })),
                         )
                         .child(
                             div()
@@ -580,5 +595,23 @@ impl Root {
             bio.update(cx, |editor, _| editor.set_text(&saved_bio));
         }
         cx.notify();
+    }
+}
+
+/// Module 927071: the "Amp up your profile" card is shown for every account (a subscriber's reads View Perks) except
+/// in the try-it-out view, and until the user closes it.
+fn shows_upsell(try_it_out: bool, closed: bool) -> bool {
+    !try_it_out && !closed
+}
+
+#[cfg(test)]
+mod upsell_tests {
+    use super::shows_upsell;
+
+    #[test]
+    fn the_preview_card_is_for_every_tier_but_not_try_it_out() {
+        assert!(shows_upsell(false, false));
+        assert!(!shows_upsell(true, false));
+        assert!(!shows_upsell(false, true));
     }
 }

@@ -48,6 +48,30 @@ fn picture_file(format: ImageFormat, bytes: &[u8]) -> Option<(Vec<u8>, &'static 
     Some((out, "png"))
 }
 
+/// What the composer's character count shows (modules 246049 and 263582).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct CounterState {
+    /// `limit - length`: negative when over.
+    pub remaining: i64,
+    /// The wheel before the number (`I && M`): a Nitro account past 2000 characters and not over its limit.
+    pub flair: bool,
+    /// The "Send longer messages with Discord Nitro!" hint (`v && !k`): an account without the longer limit.
+    pub upsell: bool,
+}
+
+/// `isVisible` of 263582: shown once the remaining count is at or below a tenth of the limit, and for a Nitro account
+/// from 2001 characters while not over.
+pub(super) fn counter_state(length: usize, limit: usize, longer: bool) -> Option<CounterState> {
+    let remaining = limit as i64 - length as i64;
+    let near = remaining <= (limit / 10) as i64;
+    let flair = longer && length > MAX_LENGTH && remaining >= 0;
+    (flair || near).then_some(CounterState {
+        remaining,
+        flair,
+        upsell: !longer && near,
+    })
+}
+
 impl Root {
     /// The longest message the account may send.
     pub(super) fn max_message_length(&self) -> usize {
@@ -112,21 +136,19 @@ impl Root {
         cx.notify();
     }
 
-    /// The count of characters over the limit (`characterCount`, measured in the too-long golden) with the Nitro hint
-    /// under it, at the composer's bottom right.
+    /// The composer's character count (module 246049 with the visibility rule of 263582): the remaining count shows
+    /// from a tenth of the limit before it; a Nitro account also gets the wheel flair from 2001 characters on, and an
+    /// account without Nitro gets the "Send longer messages" hint beside it.
     pub(super) fn length_counter(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let max = self.max_message_length();
-        let over = self
-            .composer
-            .read(cx)
-            .text()
-            .chars()
-            .count()
-            .checked_sub(max)?;
-        if over == 0 {
-            return None;
-        }
-        let hint = (max == MAX_LENGTH).then(|| {
+        let length = self.composer.read(cx).text().chars().count();
+        let counter = counter_state(
+            length,
+            max,
+            self.premium().max_message_length() > MAX_LENGTH,
+        )?;
+        let remaining = counter.remaining;
+        let hint = counter.upsell.then(|| {
             div()
                 .mt(px(8.))
                 .h(px(28.))
@@ -163,8 +185,20 @@ impl Root {
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .font_weight(FontWeight(600.))
-                        .text_color(color("--text-feedback-critical"))
-                        .child(format!("-{over}")),
+                        // `premiumFlair`: the wheel, `--interactive-text-default`, 4px before the number.
+                        .when(counter.flair, |row| {
+                            row.child(div().mr(px(4.)).child(super::icon(
+                                "nitro_wheel",
+                                24.,
+                                "--interactive-text-default",
+                            )))
+                        })
+                        .text_color(color(if remaining >= 0 {
+                            "--text-default"
+                        } else {
+                            "--text-feedback-critical"
+                        }))
+                        .child(remaining.to_string()),
                 )
                 .children(hint)
                 .into_any_element(),
@@ -231,6 +265,32 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_counter_shows_a_tenth_of_the_limit_before_it_for_every_tier() {
+        // No Nitro: 2000, shown from 1800 on, with the hint.
+        assert_eq!(counter_state(1799, 2000, false), None);
+        let near = counter_state(1800, 2000, false).unwrap();
+        assert_eq!(
+            (near.remaining, near.flair, near.upsell),
+            (200, false, true)
+        );
+        let over = counter_state(2005, 2000, false).unwrap();
+        assert_eq!(over.remaining, -5);
+        // Nitro: 4000, shown from 2001 on with the wheel, and from 3600 on without it needing 2000.
+        assert_eq!(counter_state(2000, 4000, true), None);
+        let flair = counter_state(2001, 4000, true).unwrap();
+        assert_eq!(
+            (flair.remaining, flair.flair, flair.upsell),
+            (1999, true, false)
+        );
+        let near = counter_state(3700, 4000, true).unwrap();
+        assert!(near.flair && !near.upsell);
+        let over = counter_state(4001, 4000, true).unwrap();
+        assert_eq!((over.remaining, over.flair), (-1, false));
+        // At the limit: "0", not critical.
+        assert_eq!(counter_state(2000, 2000, false).unwrap().remaining, 0);
+    }
 
     #[test]
     fn a_png_is_kept_and_a_bitmap_becomes_a_png() {

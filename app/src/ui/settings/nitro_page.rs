@@ -3,12 +3,14 @@
 //! `design/dom/settings/nitro-darker-cozy.json` (positions relative to the page's top, 154 in the capture).
 //!
 //! Not drawn: the perk illustrations, the plan card mascots and the hero sparkles (artwork of the official page).
-//! A subscriber sees "Manage" in the official client; that state needs a real subscription and is not drawn.
+//! A subscriber's page (module 886268 `aH`) opens on a card pointing at Subscriptions, and its subscribe buttons read
+//! and act by the subscription (module 572079): Current Plan, Upgrade, or disabled. That state is built from the
+//! modules; no capture of a subscriber exists.
 
 use super::Root;
 use crate::ui::nitro::{oklab, rgb};
-use crate::ui::{color, icon};
-use dc_state::premium::sku;
+use crate::ui::{color, icon, tooltip};
+use dc_state::premium::{PremiumType, SubscribeCta, Subscription, sku};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, div, linear_color_stop, linear_gradient,
     prelude::*, px, rgba,
@@ -60,7 +62,7 @@ const PERKS: [(&str, &str, f32, f32, f32); 9] = [
     ),
     (
         "HD Video",
-        "Better video resolutions for all your streams. Stream apps and games in up to 4K and 60fps.",
+        "Better video resolutions for all your streams. Stream apps and games in sweet, sweet HD.",
         1.,
         897.,
         266.,
@@ -95,7 +97,7 @@ const PERKS: [(&str, &str, f32, f32, f32); 9] = [
     ),
     (
         "Unlimited Super Reactions",
-        "We made Super Reactions unlimited so you can unleash the chaos.",
+        "We made Super Reactions unlimited so you can unleash the chaos in your chats.",
         0.,
         1758.,
         282.,
@@ -113,6 +115,65 @@ const PERKS: [(&str, &str, f32, f32, f32); 9] = [
         0.,
         2056.,
         260.,
+    ),
+];
+
+/// The perk card pictures, in `PERKS` order: art name, url, width, height. Sizes and sources are from the capture
+/// (`design/dom/settings/nitro-darker-cozy.json`, `perksCardArt_hNerlt`); every picture sits 31 px under the card top.
+pub(in crate::ui) const PERK_ART: [(&str, &str, f32, f32); 9] = [
+    (
+        "perk-emoji",
+        "https://discordapp.com/assets/d8edaaf5cb32248f.svg",
+        210.,
+        105.78,
+    ),
+    (
+        "perk-hd",
+        "https://discordapp.com/assets/3bcdc01b26c7f691.svg",
+        175.,
+        116.27,
+    ),
+    (
+        "perk-upload",
+        "https://discordapp.com/assets/010eae6a6dbacc63.svg",
+        220.,
+        105.05,
+    ),
+    (
+        "perk-app-icons",
+        "https://cdn.discordapp.com/assets/content/bca160c31fc5390dd2b41d90060edcc912a45f6ab3beab44ea79e16bf1f6530f.png",
+        230.,
+        115.,
+    ),
+    (
+        "perk-sounds",
+        "https://discordapp.com/assets/bd6751720573fb38.svg",
+        159.72,
+        132.,
+    ),
+    (
+        "perk-video",
+        "https://discordapp.com/assets/1eb1b74667b4c0f0.svg",
+        222.,
+        132.,
+    ),
+    (
+        "perk-reactions",
+        "https://discordapp.com/assets/99b308eabe7fcfd2.svg",
+        220.,
+        132.,
+    ),
+    (
+        "perk-stickers",
+        "https://discordapp.com/assets/0838bda6ecd20d91.svg",
+        222.,
+        109.75,
+    ),
+    (
+        "perk-badge",
+        "https://discordapp.com/assets/42e77ef3b6c4c1bb.svg",
+        151.,
+        110.,
     ),
 ];
 
@@ -175,6 +236,8 @@ fn at(x: f32, y: f32) -> gpui::Div {
 }
 
 impl Root {
+    /// A subscribe or gift button of the page. `cta` is a subscribe button's text and state for the account's
+    /// subscription (module 572079); a disabled one is half opaque, does nothing and may explain itself on hover.
     #[allow(clippy::too_many_arguments)]
     fn settings_outline_button(
         &self,
@@ -185,8 +248,12 @@ impl Root {
         width: f32,
         cx: &mut Context<Self>,
         gift: bool,
+        cta: Option<SubscribeCta>,
     ) -> AnyElement {
-        div()
+        let disabled = cta.as_ref().is_some_and(|cta| cta.disabled);
+        let tip = cta.as_ref().and_then(|cta| cta.tooltip);
+        let label = cta.as_ref().map_or(label, |cta| cta.text);
+        let button = div()
             .id(id)
             .w(px(width))
             .h(px(40.))
@@ -198,7 +265,9 @@ impl Root {
                 rgba(0xffffffff)
             })
             .when(filled, |this| this.bg(rgba(0xffffffff)))
-            .cursor_pointer()
+            // `.button:disabled`: not-allowed and half opaque.
+            .when(disabled, |this| this.opacity(0.5).cursor_not_allowed())
+            .when(!disabled, |this| this.cursor_pointer())
             .flex()
             .items_center()
             .justify_center()
@@ -216,8 +285,20 @@ impl Root {
                     .then(|| icon(glyph, 20., if filled { "--brand-500" } else { "--white" })),
             )
             .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(gift, cx)))
-            .into_any_element()
+            .when(!disabled, |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| this.open_purchase(gift, cx)))
+            });
+        match tip {
+            Some(tip) => self
+                .with_tip(
+                    format!("{id}-tip"),
+                    tooltip::Tip::text(tip, tooltip::Side::Top),
+                    button,
+                    cx,
+                )
+                .into_any_element(),
+            None => button.into_any_element(),
+        }
     }
 
     fn settings_plan_card(&self, nitro: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -291,6 +372,8 @@ impl Root {
                 288.,
                 cx,
                 false,
+                // `tier0CTAButton` and `tier2CTAButton`: Current Plan, Upgrade or a disabled Subscribe by tier.
+                Some(self.subscribe_cta(Some(plan_sku))),
             )))
             .into_any_element()
     }
@@ -302,6 +385,7 @@ impl Root {
         column: f32,
         top: f32,
         height: f32,
+        index: usize,
     ) -> AnyElement {
         div()
             .absolute()
@@ -313,23 +397,38 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-high"))
+            .child({
+                let (name, _, art_w, art_h) = PERK_ART[index];
+                div()
+                    .absolute()
+                    .top(px(31.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(self.nitro_art(name, art_w, art_h))
+            })
             .child(
+                // Text boxes are 290 wide in a 340 card (282 in the last one) and sit 103 px above the card's
+                // bottom edge (design/golden/windows/settings-full/nitro.json).
                 div()
                     .absolute()
                     .left_0()
                     .right_0()
-                    .bottom(px(24.))
-                    .px(px(40.))
+                    .bottom(px(34.))
+                    .px(px(if index == 8 { 29. } else { 25. }))
                     .flex()
                     .flex_col()
                     .items_center()
                     .text_center()
                     .child(text(title, 20., 24., 600., "--text-strong"))
-                    .child(
-                        div()
-                            .mt(px(7.))
-                            .child(text(body, 14., 18., 400., "--text-default")),
-                    ),
+                    .child(div().mt(px(8.)).h(px(36.)).child(text(
+                        body,
+                        14.,
+                        18.,
+                        400.,
+                        "--text-default",
+                    ))),
             )
             .into_any_element()
     }
@@ -435,6 +534,8 @@ impl Root {
                 160.,
                 cx,
                 false,
+                // The hero asks for Nitro only from a Basic or Classic subscriber (`C` of the page).
+                Some(self.subscribe_cta(self.hero_upgrade_sku())),
             )))
             .child(at(356., 228.).child(self.settings_outline_button(
                 "settings-nitro-hero-gift",
@@ -444,6 +545,7 @@ impl Root {
                 160.,
                 cx,
                 true,
+                None,
             )))
             .child(at(1., 363.).child(self.settings_plan_card(false, cx)))
             .child(at(361., 363.).child(self.settings_plan_card(true, cx)));
@@ -455,8 +557,8 @@ impl Root {
             600.,
             "--text-strong",
         )));
-        for (title, body, column, top, height) in PERKS {
-            page = page.child(self.perk_card(title, body, column, top, height));
+        for (index, (title, body, column, top, height)) in PERKS.into_iter().enumerate() {
+            page = page.child(self.perk_card(title, body, column, top, height, index));
         }
         // The comparison table.
         let table_top = 2492.;
@@ -543,6 +645,116 @@ impl Root {
                 .child(Self::compare_cell(nitro, 620., middle));
             row_top += label_height + 50.;
         }
-        page.into_any_element()
+        // A subscriber's page opens on the notice that points at Subscriptions, 24px above the hero.
+        let Some(notice) = self
+            .premium_subscription()
+            .and_then(|subscription| self.manage_notice(&subscription, cx))
+        else {
+            return page.into_any_element();
+        };
+        div()
+            .relative()
+            .w_full()
+            .h(px(4202.3 + NOTICE_SHIFT))
+            .child(at(1., 9.).w(px(696.)).child(notice))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(NOTICE_SHIFT))
+                    .left_0()
+                    .w_full()
+                    .h(px(4202.3))
+                    .child(page),
+            )
+            .into_any_element()
+    }
+
+    /// The card over the hero of a subscriber (`aR` of module 886268, `container_W-mjBG`): a 13px warning glyph and
+    /// the sentence naming the plan, on `--background-base-lower`, 8px of padding all round. The sentence is `xHRgU2`;
+    /// for Nitro Classic, which is no longer sold, it is the longer `tYuv+T` with a link to the support article.
+    fn manage_notice(
+        &self,
+        subscription: &Subscription,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let name = subscription.display_name()?;
+        let classic = subscription.premium_type() == Some(PremiumType::Classic);
+        let link = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .cursor_pointer()
+                .text_color(color("--text-link"))
+                .hover(|this| this.underline())
+                .child(label)
+        };
+        let to_subscriptions =
+            cx.listener(|this, _, _, cx| this.settings_goto("Subscriptions", None, cx));
+        let sentence = if classic {
+            // `tYuv+T`: the words flow over as many lines as the card needs.
+            let words = |text: &'static str| {
+                text.split(' ')
+                    .map(|word| div().mr(px(3.5)).child(word))
+                    .collect::<Vec<_>>()
+            };
+            div()
+                .flex()
+                .flex_wrap()
+                .children(words(
+                    "Nitro Classic is no longer available for new purchases. As an existing Classic subscriber, you can keep your plan as long as your renewal is successful. For more details, check this",
+                ))
+                .child(link("nitro-notice-article", "support article").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.follow_link(
+                            // `MVz.PREMIUM_DETAILS`.
+                            "https://support.discord.com/hc/en-us/articles/115000435108",
+                            "support article",
+                            cx,
+                        );
+                    },
+                )))
+                .child(div().mr(px(3.5)).child("."))
+                .children(words("Go to the"))
+                .child(div().mr(px(3.5)).child(
+                    link("nitro-notice-subscriptions", "Subscriptions").on_click(to_subscriptions),
+                ))
+                .children(words("page to manage your Nitro plan."))
+        } else {
+            div()
+                .flex()
+                .child(format!(
+                    "Trying to manage your {name} subscription? Go to your "
+                ))
+                .child(
+                    link("nitro-notice-subscriptions", "Subscriptions").on_click(to_subscriptions),
+                )
+                .child(" page.")
+        };
+        Some(
+            div()
+                .w_full()
+                .max_w(px(1000.))
+                .p(px(8.))
+                .rounded(px(4.))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .mr(px(6.))
+                        .child(icon("shop_circle_error", 13., "--status-warning")),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(sentence),
+                )
+                .into_any_element(),
+        )
     }
 }
+
+/// The notice's 34px (18px line, 8px padding twice) and the 24px under it (`existingSubscriberSpacing`).
+const NOTICE_SHIFT: f32 = 34. + 24.;

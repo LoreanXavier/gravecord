@@ -489,6 +489,7 @@ impl Root {
     pub(super) fn boost_page_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let page = self.boost_page.as_ref()?;
         let guild = self.current_guild()?;
+        let gift = offers_gift(self.premium());
         let scroll = page.scroll.clone();
         let scrolled = -f32::from(scroll.offset().y);
         let name = guild.name.clone();
@@ -663,11 +664,25 @@ impl Root {
                                                     .line_height(px(20.))
                                                     .font_weight(FontWeight(500.))
                                                     .text_color(gpui::rgb(0xffffff))
-                                                    .child("Get Nitro with 2 Free Boosts")
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.boost_page = None;
-                                                        this.open_nitro(cx);
-                                                    })),
+                                                    .when(gift, |this| {
+                                                        this.gap(px(4.))
+                                                            .child(icon("gift", 20., "--white"))
+                                                    })
+                                                    .child(if gift {
+                                                        "Gift Nitro"
+                                                    } else {
+                                                        "Get Nitro with 2 Free Boosts"
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.boost_page = None;
+                                                            if gift {
+                                                                this.open_purchase(true, cx);
+                                                            } else {
+                                                                this.open_nitro(cx);
+                                                            }
+                                                        },
+                                                    )),
                                             ),
                                     ),
                             ),
@@ -1414,9 +1429,25 @@ impl Root {
     }
 }
 
+/// Module 233824 (`hasFreeBoosts(user) || isPremium(user, TIER_2)`): an account with free boosts already has them, so
+/// the secondary button gifts Nitro; any other account is offered "Get Nitro with 2 Free Boosts".
+fn offers_gift(premium: dc_state::premium::PremiumType) -> bool {
+    use dc_state::premium::{Feature, PremiumType};
+    premium.has(Feature::FreeBoosts) || premium == PremiumType::Nitro
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_nitro_button_is_a_gift_only_for_nitro() {
+        use dc_state::premium::PremiumType;
+        assert!(!offers_gift(PremiumType::None));
+        assert!(!offers_gift(PremiumType::Basic));
+        assert!(!offers_gift(PremiumType::Classic));
+        assert!(offers_gift(PremiumType::Nitro));
+    }
 
     #[test]
     fn the_table_has_a_value_for_every_tier() {

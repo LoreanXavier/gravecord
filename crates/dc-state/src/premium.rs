@@ -493,6 +493,323 @@ pub fn checkout_handoff_url(
     )
 }
 
+/// Premium plans the subscription record can hold that `plan_id` does not list: the legacy and the group plans
+/// (the plan table `hd` of module 682901).
+pub mod extra_plan_id {
+    pub const MONTH_LEGACY: u64 = 511651856145973248;
+    pub const YEAR_LEGACY: u64 = 511651860671627264;
+    pub const GROUP_MONTH: u64 = 1432523012455792640;
+    /// The "None" plans a guild-boost-only subscription carries instead of a premium plan.
+    pub const NONE_MONTH: u64 = 628379151761408000;
+    pub const NONE_YEAR: u64 = 628381571568631808;
+    pub const NONE_3_MONTH: u64 = 944265614527037440;
+    pub const NONE_6_MONTH: u64 = 944265636643602432;
+}
+
+/// `SubscriptionStatus` (module 652215).
+pub mod status {
+    pub const UNPAID: u64 = 0;
+    pub const ACTIVE: u64 = 1;
+    pub const PAST_DUE: u64 = 2;
+    pub const CANCELED: u64 = 3;
+    pub const ENDED: u64 = 4;
+    pub const ACCOUNT_HOLD: u64 = 6;
+}
+
+/// `SubscriptionTypes.PREMIUM` (module 652215): the Nitro subscription, as against a guild or application one.
+pub const SUBSCRIPTION_TYPE_PREMIUM: u64 = 1;
+
+/// The premium type a plan grants (`hd[plan].premiumType` of module 682901); `None` for boost and "none" plans.
+pub fn plan_premium_type(plan: u64) -> Option<PremiumType> {
+    use extra_plan_id as extra;
+    match plan {
+        plan_id::MONTH_TIER_0 | plan_id::YEAR_TIER_0 => Some(PremiumType::Basic),
+        plan_id::MONTH_TIER_1 | plan_id::YEAR_TIER_1 => Some(PremiumType::Classic),
+        plan_id::MONTH_TIER_2
+        | plan_id::YEAR_TIER_2
+        | plan_id::THREE_MONTH_TIER_2
+        | plan_id::SIX_MONTH_TIER_2
+        | extra::MONTH_LEGACY
+        | extra::YEAR_LEGACY
+        | extra::GROUP_MONTH => Some(PremiumType::Nitro),
+        _ => None,
+    }
+}
+
+/// The SKU a premium plan belongs to (`hd[plan].skuId` of module 682901).
+pub fn plan_sku(plan: u64) -> Option<u64> {
+    use extra_plan_id as extra;
+    match plan {
+        plan_id::MONTH_TIER_0 | plan_id::YEAR_TIER_0 => Some(sku::TIER_0),
+        plan_id::MONTH_TIER_1 | plan_id::YEAR_TIER_1 => Some(sku::TIER_1),
+        plan_id::MONTH_TIER_2
+        | plan_id::YEAR_TIER_2
+        | plan_id::THREE_MONTH_TIER_2
+        | plan_id::SIX_MONTH_TIER_2
+        | extra::GROUP_MONTH => Some(sku::TIER_2),
+        extra::MONTH_LEGACY | extra::YEAR_LEGACY => Some(sku::LEGACY),
+        _ => None,
+    }
+}
+
+/// `m1` of module 832946: the plans a subscription without a premium plan carries.
+fn is_none_plan(plan: u64) -> bool {
+    use extra_plan_id as extra;
+    matches!(
+        plan,
+        extra::NONE_MONTH | extra::NONE_YEAR | extra::NONE_3_MONTH | extra::NONE_6_MONTH
+    )
+}
+
+/// The tier's name in the plan lists and the Subscriptions notice (`Mr` of module 682901: `t9uG/o`, `FSOz78`,
+/// `lG6a5x`).
+pub fn tier_display_name(tier: PremiumType) -> Option<&'static str> {
+    match tier {
+        PremiumType::Basic => Some("Nitro Basic"),
+        PremiumType::Classic => Some("Nitro Classic"),
+        PremiumType::Nitro => Some("Nitro"),
+        PremiumType::None => None,
+    }
+}
+
+/// `ci` of module 682901: how far up the ladder a tier sits (Basic, Classic, Nitro).
+fn tier_rank(tier: PremiumType) -> Option<u8> {
+    match tier {
+        PremiumType::Basic => Some(0),
+        PremiumType::Classic => Some(1),
+        PremiumType::Nitro => Some(2),
+        PremiumType::None => None,
+    }
+}
+
+/// One line of a subscription (`{id, plan_id, quantity}`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscriptionItem {
+    pub plan_id: u64,
+    pub quantity: u64,
+}
+
+/// A pending plan change (`renewal_mutations`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenewalMutations {
+    pub items: Vec<SubscriptionItem>,
+}
+
+/// A record of `GET /users/@me/billing/subscriptions` (`createFromServer` in module 191115), with the fields the
+/// pages read. Dates stay as the API's ISO strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subscription {
+    pub id: String,
+    pub kind: u64,
+    pub user_id: Option<u64>,
+    pub status: u64,
+    pub items: Vec<SubscriptionItem>,
+    /// The premium plan among the items, else the "none" plan of the same interval (`a9` of module 367888).
+    pub plan_id: u64,
+    pub renewal_mutations: Option<RenewalMutations>,
+    pub payment_source_id: Option<String>,
+    pub trial_id: Option<String>,
+    pub trial_ends_at: Option<String>,
+    pub created_at: Option<String>,
+    pub canceled_at: Option<String>,
+    pub current_period_start: Option<String>,
+    pub current_period_end: Option<String>,
+    pub streak_started_at: Option<String>,
+    pub currency: Option<String>,
+    pub payment_gateway: Option<u64>,
+}
+
+impl Subscription {
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let items = |list: &Value| -> Option<Vec<SubscriptionItem>> {
+            list.as_array()?
+                .iter()
+                .map(|item| {
+                    Some(SubscriptionItem {
+                        plan_id: item["plan_id"].as_str()?.parse().ok()?,
+                        quantity: item["quantity"].as_u64().unwrap_or(1),
+                    })
+                })
+                .collect()
+        };
+        let items_now = items(&value["items"])?;
+        let first = items_now.first()?;
+        let text = |key: &str| value[key].as_str().map(str::to_owned);
+        let plan_id = if value["type"].as_u64() == Some(SUBSCRIPTION_TYPE_PREMIUM) {
+            items_now
+                .iter()
+                .find(|item| plan_premium_type(item.plan_id).is_some())
+                .map_or(first.plan_id, |item| item.plan_id)
+        } else {
+            first.plan_id
+        };
+        Some(Self {
+            id: value["id"].as_str()?.to_owned(),
+            kind: value["type"].as_u64()?,
+            user_id: value["user_id"].as_str().and_then(|id| id.parse().ok()),
+            status: value["status"].as_u64()?,
+            plan_id,
+            items: items_now,
+            renewal_mutations: items(&value["renewal_mutations"]["items"])
+                .map(|items| RenewalMutations { items }),
+            payment_source_id: text("payment_source_id"),
+            trial_id: text("trial_id"),
+            trial_ends_at: text("trial_ends_at"),
+            created_at: text("created_at"),
+            canceled_at: text("canceled_at"),
+            current_period_start: text("current_period_start"),
+            current_period_end: text("current_period_end"),
+            streak_started_at: text("streak_started_at"),
+            currency: text("currency"),
+            payment_gateway: value["payment_gateway"].as_u64(),
+        })
+    }
+
+    /// `getPremiumPlanItem` (`Q` of module 722178): the item whose plan is a premium one; boost-only subscriptions
+    /// have none.
+    pub fn premium_item(&self) -> Option<&SubscriptionItem> {
+        self.items
+            .iter()
+            .find(|item| plan_premium_type(item.plan_id).is_some())
+    }
+
+    /// The tier the subscription's premium plan grants.
+    pub fn premium_type(&self) -> Option<PremiumType> {
+        plan_premium_type(self.premium_item()?.plan_id)
+    }
+
+    /// The plan's name in the settings notice (`getTierDisplayNameByPlanId`, or "Boost" for a boost-only record).
+    pub fn display_name(&self) -> Option<&'static str> {
+        match self.premium_item() {
+            Some(item) => plan_premium_type(item.plan_id).and_then(tier_display_name),
+            None => self
+                .items
+                .iter()
+                .any(|item| {
+                    matches!(
+                        item.plan_id,
+                        plan_id::MONTH_GUILD
+                            | plan_id::YEAR_GUILD
+                            | plan_id::THREE_MONTH_GUILD
+                            | plan_id::SIX_MONTH_GUILD
+                    )
+                })
+                .then_some("Boost"),
+        }
+    }
+
+    /// `Nc` of module 722178: a plan change, a trial or a missed payment is pending, so the plan cannot be switched.
+    pub fn switching_disabled(&self) -> bool {
+        self.renewal_mutations.is_some()
+            || self.trial_ends_at.is_some()
+            || self.status == status::PAST_DUE
+    }
+
+    /// `premiumSince`: when the unbroken run of subscription began.
+    pub fn premium_since(&self) -> Option<&str> {
+        self.streak_started_at
+            .as_deref()
+            .or(self.created_at.as_deref())
+    }
+}
+
+/// `getPremiumTypeSubscription` of the subscription store (module 166403): the account's Nitro subscription, among
+/// the records that are not unpaid and belong to it.
+pub fn premium_type_subscription(body: &Value, user: Option<u64>) -> Option<Subscription> {
+    body.as_array()?
+        .iter()
+        .filter_map(Subscription::from_json)
+        .filter(|sub| sub.status != status::UNPAID && sub.user_id == user)
+        .find(|sub| sub.kind == SUBSCRIPTION_TYPE_PREMIUM)
+}
+
+/// What the subscribe button of a Nitro page reads and whether it works: `useSubscribeButtonText` of module 572079.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscribeCta {
+    pub text: &'static str,
+    pub disabled: bool,
+    /// The hover text of a disabled button (`jXaaRk` and the plan-change notes of `Q8`).
+    pub tooltip: Option<&'static str>,
+}
+
+/// `jXaaRk`.
+pub const MANAGE_SUBSCRIPTION_TIP: &str =
+    "To manage your Nitro subscription, go to the Subscriptions page in User Settings.";
+
+/// `Q8` of module 722178: why a plan cannot be switched now.
+fn switching_note(subscription: &Subscription) -> Option<&'static str> {
+    let mut note = None;
+    if let Some(mutations) = &subscription.renewal_mutations {
+        let changes_plan = mutations
+            .items
+            .iter()
+            .find(|item| plan_premium_type(item.plan_id).is_some())
+            .is_none_or(|item| item.plan_id != subscription.plan_id);
+        note = Some(if changes_plan {
+            "You have to cancel your pending plan change before choosing another plan."
+        } else {
+            "You have a pending boost cancellation. You have to uncancel it before switching plans."
+        });
+    }
+    if subscription.trial_ends_at.is_some() {
+        note = Some("You cannot switch plans during your trial.");
+    }
+    note
+}
+
+/// The button's text and state for a call to action naming `cta_sku` (`None` is the hero's plain Subscribe), given the
+/// account's Nitro subscription and its `premium_type`. Without a subscription the button is a plain Subscribe; with
+/// one it is disabled, naming the current plan, unless it offers an upgrade to Nitro.
+pub fn subscribe_cta(
+    cta_sku: Option<u64>,
+    subscription: Option<&Subscription>,
+    user: PremiumType,
+) -> SubscribeCta {
+    // `S`: the plan's tier when the subscription has a premium plan, else the account's own.
+    let current = subscription
+        .and_then(Subscription::premium_type)
+        .unwrap_or(user);
+    let upgrade = cta_sku == Some(sku::TIER_2)
+        && matches!(current, PremiumType::Basic | PremiumType::Classic);
+    let default_text = if upgrade { "Upgrade" } else { "Subscribe" };
+    let switching = subscription.is_some_and(Subscription::switching_disabled);
+    let locked = subscription.is_some_and(|sub| {
+        sub.status != status::ACCOUNT_HOLD && !is_none_plan(sub.plan_id) && !upgrade
+    });
+    if !(locked || switching) {
+        return SubscribeCta {
+            text: default_text,
+            disabled: false,
+            tooltip: None,
+        };
+    }
+    let mut text = default_text;
+    let mut tooltip = None;
+    let known = cta_sku
+        .is_none_or(|sku| matches!(sku, sku::LEGACY | sku::TIER_0 | sku::TIER_1 | sku::TIER_2));
+    if known {
+        let offered = cta_sku.map_or(PremiumType::None, type_of_sku);
+        if switching {
+            tooltip = subscription.and_then(switching_note);
+        } else if let (Some(offered), Some(current)) = (tier_rank(offered), tier_rank(current))
+            && offered < current
+        {
+            text = "Subscribe";
+            tooltip = Some(MANAGE_SUBSCRIPTION_TIP);
+        } else if offered.is_subscriber() && offered == current {
+            text = "Current Plan";
+            tooltip = Some(MANAGE_SUBSCRIPTION_TIP);
+        } else if !offered.is_subscriber() && current == PremiumType::Nitro {
+            tooltip = Some(MANAGE_SUBSCRIPTION_TIP);
+        }
+    }
+    SubscribeCta {
+        text,
+        disabled: true,
+        tooltip,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +1070,128 @@ mod tests {
             plan_id::YEAR_TIER_0
         );
         assert!(find_plan(&plans, sku::TIER_2, false).is_none());
+    }
+
+    fn subscription(plan: u64, status: u64) -> Subscription {
+        Subscription::from_json(&json!({
+            "id": "1", "type": 1, "user_id": "9", "status": status,
+            "items": [{"id": "5", "plan_id": plan.to_string(), "quantity": 1}],
+            "created_at": "2025-01-02T03:04:05.000000+00:00",
+            "streak_started_at": "2024-06-01T00:00:00.000000+00:00",
+            "current_period_end": "2026-12-02T03:04:05.000000+00:00",
+            "renewal_mutations": null, "trial_ends_at": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_subscription_record_reads_its_plan_and_tier() {
+        let sub = subscription(plan_id::YEAR_TIER_2, 1);
+        assert_eq!(sub.plan_id, plan_id::YEAR_TIER_2);
+        assert_eq!(sub.premium_type(), Some(PremiumType::Nitro));
+        assert_eq!(
+            sub.premium_since(),
+            Some("2024-06-01T00:00:00.000000+00:00")
+        );
+        assert!(!sub.switching_disabled());
+        let boost = Subscription::from_json(&json!({
+            "id": "2", "type": 1, "user_id": "9", "status": 1,
+            "items": [{"plan_id": plan_id::MONTH_GUILD.to_string(), "quantity": 2}],
+        }))
+        .unwrap();
+        assert_eq!(boost.premium_type(), None);
+        assert_eq!(boost.display_name(), Some("Boost"));
+        assert_eq!(sub.display_name(), Some("Nitro"));
+        assert_eq!(
+            subscription(plan_id::YEAR_TIER_0, 1).display_name(),
+            Some("Nitro Basic")
+        );
+        assert!(
+            subscription(plan_id::MONTH_TIER_0, 1)
+                .premium_item()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_store_picks_the_accounts_paid_nitro_subscription() {
+        let body = json!([
+            {"id": "1", "type": 2, "user_id": "9", "status": 1,
+             "items": [{"plan_id": plan_id::MONTH_GUILD.to_string(), "quantity": 1}]},
+            {"id": "2", "type": 1, "user_id": "8", "status": 1,
+             "items": [{"plan_id": plan_id::MONTH_TIER_2.to_string(), "quantity": 1}]},
+            {"id": "3", "type": 1, "user_id": "9", "status": 0,
+             "items": [{"plan_id": plan_id::MONTH_TIER_2.to_string(), "quantity": 1}]},
+            {"id": "4", "type": 1, "user_id": "9", "status": 1,
+             "items": [{"plan_id": plan_id::YEAR_TIER_0.to_string(), "quantity": 1}]},
+        ]);
+        assert_eq!(premium_type_subscription(&body, Some(9)).unwrap().id, "4");
+        assert!(premium_type_subscription(&body, Some(7)).is_none());
+        assert!(premium_type_subscription(&json!([]), Some(9)).is_none());
+    }
+
+    #[test]
+    fn the_subscribe_button_by_tier() {
+        let nitro = subscription(plan_id::MONTH_TIER_2, 1);
+        let basic = subscription(plan_id::YEAR_TIER_0, 1);
+        let classic = subscription(plan_id::MONTH_TIER_1, 1);
+        // No subscription: every button is a plain Subscribe.
+        for sku in [None, Some(sku::TIER_0), Some(sku::TIER_2)] {
+            let cta = subscribe_cta(sku, None, PremiumType::None);
+            assert_eq!(
+                (cta.text, cta.disabled, cta.tooltip),
+                ("Subscribe", false, None)
+            );
+        }
+        // A Nitro subscriber: the hero's button is disabled and says so on hover; the Nitro card reads Current Plan
+        // and the Basic card a disabled Subscribe.
+        let hero = subscribe_cta(None, Some(&nitro), PremiumType::Nitro);
+        assert_eq!((hero.text, hero.disabled), ("Subscribe", true));
+        assert_eq!(hero.tooltip, Some(MANAGE_SUBSCRIPTION_TIP));
+        let card = subscribe_cta(Some(sku::TIER_2), Some(&nitro), PremiumType::Nitro);
+        assert_eq!((card.text, card.disabled), ("Current Plan", true));
+        let lower = subscribe_cta(Some(sku::TIER_0), Some(&nitro), PremiumType::Nitro);
+        assert_eq!((lower.text, lower.disabled), ("Subscribe", true));
+        // A Basic subscriber may upgrade: the hero asks for Nitro and both Nitro buttons work.
+        let up = subscribe_cta(Some(sku::TIER_2), Some(&basic), PremiumType::Basic);
+        assert_eq!((up.text, up.disabled, up.tooltip), ("Upgrade", false, None));
+        let own = subscribe_cta(Some(sku::TIER_0), Some(&basic), PremiumType::Basic);
+        assert_eq!((own.text, own.disabled), ("Current Plan", true));
+        let classic_card = subscribe_cta(Some(sku::TIER_0), Some(&classic), PremiumType::Classic);
+        assert_eq!(
+            (classic_card.text, classic_card.disabled),
+            ("Subscribe", true)
+        );
+        // A past-due Basic subscriber cannot switch even to Nitro: the note says why.
+        let mut late = subscription(plan_id::MONTH_TIER_0, status::PAST_DUE);
+        late.status = status::PAST_DUE;
+        let held = subscribe_cta(Some(sku::TIER_2), Some(&late), PremiumType::Basic);
+        assert_eq!((held.text, held.disabled), ("Upgrade", true));
+        // An account on hold is treated as having no subscription.
+        let hold = subscription(plan_id::MONTH_TIER_2, status::ACCOUNT_HOLD);
+        assert!(!subscribe_cta(None, Some(&hold), PremiumType::Nitro).disabled);
+    }
+
+    #[test]
+    fn a_pending_plan_change_is_the_buttons_note() {
+        let mut sub = subscription(plan_id::MONTH_TIER_0, 1);
+        sub.renewal_mutations = Some(RenewalMutations {
+            items: vec![SubscriptionItem {
+                plan_id: plan_id::MONTH_TIER_2,
+                quantity: 1,
+            }],
+        });
+        let cta = subscribe_cta(Some(sku::TIER_2), Some(&sub), PremiumType::Basic);
+        assert!(cta.disabled);
+        assert_eq!(
+            cta.tooltip,
+            Some("You have to cancel your pending plan change before choosing another plan.")
+        );
+        sub.trial_ends_at = Some("2026-12-01T00:00:00+00:00".into());
+        assert_eq!(
+            subscribe_cta(None, Some(&sub), PremiumType::Basic).tooltip,
+            Some("You cannot switch plans during your trial.")
+        );
     }
 
     #[test]

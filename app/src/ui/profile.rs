@@ -414,7 +414,7 @@ impl Root {
             .gap(px(12.))
             .child(names)
             .when(own, |this| {
-                this.child(upsell(self.premium().is_subscriber()))
+                this.child(upsell(self.premium().is_subscriber(), cx))
             })
             .children(
                 own.then_some(self.guild)
@@ -477,7 +477,9 @@ impl Root {
             .children(effect)
             .child(more);
         let at: Point<Pixels> = if popout.left {
-            point(popout.anchor.left() - px(308.), popout.anchor.top())
+            // The 300px card ends 8px before the member list's edge, 16px before the row (menus2/self-popout: row
+            // at 1024, card 708 to 1008; popouts/pt-member-game the same).
+            point(popout.anchor.left() - px(316.), popout.anchor.top())
         } else {
             point(popout.anchor.right() + px(8.), popout.anchor.top() - px(1.))
         };
@@ -499,7 +501,13 @@ impl Root {
                     .child(
                         anchored()
                             .position(at)
-                            .snap_to_window_with_margin(px(8.))
+                            // 12px kept below the card (menus2/self-popout: its border ends at y=708 of 720).
+                            .snap_to_window_with_margin(gpui::Edges {
+                                top: px(8.),
+                                right: px(8.),
+                                bottom: px(12.),
+                                left: px(8.),
+                            })
                             .child(card.popout(
                                 "user-popout",
                                 PopKind::Translate,
@@ -520,8 +528,8 @@ impl Root {
 /// `upsellContainer_vJa-rc`: "Amp up your profile" with Get Nitro and Shop, inside a two-color gradient edge.
 /// The card for a subscriber differs: module 560296 `$` swaps the Get Nitro button for "View Perks" (string `0Q61kF`,
 /// `NitroWheelIcon`) when `isPremiumUser`.
-pub(super) fn upsell_card_for(premium: bool) -> impl IntoElement {
-    upsell(premium)
+pub(super) fn upsell_card_for(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
+    upsell(premium, cx)
 }
 
 /// The first button's icon and label: Get Nitro, or View Perks for a subscriber (module 560296 `$`).
@@ -533,26 +541,55 @@ fn upsell_first_button(premium: bool) -> (&'static str, &'static str) {
     }
 }
 
-fn upsell(premium: bool) -> impl IntoElement {
-    let button = |icon_name: &'static str, label: &'static str| {
-        div()
-            .flex_1()
-            .h(px(32.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(color("--control-secondary-border-default"))
-            .bg(color("--control-secondary-background-default"))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(4.))
-            .text_size(px(14.))
-            .line_height(px(18.))
-            .font_weight(FontWeight(500.))
-            .text_color(color("--control-secondary-text-default"))
-            .child(icon(icon_name, 20., "--control-secondary-text-default"))
-            .child(label)
-    };
+/// What the card's buttons do (module 560296 `$`): View Perks opens the Shop (`APPLICATION_STORE`), Get Nitro opens the
+/// premium purchase modal for Nitro (`GET_PREMIUM`, `TIER_2`), Shop opens the Shop; each closes the popout
+/// (`onInteraction`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpsellAction {
+    OpenShop,
+    GetNitro,
+}
+
+fn upsell_action(premium: bool, shop_button: bool) -> UpsellAction {
+    if shop_button || premium {
+        UpsellAction::OpenShop
+    } else {
+        UpsellAction::GetNitro
+    }
+}
+
+fn upsell(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
+    let button =
+        |id: &'static str, icon_name: &'static str, label: &'static str, action: UpsellAction| {
+            div()
+                .id(id)
+                .cursor_pointer()
+                .flex_1()
+                .h(px(32.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--control-secondary-border-default"))
+                .bg(color("--control-secondary-background-default"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--control-secondary-text-default"))
+                .child(icon(icon_name, 20., "--control-secondary-text-default"))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.status_popout = None;
+                    this.profile = None;
+                    match action {
+                        UpsellAction::OpenShop => this.open_shop(cx),
+                        UpsellAction::GetNitro => this.open_purchase(false, cx),
+                    }
+                    cx.notify();
+                }))
+        };
     // The edge is two 2px gradient borders (#b377f3 to #3e70dd); gpui draws one color, so it takes the first.
     div()
         .rounded(px(8.))
@@ -584,9 +621,19 @@ fn upsell(premium: bool) -> impl IntoElement {
                 .gap(px(8.))
                 .child({
                     let (icon_name, label) = upsell_first_button(premium);
-                    button(icon_name, label)
+                    button(
+                        "upsell-first",
+                        icon_name,
+                        label,
+                        upsell_action(premium, false),
+                    )
                 })
-                .child(button("shop", "Shop")),
+                .child(button(
+                    "upsell-shop",
+                    "shop",
+                    "Shop",
+                    upsell_action(premium, true),
+                )),
         )
 }
 
@@ -680,7 +727,16 @@ fn status_bubble() -> impl IntoElement {
 
 #[cfg(test)]
 mod upsell_tests {
-    use super::upsell_first_button;
+    use super::{UpsellAction, upsell_action, upsell_first_button};
+
+    #[test]
+    fn the_upsell_buttons_go_by_tier() {
+        // Non-subscriber: Get Nitro buys, Shop opens the Shop. Subscriber: View Perks opens the Shop too.
+        assert_eq!(upsell_action(false, false), UpsellAction::GetNitro);
+        assert_eq!(upsell_action(false, true), UpsellAction::OpenShop);
+        assert_eq!(upsell_action(true, false), UpsellAction::OpenShop);
+        assert_eq!(upsell_action(true, true), UpsellAction::OpenShop);
+    }
 
     #[test]
     fn a_subscriber_reads_view_perks_instead_of_get_nitro() {

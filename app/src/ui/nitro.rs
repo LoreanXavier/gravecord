@@ -17,6 +17,8 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::rc::Rc;
 
+mod home;
+
 pub(super) const NITRO_PREFIX: &str = "nitro:";
 const PLANS_KEY: &str = "nitro:plans:";
 const SOURCES_KEY: &str = "nitro:sources";
@@ -136,6 +138,12 @@ pub(crate) struct NitroState {
     pub(super) handoff: Option<(String, String)>,
     pub(super) sources: Option<Value>,
     pub(super) subscriptions: Option<Value>,
+    /// A capture step set `subscriptions`: the account's own read must not replace it.
+    pub(super) subscriptions_injected: bool,
+    /// The selected filter pill of the Nitro subscriber home's favorites (`sV`).
+    pub(super) favorites_tab: usize,
+    /// The perk card under the pointer on the subscriber home.
+    pub(super) hovered_perk: Option<&'static str>,
 }
 
 impl Default for NitroState {
@@ -155,6 +163,9 @@ impl Default for NitroState {
             handoff: None,
             sources: None,
             subscriptions: None,
+            subscriptions_injected: false,
+            favorites_tab: 0,
+            hovered_perk: None,
         }
     }
 }
@@ -390,6 +401,9 @@ impl Root {
         for (name, url) in MODAL_ART {
             self.request_image(art_key(name), url.to_owned());
         }
+        for (name, url, _, _) in super::settings::nitro_page::PERK_ART {
+            self.request_image(art_key(name), url.to_owned());
+        }
         for item in WHATS_NEW.iter().chain(BEST_OF.iter()) {
             self.request_image(item.poster.to_owned(), item.poster.to_owned());
         }
@@ -461,7 +475,10 @@ impl Root {
             if report["ok"] == true {
                 self.nitro.payments = Some(report["body"].clone());
             }
-        } else if key == SUBSCRIPTIONS_KEY && report["ok"] == true {
+        } else if key == SUBSCRIPTIONS_KEY
+            && report["ok"] == true
+            && !self.nitro.subscriptions_injected
+        {
             self.nitro.subscriptions = Some(report["body"].clone());
         }
         cx.notify();
@@ -557,15 +574,20 @@ impl Root {
     ///
     /// `target`: the plan a card has selected, which goes straight to checkout; `None` opens Select Plan. A card
     /// with nothing selected passes `enabled = false`.
+    ///
+    /// `cta` is the button's text and state for the account's subscription (module 572079): Upgrade, Current Plan, or
+    /// a disabled Subscribe. A disabled button is half opaque, not-allowed, does nothing and may explain itself.
     fn subscribe_button(
         &self,
         id: &'static str,
         full: bool,
         target: Option<(u64, bool)>,
         enabled: bool,
+        cta: premium::SubscribeCta,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        div()
+        let enabled = enabled && !cta.disabled;
+        let button = div()
             .id(id)
             .when(!enabled, |this| this.opacity(0.5))
             .when(full, |this| this.w_full())
@@ -573,7 +595,8 @@ impl Root {
             .px(px(16.))
             .rounded(px(8.))
             .bg(rgba(0xffffffff))
-            .cursor_pointer()
+            .when(enabled, |this| this.cursor_pointer())
+            .when(!enabled, |this| this.cursor_not_allowed())
             .flex()
             .items_center()
             .justify_center()
@@ -583,7 +606,7 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(rgba(0x000000ff))
             .child(icon("nitro_wheel", 20., "--black"))
-            .child("Subscribe")
+            .child(cta.text)
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !enabled {
                     return;
@@ -592,8 +615,19 @@ impl Root {
                     Some((sku, yearly)) => this.open_checkout(sku, yearly, cx),
                     None => this.open_purchase(false, cx),
                 }
-            }))
-            .into_any_element()
+            }));
+        match cta.tooltip {
+            Some(tip) => self
+                .with_tip(
+                    format!("{id}-tip"),
+                    super::tooltip::Tip::text(tip, super::tooltip::Side::Top),
+                    button,
+                    cx,
+                )
+                .when(full, |this| this.w_full())
+                .into_any_element(),
+            None => button.into_any_element(),
+        }
     }
 
     fn gift_button(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
@@ -664,6 +698,7 @@ impl Root {
                                 false,
                                 None,
                                 true,
+                                self.subscribe_cta(self.hero_upgrade_sku()),
                                 cx,
                             ))
                             .child(self.gift_button("nitro-hero-gift", cx)),
@@ -847,10 +882,12 @@ impl Root {
         cx: &mut Context<Self>,
         yearly: bool,
         nitro: bool,
+        disabled: bool,
     ) -> AnyElement {
         div()
             .id(id)
-            .cursor_pointer()
+            .when(!disabled, |this| this.cursor_pointer())
+            .when(disabled, |this| this.cursor_not_allowed().opacity(0.3))
             .relative()
             .w_full()
             .rounded(px(16.))
@@ -912,6 +949,9 @@ impl Root {
                 "--text-strong",
             )))
             .on_click(cx.listener(move |this, _, _, cx| {
+                if disabled {
+                    return;
+                }
                 if nitro {
                     this.nitro.nitro_yearly = Some(yearly);
                 } else {
@@ -929,6 +969,12 @@ impl Root {
         } else {
             self.nitro.basic_yearly
         };
+        // Module 572079: the card of the plan the account is already subscribed to is locked (both periods).
+        let owned = self
+            .premium_subscription()
+            .and_then(|s| s.premium_item().map(|item| premium::plan_sku(item.plan_id)))
+            .flatten()
+            == Some(sku);
         let yearly = self.plan_price(sku, true);
         let monthly = self.plan_price(sku, false);
         let features: &[(&str, &str)] = if nitro {
@@ -983,6 +1029,7 @@ impl Root {
                     cx,
                     true,
                     nitro,
+                    owned,
                 )
             }))
             .children(monthly.map(|price| {
@@ -999,6 +1046,7 @@ impl Root {
                     cx,
                     false,
                     nitro,
+                    owned,
                 )
             }));
         div()
@@ -1065,6 +1113,7 @@ impl Root {
                         true,
                         yearly_selected.map(|yearly| (sku, yearly)),
                         yearly_selected.is_some(),
+                        self.subscribe_cta(Some(sku)),
                         cx,
                     )),
             )
@@ -1306,6 +1355,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.request_nitro();
+        // `L.YE` of module 886268: exactly Nitro gets the subscriber home (`sQ`), every other account the marketing one.
+        if self.premium() == PremiumType::Nitro {
+            return self.nitro_subscriber_home(cx);
+        }
         let scroll = self.nitro.scroll.clone();
         let offset = -f32::from(scroll.offset().y);
         let active = SECTION_TOPS
@@ -1515,6 +1568,7 @@ impl Root {
                                     false,
                                     None,
                                     true,
+                                    self.subscribe_cta(self.hero_upgrade_sku()),
                                     cx,
                                 ))
                                 .child(self.gift_button("nitro-float-gift", cx)),
@@ -1550,11 +1604,87 @@ impl Root {
             || (animated && !tier.has(premium::Feature::AnimatedEmojis))
     }
 
-    /// Capture harness step `premium N`: the account's tier, changed in this process only.
+    /// Capture harness step `premium N`: the account's tier, changed in this process only, with the monthly
+    /// subscription of that tier a real subscriber's account has (the test account has none).
     #[cfg(feature = "capture")]
     pub(crate) fn script_premium(&mut self, tier: Option<u64>, cx: &mut Context<Self>) {
         self.stores.account.premium_type = tier;
+        let plan = tier.and_then(|tier| match PremiumType::from_wire(Some(tier)) {
+            PremiumType::Basic => Some(premium::plan_id::MONTH_TIER_0),
+            PremiumType::Classic => Some(premium::plan_id::MONTH_TIER_1),
+            PremiumType::Nitro => Some(premium::plan_id::MONTH_TIER_2),
+            PremiumType::None => None,
+        });
+        self.script_subscription(plan, "ok", cx);
+    }
+
+    /// Capture harness step `subscription <plan id> <state>`: the body of `GET /users/@me/billing/subscriptions`
+    /// as one Nitro subscription would return it (`none` clears it). The states are `ok`, `past_due`, `trial` and
+    /// `pending` (a plan change to the monthly Nitro plan).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_subscription(
+        &mut self,
+        plan: Option<u64>,
+        state: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let user = self
+            .stores
+            .current_user
+            .as_ref()
+            .map_or(0, |user| user.id)
+            .to_string();
+        let rows: Vec<Value> = plan
+            .map(|plan| {
+                let item = |plan: u64| serde_json::json!({"id": "1", "plan_id": plan.to_string(), "quantity": 1});
+                serde_json::json!({
+                    "id": "1", "type": 1, "user_id": user,
+                    "status": if state == "past_due" { premium::status::PAST_DUE } else { premium::status::ACTIVE },
+                    "items": [item(plan)],
+                    "created_at": "2025-03-14T09:30:00.000000+00:00",
+                    "streak_started_at": "2024-02-10T09:30:00.000000+00:00",
+                    "current_period_start": "2026-11-02T09:30:00.000000+00:00",
+                    "current_period_end": "2026-12-02T09:30:00.000000+00:00",
+                    "currency": "usd",
+                    "payment_source_id": null,
+                    "trial_id": if state == "trial" { Value::from("1") } else { Value::Null },
+                    "trial_ends_at": if state == "trial" {
+                        Value::from("2026-12-02T09:30:00.000000+00:00")
+                    } else { Value::Null },
+                    "renewal_mutations": if state == "pending" {
+                        serde_json::json!({"items": [item(premium::plan_id::MONTH_TIER_2)]})
+                    } else { Value::Null },
+                })
+            })
+            .into_iter()
+            .collect();
+        self.nitro.subscriptions = Some(Value::Array(rows));
+        self.nitro.subscriptions_injected = true;
         cx.notify();
+    }
+
+    /// The account's Nitro subscription, as the subscription store holds it (`getPremiumTypeSubscription`): none
+    /// until the account's own read has returned one.
+    pub(super) fn premium_subscription(&self) -> Option<premium::Subscription> {
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        premium::premium_type_subscription(self.nitro.subscriptions.as_ref()?, me)
+    }
+
+    /// The SKU the Nitro pages' hero asks for: Nitro, from a subscriber of any other plan (`C` of module 886268);
+    /// nothing from a Nitro subscriber or an account without a subscription.
+    pub(in crate::ui) fn hero_upgrade_sku(&self) -> Option<u64> {
+        let subscription = self.premium_subscription()?;
+        let own = premium::plan_sku(subscription.premium_item()?.plan_id)?;
+        (own != sku::TIER_2).then_some(sku::TIER_2)
+    }
+
+    /// The text and state of a subscribe button naming `cta_sku` (module 572079).
+    pub(super) fn subscribe_cta(&self, cta_sku: Option<u64>) -> premium::SubscribeCta {
+        premium::subscribe_cta(
+            cta_sku,
+            self.premium_subscription().as_ref(),
+            self.premium(),
+        )
     }
 
     /// Whether the account has any Nitro (`premium_type`).
