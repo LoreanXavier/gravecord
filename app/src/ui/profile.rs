@@ -404,9 +404,6 @@ impl Root {
                         )
                     }),
             );
-        let owner = self
-            .current_guild()
-            .is_some_and(|guild| guild.owner_id == Some(user.id));
         let body = div()
             .pl(px(16.))
             .pt(px(4.))
@@ -416,23 +413,14 @@ impl Root {
             .flex_col()
             .gap(px(12.))
             .child(names)
-            .when(own, |this| this.child(upsell()))
-            .when(own && owner, |this| {
-                // `roleListContainer_xL50-d`: the guild owner can add roles to their own profile here.
-                this.child(
-                    div()
-                        .mt(px(2.))
-                        .h(px(24.))
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .text_color(color("--interactive-text-default"))
-                        .child(icon("add_role", 18., "--interactive-text-default"))
-                        .child("Add role"),
-                )
-            });
+            .when(own, |this| {
+                this.child(upsell(self.premium().is_subscriber()))
+            })
+            .children(
+                own.then_some(self.guild)
+                    .flatten()
+                    .and_then(|guild| self.popout_roles(guild, user.id, cx)),
+            );
         let footer = own.then(|| {
             div().px(px(16.)).pb(px(12.)).child(
                 div()
@@ -530,11 +518,22 @@ impl Root {
 }
 
 /// `upsellContainer_vJa-rc`: "Amp up your profile" with Get Nitro and Shop, inside a two-color gradient edge.
-pub(super) fn upsell_card() -> impl IntoElement {
-    upsell()
+/// The card for a subscriber differs: module 560296 `$` swaps the Get Nitro button for "View Perks" (string `0Q61kF`,
+/// `NitroWheelIcon`) when `isPremiumUser`.
+pub(super) fn upsell_card_for(premium: bool) -> impl IntoElement {
+    upsell(premium)
 }
 
-fn upsell() -> impl IntoElement {
+/// The first button's icon and label: Get Nitro, or View Perks for a subscriber (module 560296 `$`).
+fn upsell_first_button(premium: bool) -> (&'static str, &'static str) {
+    if premium {
+        ("nitro_wheel", "View Perks")
+    } else {
+        ("nitro_mark", "Get Nitro")
+    }
+}
+
+fn upsell(premium: bool) -> impl IntoElement {
     let button = |icon_name: &'static str, label: &'static str| {
         div()
             .flex_1()
@@ -583,7 +582,10 @@ fn upsell() -> impl IntoElement {
             div()
                 .flex()
                 .gap(px(8.))
-                .child(button("nitro_mark", "Get Nitro"))
+                .child({
+                    let (icon_name, label) = upsell_first_button(premium);
+                    button(icon_name, label)
+                })
                 .child(button("shop", "Shop")),
         )
 }
@@ -674,4 +676,15 @@ fn status_bubble() -> impl IntoElement {
                 // `content_rmCN9_`: the add icon is inline (16px, 4px after it), so the text wraps under it.
                 .child(div().px(px(12.)).py(px(8.)).child(status_text())),
         )
+}
+
+#[cfg(test)]
+mod upsell_tests {
+    use super::upsell_first_button;
+
+    #[test]
+    fn a_subscriber_reads_view_perks_instead_of_get_nitro() {
+        assert_eq!(upsell_first_button(false), ("nitro_mark", "Get Nitro"));
+        assert_eq!(upsell_first_button(true), ("nitro_wheel", "View Perks"));
+    }
 }

@@ -591,7 +591,9 @@ impl Root {
                     .flex()
                     .flex_col()
                     .child(names)
-                    .child(div().mt(px(6.)).child(super::profile::upsell_card()))
+                    .child(div().mt(px(6.)).child(super::profile::upsell_card_for(
+                        self.premium().is_subscriber(),
+                    )))
                     .child(div().mt(px(12.)).child(first))
                     .child(div().mt(px(12.)).child(second)),
             );
