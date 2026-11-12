@@ -6472,14 +6472,16 @@ impl Root {
                         return div().into_any_element();
                     }
                     dc_state::message_kinds::Presentation::System if !dm::is_system(message) => {
-                        return self
-                            .kind_line(message, *head, cx)
-                            .unwrap_or_else(|| div().into_any_element());
+                        return match self.kind_line(message, cx) {
+                            Some(line) => self.system_row(message, *head, line, cx),
+                            None => div().into_any_element(),
+                        };
                     }
                     _ => {}
                 }
                 if dm::is_system(message) {
-                    return self.system_message(message, *head, cx);
+                    let line = self.system_message(message, cx);
+                    return self.system_row(message, *head, line, cx);
                 }
                 // THREAD_STARTER_MESSAGE draws the message it references as an ordinary message (module 891522, `n$`
                 // and `nq`: no toolbar, menu or reactions), or the "could not load" line when it is not known.
@@ -6889,6 +6891,61 @@ impl Root {
         }
     }
 
+    /// The row around a system line ("X started a call.", a join, a pin): a `.message` like any other, so it takes
+    /// the hover tint, the hover bar and the message menu. The 17px between groups is outside the hover box, and the
+    /// box stops 16px short of the edge, as for an ordinary message.
+    fn system_row(
+        &self,
+        message: &Message,
+        head: bool,
+        line: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = message.id;
+        let own = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|user| user.id == message.author.id);
+        let menu_open = self.menu.is_some_and(|open| open.message == id);
+        let hovered = self.hovered == Some(id) || menu_open;
+        let over = color("--message-background-hover");
+        div()
+            .pt(px(if head { 17. } else { 0. }))
+            .pr(px(16.))
+            .child(
+                div()
+                    .id(SharedString::from(format!("system-row-{id}")))
+                    .relative()
+                    .when(menu_open, |this| this.bg(over))
+                    .hover(move |style| style.bg(over))
+                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                        if *inside {
+                            this.hovered = Some(id);
+                        } else if this.hovered == Some(id) {
+                            this.hovered = None;
+                        }
+                        cx.notify();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
+                        }),
+                    )
+                    .child(line)
+                    .when(hovered, |this| {
+                        this.child(self.message_toolbar_at(
+                            message,
+                            own,
+                            if head { -16. } else { -25. },
+                            cx,
+                        ))
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// Own messages offer Edit; the official bar is at -25px, 14px in from the row's right edge.
     /// The bar `top` px from its message's box: `.container_V_VY9Q` is 25px above it, `.isHeader` (the first message
     /// of a group) 16px (captures stage-ann/ann-message-hover and audio-attachment/card-hover: box 82.4, bar 66.4).
@@ -6901,6 +6958,18 @@ impl Root {
     ) -> impl IntoElement {
         let id = message.id;
         let text = message.content.clone();
+        // Module 448761: the message types a person writes (`USER_MESSAGE`, the ones that can be edited), the ones
+        // that take a reply (`REPLYABLE`) and the ones that can be forwarded (`FORWARDABLE`). A call or a pin line
+        // is in none of them: its bar holds the reactions and More.
+        const USER_MESSAGE: [u64; 9] = [0, 19, 20, 23, 26, 41, 45, 47, 68];
+        const REPLYABLE: [u64; 21] = [
+            0, 7, 19, 20, 23, 24, 25, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 45, 46, 69,
+        ];
+        const FORWARDABLE: [u64; 5] = [0, 19, 20, 23, 35];
+        let kind = message.kind;
+        let edits = own && USER_MESSAGE.contains(&kind);
+        let replies = !edits && REPLYABLE.contains(&kind);
+        let forwards = FORWARDABLE.contains(&kind);
         let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
             self.quick_reactions().into_iter().take(3).collect();
         let has_quick = !quick.is_empty();
@@ -7021,7 +7090,7 @@ impl Root {
                     }
                 })),
             )
-            .when(own, |this| {
+            .when(edits, |this| {
                 this.child(
                     div()
                         .id("toolbar-edit")
@@ -7038,7 +7107,7 @@ impl Root {
                 )
             })
             // Others' messages offer Reply where your own offer Edit.
-            .when(!own, |this| {
+            .when(replies, |this| {
                 let found = message.clone();
                 this.child(
                     self.with_tip(
@@ -7054,22 +7123,24 @@ impl Root {
                     })),
                 )
             })
-            .child(
-                self.with_tip(
-                    "toolbar-forward",
-                    Tip::text("Forward", Side::Top),
-                    button("msg_forward"),
-                    cx,
+            .when(forwards, |this| {
+                this.child(
+                    self.with_tip(
+                        "toolbar-forward",
+                        Tip::text("Forward", Side::Top),
+                        button("msg_forward"),
+                        cx,
+                    )
+                    .cursor_pointer()
+                    .on_click({
+                        let found = message.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.tip = None;
+                            this.open_forward(found.clone(), window, cx);
+                        })
+                    }),
                 )
-                .cursor_pointer()
-                .on_click({
-                    let found = message.clone();
-                    cx.listener(move |this, _, window, cx| {
-                        this.tip = None;
-                        this.open_forward(found.clone(), window, cx);
-                    })
-                }),
-            )
+            })
             .children(self.publish_button(message, &button, cx))
             .child(
                 self.with_tip(

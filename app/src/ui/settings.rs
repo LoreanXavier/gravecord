@@ -891,11 +891,9 @@ impl Root {
         let new_badge_after = entry.page == Page::Accessibility
             && !active
             && !ACCESSIBILITY_SEEN.load(Ordering::Relaxed);
-        let anchors = if active {
-            anchors_of(entry)
-        } else {
-            Vec::new()
-        };
+        // Every page's categories: the open page's list is drawn, and the one of the page just left while it
+        // closes.
+        let anchors = anchors_of(entry);
         let page = entry.page;
         // The sidebar is a list: one tab stop on the open page, the arrows, Home and End move between items.
         let handle = self.stop(&format!("settings-nav-{}", entry.icon), cx);
@@ -924,7 +922,24 @@ impl Root {
         } else {
             "--text-muted"
         }))
-        .when(active, |this| this.bg(color("--background-mod-normal")))
+        // `.item_xyJHva.active_xyJHva`: `transition: background-color .3s ease`. A row that is not the open one has
+        // no transition (`:hover:not(.active) { transition: none }`), so the fill only fades in.
+        .map(|this| {
+            let key = motion::key(&("settings-nav-fill", entry.icon));
+            let fill = color("--background-mod-normal");
+            if active {
+                this.bg(motion::color(
+                    key,
+                    fill,
+                    motion::css(300., motion::Ease::Ease),
+                ))
+            } else {
+                // Kept clear at once, so the next time the row opens its fill starts from nothing.
+                let clear = gpui::Rgba { a: 0., ..fill };
+                motion::color(key, clear, motion::css(0., motion::Ease::Linear));
+                this
+            }
+        })
         .when(!active, |this| {
             this.hover(move |style| {
                 let style = style.bg(color(if destructive {
@@ -1002,15 +1017,49 @@ impl Root {
             .left_0()
             .size_full(),
         );
+        // `.subnavContainer_8qMUr2`: `overflow-y: clip; transition: height .2s ease-out, opacity .15s ease-out 80ms`.
+        // The list of the page that opens grows to its height while the one of the page left shrinks to nothing.
+        let subnav = (!anchors.is_empty()).then(|| {
+            let full = self.settings_subnav_height(&anchors, window);
+            let height = motion::value(
+                motion::key(&("settings-subnav-height", entry.icon)),
+                if active { full } else { 0. },
+                motion::css(200., motion::Ease::EaseOut),
+            );
+            let opacity = motion::value(
+                motion::key(&("settings-subnav-opacity", entry.icon)),
+                if active { 1. } else { 0. },
+                motion::css(150., motion::Ease::EaseOut).delay(80.),
+            );
+            (height, opacity)
+        });
         div()
             .flex()
             .flex_col()
             .child(item)
             .when_some(
-                (active && !anchors.is_empty()).then_some(anchors),
-                |this, anchors| this.child(self.settings_subnav(&anchors, window, cx)),
+                subnav.filter(|(height, _)| active || *height > 0.5),
+                |this, (height, opacity)| {
+                    this.child(
+                        div()
+                            .h(px(height))
+                            .overflow_hidden()
+                            .opacity(opacity)
+                            .child(self.settings_subnav(&anchors, active, window, cx)),
+                    )
+                },
             )
             .into_any_element()
+    }
+
+    /// The height of a page's category list: its rows, the 16px between them and 8px above and under.
+    fn settings_subnav_height(&self, anchors: &[Anchor], window: &mut Window) -> f32 {
+        let seen = ACCOUNT_STATUS_SEEN.load(Ordering::Relaxed);
+        let rows: f32 = anchors
+            .iter()
+            .map(|anchor| 20. * wrapped_lines(window, anchor.label, anchor.badge && !seen) as f32)
+            .sum();
+        rows + 16. * anchors.len().saturating_sub(1) as f32 + 16.
     }
 
     /// The grid of `subnav_8qMUr2`: a 2px track 17px in, labels 17px past it and 16px apart.
@@ -1018,10 +1067,16 @@ impl Root {
     fn settings_subnav(
         &self,
         anchors: &[Anchor],
+        open_page: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let current = self.settings.as_ref().map_or(0, |open| open.anchor.get());
+        // The list of a page that is closing keeps no lit entry of the page that opened.
+        let current = if open_page {
+            self.settings.as_ref().map_or(0, |open| open.anchor.get())
+        } else {
+            usize::MAX
+        };
         if anchors.get(current).and_then(|anchor| anchor.key) == Some(ACCOUNT_KEYS[2]) {
             ACCOUNT_STATUS_SEEN.store(true, Ordering::Relaxed);
         }
@@ -1045,16 +1100,18 @@ impl Root {
             .h(px(total))
             .rounded(px(1.))
             .bg(color("--background-mod-subtle"))
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.))
-                    .top(px(thumb_top))
-                    .w(px(2.))
-                    .h(px(thumb_height))
-                    .rounded_full()
-                    .bg(color("--interactive-text-active")),
-            );
+            .when(open_page, |track| {
+                track.child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(thumb_top))
+                        .w(px(2.))
+                        .h(px(thumb_height))
+                        .rounded_full()
+                        .bg(color("--interactive-text-active")),
+                )
+            });
         let rows: Vec<AnyElement> = anchors
             .iter()
             .enumerate()

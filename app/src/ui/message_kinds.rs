@@ -183,7 +183,6 @@ impl Root {
     pub(super) fn kind_line(
         &self,
         message: &Message,
-        head: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let line = message_kinds::system_line(message, &self.line_context())?;
@@ -192,8 +191,6 @@ impl Root {
         let mentioned = self.mentions_me(message);
         Some(
             div()
-                .pt(px(if head { 17. } else { 0. }))
-                .pr(px(16.))
                 .child(
                     div()
                         .relative()

@@ -560,12 +560,7 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn system_message(
-        &self,
-        message: &Message,
-        head: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn system_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
         let (icon_name, tail, tint) = match message.kind {
             FRIEND_REQUEST_ACCEPTED => (
                 "system_friend_accepted",
@@ -577,8 +572,6 @@ impl Root {
             _ => ("system_friend_accepted", "", "--status-positive"),
         };
         div()
-            .pt(px(if head { 17. } else { 0. }))
-            .pr(px(16.))
             .child(
                 div()
                     .relative()
