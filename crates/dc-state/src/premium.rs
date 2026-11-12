@@ -290,7 +290,8 @@ pub fn format_currency(amount: i64, exponent: u32, currency: &str) -> String {
     let negative = amount < 0;
     let magnitude = amount.unsigned_abs() as u128;
     let digits = default_digits(currency);
-    let scale = 10u128.pow(exponent);
+    // The exponent comes from a billing answer; past 30 the power would overflow `u128`.
+    let scale = 10u128.pow(exponent.min(30));
     // Round the major-unit value to the currency's digits, half away from zero, in integers.
     let target = 10u128.pow(digits as u32);
     let scaled = magnitude * target;
@@ -814,6 +815,12 @@ pub fn subscribe_cta(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_absurd_currency_exponent_does_not_overflow() {
+        let _ = format_currency(999, 200, "USD");
+        let _ = format_currency(i64::MIN, 40, "JPY");
+    }
 
     #[test]
     fn gates_follow_the_tier_table() {

@@ -302,7 +302,9 @@ impl<'a> Reader<'a> {
                 let bits = self.u8()?;
                 let mut raw = self.take(length)?.to_vec();
                 if let Some(last) = raw.last_mut() {
-                    *last = last.checked_shr(8 - bits as u32).unwrap_or(0);
+                    *last = last
+                        .checked_shr(8u32.saturating_sub(u32::from(bits)))
+                        .unwrap_or(0);
                 }
                 Ok(Value::Array(raw.into_iter().map(Value::from).collect()))
             }
@@ -367,6 +369,14 @@ fn little_endian_to_decimal(digits: &[u8]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_bit_binary_with_more_than_eight_spare_bits_does_not_panic() {
+        // BIT_BINARY, length 1, "bits in the last byte" 200 (malformed), one byte.
+        let bytes = [131, BIT_BINARY, 0, 0, 0, 1, 200, 0xff];
+        assert!(unpack(&bytes).is_ok());
+        assert!(unpack(&[131, BIT_BINARY, 0, 0, 0, 1, 0, 0xff]).is_ok());
+    }
 
     #[test]
     fn packs_atoms_the_way_the_client_does() {

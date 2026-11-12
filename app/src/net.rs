@@ -1203,7 +1203,12 @@ pub async fn run(
                                 started_ms,
                             });
                         }
-                        Err(error) => warn!("loading messages failed: {error}"),
+                        Err(error) => {
+                            warn!("loading messages failed: {error}");
+                            // The channel the app reopened may be one this account lost access to: the loading
+                            // screen must not wait for a page that will never come.
+                            let _ = updates.send(Update::MessagesFailed { channel });
+                        }
                     }
                 });
             }

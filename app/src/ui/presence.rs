@@ -17,6 +17,20 @@ fn emoji_source(emoji: &Value) -> Option<String> {
 }
 
 impl Root {
+    /// The custom-status emoji of the one presence a `PRESENCE_UPDATE` carries. A busy server sends many of these a
+    /// second, so they must not rescan every presence the store holds (`request_presence_images`).
+    pub(super) fn request_presence_image_of(&mut self, data: &Value) {
+        let url = data["activities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|activity| activity["type"] == 4)
+            .find_map(|activity| emoji_source(&activity["emoji"]));
+        if let Some(url) = url {
+            self.request_image(url.clone(), url);
+        }
+    }
+
     pub(super) fn request_presence_images(&mut self) {
         let urls: Vec<String> = self
             .stores

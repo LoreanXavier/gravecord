@@ -22,6 +22,9 @@ pub enum Row {
     Unknown,
 }
 
+/// The farthest row a SYNC may start at; the list is dense, so a start past this would allocate a row per slot.
+const MAX_LIST_ROWS: usize = 1_000_000;
+
 fn id_of(value: &Value) -> Option<Id> {
     value.as_str()?.parse().ok()
 }
@@ -170,6 +173,11 @@ impl MemberList {
             return;
         };
         let items = op["items"].as_array().map_or(&[][..], Vec::as_slice);
+        // A range start beyond any real list (a guild has at most a few million members) is malformed: skip it
+        // instead of allocating that many rows.
+        if start > MAX_LIST_ROWS {
+            return;
+        }
         let end = start + items.len();
         if self.rows.len() < end {
             self.rows.resize(end, Row::Unknown);
@@ -323,6 +331,14 @@ mod tests {
     fn bad_indexes_are_ignored() {
         let mut list = synced();
         list.apply(&json!({"groups": [], "ops": [{"op": "DELETE", "index": 50}, {"op": "UPDATE", "index": 50, "item": member("1", "dnd")}]}));
+        assert_eq!(list.rows.len(), 3);
+    }
+
+    #[test]
+    fn a_range_start_far_past_any_list_is_skipped() {
+        let mut list = synced();
+        list.apply(&json!({"ops": [{"op": "SYNC", "range": [u64::MAX / 2, u64::MAX / 2 + 99], "items": [member("9", "online")]}]}));
+        list.apply(&json!({"ops": [{"op": "SYNC", "range": [4_000_000_000u64, 4_000_000_099u64], "items": [member("9", "online")]}]}));
         assert_eq!(list.rows.len(), 3);
     }
 }
