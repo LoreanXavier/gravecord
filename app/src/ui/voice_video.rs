@@ -154,6 +154,9 @@ pub(super) struct Video {
     pub(super) images: Slots<Arc<RenderImage>>,
     pumping: bool,
     streams: HashMap<StreamKey, Live>,
+    /// A stream asked to be watched before this account's voice state of the call arrived (Watch Stream from
+    /// outside the call): the owner and whether several were asked for. Sent once the state is there.
+    pending_watch: Option<(u64, bool)>,
 }
 
 impl Video {
@@ -786,6 +789,11 @@ impl Root {
         let Some(call) = &self.call else {
             return;
         };
+        if self.stream_identity().is_none() {
+            // The call was just joined: the watch needs the session of our own voice state.
+            self.video.pending_watch = Some((owner, force_multiple));
+            return;
+        }
         let (guild, channel) = (call.guild, call.channel);
         let others: Vec<u64> = self
             .watched_streams()
@@ -822,6 +830,19 @@ impl Root {
             self.join_dm_call(channel, false, cx);
         }
         self.watch_stream_of(owner, cx);
+    }
+
+    /// Our voice state arrived, or the call is gone: the watch that waited for it is sent or dropped.
+    pub(super) fn stream_pending_watch(&mut self, cx: &mut Context<Self>) {
+        if self.call.is_none() {
+            self.video.pending_watch = None;
+            return;
+        }
+        if self.stream_identity().is_some()
+            && let Some((owner, multiple)) = self.video.pending_watch.take()
+        {
+            self.watch_stream_with(owner, multiple, cx);
+        }
     }
 
     /// Gives the call's stream audio mix the level stored for `owner`'s stream.

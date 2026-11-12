@@ -83,6 +83,9 @@ impl Root {
             // `CONNECTION_OPEN` of `ApplicationStreamPreviewStore`.
             self.stream_previews.clear();
         }
+        if matches!(name, "VOICE_STATE_UPDATE" | "CALL_CREATE" | "CALL_DELETE") {
+            self.stream_pending_watch(cx);
+        }
         if matches!(name, "READY" | "RESUMED")
             && self.guild.is_none()
             && let Some(channel) = self.channel

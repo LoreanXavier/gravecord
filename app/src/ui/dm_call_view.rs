@@ -317,7 +317,10 @@ impl Root {
                 .overflow_hidden()
                 // `root_rTsZa_` paints `rgb(0, 0, 0)` over the wrapper's `--background-surface-high`.
                 .bg(color("--black"))
-                .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_none() {
+                        this.call_drags_end();
+                    }
                     this.voice_view_moved(cx);
                 }))
                 .child(body)

@@ -127,15 +127,23 @@ impl Root {
         self.vv.popout_on_top = false;
         if let Some(handle) = self.vv.popout.take() {
             self.drop_tips_of(gpui::AnyWindowHandle::from(handle).window_id());
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            // The window may be the one handling the press that closes it: it goes once this update is over.
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            });
         }
         cx.notify();
     }
 
     /// The popped-out window does not outlive the call.
     pub(super) fn call_popout_frame(&mut self, cx: &mut Context<Self>) {
-        if self.vv.popout.is_some() && self.call.is_none() {
-            self.close_call_popout(cx);
+        if self.call.is_none() {
+            // What belonged to the call that ended.
+            self.vv.end_shows_stream.set(false);
+            self.call_drags_end();
+            if self.vv.popout.is_some() {
+                self.close_call_popout(cx);
+            }
         }
     }
 
@@ -155,7 +163,10 @@ impl Root {
                 .id("call-popout-body")
                 .absolute()
                 .inset_0()
-                .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, _, cx| {
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_none() {
+                        this.call_drags_end();
+                    }
                     this.voice_view_moved(cx);
                 }))
                 .child(body)

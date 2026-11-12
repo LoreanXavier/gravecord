@@ -101,7 +101,9 @@ pub(super) fn render_image(picture: &dc_media::Picture) -> Option<Arc<RenderImag
         pixel.swap(0, 2);
     }
     let buffer = image::RgbaImage::from_raw(picture.width, picture.height, rgba)?;
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
+    Some(Arc::new(
+        RenderImage::new(vec![image::Frame::new(buffer)]).transient(),
+    ))
 }
 
 // ---- which tiles ----

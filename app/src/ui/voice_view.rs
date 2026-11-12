@@ -905,6 +905,17 @@ impl Root {
     /// Full Screen of the call bar: the call takes the whole window and the window the whole screen; again, and
     /// both go back.
     pub(super) fn toggle_call_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // In the popped-out window Full Screen is that window's own: the main window keeps its message.
+        if self
+            .vv
+            .popout
+            .is_some_and(|handle| gpui::AnyWindowHandle::from(handle) == window.window_handle())
+        {
+            self.vv.menu = None;
+            window.toggle_fullscreen();
+            cx.notify();
+            return;
+        }
         self.vv.fullscreen = !self.vv.fullscreen;
         self.vv.menu = None;
         if window.is_fullscreen() != self.vv.fullscreen {
@@ -983,7 +994,10 @@ impl Root {
             .h_full()
             .overflow_hidden()
             .bg(mid("--background-base-lowest"))
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button.is_none() {
+                    this.call_drags_end();
+                }
                 this.voice_view_moved(cx);
             }))
             .child(body);
@@ -2332,9 +2346,13 @@ impl Root {
                     .justify_center()
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        match watched.filter(|_| this.vv.end_shows_stream.get()) {
-                            Some(owner) => this.unwatch_stream_of(owner, cx),
-                            None => this.leave_voice(cx),
+                        // What the button shows decides, also while it is swapping.
+                        if this.vv.end_shows_stream.get() {
+                            if let Some(owner) = watched {
+                                this.unwatch_stream_of(owner, cx);
+                            }
+                        } else {
+                            this.leave_voice(cx);
                         }
                     }))
                     // Stop Watching is 958449 with `streamActive` (`useScreenshareLottie("disable")`), Disconnect

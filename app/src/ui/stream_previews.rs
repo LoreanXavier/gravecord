@@ -124,7 +124,15 @@ impl Root {
         };
         let now = now_ms();
         match body["url"].as_str() {
-            Some(url) => self.stream_previews.success(key, url.to_owned(), now),
+            Some(url) => {
+                // Each answer is a new address: the picture of the last one is let go.
+                if let Some(old) = self.stream_previews.url(key).map(str::to_owned)
+                    && old != url
+                {
+                    self.images.remove(&old);
+                }
+                self.stream_previews.success(key, url.to_owned(), now);
+            }
             None => {
                 let retry = body["body"]["retry_after"]
                     .as_f64()

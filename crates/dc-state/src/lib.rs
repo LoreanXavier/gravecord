@@ -1720,6 +1720,14 @@ impl Stores {
                     }
                 }
             }
+            "CALL_DELETE" => {
+                // `VoiceStateStore` (module 977997): the call's channel has no voice states left.
+                if let Some(channel) = id(&data["channel_id"])
+                    && let Some(list) = self.voice_states.get_mut(&0)
+                {
+                    list.retain(|state| state.channel_id != channel);
+                }
+            }
             "VOICE_SERVER_UPDATE" => {
                 let guild = if data["guild_id"].is_null() {
                     Some(0)
@@ -3485,6 +3493,23 @@ mod tests {
                 .iter()
                 .any(|state| state.user_id == 5 && state.self_stream)
         );
+    }
+
+    #[test]
+    fn a_call_that_ended_has_nobody_in_it() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "CALL_CREATE",
+            &json!({"channel_id": "500", "message_id": "1", "region": "x", "ongoing_rings": {},
+                "voice_states": [{"channel_id": "500", "user_id": "5", "session_id": "s"}]}),
+        );
+        stores.dispatch(
+            "VOICE_STATE_UPDATE",
+            &json!({"channel_id": "600", "user_id": "7", "session_id": "u"}),
+        );
+        stores.dispatch("CALL_DELETE", &json!({"channel_id": "500"}));
+        assert!(stores.voice_members(0, 500).is_empty());
+        assert_eq!(stores.voice_members(0, 600).len(), 1);
     }
 
     #[test]

@@ -28,6 +28,8 @@ pub(super) struct State {
     /// When the bar hides after the pointer left (`_hoverTimeout`, 150 ms).
     hide_at: Option<f64>,
     dragging: bool,
+    /// A stream's level while its bar is dragged (the owner, the percent, muted): stored once, when the drag ends.
+    live: Option<(u64, f32, bool)>,
     /// Where the rail was painted.
     track: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -54,17 +56,50 @@ impl Root {
     /// The level in percent (100 is unity) and whether the target is muted here.
     fn call_volume_level(&self, user: u64, stream: bool) -> (f32, bool) {
         if stream {
-            (
-                super::stream_volume::percent(user),
-                super::stream_volume::muted(user),
-            )
+            match self.call_volume.live {
+                Some((owner, percent, muted)) if owner == user => (percent, muted),
+                _ => (
+                    super::stream_volume::percent(user),
+                    super::stream_volume::muted(user),
+                ),
+            }
         } else {
             let (factor, muted) = self.context.mix.get(&user).copied().unwrap_or((1., false));
             (factor * 100., muted)
         }
     }
 
+    /// A drag that ended, or was cut short: its last level is stored.
+    pub(super) fn call_volume_drag_end(&mut self) {
+        self.call_volume.dragging = false;
+        if let Some((owner, percent, muted)) = self.call_volume.live.take() {
+            super::stream_volume::set_percent(owner, percent);
+            if super::stream_volume::muted(owner) != muted {
+                super::stream_volume::set_muted(owner, muted);
+            }
+            self.apply_stream_volume(owner);
+        }
+    }
+
+    /// The drags of the call view end with the button, wherever it was let go.
+    pub(super) fn call_drags_end(&mut self) {
+        if self.call_volume.dragging || self.call_volume.live.is_some() {
+            self.call_volume_drag_end();
+        }
+        self.stream_zoom.release();
+    }
+
     fn call_volume_set(&mut self, user: u64, stream: bool, percent: f32, muted: bool) {
+        if stream && self.call_volume.dragging {
+            // Storage is written once at the end of the drag; the mix follows the pointer.
+            self.call_volume.live = Some((user, percent, muted));
+            if let Some(call) = &self.call {
+                call.controls
+                    .hub()
+                    .set_stream_volume(if muted { 0. } else { percent / 100. });
+            }
+            return;
+        }
         if stream {
             super::stream_volume::set_percent(user, percent);
             super::stream_volume::set_muted(user, muted);
@@ -168,7 +203,7 @@ impl Root {
                                     return;
                                 }
                                 let _ = released.update(cx, |this, cx| {
-                                    this.call_volume.dragging = false;
+                                    this.call_volume_drag_end();
                                     if !this.call_volume.over {
                                         this.call_volume.hide_at = Some(motion::now() + 150.);
                                     }

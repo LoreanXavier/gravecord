@@ -120,7 +120,7 @@ index 75da2eb..9b0c895 100644
 +    true
 +}
 diff --git a/crates/gpui/src/assets.rs b/crates/gpui/src/assets.rs
-index cb8b47e..b276b6e 100644
+index cb8b47e..b0ab08d 100644
 --- a/crates/gpui/src/assets.rs
 +++ b/crates/gpui/src/assets.rs
 @@ -37,6 +37,8 @@ pub struct ImageId(pub usize);
@@ -132,6 +132,34 @@ index cb8b47e..b276b6e 100644
  }
  
  /// A cached and processed image, in BGRA format
+@@ -45,6 +47,8 @@ pub struct RenderImage {
+     pub id: ImageId,
+     /// The scale factor of this image on render.
+     pub(crate) scale_factor: f32,
++    /// The picture is replaced often (a video frame): it is drawn as it is, never as a scaled-down copy.
++    pub(crate) transient: bool,
+     data: SmallVec<[Frame; 1]>,
+ }
+ 
+@@ -64,10 +68,18 @@ impl RenderImage {
+         Self {
+             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+             scale_factor: 1.0,
++            transient: false,
+             data: data.into(),
+         }
+     }
+ 
++    /// Marks a picture that is replaced often, such as a video frame: a scaled-down copy of it would be made and
++    /// thrown away every frame.
++    pub fn transient(mut self) -> Self {
++        self.transient = true;
++        self
++    }
++
+     /// Convert this image into a byte slice.
+     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+         self.data
 diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
 index 8f980bd..f6040e9 100644
 --- a/crates/gpui/src/element.rs
@@ -960,7 +988,7 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..8d49554 100644
+index 4e2e1a7..1c395c3 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
@@ -2051,7 +2079,7 @@ index 4e2e1a7..8d49554 100644
 +        frame_index: usize,
 +        shown: Size<Pixels>,
 +    ) -> Option<(u32, u32)> {
-+        if data.frame_count() != 1 {
++        if data.frame_count() != 1 || data.transient {
 +            return None;
 +        }
 +        let source = data.size(frame_index);
