@@ -143,7 +143,13 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::ComponentSelect,
     Layer::InteractionSelect,
     Layer::FolderMenu,
+    Layer::AudioMenu,
 ];
+
+/// A submenu is a layer only while the menu it hangs off is open.
+fn submenu_is_open(submenu: bool, menu: bool) -> bool {
+    submenu && menu
+}
 
 /// The open flag of a settings select (`select_with_list`'s `open_key`); the add-game popout's flag is not one.
 fn is_select_key(key: &str) -> bool {
@@ -197,7 +203,8 @@ impl Root {
             Layer::SnoozeMenu => self.snooze_menu.is_some(),
             Layer::ClipMenu => self.clips_menu_open(),
             Layer::Menu => self.menu.is_some(),
-            Layer::Submenu => self.submenu.is_some(),
+            // The submenu hangs off the menu; with the menu gone nothing of it is drawn.
+            Layer::Submenu => submenu_is_open(self.submenu.is_some(), self.menu.is_some()),
             Layer::ContextMenu => self.context.open.is_some(),
             Layer::ComponentSelect => self.components.open.is_some(),
             Layer::InteractionSelect => self.interaction_select_is_open(),
@@ -346,6 +353,13 @@ mod tests {
         // The popout does not close while its own select is the top layer; the select does.
         assert!(!is_top(&open, Layer::AddGame));
         assert!(is_top(&open, Layer::SettingsSelect));
+    }
+
+    #[test]
+    fn a_submenu_without_its_menu_is_not_a_layer() {
+        assert!(submenu_is_open(true, true));
+        assert!(!submenu_is_open(true, false));
+        assert!(!submenu_is_open(false, true));
     }
 
     #[test]

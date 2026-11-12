@@ -76,6 +76,13 @@ impl Root {
             security_actions,
             too_long,
             snooze_menu,
+            guild_notifications,
+            channel_status,
+            follow,
+            start_stage,
+            stage_welcome,
+            stage_end_confirm,
+            publish_confirm,
             menu,
             submenu,
         );

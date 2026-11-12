@@ -184,6 +184,8 @@ pub(in crate::ui) struct Stops {
     focused: RefCell<Option<FocusHandle>>,
     /// The first row that is fully in view, read before the list renders (its state is borrowed while it does).
     pub(super) first_row: std::cell::Cell<usize>,
+    /// A row of a menu had focus when the frame started (before its groups were cleared).
+    pub(super) menu_had_focus: std::cell::Cell<bool>,
 }
 
 impl Stops {
@@ -191,6 +193,8 @@ impl Stops {
     /// out is kept until the region is drawn again (`begin_region`).
     pub(in crate::ui) fn begin_frame(&self, focused: Option<&FocusHandle>, first_row: usize) {
         self.first_row.set(first_row);
+        self.menu_had_focus
+            .set(focused.is_some_and(|handle| self.in_group("menu", handle)));
         crate::ui::modal::begin_frame();
         let root = crate::ui::motion::current_view();
         self.clear_view(|view| view.is_none() || view == root);
@@ -219,6 +223,14 @@ impl Stops {
             .iter()
             .find(|(_, other)| *other == handle)
             .map(|(key, _)| key.clone())
+    }
+
+    /// Whether `handle` is a stop of the group `name` as the last frame laid it out.
+    pub(in crate::ui) fn in_group(&self, name: &str, handle: &FocusHandle) -> bool {
+        self.groups
+            .borrow()
+            .iter()
+            .any(|group| group.name == name && group.position(handle).is_some())
     }
 
     pub(in crate::ui) fn has_focus(&self, handle: &FocusHandle) -> bool {

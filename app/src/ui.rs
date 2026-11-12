@@ -8114,6 +8114,20 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Escape in the search box: its field would emit Cancel, but the chain below takes the key first.
+                if keys.key == "escape"
+                    && this.search.as_ref().is_some_and(|search| search.focused)
+                    && this.search_filters.is_none()
+                {
+                    this.clear_search(cx);
+                    if this.composer_reachable() {
+                        this.focus_composer(window, cx);
+                    } else {
+                        window.focus(&this.focus, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && let Some(filters) = this.search_filters.as_mut()
                 {
@@ -8126,6 +8140,47 @@ impl Render for Root {
                 }
                 if keys.key == "escape" && this.thread_modal {
                     this.thread_modal = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // A dialog opened with a text field in focus: the field would emit Cancel, but the chain below
+                // takes Escape first, so the dialogs close here.
+                if keys.key == "escape" && this.create_channel.is_some() {
+                    this.create_channel = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // Dialogs of the server menu and the Stage and announcement flows: a modal's own Escape.
+                if keys.key == "escape"
+                    && (this.guild_notifications.is_some()
+                        || this.channel_status.is_some()
+                        || this.follow.is_some()
+                        || this.start_stage.is_some()
+                        || this.stage_welcome.is_some()
+                        || this.stage_end_confirm.is_some()
+                        || this.publish_confirm.is_some())
+                {
+                    this.guild_notifications = None;
+                    this.channel_status = None;
+                    this.follow = None;
+                    this.start_stage = None;
+                    this.stage_welcome = None;
+                    this.stage_end_confirm = None;
+                    this.publish_confirm = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.report.is_some() {
+                    this.report = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.invite.is_some() {
+                    this.invite = None;
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -8369,6 +8424,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // A submenu whose menu is already gone (Add Reaction opens the picker and closes the menu) is not a
+                // layer anyone sees: it must not take the key from the picker above it.
+                if event.keystroke.key == "escape" && this.menu.is_none() {
+                    this.submenu = None;
+                }
                 if event.keystroke.key == "escape" && this.notify_open {
                     this.notify_open = false;
                     this.notify_submenu = None;
@@ -8398,7 +8458,9 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.submenu.is_some() {
+                    // 165862 closes the whole menu on Escape, the submenu with it.
                     this.submenu = None;
+                    this.menu = None;
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.picker.is_some() {

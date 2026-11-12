@@ -185,6 +185,34 @@ pub(super) enum Anchor {
     Other(FocusHandle),
 }
 
+/// Where focus goes when a layer closes and gives back what it took over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Restore {
+    Composer,
+    Edit,
+    Handle,
+    /// The window's own handle: what had focus is the page itself or is not drawn here, and the layer's own field
+    /// is gone. A focus handle that is not drawn receives no keys.
+    Window,
+    Keep,
+}
+
+pub(super) fn restore_target(anchor: &Anchor, composer_reachable: bool, editing: bool) -> Restore {
+    match anchor {
+        Anchor::Composer if composer_reachable => Restore::Composer,
+        Anchor::Edit if editing => Restore::Edit,
+        Anchor::Edit if composer_reachable => Restore::Composer,
+        Anchor::Edit => Restore::Keep,
+        Anchor::Other(_) => Restore::Handle,
+        Anchor::Composer | Anchor::Root | Anchor::Nothing => Restore::Window,
+    }
+}
+
+/// A row of a menu had focus at the start of the frame and no menu is open any more: the row is not drawn.
+pub(super) fn menu_row_focus_is_gone(menu_open: bool, row_had_focus: bool) -> bool {
+    row_had_focus && !menu_open
+}
+
 /// Whether the message box gives up focus: a dialog is open, or the box is not drawn.
 pub(super) fn blurs_composer(anchor: &Anchor, modal: bool, reachable: bool) -> bool {
     matches!(anchor, Anchor::Composer) && (modal || !reachable)
@@ -269,6 +297,14 @@ impl Root {
                 self.invite.is_some(),
                 self.create_channel.is_some(),
                 self.report.is_some(),
+                self.thread_modal,
+                self.guild_notifications.is_some(),
+                self.channel_status.is_some(),
+                self.follow.is_some(),
+                self.start_stage.is_some(),
+                self.stage_welcome.is_some(),
+                self.stage_end_confirm.is_some(),
+                self.publish_confirm.is_some(),
                 self.full_profile.is_some(),
                 self.custom_status.is_some(),
                 self.custom_reminder.is_some(),
@@ -382,24 +418,35 @@ impl Root {
     }
 
     fn restore_anchor(&mut self, anchor: &Anchor, window: &mut Window, cx: &mut Context<Self>) {
-        match anchor {
-            Anchor::Composer if self.composer_reachable() => self.focus_composer(window, cx),
-            Anchor::Edit => {
+        match restore_target(anchor, self.composer_reachable(), self.editing.is_some()) {
+            Restore::Composer => self.focus_composer(window, cx),
+            Restore::Edit => {
                 if let Some((_, editor)) = self.editing.as_ref() {
                     let handle = editor.read(cx).focus_handle(cx);
                     window.focus(&handle, cx);
-                } else if self.composer_reachable() {
-                    self.focus_composer(window, cx);
                 }
             }
-            Anchor::Other(handle) => window.focus(handle, cx),
-            Anchor::Composer | Anchor::Root | Anchor::Nothing => {}
+            Restore::Handle => {
+                if let Anchor::Other(handle) = anchor {
+                    window.focus(handle, cx);
+                }
+            }
+            Restore::Window => window.focus(&self.focus, cx),
+            Restore::Keep => {}
         }
     }
 
     /// Called at the start of every frame, before the tree is built: moves focus where the rules above say after
     /// whatever the last input changed.
     pub(in crate::ui) fn sync_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A click on a menu row focuses the row; when that click closed the menu (or replaced it with a dialog) the
+        // row is no longer drawn, and a focus handle that is not drawn receives no keys, Escape included.
+        if menu_row_focus_is_gone(
+            self.menu.is_some() || self.context.open.is_some(),
+            self.keys.stops.menu_had_focus.get(),
+        ) {
+            window.focus(&self.focus, cx);
+        }
         let layers = self.layer_count();
         let now = Seen {
             layers,
@@ -914,6 +961,37 @@ mod tests {
         assert!(!blurs_composer(&Anchor::Edit, true, true));
         assert!(!blurs_composer(&Anchor::Root, true, true));
         assert!(!blurs_composer(&Anchor::Nothing, true, true));
+    }
+
+    #[test]
+    fn a_closing_layer_returns_focus_to_the_window_when_nothing_drawn_had_it() {
+        assert_eq!(restore_target(&Anchor::Root, true, false), Restore::Window);
+        assert_eq!(
+            restore_target(&Anchor::Nothing, false, false),
+            Restore::Window
+        );
+        // A message box that is not drawn (Home, a forum) cannot take focus back.
+        assert_eq!(
+            restore_target(&Anchor::Composer, false, false),
+            Restore::Window
+        );
+        assert_eq!(
+            restore_target(&Anchor::Composer, true, false),
+            Restore::Composer
+        );
+        assert_eq!(restore_target(&Anchor::Edit, true, true), Restore::Edit);
+        assert_eq!(
+            restore_target(&Anchor::Edit, true, false),
+            Restore::Composer
+        );
+        assert_eq!(restore_target(&Anchor::Edit, false, false), Restore::Keep);
+    }
+
+    #[test]
+    fn a_menu_row_that_had_focus_is_gone_with_its_menu() {
+        assert!(menu_row_focus_is_gone(false, true));
+        assert!(!menu_row_focus_is_gone(true, true));
+        assert!(!menu_row_focus_is_gone(false, false));
     }
 
     #[test]
