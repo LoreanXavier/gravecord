@@ -123,6 +123,9 @@ pub(super) struct State {
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
     pub popout_render: bool,
+    /// The red button of the tray shows Stop Watching, not Disconnect (`D` of `eT` in module 105225: it changes
+    /// once the button has shrunk).
+    pub end_shows_stream: std::cell::Cell<bool>,
     /// The call view is being built for a call this account has not joined (`inCall` is false): every participant
     /// has a tile, none can be focused, and the bar and its menus are left to the join buttons.
     pub outside: bool,
@@ -149,6 +152,7 @@ impl Default for State {
             popout: None,
             popout_render: false,
             outside: false,
+            end_shows_stream: std::cell::Cell::new(false),
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -1974,29 +1978,86 @@ impl Root {
                 )
                 .into_any_element(),
             ]))
-            .child(
-                self.with_tip(
-                    "call-disconnect-tip",
-                    Tip::text("Disconnect", Side::Top),
-                    div()
-                        .id("call-disconnect")
-                        .w(px(66.))
-                        .h(px(50.))
-                        .rounded(px(12.))
-                        .bg(mid("--control-critical-primary-background-default"))
-                        .hover(|style| style.bg(mid("--control-critical-primary-background-hover")))
-                        .active(|style| {
-                            style.bg(mid("--control-critical-primary-background-active"))
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx)))
-                        .child(icon("voice_disconnect", 20., "--white")),
-                    cx,
-                ),
-            );
+            .child({
+                // `eT` of module 105225: Stop Watching while the focused tile is a stream of someone else that this
+                // client watches, else Disconnect. On a change the button shrinks to 0.7 and fades to 0.2 (spring:
+                // mass 2, tension 600, friction 45, clamped), swaps, and comes back (tension 1000).
+                let watched = self.vv.focus.tile.and_then(|(user, kind)| {
+                    (kind == TileKind::Stream
+                        && self
+                            .video_stream_of(user)
+                            .is_some_and(|info| info.role == dc_voice::streams::Role::Watch))
+                    .then_some(user)
+                });
+                let wanted = watched.is_some();
+                let shown_stream = self.vv.end_shows_stream.get();
+                let changing = wanted != shown_stream;
+                let key = super::motion::key(&"call-end-swap");
+                let mut config =
+                    super::motion::SpringConfig::new(if changing { 600. } else { 1000. }, 45.);
+                config.mass = 2.;
+                config.clamp = changing;
+                config.precision = Some(0.01);
+                let t = super::motion::spring_value(key, if changing { 0. } else { 1. }, config);
+                if changing && super::motion::settled(&[key]) {
+                    self.vv.end_shows_stream.set(wanted);
+                    cx.notify();
+                }
+                let scale = if super::motion::reduced() {
+                    1.
+                } else {
+                    0.7 + 0.3 * t
+                };
+                let stream = self.vv.end_shows_stream.get();
+                let button = div()
+                    .id("call-disconnect")
+                    .w(px(66. * scale))
+                    .h(px(50. * scale))
+                    .rounded(px(12. * scale))
+                    .opacity(0.2 + 0.8 * t)
+                    .bg(mid("--control-critical-primary-background-default"))
+                    .hover(|style| style.bg(mid("--control-critical-primary-background-hover")))
+                    .active(|style| style.bg(mid("--control-critical-primary-background-active")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        match watched.filter(|_| this.vv.end_shows_stream.get()) {
+                            Some(owner) => this.unwatch_stream_of(owner, cx),
+                            None => this.leave_voice(cx),
+                        }
+                    }))
+                    .child(icon(
+                        if stream {
+                            "voice_bar_screen_active"
+                        } else {
+                            "voice_disconnect"
+                        },
+                        20. * scale,
+                        "--white",
+                    ));
+                div()
+                    .w(px(66.))
+                    .h(px(50.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .child(self.with_tip(
+                        "call-disconnect-tip",
+                        Tip::text(
+                            if stream {
+                                "Stop Watching"
+                            } else {
+                                "Disconnect"
+                            },
+                            Side::Top,
+                        ),
+                        button,
+                        cx,
+                    ))
+            });
         div()
             .absolute()
             .left(px(16.))
@@ -2062,6 +2123,7 @@ impl Root {
                     .items_center()
                     .justify_end()
                     .gap(px(20.))
+                    .children(self.call_volume_control(cx))
                     // Module 540462: Pop Out and Full Screen only exist in video mode (`mode === VIDEO && inCall`),
                     // so a DM's voice call has neither (golden `dm-call/in-call-alone`).
                     .when(guild != 0 || self.dmc.video, |this| {

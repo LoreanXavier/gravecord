@@ -48,6 +48,7 @@ mod blocked;
 mod boost_apply;
 mod call_background;
 mod call_popout;
+mod call_volume;
 #[cfg(feature = "capture")]
 mod ch_fixture;
 mod channel_drag;
@@ -512,6 +513,7 @@ pub struct Root {
     audio_menu: Option<audio_menu::AudioMenu>,
     /// The voice channel's call view: its idle timer, menus and docked chat.
     vv: voice_view::State,
+    call_volume: call_volume::State,
     invite: Option<invite::Invite>,
     invite_codes: HashMap<Id, String>,
     pending_invite_link: Option<String>,
@@ -898,6 +900,7 @@ impl Root {
             polls: poll::PollUi::default(),
             audio_menu: None,
             vv: voice_view::State::default(),
+            call_volume: call_volume::State::default(),
             invite: None,
             invite_codes: HashMap::new(),
             pending_invite_link: None,

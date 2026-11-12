@@ -496,6 +496,51 @@ impl Root {
         }
     }
 
+    /// Capture only: a stream shown as live without a connection, ours (`watch` false) or the test person's that this
+    /// client watches. Nothing is sent.
+    #[cfg(feature = "capture")]
+    pub(crate) fn fake_stream(
+        &mut self,
+        owner: u64,
+        watch: bool,
+        cx: &mut Context<Self>,
+    ) -> &'static str {
+        let Some((me, session)) = self.stream_identity() else {
+            return "not in a call";
+        };
+        let Some(call) = &self.call else {
+            return "not in a call";
+        };
+        let key = if call.guild != 0 {
+            StreamKey::Guild {
+                guild: call.guild,
+                channel: call.channel,
+                owner,
+            }
+        } else {
+            StreamKey::Call {
+                channel: call.channel,
+                owner,
+            }
+        };
+        let role = if watch { Role::Watch } else { Role::Send };
+        let tracker = Tracker::new(key, role, me, session, Instant::now());
+        let last = tracker.current();
+        self.video.streams.insert(
+            key,
+            Live {
+                tracker,
+                controls: StreamControls::new(),
+                source: None,
+                last,
+                started: None,
+                remote_quality: watch.then_some((Some(1440), 60)),
+            },
+        );
+        cx.notify();
+        "a stream is shown without a connection; nothing was sent"
+    }
+
     #[cfg(feature = "capture")]
     /// The capture-only start of the harness: the synthetic pattern at the lowest settings, ten seconds at most, and
     /// only when nobody else is in the channel. The answer says what happened.

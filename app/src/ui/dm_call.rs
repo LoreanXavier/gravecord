@@ -669,6 +669,26 @@ impl Root {
                 cx.notify();
                 "the test person is shown going live in the call; nothing was sent".to_owned()
             }
+            // `fake-live own|watch`: a stream of this account, or one of the test person that this client watches and
+            // has focused, shown without a connection.
+            ["fake-live", "own"] => self
+                .fake_stream(me, false, cx)
+                .to_owned(),
+            ["fake-live", "watch"] => {
+                let mut live = state(other, false);
+                live["self_stream"] = json!(true);
+                self.stores.dispatch("VOICE_STATE_UPDATE", &live);
+                let said = self.fake_stream(other, true, cx);
+                self.vv
+                    .focus
+                    .click(other, super::video_tiles::TileKind::Stream);
+                said.to_owned()
+            }
+            ["fake-live", "grid"] => {
+                self.vv.focus.grid();
+                cx.notify();
+                "back to the grid".to_owned()
+            }
             // `fake-flags`: the test person's client announced that clips are enabled (voice op 18).
             ["fake-flags"] => {
                 if let Some(call) = self.call.as_mut() {
