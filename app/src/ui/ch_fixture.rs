@@ -163,6 +163,20 @@ impl Root {
                 self.rebuild_rows();
                 "message injected".to_owned()
             }
+            // `ch complete <channel>`: the channel's history is whole (its first message is on screen), as after
+            // the fetch of a channel with few messages; nothing is requested.
+            ["complete", channel] => {
+                let Ok(channel) = channel.parse::<Id>() else {
+                    return "bad channel id".to_owned();
+                };
+                let window = self.stores.windows.entry(channel).or_default();
+                window.ready = true;
+                window.has_fetched = true;
+                window.has_more_before = false;
+                self.data_revision += 1;
+                self.rebuild_rows();
+                "history marked whole".to_owned()
+            }
             // `ch blocker <on|off>`: shows the Follow bar as an account without Send Messages would see it.
             ["blocker", state] => {
                 self.follow_blocker_forced = *state == "on";
@@ -206,13 +220,21 @@ impl Root {
                 let leaving = flags.contains(&"leave");
                 let data = json!({
                     "guild_id": FIXTURE_GUILD.to_string(),
-                    "channel_id": if leaving { Value::Null } else { json!("1568692565136375901") },
+                    // `stage` puts the person in the Stage channel the base script injects.
+                    "channel_id": if leaving {
+                        Value::Null
+                    } else if flags.contains(&"stage") {
+                        json!("1999000000000000103")
+                    } else {
+                        json!("1568692565136375901")
+                    },
                     "user_id": user.to_string(),
                     "session_id": "harness",
                     "self_mute": flags.contains(&"selfmute"),
                     "self_deaf": flags.contains(&"selfdeaf"),
                     "mute": flags.contains(&"mute"),
                     "deaf": flags.contains(&"deaf"),
+                    "suppress": flags.contains(&"suppress"),
                 });
                 self.stores.dispatch("VOICE_STATE_UPDATE", &data);
                 self.data_revision += 1;

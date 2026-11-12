@@ -14,12 +14,13 @@ use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::{Channel, ChannelKind, Id, permissions};
 use gpui::{
-    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, Rgba, Subscription, Window,
-    deferred, div, img, prelude::*, px, rgba,
+    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, RenderImage, Rgba,
+    Subscription, Window, deferred, div, img, prelude::*, px, rgba,
 };
 #[cfg(not(feature = "capture"))]
 use serde_json::json;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 /// `ChannelKind::Other(13)`: `GUILD_STAGE_VOICE`.
 const STAGE: ChannelKind = ChannelKind::Other(13);
@@ -32,6 +33,74 @@ const MAX_TOPIC: usize = 120;
 const GUILD_ONLY: u64 = 2;
 /// The key the answer of a start, edit or end comes back under.
 pub(super) const STAGE_KEY: &str = "stage-instance";
+
+/// The pulse gradient behind the waiting view (`pulseGradient_BUFBam`, a canvas): the rows' left edge and centre
+/// colours read from stage-ann/stage-waiting, 28px apart from the top of the 905 by 687 page.
+const GRADIENT: [(u32, u32); 25] = [
+    (0x111023, 0x151435),
+    (0x111127, 0x15153b),
+    (0x12112a, 0x161540),
+    (0x13122e, 0x19184a),
+    (0x141332, 0x1a1a51),
+    (0x151435, 0x1c1d56),
+    (0x14153a, 0x1f215c),
+    (0x16153e, 0x222463),
+    (0x181744, 0x25286a),
+    (0x18194a, 0x272b71),
+    (0x1a1a51, 0x2a2e78),
+    (0x1b1d56, 0x2d3180),
+    (0x1d1f5a, 0x2f3587),
+    (0x1f205d, 0x32388e),
+    (0x1f205f, 0x353b95),
+    (0x212362, 0x383e9c),
+    (0x222465, 0x3a41a3),
+    (0x232667, 0x3d45ab),
+    (0x24266b, 0x3f45b1),
+    (0x26286e, 0x434cb9),
+    (0x262970, 0x4a52c1),
+    (0x272a73, 0x4f59c8),
+    (0x292a76, 0x5661cf),
+    (0x282c78, 0x5d68d3),
+    (0x2a2d79, 0x6570d8),
+];
+
+fn backdrop() -> Arc<RenderImage> {
+    thread_local! {
+        static CACHE: RefCell<Option<Arc<RenderImage>>> = const { RefCell::new(None) };
+    }
+    CACHE.with(|cache| {
+        if let Some(image) = cache.borrow().as_ref() {
+            return image.clone();
+        }
+        let (width, height) = (905u32, 687u32);
+        let mut pixels = image::RgbaImage::new(width, height);
+        let channel = |rgb: u32, shift: u32| ((rgb >> shift) & 0xff) as f32;
+        for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+            let row = ((y as f32 + 0.5) / 28. - 0.5).clamp(0., (GRADIENT.len() - 1) as f32);
+            let (low, fraction) = (row.floor() as usize, row.fract());
+            let high = (low + 1).min(GRADIENT.len() - 1);
+            let across = ((x as f32 + 0.5) / width as f32 * 2. - 1.).abs();
+            let mix = |shift: u32| {
+                let at = |index: usize| {
+                    let (edge, centre) = GRADIENT[index];
+                    channel(centre, shift)
+                        + (channel(edge, shift) - channel(centre, shift)) * across
+                };
+                at(low) + (at(high) - at(low)) * fraction
+            };
+            // Premultiplied BGRA, the layout the atlas takes.
+            *pixel = image::Rgba([
+                (mix(0) + 0.5) as u8,
+                (mix(8) + 0.5) as u8,
+                (mix(16) + 0.5) as u8,
+                255,
+            ]);
+        }
+        let image = Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]));
+        *cache.borrow_mut() = Some(image.clone());
+        image
+    })
+}
 
 /// The Start the Stage modal's state (`V` of module 128347).
 pub(super) struct StartStage {
@@ -46,7 +115,70 @@ pub(super) struct StartStage {
     focus_pending: Cell<bool>,
 }
 
+/// `NewChannelsStore` (module 454058): a channel of a Community server shows the NEW pill while it is not vocal, not
+/// a thread, was made within the last week and after this account joined, and has no read state of its own.
+pub(super) fn new_channel_pill(
+    channel: &Channel,
+    community: bool,
+    joined: Id,
+    acked: Id,
+    now_ms: u64,
+) -> bool {
+    const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+    let vocal = matches!(channel.kind, ChannelKind::Voice | STAGE);
+    let thread = matches!(channel.kind, ChannelKind::Other(10..=12));
+    let made = dc_state::read_state::snowflake_ms(channel.id);
+    community
+        && !vocal
+        && !thread
+        && channel.kind != ChannelKind::Category
+        && acked == 0
+        && made > now_ms.saturating_sub(WEEK_MS)
+        && channel.id > joined
+}
+
 impl Root {
+    /// Whether the list row of `channel` carries the NEW pill.
+    pub(super) fn is_new_channel(&self, channel: &Channel) -> bool {
+        let Some(guild) = self.current_guild() else {
+            return false;
+        };
+        new_channel_pill(
+            channel,
+            guild.features.iter().any(|feature| feature == "COMMUNITY"),
+            guild.joined_snowflake(),
+            self.stores.read_states.acked(channel.id, 0),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// `O` of module 454058: opening a new channel acks it at the moment before it was made (it is no longer new).
+    pub(super) fn view_new_channel(&mut self, channel: Id) {
+        let Some(known) = self
+            .current_guild()
+            .and_then(|guild| guild.channels.iter().find(|known| known.id == channel))
+            .cloned()
+        else {
+            return;
+        };
+        if !self.is_new_channel(&known) || self.stores.read_states.mentions(channel) != 0 {
+            return;
+        }
+        let before = channel.saturating_sub(1 << 22);
+        self.stores.read_states.ack_local(channel, before, false);
+        self.data_revision += 1;
+        let _ = self.requests.send(crate::net::Request::Ack {
+            channel,
+            message: before,
+            manual: false,
+            mention_count: 0,
+            last_viewed: 0,
+        });
+    }
+
     pub(super) fn is_stage_channel(channel: &Channel) -> bool {
         channel.kind == STAGE
     }
@@ -66,132 +198,128 @@ impl Root {
             .all(|permission| self.can_in_channel(channel, permission))
     }
 
-    /// The Stage view: the channel header over the waiting card list, or the live Stage.
+    /// The Stage view: the waiting view over its gradient, or the live Stage. Both fill the page under the title bar
+    /// (stage-ann/stage-waiting and stage-live-hover: the page is 905 by 687 at (375, 33)).
     pub(super) fn stage_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(channel) = self.current_channel() else {
             return div().into_any_element();
         };
-        let instance = self.stores.stage_instances.get_by_channel(channel.id);
+        match self.stores.stage_instances.get_by_channel(channel.id) {
+            None => self.stage_waiting(channel, cx),
+            Some(instance) => {
+                let topic = instance.topic.clone();
+                self.stage_live(channel, topic)
+            }
+        }
+    }
+
+    /// `content_YMXX4L`: 400 wide, centred in the page; the header (24px above, 72 high: a 32/40 title and a 20/24
+    /// subtitle 8px under it), then the cards 24px under it and 8px apart.
+    fn stage_waiting(&self, channel: &Channel, cx: &mut Context<Self>) -> AnyElement {
         let target = channel.id;
         let moderator = self.can_moderate_stage(channel);
-        let body = match instance {
-            None => {
-                // `headerContainer_YMXX4L`: centred, 24px above and below; the title is `heading-xxl/medium` and the
-                // subtitle `heading-lg/medium`, 8px under it. Assumed sizes: 32/40 and 20/24.
-                let header = div()
-                    .my(px(24.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .text_center()
-                    .child(
-                        div()
-                            .text_size(px(32.))
-                            .line_height(px(40.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child("Waiting for the Stage to start"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(8.))
-                            .text_size(px(20.))
-                            .line_height(px(24.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-default"))
-                            .child("What will you be talking about today?"),
-                    );
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .child(header)
-                    .children(moderator.then(|| {
-                        div().mt(px(8.)).child(self.stage_card(
-                            "stage-start-card",
-                            "stage_channel",
-                            "--green-360",
-                            "Start the Stage",
-                            "Pick a topic to start the conversation.",
-                            cx.listener(move |this, _, _, cx| this.open_start_stage(target, cx)),
-                        ))
-                    }))
-                    .into_any_element()
-            }
-            Some(instance) => {
-                // The live Stage. Assumed: the topic as the title with the "Stage Live" label (`qGRagm`) over it;
-                // the speakers' and the audience's layout (module 396655's neighbours) is not read.
-                let topic = instance.topic.clone();
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px(px(8.))
-                            .py(px(2.))
-                            .rounded(px(4.))
-                            .bg(color("--green-360"))
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--white"))
-                            .child("Stage Live"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(16.))
-                            .max_w(px(640.))
-                            .text_center()
-                            .text_size(px(32.))
-                            .line_height(px(40.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(topic),
-                    )
-                    .children(moderator.then(|| {
-                        div().mt(px(24.)).child(self.stage_card(
-                            "stage-edit-card",
-                            "stage_channel",
-                            "--green-360",
-                            "Change the topic",
-                            "Update what the Stage is about.",
-                            cx.listener(move |this, _, _, cx| this.open_start_stage(target, cx)),
-                        ))
-                    }))
-                    .into_any_element()
-            }
-        };
+        let guild = self.guild;
         div()
             .parity("stage-view")
-            .flex()
-            .flex_col()
+            .relative()
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .child(self.header(cx))
+            .bg(color("--black"))
+            .overflow_hidden()
+            .child(img(backdrop()).absolute().top_0().left_0().size_full())
             .child(
                 div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .bg(color("--background-base-lower"))
-                    .child(body),
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(400.))
+                            .pt(px(24.))
+                            .pb(px(24.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .h(px(72.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .text_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(32.))
+                                            .line_height(px(40.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child("Waiting for the Stage to start"),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(8.))
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-default"))
+                                            .child("What will you be talking about today?"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(16.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .children(moderator.then(|| {
+                                        self.stage_card(
+                                            "stage-start-card",
+                                            "stage_channel",
+                                            "Start the Stage",
+                                            "Pick a topic to start the conversation.",
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.open_start_stage(target, cx)
+                                            }),
+                                        )
+                                    }))
+                                    .children(moderator.then(|| {
+                                        self.stage_card(
+                                            "stage-event-card",
+                                            "guild_menu_create_event",
+                                            "Create Event",
+                                            "Schedule a Stage for a future date.",
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_create_event(window, cx)
+                                            }),
+                                        )
+                                    }))
+                                    .child(self.stage_card(
+                                        "stage-join-card",
+                                        "mic",
+                                        "Continue without starting",
+                                        "For mic checks. Start when you're ready.",
+                                        cx.listener(move |this, _, _, cx| {
+                                            if let Some(guild) = guild {
+                                                this.request_join_voice(guild, target, cx);
+                                            }
+                                        }),
+                                    )),
+                            ),
+                    ),
             )
             .into_any_element()
     }
 
-    /// `47868` with `container__B7Y3X`: 400 wide, 16px padded, a 12px radius on `--background-base-lower` (hover
-    /// `--background-base-low`); the icon is a 6px padded circle in the card's colour, the text 16px in, a caret at
-    /// the end.
+    /// `47868` with `container__B7Y3X` (`eventPrompt_YMXX4L`): 400 by 69, 16px padded, a 12px radius on black at 0.52;
+    /// the icon is a 32px circle (6px padded) with a 20px glyph, the text 16px after it (a 16/20 semibold title over a
+    /// 12/16 line), a caret at the end.
     fn stage_card(
         &self,
         id: &'static str,
         glyph: &'static str,
-        tint: &'static str,
         title: &'static str,
         description: &'static str,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -199,10 +327,13 @@ impl Root {
         div()
             .id(id)
             .w(px(400.))
-            .p(px(16.))
+            .h(px(69.))
+            .px(px(16.))
             .rounded(px(12.))
-            .bg(color("--background-base-lower"))
-            .hover(|style| style.bg(color("--background-base-low")))
+            .bg(Rgba {
+                a: 0.52,
+                ..rgba(0x000000ff)
+            })
             .cursor_pointer()
             .flex()
             .items_center()
@@ -210,10 +341,11 @@ impl Root {
             .child(
                 div()
                     .flex_none()
-                    .p(px(6.))
-                    .rounded_full()
-                    .bg(color(tint))
-                    .child(icon(glyph, 20., "--interactive-text-active")),
+                    .size(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(glyph, 20., "--white")),
             )
             .child(
                 div()
@@ -236,7 +368,302 @@ impl Root {
                             .child(description),
                     ),
             )
-            .child(icon("chevron_right_20", 16., "--interactive-text-default"))
+            .child(icon("chevron_right_20", 16., "--white"))
+            .into_any_element()
+    }
+
+    /// The live Stage on black: `participants_ZW-j0k` over the speakers' and audience's sections, the controls under
+    /// them (`bottomControls_rTsZa_`).
+    fn stage_live(&self, channel: &Channel, topic: String) -> AnyElement {
+        let guild = self.guild.unwrap_or_default();
+        let target = channel.id;
+        let mut speakers = Vec::new();
+        let mut audience = Vec::new();
+        for state in self.stores.voice_members(guild, target) {
+            let user = self
+                .stores
+                .users
+                .get(&state.user_id)
+                .cloned()
+                .or_else(|| {
+                    self.stores
+                        .current_user
+                        .clone()
+                        .filter(|user| user.id == state.user_id)
+                })
+                .unwrap_or_default();
+            if state.suppress {
+                audience.push(user);
+            } else {
+                speakers.push(user);
+            }
+        }
+        let tile = |user: &dc_state::User| {
+            let picture = self.images.get(&super::avatar_source(user).0).cloned();
+            div()
+                .flex_none()
+                .w(px(102.))
+                .h(px(98.))
+                .rounded(px(8.))
+                .bg(color("--black"))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .size(px(56.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .children(picture.map(|picture| img(picture).size(px(56.)))),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .max_w(px(94.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(user.display_name().to_owned()),
+                )
+                .into_any_element()
+        };
+        let section = |title: String, people: &[dc_state::User], icon_name: &'static str| {
+            div()
+                .flex_none()
+                .child(
+                    div()
+                        .h(px(49.))
+                        .flex()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(color("--border-subtle"))
+                        .child(div().ml(px(3.)).child(icon(
+                            icon_name,
+                            24.,
+                            "--interactive-icon-default",
+                        )))
+                        .child(
+                            div()
+                                .ml(px(8.))
+                                .flex_1()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .child(div().mr(px(16.)).child(icon(
+                            "chevron_down",
+                            20.,
+                            "--interactive-icon-default",
+                        ))),
+                )
+                .child(
+                    div()
+                        .pt(px(12.))
+                        .pl(px(2.6))
+                        .pb(px(12.))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(5.))
+                        .children(people.iter().map(&tile)),
+                )
+                .into_any_element()
+        };
+        // stage-live and stage-live-hover: at rest the page shows neither the header nor the controls; the pointer over
+        // the page brings both (`visible`).
+        let header = div()
+            .flex_none()
+            .h(px(49.))
+            .px(px(16.))
+            .pt(px(8.))
+            .border_b_1()
+            .border_color(color("--border-subtle"))
+            .invisible()
+            .group_hover("stage-live", |style| style.visible())
+            .flex()
+            .items_start()
+            .child(
+                div()
+                    .h(px(32.))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("stage_channel", 24., "--text-muted")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(topic),
+                    )
+                    .child(
+                        div()
+                            .mx(px(16.))
+                            .size(px(4.))
+                            .rounded_full()
+                            .bg(color("--text-muted")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-muted"))
+                            .child(icon("mic", 16., "--text-muted"))
+                            .child(
+                                div()
+                                    .ml(px(4.))
+                                    .child(format!("{} is speaking", speakers.len())),
+                            )
+                            .child(div().ml(px(8.)).child(icon("members", 16., "--text-muted")))
+                            .child(
+                                div()
+                                    .ml(px(4.))
+                                    .child(format!("{} in audience", audience.len())),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .gap(px(24.))
+                    .child(icon("system_hand", 24., "--interactive-icon-default"))
+                    .child(icon("voice_view_chat", 24., "--interactive-icon-default")),
+            );
+        let round = |id: &'static str, glyph: &'static str| {
+            div()
+                .id(id)
+                .size(px(40.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(color("--interactive-background-hover")))
+                .child(icon(glyph, 20., "--white"))
+        };
+        let red = color("--red-400");
+        let controls = div()
+            .absolute()
+            .invisible()
+            .group_hover("stage-live", |style| style.visible())
+            .left_0()
+            .right_0()
+            .bottom(px(16.))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .child(
+                        div()
+                            .h(px(50.))
+                            .px(px(5.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(Rgba {
+                                a: 0.06,
+                                ..rgba(0x6c6d76ff)
+                            })
+                            .bg(rgba(0x131416ff))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(round("stage-sound", "voice_soundboard"))
+                            .child(round("stage-hand", "system_hand"))
+                            .child(round("stage-mic", "mic_muted"))
+                            .child(round("stage-more", "voice_view_more")),
+                    )
+                    .child(
+                        div()
+                            .ml(px(15.))
+                            .h(px(50.))
+                            .w(px(74.))
+                            .rounded(px(12.))
+                            .bg(red)
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .id("stage-leave")
+                                    .ml(px(5.))
+                                    .size(px(40.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("voice_disconnect", 20., "--white")),
+                            )
+                            .child(
+                                div()
+                                    .size(px(24.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("voice_view_caret", 16., "--white")),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right(px(16.))
+                    .bottom(px(13.))
+                    .flex()
+                    .gap(px(20.))
+                    .child(icon("voice_view_popout", 24., "--white"))
+                    .child(icon("voice_view_fullscreen", 24., "--white")),
+            );
+        div()
+            .parity("stage-view")
+            .group("stage-live")
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .bg(color("--black"))
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .px(px(16.))
+                    .flex()
+                    .flex_col()
+                    .children((!speakers.is_empty()).then(|| {
+                        section(
+                            format!("Speakers — {}", speakers.len()),
+                            &speakers,
+                            "members",
+                        )
+                    }))
+                    .child(section(
+                        format!("Audience — {}", audience.len()),
+                        &audience,
+                        "members",
+                    )),
+            )
+            .child(controls)
             .into_any_element()
     }
 
@@ -630,5 +1057,47 @@ impl Root {
             .stage_instances
             .get_by_channel(channel.id)
             .map(|instance| instance.topic.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel(id: Id, kind: ChannelKind) -> Channel {
+        Channel {
+            id,
+            name: "rules".to_owned(),
+            kind,
+            position: 0,
+            parent_id: None,
+            last_message_id: None,
+            overwrites: Vec::new(),
+            user_limit: 0,
+            topic: None,
+            rate_limit_per_user: 0,
+            flags: 0,
+            nsfw: false,
+            default_auto_archive_duration: None,
+            available_tags: Vec::new(),
+            default_sort_order: None,
+            default_forum_layout: 0,
+        }
+    }
+
+    #[test]
+    fn new_pill_needs_a_young_unread_text_channel_in_a_community() {
+        let now = 1_900_000_000_000u64;
+        let made = |ms_ago: u64| (now - ms_ago - 1_420_070_400_000) << 22;
+        let day = 24 * 60 * 60 * 1000;
+        let young = channel(made(day), ChannelKind::Text);
+        assert!(new_channel_pill(&young, true, 1, 0, now));
+        assert!(!new_channel_pill(&young, false, 1, 0, now));
+        assert!(!new_channel_pill(&young, true, 1, 5, now));
+        assert!(!new_channel_pill(&young, true, young.id + 1, 0, now));
+        let old = channel(made(8 * day), ChannelKind::Text);
+        assert!(!new_channel_pill(&old, true, 1, 0, now));
+        let voice = channel(made(day), ChannelKind::Voice);
+        assert!(!new_channel_pill(&voice, true, 1, 0, now));
     }
 }

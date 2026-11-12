@@ -78,6 +78,84 @@ impl Root {
         })
     }
 
+    /// The first row of a server text or announcement channel (strings `Szye2K` and `jRNiwM` of module 818418): the
+    /// 68px circle with the channel's glyph at 42px, "Welcome to #name!", "This is the start of the #name channel."
+    /// and, with Manage Channels, the Edit Channel button. Measured in capture stage-ann/ann-view: icon at (391, 350),
+    /// title box 40 high 8px under it, sentence 8px under that, button 12px under that.
+    pub(super) fn channel_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let channel = self.current_channel()?;
+        let guild = self.guild?;
+        let name = channel.name.clone();
+        let target = channel.id;
+        // The hash for every kind: the capture of an announcement channel (stage-ann/ann-view) shows it too.
+        let glyph = "text_channel";
+        let can_edit = self.my_permission(guild, Some(channel), permissions::MANAGE_CHANNELS);
+        Some(
+            div()
+                .pt(px(12.))
+                .child(
+                    div()
+                        .ml(px(16.))
+                        .mr(px(32.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .size(px(68.))
+                                .rounded_full()
+                                .bg(rgba(0x97979f14))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(glyph, 42., "--text-strong")),
+                        )
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(32.))
+                                .line_height(px(40.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(format!("Welcome to #{name}!")),
+                        )
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(16.))
+                                .line_height(px(22.))
+                                .text_color(color("--text-default"))
+                                .child(format!("This is the start of the #{name} channel.")),
+                        )
+                        .when(can_edit, |column| {
+                            column.child(
+                                div().mt(px(12.)).flex().child(
+                                    div()
+                                        .id("channel-welcome-edit")
+                                        .h(px(32.))
+                                        .px(px(11.))
+                                        .rounded(px(8.))
+                                        .bg(rgba(0x97979f1f))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_channel_settings(target, window, cx)
+                                        }))
+                                        .child(icon("settings_edit_pencil", 16., "--text-strong"))
+                                        .child("Edit Channel"),
+                                ),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// `renderFollowButton` (module 289287): `followButton_z_gUBg` is 4px 8px padded with 8px after it; the button is
     /// secondary, small. Assumed: 32 high with 11px sides, as the composer bar's button (`size="sm"`).
     pub(super) fn follow_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -89,6 +167,8 @@ impl Root {
         Some(
             div()
                 .flex_none()
+                // The wrapper starts 8px after the title wrapper (capture ann-view: 528.89 to 536.89), padded 8px.
+                .ml(px(8.))
                 .mr(px(8.))
                 .px(px(8.))
                 .py(px(4.))
@@ -329,20 +409,23 @@ impl Root {
         // `header_MXlLC1`: `--background-base-lowest`, the server's icon and `channelContainer_MXlLC1` (16px in, 320
         // at most, `--background-base-lower`, 4px radius) holding the selected-looking channel row. Assumed: 40px
         // icon and a 112px header (the `d.rQ` header's own height is not in the modules read).
+        // Measured in stage-ann/ann-follow-modal: the header is 66 high with the 50px icon 16px from its top and the
+        // channel box (36 high) 16px right of the icon, both centred together.
         let header = div()
             .flex_none()
-            .h(px(112.))
+            .h(px(66.))
+            .pt(px(16.))
             .rounded_t(px(4.))
             .bg(color("--background-base-lowest"))
             .flex()
             .items_center()
             .justify_center()
             .child(match picture {
-                Some(picture) => img(picture).size(px(40.)).rounded_full().into_any_element(),
+                Some(picture) => img(picture).size(px(50.)).rounded_full().into_any_element(),
                 None => div()
-                    .size(px(40.))
+                    .size(px(50.))
                     .rounded_full()
-                    .bg(color("--background-mod-strong"))
+                    .bg(color("--background-base-lower"))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -369,7 +452,7 @@ impl Root {
                             .flex()
                             .items_center()
                             .bg(color("--interactive-background-selected"))
-                            .child(div().ml(px(2.)).mr(px(8.)).child(icon(
+                            .child(div().ml(px(6.)).mr(px(8.)).child(icon(
                                 "announcement_channel",
                                 16.,
                                 "--text-muted",
@@ -393,6 +476,9 @@ impl Root {
                       shown: Select,
                       disabled: bool,
                       cx: &mut Context<Self>| {
+            let focused = !disabled
+                && (open.open == Some(shown)
+                    || (open.open.is_none() && shown == Select::Guild && open.guild.is_none()));
             div()
                 .relative()
                 .flex()
@@ -400,21 +486,36 @@ impl Root {
                 .gap(px(8.))
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .font_weight(FontWeight(700.))
-                        .text_color(color("--text-default"))
-                        .child(label.to_uppercase()),
+                        // `label_VhFsFg`: body-md/medium, muted while the select is disabled.
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color(if disabled && value.is_none() {
+                            "--text-muted"
+                        } else {
+                            "--text-strong"
+                        }))
+                        .child(label.to_owned()),
                 )
                 .child(
                     div()
                         .id(id)
                         .h(px(40.))
-                        .px(px(12.))
+                        .pl(px(11.))
+                        .pr(px(9.))
                         .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--input-background-default"))
+                        .border_2()
+                        // `selectField_vWC4bk`: black at .12; the focused one (the first select when the dialog
+                        // opens, or the one open) carries a 2px brand ring.
+                        .border_color(if focused {
+                            color("--brand-500")
+                        } else {
+                            Rgba { a: 0., ..rgba(0) }
+                        })
+                        .bg(Rgba {
+                            a: 0.12,
+                            ..rgba(0x000000ff)
+                        })
                         .flex()
                         .items_center()
                         .justify_between()
@@ -445,15 +546,17 @@ impl Root {
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .whitespace_nowrap()
-                                .child(value.unwrap_or_else(|| {
-                                    if shown == Select::Guild {
-                                        String::new()
-                                    } else {
-                                        "Select channel".to_owned()
-                                    }
-                                })),
+                                .child(value.unwrap_or_else(|| "Select...".to_owned())),
                         )
-                        .child(icon("chevron_down", 16., "--interactive-text-default")),
+                        .child(icon(
+                            if open.open == Some(shown) {
+                                "discover_select_chevron_up"
+                            } else {
+                                "chevron_down"
+                            },
+                            20.,
+                            "--interactive-text-default",
+                        )),
                 )
         };
         // The open list, drawn after both selects so it paints over the one below; `top` is where its select sits in
@@ -482,12 +585,13 @@ impl Root {
                             |(index, (picked, label))| {
                                 div()
                                     .id(SharedString::from(format!("follow-option-{index}")))
-                                    .h(px(32.))
+                                    .h(px(40.))
                                     .px(px(12.))
                                     .flex()
                                     .items_center()
                                     .cursor_pointer()
-                                    .text_size(px(14.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
                                     .text_color(color("--text-default"))
                                     .hover(|style| {
                                         style.bg(color("--interactive-background-hover"))
@@ -496,6 +600,30 @@ impl Root {
                                         this.follow_pick(shown, picked);
                                         cx.notify();
                                     }))
+                                    // A server's row carries its 16px icon, the acronym when it has no picture
+                                    // (stage-ann/ann-follow-select-open: icon at 456, name at 484).
+                                    .when(shown == Select::Guild, |row| {
+                                        row.child(
+                                            div()
+                                                .mr(px(12.))
+                                                .size(px(16.))
+                                                .rounded_full()
+                                                .bg(color("--background-base-lowest"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(7.))
+                                                .line_height(px(8.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-default"))
+                                                .child(
+                                                    label
+                                                        .split_whitespace()
+                                                        .filter_map(|word| word.chars().next())
+                                                        .collect::<String>(),
+                                                ),
+                                        )
+                                    })
                                     .child(label)
                             },
                         )),
@@ -516,7 +644,8 @@ impl Root {
         });
         let body = div()
             .flex_none()
-            .px(px(16.))
+            .pl(px(24.))
+            .pr(px(16.))
             .pt(px(32.))
             .flex()
             .flex_col()
@@ -594,14 +723,16 @@ impl Root {
                     ),
             );
         let ready = open.guild.is_some() && open.destination.is_some();
+        // Cancel and Follow are 100 wide, 8 apart, 24px from the right edge (stage-ann/ann-follow-modal).
         let footer = div()
             .flex_none()
-            .px(px(16.))
+            .px(px(24.))
+            .pt(px(16.))
             .pb(px(16.))
             .flex()
             .flex_row_reverse()
             .gap(px(8.))
-            .child(modal::footer_button(
+            .child(div().w(px(100.)).flex().child(modal::footer_button(
                 modal::button(
                     "follow-submit",
                     "Follow",
@@ -615,8 +746,8 @@ impl Root {
                     |this, _, cx| this.submit_follow(cx),
                 ),
                 cx,
-            ))
-            .child(modal::footer_button(
+            )))
+            .child(div().w(px(100.)).flex().child(modal::footer_button(
                 modal::button(
                     "follow-cancel",
                     "Cancel",
@@ -626,13 +757,13 @@ impl Root {
                     },
                 ),
                 cx,
-            ));
+            )));
         let panel = div()
             .id("follow-modal")
             .opacity(pose.opacity)
             .paint_scale(pose.scale, gpui::point(0.5, 0.5))
             .occlude()
-            .w(px(440.))
+            .w(px(444.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
@@ -790,11 +921,14 @@ impl Root {
             .filter(|count| *count > 0);
         // `GCGrNP`, `IMhGZz`, `8FpqOs`; while the numbers load the body shows nothing (`r.y` spinner stands in).
         let loading = !self.follower_stats.contains_key(&channel);
+        // The text is the dialog's body (`body-md/normal` 16/20 in `--text-default`, 20px of room under it:
+        // stage-ann/ann-publish-confirm, body box 80 for 3 lines), not a subtitle.
         let body = div()
             .flex()
             .flex_col()
-            .text_size(px(14.))
-            .line_height(px(18.))
+            .pb(px(20.))
+            .text_size(px(16.))
+            .line_height(px(20.))
             .text_color(color("--text-default"))
             .when(loading, |this| this.child(""))
             .when(!loading, |this| match following {
@@ -815,8 +949,8 @@ impl Root {
             modal::Spec {
                 id: "publish-modal",
                 title: "Are you sure?".into(),
-                subtitle: Some(body),
-                body: None,
+                subtitle: None,
+                body: Some(body),
                 buttons: vec![
                     modal::button(
                         "publish-cancel",

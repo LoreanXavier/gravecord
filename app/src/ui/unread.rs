@@ -28,6 +28,7 @@ impl Root {
             return;
         };
         self.notification_runtime.clear(channel);
+        self.view_new_channel(channel);
         // A window that stops short of the newest message is not the end of the channel: nothing is read there.
         if self.window_detached() || !self.stores.is_unread(channel) {
             return;
