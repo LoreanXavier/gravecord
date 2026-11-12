@@ -207,6 +207,18 @@ fn reaction_image_key(reaction: &dc_state::Reaction) -> String {
 }
 
 /// A tag chip's outer width: the label plus `.pill_snX-u4`'s 1px border and 12px padding on both sides.
+/// Whether the post sidebar is docked at this window width: it floats over the chat when its maximum width,
+/// `width - 240 - 528 + 375` (`renderThreadSidebar`, module 289287), is at most its 450px minimum (module 743898).
+fn post_sidebar_fits(window_width: f32) -> bool {
+    window_width - 393. > 450.
+}
+
+/// The post sidebar's width: the saved width or `(window.innerWidth - 240) / 2` (module 964404 `postSidebarWidth`),
+/// clamped between 450 and `width - 393` (module 812771); 520 at 1280, of which 8px are the gap before the panel.
+fn post_sidebar_width(window_width: f32) -> f32 {
+    ((window_width - 240.) / 2.).clamp(450., (window_width - 393.).max(450.))
+}
+
 fn tag_chip_width(label_width: f32) -> f32 {
     label_width + 26.
 }
@@ -1475,12 +1487,35 @@ impl Root {
         self.forum_column(channel, None, window, cx)
     }
 
-    /// Whether the list and the post panel fit side by side: 385px + 8px + 512px beside the sidebar and, when it is
-    /// open, the member list. Narrower, the post opens as the whole chat view (`pt-forum-post-open` against
-    /// `forum-fixture-posted`).
+    /// Script step `unread posts`: every post of `forum` gets a message newer than the last ack.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_unread_posts(&mut self, forum: Id, cx: &mut Context<Self>) {
+        let posts: Vec<Id> = self
+            .current_guild()
+            .into_iter()
+            .flat_map(|g| &g.threads)
+            .filter(|t| t.parent_id == forum)
+            .map(|t| t.id)
+            .collect();
+        for post in posts {
+            self.stores
+                .read_states
+                .message_created(post, u64::MAX >> 1, None, false);
+        }
+        cx.notify();
+    }
+
+    /// Whether the post opens beside the list. The post sidebar (`PostSidebar`, module 812771) is not floating
+    /// unless its maximum width, `width - 240 - 528 + 375` (`renderThreadSidebar`, module 289287), is at most its
+    /// 450px minimum (module 743898); a floating sidebar overlays the chat, which is not built, so the whole chat view
+    /// stands in for it. The member list does not count: `getSection` (module 799704) answers `SIDEBAR_CHAT`
+    /// whenever a sidebar is open, so the member list is hidden beside an open post.
     pub(super) fn forum_split_fits(&self, window: &Window) -> bool {
-        let members = if self.show_members { 265. } else { 0. };
-        f32::from(window.viewport_size().width) - 375. - members >= 905.
+        post_sidebar_fits(f32::from(window.viewport_size().width))
+    }
+
+    fn forum_sidebar_width(window: &Window) -> f32 {
+        post_sidebar_width(f32::from(window.viewport_size().width))
     }
 
     /// A forum's list beside its open post (`threadSidebarOpen_z_gUBg`): the 385px list column and the 512px post
@@ -1492,16 +1527,25 @@ impl Root {
     ) -> Option<AnyElement> {
         let forum = self.open_post_forum()?;
         let channel = self.forum_channel(forum)?.clone();
-        let list = self.forum_column(channel, Some(384.), window, cx);
-        let panel = self.forum_post_panel(forum, cx);
+        let sidebar = Self::forum_sidebar_width(window);
+        // The list is 384px wide inside its 385px column at 1280 (the layout tree of `pt-forum-post-open`).
+        let list_width = f32::from(window.viewport_size().width) - 375. - sidebar - 1.;
+        let list = self.forum_column(channel, Some(list_width), window, cx);
+        let panel = self.forum_post_panel(forum, sidebar - 8., cx);
         Some(
             div()
                 .flex()
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
-                // The list is 384px wide inside its 385px column (the layout tree of `pt-forum-post-open`).
-                .child(div().flex().w(px(384.)).flex_none().h_full().child(list))
+                .child(
+                    div()
+                        .flex()
+                        .w(px(list_width))
+                        .flex_none()
+                        .h_full()
+                        .child(list),
+                )
                 .child(
                     div()
                         .w(px(1.))
@@ -1517,22 +1561,12 @@ impl Root {
                         .bg(color("--background-base-lowest")),
                 )
                 .child(panel)
-                .when(self.show_members, |row| {
-                    row.child(
-                        div()
-                            .w(px(1.))
-                            .flex_none()
-                            .h_full()
-                            .bg(color("--background-mod-subtle")),
-                    )
-                    .child(self.member_panel(cx))
-                })
                 .into_any_element(),
         )
     }
 
     /// The panel of an open post: its header (title, More, Close), the messages and the composer.
-    fn forum_post_panel(&mut self, forum: Id, cx: &mut Context<Self>) -> AnyElement {
+    fn forum_post_panel(&mut self, forum: Id, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let title = self.current_thread().map(|t| t.name).unwrap_or_default();
         let thread = self.channel;
         let guild = self.guild;
@@ -1541,6 +1575,9 @@ impl Root {
                 .id(id)
                 .group(id)
                 .size(px(32.))
+                // `toolbar_ybUK7Z` (pt-forum-post-open): the 32px buttons sit at y 41, one pixel under the 48px
+                // bar's centre.
+                .mt(px(2.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1560,7 +1597,8 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .bg(color("--background-base-lower"))
             .pl(px(16.))
-            .pr(px(8.))
+            // The toolbar ends 9px short of the panel edge (1271 of 1280 in pt-forum-post-open).
+            .pr(px(9.))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -1599,7 +1637,7 @@ impl Root {
                 },
             )));
         div()
-            .w(px(512.))
+            .w(px(width))
             .flex_none()
             .h_full()
             .flex()
@@ -1925,7 +1963,8 @@ impl Root {
                         .pt(px(16.))
                         .pb(px(8.))
                         .text_size(px(14.))
-                        .line_height(px(18.))
+                        // `archivedDivider_BkGrJJ` is 16px tall inside the 40px `archivedDividerRow_BkGrJJ`.
+                        .line_height(px(16.))
                         .text_color(color("--text-muted"))
                         .child("Older Posts")
                         .into_any_element(),
@@ -2102,19 +2141,74 @@ impl Root {
                         }),
                 )
             })
-            .when(guidelines, |list| {
-                list.child(
-                    div()
-                        .mt(px(16.))
-                        .p(px(16.))
-                        .rounded(px(12.))
-                        .bg(color("--background-base-low"))
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .text_color(color("--text-default"))
-                        .child(channel.topic.clone().unwrap_or_default()),
-                )
-            })
+            .when(
+                guidelines
+                    && channel
+                        .topic
+                        .as_ref()
+                        .is_some_and(|topic| !topic.is_empty()),
+                |list| {
+                    // `container_hbPaoT` (modules 745431 `nX`, 257701): 12px padding in a 1px border, the header
+                    // row, then `descriptionContainer_hbPaoT` with the topic as markdown in `body-sm/normal`,
+                    // at most 220px tall.
+                    let topic = channel.topic.clone().unwrap_or_default();
+                    list.child(
+                        div()
+                            .mt(px(16.))
+                            .p(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .rounded(px(12.))
+                            .bg(color("--background-base-low"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .h(px(24.))
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(icon("ob_book_check", 20., "--text-strong"))
+                                            .child("Post Guidelines"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("forum-guidelines-close")
+                                            .cursor_pointer()
+                                            .child(icon(
+                                                "x_small",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(v) = this.forums.get_mut(&id) {
+                                                    v.guidelines = false;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(12.))
+                                    .p(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--background-mod-subtle"))
+                                    .overflow_hidden()
+                                    .child(div().max_h(px(220.)).overflow_hidden().child(
+                                        self.bio(&topic, super::hsla("--text-default"), cx),
+                                    )),
+                            ),
+                    )
+                },
+            )
             .child(
                 div()
                     .h(px(68.))
@@ -2177,54 +2271,64 @@ impl Root {
                                 .h(px(32.))
                                 .gap(px(8.))
                                 .overflow_hidden()
-                                .children(channel.available_tags.iter().map(|tag| {
-                                    let tag_id = tag.id;
-                                    div()
-                                        .id(SharedString::from(format!("forum-tag-{tag_id}")))
-                                        .flex_none()
-                                        .max_w(px(tag_limit.max(0.)))
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .h(px(32.))
-                                        .px(px(12.))
-                                        .rounded_full()
-                                        .cursor_pointer()
-                                        // `.pill_snX-u4`: 1px border; chosen tags use the reacted colours.
-                                        .border_1()
-                                        .when(tags.contains(&tag_id), |chip| {
-                                            chip.border_color(color("--brand-500"))
-                                                .bg(color("--reaction-background-reacted-default"))
-                                                .text_color(color(
-                                                    "--reaction-text-reacted-default",
-                                                ))
-                                        })
-                                        .when(!tags.contains(&tag_id), |chip| {
-                                            chip.border_color(color("--border-subtle"))
-                                                .bg(color("--control-secondary-background-default"))
-                                                .text_color(color(
-                                                    "--control-secondary-text-default",
-                                                ))
-                                                .hover(|s| {
-                                                    s.bg(color(
-                                                        "--control-secondary-background-hover",
+                                .children(channel.available_tags.iter().enumerate().map(
+                                    |(index, tag)| {
+                                        let tag_id = tag.id;
+                                        div()
+                                            .id(SharedString::from(format!("forum-tag-{tag_id}")))
+                                            .flex_none()
+                                            // The chip is its measured label plus 2 x (12 padding + 1 border), as
+                                            // `pill_snX-u4` is in Chromium (101.1 for a 75.1 label): the element's own text
+                                            // layout would round it up by a pixel.
+                                            .w(px(tag_widths[index]))
+                                            .max_w(px(tag_limit.max(0.)))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .h(px(32.))
+                                            .px(px(12.))
+                                            .rounded_full()
+                                            .cursor_pointer()
+                                            // `.pill_snX-u4`: 1px border; chosen tags use the reacted colours.
+                                            .border_1()
+                                            .when(tags.contains(&tag_id), |chip| {
+                                                chip.border_color(color("--brand-500"))
+                                                    .bg(color(
+                                                        "--reaction-background-reacted-default",
                                                     ))
-                                                })
-                                        })
-                                        .text_size(px(14.))
-                                        .line_height(px(30.))
-                                        .font_weight(FontWeight(600.))
-                                        .child(tag.name.clone())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if let Some(v) = this.forums.get_mut(&id)
-                                                && !v.tags.remove(&tag_id)
-                                            {
-                                                v.tags.insert(tag_id);
-                                            }
-                                            this.reload_forum(id);
-                                            cx.notify();
-                                        }))
-                                })),
+                                                    .text_color(color(
+                                                        "--reaction-text-reacted-default",
+                                                    ))
+                                            })
+                                            .when(!tags.contains(&tag_id), |chip| {
+                                                chip.border_color(color("--border-subtle"))
+                                                    .bg(color(
+                                                        "--control-secondary-background-default",
+                                                    ))
+                                                    .text_color(color(
+                                                        "--control-secondary-text-default",
+                                                    ))
+                                                    .hover(|s| {
+                                                        s.bg(color(
+                                                            "--control-secondary-background-hover",
+                                                        ))
+                                                    })
+                                            })
+                                            .text_size(px(14.))
+                                            .line_height(px(30.))
+                                            .font_weight(FontWeight(600.))
+                                            .child(tag.name.clone())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(v) = this.forums.get_mut(&id)
+                                                    && !v.tags.remove(&tag_id)
+                                                {
+                                                    v.tags.insert(tag_id);
+                                                }
+                                                this.reload_forum(id);
+                                                cx.notify();
+                                            }))
+                                    },
+                                )),
                         )
                         .child(
                             div()
@@ -2292,7 +2396,18 @@ impl Root {
                     .flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(list)
+                    // `scrollerBase_tqapBM auto_tqapBM`: the list keeps a stable 16px gutter, thumb 4px clear of it
+                    // (`pt-forum-bugs-current`: x 1003..1010, y 86..215).
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
+                            .child(list)
+                            .child(super::settings::auto_scrollbar(scroll.clone())),
+                    )
                     .when(show_members, |row| {
                         row.child(
                             div()
@@ -2612,6 +2727,19 @@ mod tests {
         assert_eq!(first_tag_row(&[400.], 100.), (1, 100.));
         assert_eq!(tag_chip_width(75.1), 101.1);
     }
+
+    #[test]
+    fn the_post_sidebar_docks_above_843_px_and_takes_half_the_window() {
+        assert!(post_sidebar_fits(1280.));
+        assert!(post_sidebar_fits(844.));
+        assert!(!post_sidebar_fits(843.));
+        assert_eq!(post_sidebar_width(1280.), 520.);
+        // Never narrower than 450, never wider than the room that leaves the chat its 393px.
+        assert_eq!(post_sidebar_width(900.), 450.);
+        assert_eq!(post_sidebar_width(1920.), 840.);
+        assert_eq!(post_sidebar_width(1000.), 450.);
+    }
+
     #[test]
     fn unread_counts_follow_the_official_text() {
         assert_eq!(unread_count_text(None, 9), "1+");
