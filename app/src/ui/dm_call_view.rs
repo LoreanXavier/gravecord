@@ -260,6 +260,9 @@ impl Root {
         let no_chat = video && in_call && self.dmc.no_chat;
         let target = if no_chat {
             column
+        } else if video && in_call && self.call_popped_out() {
+            // `.wrapper.poppedOut`.
+            154.
         } else {
             match self.dmc.resized {
                 Some(resized) => clamp_call_height(resized, column),
@@ -280,7 +283,9 @@ impl Root {
                 super::motion::Ease::Ease,
             ),
         );
-        let body: AnyElement = if video && in_call && self.vv.fullscreen {
+        let body: AnyElement = if video && in_call && self.call_popped_out() {
+            self.call_popped_out_message()
+        } else if video && in_call && self.vv.fullscreen {
             // Full Screen draws the call in its own layer.
             div().into_any_element()
         } else if video && in_call {

@@ -47,6 +47,7 @@ mod badge_paths;
 mod blocked;
 mod boost_apply;
 mod call_background;
+mod call_popout;
 #[cfg(feature = "capture")]
 mod ch_fixture;
 mod channel_drag;
@@ -8746,7 +8747,10 @@ impl Render for Root {
             .children(self.community_select_layer(cx))
             .children(self.overview_select_layer(cx))
             .children(self.boost_perks_modal(cx))
-            .children(self.call_fullscreen_layer(window, cx))
+            .children({
+                self.call_popout_frame(cx);
+                self.call_fullscreen_layer(window, cx)
+            })
             .children(self.boost_page_overlay(cx))
             .children(self.boost_apply_layer(cx))
             .children(self.overview_confirm_modal(cx))

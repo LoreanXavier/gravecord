@@ -119,6 +119,10 @@ pub(super) struct State {
     pub fullscreen: bool,
     /// "Hide Members" of the focus mode (`participantsOpen` is false).
     pub members_hidden: bool,
+    /// The window the call was popped out to (`call_popout.rs`).
+    pub popout: Option<super::call_popout::Handle>,
+    /// The call view is being built for that window now.
+    pub popout_render: bool,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
     pub(super) background: super::call_background::State,
@@ -139,6 +143,8 @@ impl Default for State {
             focus: Default::default(),
             fullscreen: false,
             members_hidden: false,
+            popout: None,
+            popout_render: false,
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -745,7 +751,7 @@ impl Root {
     /// Where the call view's top left corner is in the window: beside the sidebar under the title bar, or the
     /// window's own corner in Full Screen. The menus are placed against it.
     pub(super) fn call_origin(&self) -> (f32, f32) {
-        if self.vv.fullscreen {
+        if self.vv.fullscreen || self.vv.popout_render {
             (0., 0.)
         } else {
             (375., 32.)
@@ -814,7 +820,9 @@ impl Root {
             .as_ref()
             .is_some_and(|call| call.channel == channel);
         let chat = in_call && self.vv.chat_open.contains(&channel);
-        let body = if in_call && self.vv.fullscreen {
+        let body = if in_call && self.call_popped_out() {
+            self.call_popped_out_message()
+        } else if in_call && self.vv.fullscreen {
             // Full Screen draws the call in its own layer; a second copy here would open every menu twice.
             div().into_any_element()
         } else if in_call {
@@ -1946,7 +1954,9 @@ impl Root {
                         this.child(self.with_tip(
                             "call-popout-tip",
                             Tip::text("Pop Out", Side::Top),
-                            tray("call-popout", "voice_view_popout"),
+                            tray("call-popout", "voice_view_popout").on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_call_popout(cx)),
+                            ),
                             cx,
                         ))
                         .child(self.with_tip(
