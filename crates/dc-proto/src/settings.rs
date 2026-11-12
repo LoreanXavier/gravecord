@@ -898,6 +898,44 @@ fn wrapper_field(out: &mut Vec<u8>, number: u64, inner: &[u8]) {
     push_bytes_field(out, number, inner);
 }
 
+/// A stored folder entry as read before a rewrite: its id, its guild ids and the fields of it this client has no
+/// model for, as the raw bytes they came in.
+struct KeptFolder {
+    id: Option<u64>,
+    guild_ids: Vec<u64>,
+    unknown: Vec<u8>,
+}
+
+fn kept_folder_parts(message: &[u8]) -> Vec<KeptFolder> {
+    raw_fields(message)
+        .into_iter()
+        .filter(|(number, _)| *number == FOLDERS_FOLDER)
+        .map(|(_, raw)| {
+            let payload = fields(raw).next().map_or(&[][..], |(_, payload)| payload);
+            let mut kept = KeptFolder {
+                id: None,
+                guild_ids: Vec::new(),
+                unknown: Vec::new(),
+            };
+            for (number, bytes) in raw_fields(payload) {
+                match number {
+                    FOLDER_GUILD_IDS => {
+                        let inner = fields(bytes).next().map_or(&[][..], |(_, inner)| inner);
+                        kept.guild_ids.extend(fixed64_list(inner));
+                    }
+                    2 => {
+                        let inner = fields(bytes).next().map_or(&[][..], |(_, inner)| inner);
+                        kept.id = Some(varint_of(inner, 1).unwrap_or(0));
+                    }
+                    3 | 4 => {}
+                    _ => kept.unknown.extend_from_slice(bytes),
+                }
+            }
+            kept
+        })
+        .collect()
+}
+
 /// Replaces the folders of `guild_folders` (`updateAsync("guildFolders", ...)`, module 817281 `um`): every entry is
 /// written again, an id as `Int64Value`, a colour as `UInt64Value`, a name as `StringValue` (only when not empty).
 /// `guild_positions` is carried over untouched. Returns the PATCH body value (the whole `guild_folders` message, as
@@ -906,15 +944,33 @@ pub fn set_guild_folders(current: &[u8], folders: &[GuildFolderEntry]) -> (Strin
     let existing = fields(current)
         .find(|(number, _)| *number == FIELD_GUILD_FOLDERS)
         .map_or(&[][..], |(_, message)| message);
+    let kept = kept_folder_parts(existing);
+    let listed: std::collections::HashSet<u64> = folders
+        .iter()
+        .flat_map(|entry| entry.guild_ids.iter().copied())
+        .collect();
     let mut message = Vec::new();
     for entry in folders {
         let mut body = Vec::new();
-        if !entry.guild_ids.is_empty() {
-            let packed: Vec<u8> = entry
-                .guild_ids
-                .iter()
-                .flat_map(|id| id.to_le_bytes())
-                .collect();
+        let mut guild_ids = entry.guild_ids.clone();
+        let old = kept.iter().find(|old| match (entry.id, old.id) {
+            (Some(id), Some(old_id)) => id == old_id,
+            (None, None) => {
+                entry.guild_ids.len() == 1 && old.guild_ids.first() == entry.guild_ids.first()
+            }
+            _ => false,
+        });
+        // An entry without an id holds one guild in the model; the rest it held stay, unless they moved elsewhere.
+        if let (None, Some(old)) = (entry.id, old) {
+            guild_ids.extend(
+                old.guild_ids
+                    .iter()
+                    .skip(1)
+                    .filter(|guild| !listed.contains(guild)),
+            );
+        }
+        if !guild_ids.is_empty() {
+            let packed: Vec<u8> = guild_ids.iter().flat_map(|id| id.to_le_bytes()).collect();
             push_bytes_field(&mut body, FOLDER_GUILD_IDS, &packed);
         }
         let varint_wrapper = |value: u64| {
@@ -935,6 +991,9 @@ pub fn set_guild_folders(current: &[u8], folders: &[GuildFolderEntry]) -> (Strin
         }
         if let Some(color) = entry.color {
             wrapper_field(&mut body, 4, &varint_wrapper(color));
+        }
+        if let Some(old) = old {
+            body.extend_from_slice(&old.unknown);
         }
         push_bytes_field(&mut message, FOLDERS_FOLDER, &body);
     }
@@ -1088,6 +1147,39 @@ pub fn read_favorites(settings: &[u8]) -> Favorites {
 /// Replaces the favourites (`updateAsync("favorites", ...)`, module 146092 `K`): the whole message is written, as the
 /// server replaces a top-level message it is sent. Returns the PATCH body value and the new settings.
 pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>) {
+    let existing = fields(current)
+        .find(|(number, _)| *number == FIELD_FAVORITES)
+        .map_or(&[][..], |(_, message)| message);
+    // What the rewrite has no model for stays: unknown fields of the message, of a map entry and of a favourite.
+    let mut unknown_top: Vec<u8> = Vec::new();
+    let mut unknown_of: std::collections::HashMap<u64, (Vec<u8>, Vec<u8>)> =
+        std::collections::HashMap::new();
+    for (number, raw) in raw_fields(existing) {
+        if number == 1 {
+            let payload = fields(raw).next().map_or(&[][..], |(_, payload)| payload);
+            let Some(id) = fixed64_of(payload, 1) else {
+                continue;
+            };
+            let (mut entry_extra, mut value_extra) = (Vec::new(), Vec::new());
+            for (inner, bytes) in raw_fields(payload) {
+                match inner {
+                    1 => {}
+                    2 => {
+                        let value = fields(bytes).next().map_or(&[][..], |(_, value)| value);
+                        for (field, part) in raw_fields(value) {
+                            if !(1..=6).contains(&field) {
+                                value_extra.extend_from_slice(part);
+                            }
+                        }
+                    }
+                    _ => entry_extra.extend_from_slice(bytes),
+                }
+            }
+            unknown_of.insert(id, (entry_extra, value_extra));
+        } else if !(2..=7).contains(&number) {
+            unknown_top.extend_from_slice(raw);
+        }
+    }
     let mut message = Vec::new();
     for (id, known) in &favorites.channels {
         let mut value = Vec::new();
@@ -1119,7 +1211,13 @@ pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>)
         }
         let mut entry = Vec::new();
         push_fixed64_field(&mut entry, 1, *id);
+        if let Some((_, value_extra)) = unknown_of.get(id) {
+            value.extend_from_slice(value_extra);
+        }
         push_bytes_field(&mut entry, 2, &value);
+        if let Some((entry_extra, _)) = unknown_of.get(id) {
+            entry.extend_from_slice(entry_extra);
+        }
         push_bytes_field(&mut message, 1, &entry);
     }
     let flag = |out: &mut Vec<u8>, number: u64, on: bool| {
@@ -1144,6 +1242,7 @@ pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>)
         push_varint(&mut message, favorites.prune_inactive_threads_days);
     }
     flag(&mut message, 7, favorites.prune_all_favorited_threads);
+    message.extend_from_slice(&unknown_top);
     let mut encoded = Vec::new();
     push_bytes_field(&mut encoded, FIELD_FAVORITES, &message);
     let updated = with_encoded(current, &[], FIELD_FAVORITES, &encoded);
@@ -1153,6 +1252,58 @@ pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>)
 #[cfg(test)]
 mod favorites_tests {
     use super::*;
+
+    /// A varint field this client has no name for.
+    fn stranger(number: u64, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_varint(&mut out, number << 3 | WIRE_VARINT);
+        push_varint(&mut out, value);
+        out
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    #[test]
+    fn a_rewrite_of_the_favorites_keeps_the_fields_it_does_not_know() {
+        // favorites { channel 7 { type 1, position 1, unknown 9 = 33 } + entry-level unknown 3 = 4, unknown 12 = 5 }
+        let mut value = Vec::new();
+        push_varint(&mut value, 2 << 3 | WIRE_VARINT);
+        push_varint(&mut value, 1);
+        push_varint(&mut value, 3 << 3 | WIRE_VARINT);
+        push_varint(&mut value, 1);
+        value.extend(stranger(9, 33));
+        let mut entry = Vec::new();
+        push_fixed64_field(&mut entry, 1, 7);
+        push_bytes_field(&mut entry, 2, &value);
+        entry.extend(stranger(3, 4));
+        let mut message = Vec::new();
+        push_bytes_field(&mut message, 1, &entry);
+        message.extend(stranger(12, 5));
+        let mut settings = Vec::new();
+        push_bytes_field(&mut settings, FIELD_FAVORITES, &message);
+
+        let mut favorites = read_favorites(&settings);
+        assert!(favorites.add_channel(8, Some(0)));
+        let (_, rewritten) = set_favorites(&settings, &favorites);
+        let (_, kept) = fields(&rewritten)
+            .find(|(number, _)| *number == FIELD_FAVORITES)
+            .unwrap();
+        assert!(contains(kept, &stranger(12, 5)), "message level field kept");
+        assert!(
+            contains(kept, &stranger(9, 33)),
+            "favourite level field kept"
+        );
+        assert!(
+            contains(kept, &stranger(3, 4)),
+            "map entry level field kept"
+        );
+        let read = read_favorites(&rewritten);
+        assert!(read.is_favorite(7) && read.is_favorite(8));
+    }
 
     #[test]
     fn a_favorite_is_written_as_the_official_message() {
@@ -1657,5 +1808,99 @@ mod guild_folder_tests {
         let (entries, _) = guild_folders(&updated);
         assert_eq!(entries[0].name, None);
         assert_eq!(entries[0].id, Some(9));
+    }
+}
+
+#[cfg(test)]
+mod folder_rewrite_tests {
+    use super::*;
+
+    fn ids(list: &[u64]) -> Vec<u8> {
+        list.iter().flat_map(|id| id.to_le_bytes()).collect()
+    }
+
+    fn stranger(number: u64, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_varint(&mut out, number << 3 | WIRE_VARINT);
+        push_varint(&mut out, value);
+        out
+    }
+
+    fn stored(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut message = Vec::new();
+        for entry in entries {
+            push_bytes_field(&mut message, FOLDERS_FOLDER, entry);
+        }
+        let mut settings = Vec::new();
+        push_bytes_field(&mut settings, FIELD_GUILD_FOLDERS, &message);
+        settings
+    }
+
+    #[test]
+    fn a_rewrite_keeps_unknown_folder_fields_and_the_guilds_of_an_entry_without_an_id() {
+        // Folder 5 {guilds 1 2, unknown 9 = 77}; an entry without an id holding guilds 3 4 5.
+        let mut folder = Vec::new();
+        push_bytes_field(&mut folder, FOLDER_GUILD_IDS, &ids(&[1, 2]));
+        let mut id = Vec::new();
+        push_varint(&mut id, 1 << 3 | WIRE_VARINT);
+        push_varint(&mut id, 5);
+        push_bytes_field(&mut folder, 2, &id);
+        folder.extend(stranger(9, 77));
+        let mut loose = Vec::new();
+        push_bytes_field(&mut loose, FOLDER_GUILD_IDS, &ids(&[3, 4, 6]));
+        let settings = stored(&[folder, loose]);
+
+        // The model holds the loose entry as its first guild only, and the user drags 1 out of the folder.
+        let model = [
+            GuildFolderEntry {
+                id: Some(5),
+                guild_ids: vec![2],
+                ..GuildFolderEntry::default()
+            },
+            GuildFolderEntry {
+                guild_ids: vec![3],
+                ..GuildFolderEntry::default()
+            },
+            GuildFolderEntry {
+                guild_ids: vec![1],
+                ..GuildFolderEntry::default()
+            },
+        ];
+        let (_, rewritten) = set_guild_folders(&settings, &model);
+        let (entries, _) = guild_folders(&rewritten);
+        assert_eq!(entries[0].id, Some(5));
+        assert_eq!(entries[0].guild_ids, vec![2]);
+        assert_eq!(entries[1].guild_ids, vec![3, 4, 6]);
+        assert_eq!(entries[2].guild_ids, vec![1]);
+        let (_, message) = fields(&rewritten)
+            .find(|(number, _)| *number == FIELD_GUILD_FOLDERS)
+            .unwrap();
+        let kept = kept_folder_parts(message);
+        assert!(
+            kept[0].unknown == stranger(9, 77),
+            "the unknown field of folder 5"
+        );
+    }
+
+    #[test]
+    fn a_guild_that_moved_is_not_listed_twice() {
+        let mut loose = Vec::new();
+        push_bytes_field(&mut loose, FOLDER_GUILD_IDS, &ids(&[3, 4]));
+        let settings = stored(&[loose]);
+        let model = [
+            GuildFolderEntry {
+                guild_ids: vec![3],
+                ..GuildFolderEntry::default()
+            },
+            GuildFolderEntry {
+                guild_ids: vec![4],
+                ..GuildFolderEntry::default()
+            },
+        ];
+        let (_, rewritten) = set_guild_folders(&settings, &model);
+        let (entries, _) = guild_folders(&rewritten);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].guild_ids, vec![3]);
+        assert_eq!(entries[1].guild_ids, vec![4]);
     }
 }

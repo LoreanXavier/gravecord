@@ -283,6 +283,25 @@ fn push_number(out: &mut Vec<u8>, number: u64, value: u32) {
     }
 }
 
+/// `FavoriteGIFs.hide_tooltip` as `settings_base64` stores it. Only the old-settings migration sets it (module
+/// 596339, once, to "more than two favourites"); favouriting never changes it, so a rewrite keeps what is stored.
+pub fn favorite_gifs_hide_tooltip(settings_base64: &str) -> bool {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return false;
+    };
+    for (number, value) in fields(&settings) {
+        let (true, Value::Bytes(message)) = (number == FAVORITE_GIFS, value) else {
+            continue;
+        };
+        for (inner, value) in fields(message) {
+            if let (2, Value::Varint(flag)) = (inner, value) {
+                return flag != 0;
+            }
+        }
+    }
+    false
+}
+
 /// The PATCH body that sets the favourites: the whole `favorite_gifs` message, which the server replaces as one.
 pub fn favorite_gifs_patch(gifs: &[FavoriteGif], hide_tooltip: bool) -> String {
     let mut message = Vec::new();
@@ -536,5 +555,26 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].url, other.url);
         assert!(favorite_gifs(&favorite_gifs_patch(&[], false)).is_empty());
+    }
+
+    #[test]
+    fn the_stored_hide_tooltip_is_read_back_and_not_derived_from_the_count() {
+        let gif = FavoriteGif {
+            url: "https://klipy.com/gifs/wave".to_owned(),
+            format: 1,
+            src: "https://media.example/wave.gif".to_owned(),
+            width: 10,
+            height: 10,
+            order: 1,
+        };
+        assert!(favorite_gifs_hide_tooltip(&favorite_gifs_patch(
+            std::slice::from_ref(&gif),
+            true
+        )));
+        assert!(!favorite_gifs_hide_tooltip(&favorite_gifs_patch(
+            &[gif.clone(), gif.clone(), gif],
+            false
+        )));
+        assert!(!favorite_gifs_hide_tooltip(""));
     }
 }

@@ -193,7 +193,12 @@ impl Root {
         };
         let list = dc_proto::frecency::toggle_favorite_gif(self.favorite_gif_list(), favorite);
         if !crate::storage::settings_writes_blocked() {
-            let patch = dc_proto::frecency::favorite_gifs_patch(&list, list.len() > 2);
+            let hide_tooltip = self
+                .fetched
+                .get(super::actions::FRECENCY_KEY)
+                .and_then(|body| body["settings"].as_str())
+                .is_some_and(dc_proto::frecency::favorite_gifs_hide_tooltip);
+            let patch = dc_proto::frecency::favorite_gifs_patch(&list, hide_tooltip);
             let _ = self.requests.send(Request::Rest {
                 key: None,
                 method: reqwest::Method::PATCH,
