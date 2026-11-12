@@ -479,6 +479,9 @@ impl Root {
             .flex()
             .flex_wrap()
             .gap(px(8.))
+            // `baseSettingWrapper_4Z2WJy` keeps 8px above and below its content (the grid's wrapper is 120px
+            // tall around 104px of tiles in `dom/settings/appearance-darker-cozy`).
+            .py(px(8.))
             .children(tiles)
             .into_any_element()
     }

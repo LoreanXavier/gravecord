@@ -336,8 +336,8 @@ impl Root {
                         listed(907, "Magical"),
                         listed(me.id, &me.username),
                         {"group": {"id": "online"}},
-                        {"member": {"nick": null, "user": {"id": "906", "username": "Fiery", "discriminator": "0"}, "presence": {"status": "online"}}},
-                        {"member": {"nick": null, "user": {"id": "908", "username": "Plain", "discriminator": "0"}, "presence": {"status": "idle"}}},
+                        {"member": {"nick": null, "user": {"id": "906", "username": "Fiery", "discriminator": "0"}, "presence": {"status": "online"}, "roles": [GRAD2.to_string()]}},
+                        {"member": {"nick": null, "user": {"id": "908", "username": "Plain", "discriminator": "0"}, "presence": {"status": "idle"}, "roles": [GRAD_PLAIN.to_string()]}},
                     ]}]}),
             );
         }

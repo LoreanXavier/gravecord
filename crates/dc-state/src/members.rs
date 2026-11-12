@@ -87,6 +87,12 @@ impl GuildMembers {
                     .get(guild, member.user.id)
                     .and_then(|known| known.joined_at.clone());
             }
+            // An object without a `roles` key says nothing about roles (it is not "no roles"): keep the known ones.
+            if value.get("roles").is_none()
+                && let Some(known) = self.get(guild, member.user.id)
+            {
+                member.roles = known.roles.clone();
+            }
             if value.get("avatar").is_none() {
                 member.avatar = self
                     .get(guild, member.user.id)
@@ -182,6 +188,25 @@ impl GuildMembers {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_member_object_without_roles_keeps_the_known_roles() {
+        let mut store = GuildMembers::default();
+        store.dispatch(
+            "GUILD_MEMBERS_CHUNK",
+            &json!({"guild_id": "9", "members": [{"user": {"id": "1", "username": "ann"}, "roles": ["5"]}]}),
+        );
+        store.dispatch(
+            "GUILD_MEMBER_LIST_UPDATE",
+            &json!({"guild_id": "9", "ops": [{"op": "SYNC", "items": [{"member": {"user": {"id": "1", "username": "ann"}}}]}]}),
+        );
+        assert_eq!(store.of(9)[0].roles, vec![5]);
+        store.dispatch(
+            "GUILD_MEMBER_UPDATE",
+            &json!({"guild_id": "9", "user": {"id": "1", "username": "ann"}, "roles": []}),
+        );
+        assert!(store.of(9)[0].roles.is_empty());
+    }
 
     #[test]
     fn a_chunk_adds_members_in_order_and_an_update_keeps_the_place() {

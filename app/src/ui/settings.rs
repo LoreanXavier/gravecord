@@ -273,6 +273,10 @@ const ACCOUNT_SCROLL_MARGIN: f32 = 16. + 8. + 52.;
 /// (`account-status-darker-cozy` shows neither).
 static ACCOUNT_STATUS_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// The NEW badge after the Accessibility sidebar entry (`settings-appearance-67-top-darker-cozy` shows it beside
+/// the entry; `accessibility-darker-cozy`, with the page open, does not): it goes once the page has been opened.
+static ACCESSIBILITY_SEEN: AtomicBool = AtomicBool::new(false);
+
 /// The Account page lists its own anchors; every other page lists its titled sections.
 fn anchors_of(entry: &Entry) -> Vec<Anchor> {
     if !entry.anchors.is_empty() {
@@ -879,6 +883,12 @@ impl Root {
         let open = self.settings.as_ref();
         let active = open.is_some_and(|open| open.page == entry.page);
         let destructive = entry.page == Page::LogOut;
+        if active && entry.page == Page::Accessibility {
+            ACCESSIBILITY_SEEN.store(true, Ordering::Relaxed);
+        }
+        let new_badge_after = entry.page == Page::Accessibility
+            && !active
+            && !ACCESSIBILITY_SEEN.load(Ordering::Relaxed);
         let anchors = if active {
             anchors_of(entry)
         } else {
@@ -903,7 +913,11 @@ impl Root {
         .items_center()
         .justify_between()
         .cursor_pointer()
-        .text_color(color(if active {
+        // The Log Out entry (`item_xyJHva destructive_xyJHva`) carries an inline `color: var(--text-feedback-critical)`
+        // and `var(--icon-feedback-critical)` on its icon, so hover leaves its colours alone.
+        .text_color(color(if destructive {
+            "--text-feedback-critical"
+        } else if active {
             "--text-strong"
         } else {
             "--text-muted"
@@ -911,13 +925,16 @@ impl Root {
         .when(active, |this| this.bg(color("--background-mod-normal")))
         .when(!active, |this| {
             this.hover(move |style| {
-                style
-                    .bg(color(if destructive {
-                        "--background-feedback-mod-critical"
-                    } else {
-                        "--background-mod-muted"
-                    }))
-                    .text_color(color("--text-strong"))
+                let style = style.bg(color(if destructive {
+                    "--background-feedback-mod-critical"
+                } else {
+                    "--background-mod-muted"
+                }));
+                if destructive {
+                    style
+                } else {
+                    style.text_color(color("--text-strong"))
+                }
             })
         })
         // `.item_xyJHva.active`: `.full-motion` `background-color .3s ease`; the `:hover:not(.active)` rule is
@@ -948,7 +965,9 @@ impl Root {
                         .path(format!("icons/settings_{}.svg", entry.icon))
                         .size(px(20.))
                         .flex_none()
-                        .text_color(color(if active {
+                        .text_color(color(if destructive {
+                            "--icon-feedback-critical"
+                        } else if active {
                             "--text-strong"
                         } else {
                             "--text-muted"
@@ -962,6 +981,7 @@ impl Root {
                         .child(entry.label),
                 ),
         )
+        .when(new_badge_after, |this| this.child(new_badge()))
         .when(
             self.keyboard_mode() && self.keys.stops.has_focus(&handle),
             |this| this.child(super::keyboard::hollow_ring(8.)),
