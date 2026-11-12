@@ -238,7 +238,10 @@ impl Root {
         } else {
             240.
         };
-        let body: AnyElement = if video && in_call {
+        let body: AnyElement = if video && in_call && self.vv.fullscreen {
+            // Full Screen draws the call in its own layer.
+            div().into_any_element()
+        } else if video && in_call {
             self.call_view(0, channel, width, height, cx)
         } else {
             self.dm_call_avatars(&people, width)

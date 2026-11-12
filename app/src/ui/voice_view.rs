@@ -115,6 +115,8 @@ pub(super) struct State {
     pub suggest: bool,
     /// The focused tile, if any (`selectedParticipant`).
     pub focus: video_tiles::Focus,
+    /// Full Screen: the call fills the window and the window fills the screen.
+    pub fullscreen: bool,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
     pub(super) background: super::call_background::State,
@@ -133,6 +135,7 @@ impl Default for State {
             quality_open: false,
             suggest: false,
             focus: Default::default(),
+            fullscreen: false,
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -659,6 +662,65 @@ impl Root {
             .into_any_element()
     }
 
+    /// Where the call view's top left corner is in the window: beside the sidebar under the title bar, or the
+    /// window's own corner in Full Screen. The menus are placed against it.
+    pub(super) fn call_origin(&self) -> (f32, f32) {
+        if self.vv.fullscreen {
+            (0., 0.)
+        } else {
+            (375., 32.)
+        }
+    }
+
+    /// Full Screen of the call bar: the call takes the whole window and the window the whole screen; again, and
+    /// both go back.
+    pub(super) fn toggle_call_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.vv.fullscreen = !self.vv.fullscreen;
+        self.vv.menu = None;
+        if window.is_fullscreen() != self.vv.fullscreen {
+            window.toggle_fullscreen();
+        }
+        cx.notify();
+    }
+
+    /// The call over everything else while Full Screen is on. It ends with the call.
+    pub(super) fn call_fullscreen_layer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.vv.fullscreen {
+            return None;
+        }
+        let Some((guild, channel)) = self.call.as_ref().map(|call| (call.guild, call.channel))
+        else {
+            self.vv.fullscreen = false;
+            if window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
+            return None;
+        };
+        let size = window.viewport_size();
+        let (width, height) = (f32::from(size.width), f32::from(size.height));
+        let body = self.call_view(guild, channel, width, height, cx);
+        Some(
+            gpui::deferred(
+                div()
+                    .id("call-fullscreen")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(mid("--background-base-lowest"))
+                    .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
+                        this.voice_view_moved(cx);
+                    }))
+                    .child(body),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     /// The main area for a voice channel: the call while in it, else the disconnected state.
     pub(super) fn voice_view(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let (Some(guild), Some(channel)) = (self.guild, self.channel) else {
@@ -672,7 +734,10 @@ impl Root {
             .as_ref()
             .is_some_and(|call| call.channel == channel);
         let chat = in_call && self.vv.chat_open.contains(&channel);
-        let body = if in_call {
+        let body = if in_call && self.vv.fullscreen {
+            // Full Screen draws the call in its own layer; a second copy here would open every menu twice.
+            div().into_any_element()
+        } else if in_call {
             self.call_view(guild, channel, width, height, cx)
         } else {
             self.disconnected_view(guild, channel, width, height, cx)
@@ -1764,11 +1829,16 @@ impl Root {
                         ))
                         .child(self.with_tip(
                             "call-fullscreen-tip",
-                            Tip::text("Full Screen", Side::Top),
-                            tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(
-                                |_, _, window, _| {
-                                    window.toggle_fullscreen();
+                            Tip::text(
+                                if self.vv.fullscreen {
+                                    "Exit Full Screen"
+                                } else {
+                                    "Full Screen"
                                 },
+                                Side::Top,
+                            ),
+                            tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(
+                                |this, _, window, cx| this.toggle_call_fullscreen(window, cx),
                             )),
                             cx,
                         ))
@@ -2014,8 +2084,16 @@ impl Root {
                     ),
                 ];
                 // Right edges meet, 16px above the button; the panel is 268px tall.
-                let left = f32::from(anchor.right()) - MORE_WIDTH - 375.;
-                let top = f32::from(anchor.top()) - 16. - 268. - 32.;
+                let (ox, oy) = self.call_origin();
+                let left = f32::from(anchor.right()) - MORE_WIDTH - ox;
+                // Over the button when there is room, under it in a call area at the top of the window.
+                let top = super::audio_menu::popout_top(
+                    f32::from(anchor.top()),
+                    f32::from(anchor.bottom()),
+                    268.,
+                    16.,
+                    self.viewport.1,
+                ) - oy;
                 vec![
                     deferred(
                         div().absolute().left(px(left)).top(px(top)).child(
@@ -2110,16 +2188,17 @@ impl Root {
                 ));
                 let rows_height = 36. * (rows.len() as f32 - 1.) + 17. + 18.;
                 // Opens at the pointer, 16px from the window's edges.
-                let window_w = width + 375.;
-                let window_h = height + 32.;
+                let (ox, oy) = self.call_origin();
+                let window_w = width + ox;
+                let window_h = height + oy;
                 let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);
                 let top = f32::from(at.y).min(window_h - 16. - rows_height);
                 vec![
                     deferred(
                         div()
                             .absolute()
-                            .left(px(left - 375.))
-                            .top(px(top - 32.))
+                            .left(px(left - ox))
+                            .top(px(top - oy))
                             .child(
                                 self.menu_panel(TILE_MENU_WIDTH, false)
                                     .id("voice-tile-menu")
@@ -2223,16 +2302,17 @@ impl Root {
                         this.open_settings_section("Voice & Video", cx);
                     },
                 ));
-                let window_w = width + 375.;
-                let window_h = height + 32.;
+                let (ox, oy) = self.call_origin();
+                let window_w = width + ox;
+                let window_h = height + oy;
                 let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);
                 let top = f32::from(at.y).min(window_h - 16. - rows_height);
                 vec![
                     deferred(
                         div()
                             .absolute()
-                            .left(px(left - 375.))
-                            .top(px(top - 32.))
+                            .left(px(left - ox))
+                            .top(px(top - oy))
                             .child(
                                 self.menu_panel(TILE_MENU_WIDTH, false)
                                     .id("voice-stream-menu")

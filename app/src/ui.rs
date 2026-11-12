@@ -8192,6 +8192,11 @@ impl Render for Root {
                     return;
                 }
                 // Dialogs of the server menu and the Stage and announcement flows: a modal's own Escape.
+                if keys.key == "escape" && this.vv.fullscreen {
+                    this.toggle_call_fullscreen(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.close_boost_apply() {
                     cx.notify();
                     cx.stop_propagation();
@@ -8668,6 +8673,7 @@ impl Render for Root {
             .children(self.community_select_layer(cx))
             .children(self.overview_select_layer(cx))
             .children(self.boost_perks_modal(cx))
+            .children(self.call_fullscreen_layer(window, cx))
             .children(self.boost_page_overlay(cx))
             .children(self.boost_apply_layer(cx))
             .children(self.overview_confirm_modal(cx))

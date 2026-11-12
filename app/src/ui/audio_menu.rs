@@ -54,8 +54,26 @@ pub(crate) struct AudioMenu {
     pub call: bool,
     pub side: Side,
     pub at: Point<Pixels>,
+    /// The bottom edge of the control the menu opened from, for a menu that has no room above it.
+    pub below: Pixels,
     pub sub: Option<Sub>,
     pub dragging: bool,
+}
+
+/// The top of a popout `height` tall that prefers to sit `gap` px over a control spanning `above..below`, in a
+/// window `window` px high: over the control when it fits, under it when only that side has more room, and never out
+/// of the window (8px from its edges, the top edge first).
+pub(crate) fn popout_top(above: f32, below: f32, height: f32, gap: f32, window: f32) -> f32 {
+    const EDGE: f32 = 8.;
+    let over = above - gap - height;
+    let room_over = above - gap - EDGE;
+    let room_under = window - below - gap - EDGE;
+    let top = if height > room_over && room_under > room_over {
+        below + gap
+    } else {
+        over
+    };
+    top.min(window - EDGE - height).max(EDGE)
 }
 
 /// "Microphone (H2015 Pro)" reads as "H2015 Pro" over "Microphone", as the official list shows it.
@@ -159,6 +177,7 @@ impl Root {
                 call: false,
                 side,
                 at: gpui::point(bounds.left() - px(33.), bounds.top()),
+                below: bounds.bottom(),
                 sub: None,
                 dragging: false,
             });
@@ -176,6 +195,7 @@ impl Root {
                 call: true,
                 side: Side::Input,
                 at: gpui::point(bounds.left() - px(120.5), bounds.top()),
+                below: bounds.bottom(),
                 sub: None,
                 dragging: false,
             });
@@ -498,8 +518,17 @@ impl Root {
     /// The menu's top: its bottom sits 4px over the chevron.
     fn audio_menu_top(&self, menu: &AudioMenu) -> f32 {
         if menu.call {
-            // 470px tall, its bottom 8px over the chevron's nub.
-            return f32::from(menu.at.y) - 8. - 470.;
+            // 470px tall, its bottom 8px over the chevron's nub. A call area at the top of the window (a direct
+            // message's) has no 470px above its bar: the popout then opens under the control when there is more room
+            // there, and is pushed back into the window either way (the popout's `autoInvert` and
+            // `nudgeAlignIntoViewport`).
+            return popout_top(
+                f32::from(menu.at.y),
+                f32::from(menu.below),
+                470.,
+                8.,
+                self.viewport.1,
+            );
         }
         let height = match menu.side {
             Side::Input => 250.,
@@ -789,6 +818,25 @@ impl Root {
             .with_priority(2)
             .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod popout_tests {
+    use super::popout_top;
+
+    #[test]
+    fn a_popout_sits_over_its_control_when_it_fits() {
+        assert_eq!(popout_top(600., 640., 470., 8., 720.), 122.);
+    }
+
+    #[test]
+    fn with_no_room_over_it_opens_under_and_stays_in_the_window() {
+        // A direct message's call bar near the top of a tall window: under the control.
+        assert_eq!(popout_top(237., 277., 470., 8., 1000.), 285.);
+        // The same in a short window: neither side holds it, so it is pushed to the edge.
+        assert_eq!(popout_top(237., 277., 470., 8., 720.), 242.);
+        assert_eq!(popout_top(100., 140., 470., 8., 400.), 8.);
     }
 }
 
