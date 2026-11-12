@@ -802,4 +802,58 @@ mod tests {
             "role-icon:7:abc.webp?size=40"
         );
     }
+
+    fn crosspost_message() -> Message {
+        Message {
+            id: 1,
+            channel_id: 1,
+            author: dc_state::User {
+                id: 7,
+                username: "a".into(),
+                ..dc_state::User::default()
+            },
+            content: String::new(),
+            edited: false,
+            edited_at: None,
+            referenced: None,
+            attachments: Vec::new(),
+            embeds: Vec::new(),
+            reactions: Vec::new(),
+            timestamp: chrono::Utc::now(),
+            kind: 0,
+            flags: 1 << 1,
+            webhook_id: None,
+            application_id: None,
+            mentions: 0,
+            mention_roles: 0,
+            mention_everyone: false,
+            mention_user_ids: Vec::new(),
+            mention_role_ids: Vec::new(),
+            blocked: false,
+            ignored: false,
+            forwarded: None,
+            pinned: false,
+            reference_id: Some(9),
+            reference_channel_id: None,
+            reference_guild_id: Some(5),
+            sticker_items: Vec::new(),
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_crosspost_needs_the_flag_a_reference_and_a_plain_message() {
+        let mut message = crosspost_message();
+        assert!(is_crosspost(&message));
+        message.reference_id = None;
+        assert!(is_crosspost(&message), "the reference guild alone counts");
+        message.reference_guild_id = None;
+        assert!(!is_crosspost(&message));
+        let mut message = crosspost_message();
+        message.flags = 1;
+        assert!(!is_crosspost(&message), "published, not a crosspost");
+        let mut message = crosspost_message();
+        message.kind = 19;
+        assert!(!is_crosspost(&message), "a reply is not a crosspost");
+    }
 }

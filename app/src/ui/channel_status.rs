@@ -800,3 +800,31 @@ impl Root {
 /// The fixture guild's voice channel "General", the only one a harness run may set a status on.
 #[cfg(feature = "capture")]
 const FIXTURE_VOICE: Id = 1_568_692_565_136_375_901;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dc_markdown::Kind;
+
+    #[test]
+    fn plain_text_has_no_emoji_spans() {
+        assert!(emoji_spans(None).is_none());
+        assert!(emoji_spans(Some("lobby music **loud**")).is_none());
+    }
+
+    #[test]
+    fn unicode_and_custom_emoji_become_spans_and_the_rest_stays_plain_text() {
+        let spans = emoji_spans(Some("**party** \u{1F389} <:wave:123456789012345678>")).unwrap();
+        assert!(spans.iter().any(|span| matches!(span.kind, Kind::Unicode)));
+        assert!(
+            spans
+                .iter()
+                .any(|span| matches!(span.kind, Kind::Emoji { .. }))
+        );
+        for span in &spans {
+            if matches!(span.kind, Kind::Text) {
+                assert_eq!(span.style, dc_markdown::Style::default());
+            }
+        }
+    }
+}

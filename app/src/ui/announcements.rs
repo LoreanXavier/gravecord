@@ -392,9 +392,7 @@ impl Root {
                       value: Option<String>,
                       shown: Select,
                       disabled: bool,
-                      options: Vec<(Id, String)>,
                       cx: &mut Context<Self>| {
-            let expanded = open.open == Some(shown) && !disabled;
             div()
                 .relative()
                 .flex()
@@ -457,44 +455,53 @@ impl Root {
                         )
                         .child(icon("chevron_down", 16., "--interactive-text-default")),
                 )
-                .when(expanded, |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top(px(72.))
-                            .left(px(0.))
-                            .right(px(0.))
-                            .max_h(px(200.))
-                            .overflow_hidden()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .py(px(4.))
-                            .occlude()
-                            .children(options.into_iter().enumerate().map(
-                                |(index, (picked, label))| {
-                                    div()
-                                        .id(SharedString::from(format!("follow-option-{index}")))
-                                        .h(px(32.))
-                                        .px(px(12.))
-                                        .flex()
-                                        .items_center()
-                                        .cursor_pointer()
-                                        .text_size(px(14.))
-                                        .text_color(color("--text-default"))
-                                        .hover(|style| {
-                                            style.bg(color("--interactive-background-hover"))
-                                        })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.follow_pick(shown, picked);
-                                            cx.notify();
-                                        }))
-                                        .child(label)
-                                },
-                            )),
-                    )
-                })
+        };
+        // The open list, drawn after both selects so it paints over the one below; `top` is where its select sits in
+        // the column (label 16 + gap 8 + field 40, and the 16 gap between the two selects).
+        let popup = |top: f32,
+                     shown: Select,
+                     disabled: bool,
+                     options: Vec<(Id, String)>,
+                     cx: &mut Context<Self>| {
+            (open.open == Some(shown) && !disabled).then(|| {
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(top + 72.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .max_h(px(200.))
+                        .overflow_hidden()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-higher"))
+                        .py(px(4.))
+                        .occlude()
+                        .children(options.into_iter().enumerate().map(
+                            |(index, (picked, label))| {
+                                div()
+                                    .id(SharedString::from(format!("follow-option-{index}")))
+                                    .h(px(32.))
+                                    .px(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-default"))
+                                    .hover(|style| {
+                                        style.bg(color("--interactive-background-hover"))
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.follow_pick(shown, picked);
+                                        cx.notify();
+                                    }))
+                                    .child(label)
+                            },
+                        )),
+                )
+                .with_priority(2)
+            })
         };
         let guild_options: Vec<(Id, String)> = targets
             .iter()
@@ -544,6 +551,7 @@ impl Root {
                 div()
                     .mt(px(24.))
                     .w_full()
+                    .relative()
                     .flex()
                     .flex_col()
                     .gap(px(16.))
@@ -554,7 +562,6 @@ impl Root {
                         guild_value,
                         Select::Guild,
                         none,
-                        guild_options,
                         cx,
                     ))
                     .child(select(
@@ -563,7 +570,14 @@ impl Root {
                         channel_value,
                         Select::Channel,
                         channel_options.is_empty(),
-                        channel_options,
+                        cx,
+                    ))
+                    .children(popup(0., Select::Guild, none, guild_options, cx))
+                    .children(popup(
+                        80.,
+                        Select::Channel,
+                        channel_options.is_empty(),
+                        channel_options.clone(),
                         cx,
                     ))
                     .child(
