@@ -409,6 +409,18 @@ pub(super) fn select_field_open(
     width: Option<f32>,
     open: bool,
 ) -> gpui::Div {
+    select_field_led(value, width, open, None)
+}
+
+/// The same field with a leading picture before the text (the DM permissions server select shows the chosen
+/// server's icon, the Discord mark for "All servers": a 24px tile 8px in, the text 8px after it).
+pub(super) fn select_field_led(
+    value: impl Into<SharedString>,
+    width: Option<f32>,
+    open: bool,
+    leading: Option<AnyElement>,
+) -> gpui::Div {
+    let led = leading.is_some();
     div()
         .flex_none()
         .when_some(width, |this, width| this.w(px(width)))
@@ -424,11 +436,12 @@ pub(super) fn select_field_open(
         .bg(color("--input-background-default"))
         .flex()
         .items_center()
+        .children(leading.map(|picture| div().flex_none().ml(px(7.)).child(picture)))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .pl(px(12.))
+                .pl(px(if led { 8. } else { 12. }))
                 .text_size(px(16.))
                 .line_height(px(20.))
                 .text_color(color("--text-strong"))
@@ -752,13 +765,28 @@ impl Root {
             .relative()
             .flex_none()
             .child(
-                select_field_open(label, width, open)
-                    .id(SharedString::from(format!("{key}-field")))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.setting_choices.insert(open_key, Choice::On(!open));
-                        cx.notify();
-                    })),
+                select_field_led(
+                    label,
+                    width,
+                    open,
+                    (key == super::privacy::GUILD_SELECTOR && chosen == 0).then(|| {
+                        div()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .bg(color("--control-primary-background-default"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(mask_icon("sb_discord", 18., "--white"))
+                            .into_any_element()
+                    }),
+                )
+                .id(SharedString::from(format!("{key}-field")))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.setting_choices.insert(open_key, Choice::On(!open));
+                    cx.notify();
+                })),
             )
             .when(open, |this| {
                 this.child(
@@ -1281,6 +1309,19 @@ impl Root {
                 }
                 row.render()
             }
+            // The captured notice under the message-request switch has the same Confirm Age button as the filters'.
+            Node::Notice { key, text } if *key == "message_requests_notice_setting" => {
+                // Captured: 24px under the switch (the column gap is 16) and 9px more than the column gap above
+                // the next divider.
+                div()
+                    .mt(px(8.))
+                    .mb(px(9.))
+                    .child(super::content_filters::age_notice(
+                        "message-requests-confirm-age",
+                        text,
+                    ))
+                    .into_any_element()
+            }
             Node::Notice { text, .. } => info_notice(text).into_any_element(),
             Node::Accordion {
                 key,
@@ -1395,7 +1436,7 @@ impl Root {
             }
             Node::Custom { key, height } => match *key {
                 "appearance_default_themes" => self.default_themes(cx),
-                "appearance_custom_themes_upsell" => self.custom_theme_card(cx),
+                "appearance_custom_themes_upsell" => self.custom_theme_card(window, cx),
                 "appearance_client_themes" => self.color_themes(cx),
                 "appearance_in_app_icon" => self.app_icon_grid(),
                 _ => self

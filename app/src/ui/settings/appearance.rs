@@ -7,8 +7,8 @@ use super::swatches::SWATCHES;
 use super::{Root, button, color, mask_icon};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, BoxShadow, Context, FontWeight, Image, ImageFormat, IntoElement, SharedString, div,
-    img, point, prelude::*, px,
+    AnyElement, BoxShadow, Context, FontWeight, Image, ImageFormat, IntoElement, Pixels,
+    SharedString, Window, div, img, point, prelude::*, px,
 };
 use std::sync::Arc;
 
@@ -296,13 +296,27 @@ impl Root {
             .into_any_element()
     }
 
-    pub(super) fn custom_theme_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn custom_theme_card(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The text column shrinks with the card and stops at its longest word (`min-width: auto`).
+        let title = "Make your Discord look *juuusst* right";
+        let body = "Create your own custom theme to make Discord uniquely yours. Only with Nitro.";
+        let widest = |window: &mut Window, text: &str, size: f32, weight: f32| {
+            text.split_whitespace()
+                .map(|word| super::render::measure_text(window, word, size, weight))
+                .fold(px(0.), Pixels::max)
+        };
+        let column_min = widest(window, title, 20., 600.).max(widest(window, body, 14., 400.));
         let banner = self.images.get("theme_upsell_banner").cloned();
         div()
             .py(px(8.))
             .child(
                 div()
-                    .h(px(104.))
+                    // Grows with the wrapped text at a narrow width (the 200% golden's card is 180 high).
+                    .min_h(px(104.))
                     .px(px(25.))
                     .py(px(16.))
                     .rounded(px(8.))
@@ -318,10 +332,9 @@ impl Root {
                             .children(banner.map(|picture| img(picture).w(px(117.)).h(px(69.)))),
                     )
                     .child(
-                        // No `min_w(0)`: a flex child keeps its longest word (`min-width:auto`), so a narrow page
-                        // overflows to the right instead of folding the title into a column of single letters.
                         div()
                             .flex_1()
+                            .min_w(column_min)
                             .flex()
                             .flex_col()
                             .gap(px(4.))

@@ -158,6 +158,18 @@ fn text(
         .child(value.into())
 }
 
+/// The Nitro display face, bold and upright, upper case (the captured hero and plan card titles; the page's section
+/// headings are the sans at 600).
+fn display(value: &str, size: f32, line: f32) -> gpui::Div {
+    div()
+        .font_family(crate::ui::nitro::NITRO_FONT)
+        .text_size(px(size))
+        .line_height(px(line))
+        .font_weight(FontWeight(700.))
+        .text_color(color("--text-strong"))
+        .child(value.to_uppercase())
+}
+
 fn at(x: f32, y: f32) -> gpui::Div {
     div().absolute().left(px(x)).top(px(y))
 }
@@ -199,11 +211,10 @@ impl Root {
             } else {
                 rgba(0xffffffff).into()
             })
-            .child(icon(
-                glyph,
-                20.,
-                if filled { "--brand-500" } else { "--white" },
-            ))
+            .children(
+                (!glyph.is_empty())
+                    .then(|| icon(glyph, 20., if filled { "--brand-500" } else { "--white" })),
+            )
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(gift, cx)))
             .into_any_element()
@@ -219,10 +230,12 @@ impl Root {
         } else {
             &BASIC_FEATURES
         };
+        // Sampled from settings-full/nitro-01: the cards run left to right, 10px in and 10px from the edge
+        // (85,101,240) to (2,123,195) and (134,71,196) to (170,92,139), constant down the card.
         let (from, to) = if nitro {
-            (rgb(150, 78, 200), rgb(178, 84, 150))
+            (rgb(134, 71, 196), rgb(170, 92, 139))
         } else {
-            (rgb(61, 96, 232), rgb(8, 128, 200))
+            (rgb(85, 101, 240), rgb(2, 123, 195))
         };
         div()
             .relative()
@@ -230,15 +243,14 @@ impl Root {
             .h(px(406.))
             .rounded(px(16.))
             .bg(linear_gradient(
-                135.,
+                90.,
                 linear_color_stop(from, 0.),
                 linear_color_stop(to, 1.),
             ))
-            .child(at(24., 12.).child(Self::nitro_heading(
+            .child(at(24., 12.).child(display(
                 if nitro { "Nitro" } else { "Nitro Basic" },
                 28.,
                 30.,
-                true,
             )))
             .child(
                 at(24., if nitro { 52. } else { 70. })
@@ -273,7 +285,8 @@ impl Root {
                     "settings-basic-subscribe"
                 },
                 "Subscribe",
-                "nitro_wheel",
+                // The captured plan card buttons carry no wheel (the hero's do).
+                "",
                 nitro,
                 288.,
                 cx,
@@ -401,7 +414,7 @@ impl Root {
             )
             .child(
                 at(0., 81.).w(px(696.)).flex().justify_center().child(
-                    Self::nitro_heading("Unlock a World of Perks with Nitro", 32., 34., true)
+                    display("Unlock a World of Perks with Nitro", 32., 34.)
                         .w(px(480.))
                         .text_center()
                         .text_color(color("--white")),
@@ -435,12 +448,13 @@ impl Root {
             .child(at(1., 363.).child(self.settings_plan_card(false, cx)))
             .child(at(361., 363.).child(self.settings_plan_card(true, cx)));
         // Favourite perks.
-        page = page.child(
-            at(0., 823.).w(px(696.)).flex().justify_center().child(
-                Self::nitro_heading("Favorite Nitro Perks", 32., 40., false)
-                    .font_weight(FontWeight(600.)),
-            ),
-        );
+        page = page.child(at(0., 823.).w(px(696.)).flex().justify_center().child(text(
+            "Favorite Nitro Perks",
+            32.,
+            40.,
+            600.,
+            "--text-strong",
+        )));
         for (title, body, column, top, height) in PERKS {
             page = page.child(self.perk_card(title, body, column, top, height));
         }
@@ -448,10 +462,17 @@ impl Root {
         let table_top = 2492.;
         page = page
             .child(
-                at(0., 2406.).w(px(696.)).flex().justify_center().child(
-                    Self::nitro_heading("Pick the plan that works best for you", 32., 40., false)
-                        .font_weight(FontWeight(600.)),
-                ),
+                at(0., 2406.)
+                    .w(px(696.))
+                    .flex()
+                    .justify_center()
+                    .child(text(
+                        "Pick the plan that works best for you",
+                        32.,
+                        40.,
+                        600.,
+                        "--text-strong",
+                    )),
             )
             .child(
                 at(484., table_top)

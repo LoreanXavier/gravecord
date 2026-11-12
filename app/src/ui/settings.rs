@@ -1166,6 +1166,20 @@ impl Root {
                 "--input-border-default"
             }))
             .bg(color("--input-background-default"))
+            // Focused: `outline: 2px solid var(--custom-input-focus-border-color); outline-offset: -2px` (448400 css,
+            // `.wrapper_UcGqzv:has(input:focus)`), a 2px ring inside the border box.
+            .relative()
+            .children(focused.then(|| {
+                div()
+                    .absolute()
+                    .top(px(-1.))
+                    .left(px(-1.))
+                    .right(px(-1.))
+                    .bottom(px(-1.))
+                    .rounded(px(8.))
+                    .border_2()
+                    .border_color(color("--input-border-active"))
+            }))
             .child(
                 div()
                     .size(px(30.))

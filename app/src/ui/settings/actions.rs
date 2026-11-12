@@ -130,7 +130,7 @@ pub(in crate::ui) struct State {
     /// The sidebar's search box (`te`, module 276530); its text is the query that filters the sidebar.
     pub search: Option<gpui::Entity<crate::editor::Editor>>,
     pub search_sub: Option<gpui::Subscription>,
-    connections_asked: bool,
+    pub(in crate::ui) connections_asked: bool,
 }
 
 impl State {
@@ -317,7 +317,7 @@ pub(super) fn harvest_next_allowed(harvest: &Value) -> Option<chrono::DateTime<c
 
 impl Root {
     /// Settings opened: ask for what the pages list (`initialize` of the data usage category and the harvest row).
-    pub(super) fn settings_pages_opened(&mut self) {
+    pub(in crate::ui) fn settings_pages_opened(&mut self) {
         self.settings_extra.panel = None;
         self.settings_extra.family_tab = 0;
         self.settings_extra.nested_return = None;

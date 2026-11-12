@@ -1,7 +1,9 @@
 //! Connected Apps: the account's connections (`GET /users/@me/connections`) and authorized apps
 //! (`GET /oauth2/tokens`), each row with the button that starts its removal. Removing opens the confirm dialog first;
 //! only that dialog's confirm button sends `DELETE /users/@me/connections/{type}/{id}` or `DELETE /oauth2/tokens/{id}`
-//! (module 158935 `Tq`, `TW`, `TK`; the add-connection grid and its OAuth pages are not built).
+//! (module 158935 `Tq`, `TW`, `TK`). The "Add a new connection" grid below the header draws the provider buttons; a
+//! button opens its authorize URL (`GET /connections/{type}/authorize`). The providers that open an in-app dialog
+//! first (Crunchyroll, Xbox, PlayStation, domain, Bluesky) have no dialog yet.
 
 use super::actions::Dialog;
 use super::{button, mask_icon};
@@ -306,13 +308,15 @@ pub(super) fn app_removal(app: &App) -> Request {
 
 fn empty_state(title: &'static str, body: &'static str) -> AnyElement {
     div()
-        // `.emptyState_yX-kzH`: at least 200px tall, the notice centred in it.
-        .min_h(px(200.))
+        // `.emptyState_yX-kzH`: at least 200px tall, the notice centred in it. The captured box measures 216 with
+        // 8px between the title and the line (settings-full/connected-apps-00: title 16px and line 20px lower than
+        // a 200px box with a 4px gap draws them, divider 26px lower).
+        .min_h(px(216.))
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(4.))
+        .gap(px(8.))
         .child(
             div()
                 .text_size(px(20.))
@@ -543,10 +547,14 @@ impl Root {
         let accounts = accounts_of(list);
         if accounts.is_empty() {
             // `hh.SG` with `WenGZ2` and `aoLS84`.
-            return empty_state(
-                "No Connections",
-                "Connect your accounts to unlock special Discord integrations",
-            );
+            // 10px more room under the grid than the apps list has under its description (captured positions).
+            return div()
+                .mt(px(10.))
+                .child(empty_state(
+                    "No Connections",
+                    "Connect your accounts to unlock special Discord integrations",
+                ))
+                .into_any_element();
         }
         let rows: Vec<AnyElement> = accounts
             .into_iter()
