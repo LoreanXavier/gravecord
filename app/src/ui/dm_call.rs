@@ -560,12 +560,13 @@ impl Root {
             ["state"] => {
                 let call = self.stores.calls.get_call(channel);
                 format!(
-                    "stop-ringing asked {:?}; call {:?}; incoming {}; in voice {}; controls shown {}",
+                    "stop-ringing asked {:?}; call {:?}; incoming {}; in voice {}; controls shown {}; {}",
                     self.dmc.stops,
                     call.map(|call| (call.message_id, call.ringing.clone(), call.unavailable)),
                     self.stores.calls.get_incoming_calls(false).len(),
                     self.call.is_some(),
-                    self.controls_shown()
+                    self.controls_shown(),
+                    self.call_view_state()
                 )
             }
             ["controls"] => {

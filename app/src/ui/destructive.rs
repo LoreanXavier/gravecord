@@ -11,7 +11,7 @@ use gpui::{AnyElement, Context, FontWeight, IntoElement};
 /// What the confirm button does.
 enum Then {
     /// One request.
-    Send(Request),
+    Send(Box<Request>),
     /// A bulk mark as read of `(channel, message)` pairs (`mark_read.rs`).
     MarkRead(Vec<(Id, Id)>),
 }
@@ -64,7 +64,7 @@ impl Pending {
             after: around("a6Gz9J", "channelName", name).1,
             confirm: dc_intl::tr("Delete Thread").to_owned(),
             critical: true,
-            then: Some(Then::Send(delete_thread_request(thread))),
+            then: Some(Then::Send(Box::new(delete_thread_request(thread)))),
         }
     }
 
@@ -81,6 +81,26 @@ impl Pending {
             confirm: dc_intl::tr("Mark As Read").to_owned(),
             critical: false,
             then: Some(Then::MarkRead(reads)),
+        }
+    }
+
+    /// `renderSuppressConfirmModal` of module 679636: "Are you sure?" (`VL1KOk`), `vXZ+Fo` and the shift hint
+    /// `5j2by3`, confirm "Remove All Embeds" (`YEHppG`) in red (module 640238's default).
+    pub(super) fn suppress_embeds(request: Request) -> Self {
+        Self {
+            id: "suppress-embeds-modal",
+            title: dc_intl::tr("Are you sure?").to_owned(),
+            before: format!(
+                "{}
+{}",
+                dc_intl::tr("This will remove all embeds on this message for everyone."),
+                dc_intl::tr("Hold shift when clearing embeds to skip this modal.")
+            ),
+            name: String::new(),
+            after: String::new(),
+            confirm: dc_intl::tr("Remove All Embeds").to_owned(),
+            critical: true,
+            then: Some(Then::Send(Box::new(request))),
         }
     }
 
@@ -152,7 +172,7 @@ impl Root {
                             };
                             match then {
                                 Then::Send(request) => {
-                                    let _ = this.requests.send(request);
+                                    let _ = this.requests.send(*request);
                                 }
                                 Then::MarkRead(reads) => this.mark_read_bulk(&reads, cx),
                             }

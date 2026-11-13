@@ -844,6 +844,13 @@ impl Root {
         page.into_any_element()
     }
 
+    pub(super) fn safety_confirm_open(&self) -> bool {
+        self.server_settings.as_ref().is_some_and(|open| {
+            open.page == Page::SafetySetup
+                && (open.safety.verify_dialog.is_some() || open.safety.risky_open)
+        })
+    }
+
     /// Module 313003.
     pub(super) fn safety_verify_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;

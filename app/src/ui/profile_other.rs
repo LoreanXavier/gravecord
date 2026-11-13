@@ -53,6 +53,7 @@ impl Root {
         if roles.is_empty() {
             return None;
         }
+        let palette = self.profile_palette(user, Some(guild.id), false);
         Some(
             div()
                 .parity("profile-roles")
@@ -73,7 +74,7 @@ impl Root {
                         .pl(px(2.))
                         .pr(px(8.))
                         .border_1()
-                        .border_color(color("--opacity-white-8"))
+                        .border_color(palette.token("--border-subtle"))
                         .rounded(px(8.))
                         .flex()
                         .items_center()
@@ -120,14 +121,15 @@ impl Root {
             .get(&user)
             .map(|known| known.display_name().to_owned())
             .unwrap_or_default();
+        let palette = self.profile_palette(user, self.guild, false);
         let editor = cx.new(|cx| {
-            // `editor_q6l9qz`: 14px on 22px lines, the placeholder at 76% white.
+            // `editor_q6l9qz`: 14px on 22px lines on the profile's own tokens.
             let style = crate::editor::EditorStyle {
                 size: 14.,
                 line_height: 22.,
-                text: hsla(0., 0., 1., 0.96),
-                placeholder: hsla(0., 0., 1., 0.76),
-                caret: hsla(0., 0., 1., 0.96),
+                text: palette.token("--text-default").into(),
+                placeholder: palette.token("--text-muted").into(),
+                caret: palette.token("--text-default").into(),
                 ..super::editor_style()
             };
             let mut editor = Editor::new(style, cx);
@@ -179,7 +181,11 @@ impl Root {
     ) -> Option<AnyElement> {
         let user = self.stores.users.get(&popout.user)?.clone();
         let id = user.id;
-        let palette = self.dm_palette(id);
+        let palette = self.profile_palette(id, self.guild, false);
+        let light = palette
+            .theme
+            .as_ref()
+            .is_some_and(super::profile_theme::ProfileTheme::light);
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
         let private = body.is_some_and(|body| body["private"] == true);
@@ -199,13 +205,17 @@ impl Root {
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
         let friends = body
-            .and_then(|body| body["mutual_friends"].as_array().map(Vec::len))
+            .and_then(|body| {
+                body["mutual_friends"]
+                    .as_array()
+                    .map(Vec::len)
+                    .or_else(|| body["mutual_friends_count"].as_u64().map(|n| n as usize))
+            })
             .unwrap_or(0);
         let servers = body
             .and_then(|body| body["mutual_guilds"].as_array().map(Vec::len))
             .unwrap_or(0);
-        let badges = self.profile_badges("popout", id, cx);
-        let subtle = hsla(0., 0., 0.78, 1.);
+        let subtle = palette.subtle;
         let plural = |count: usize, one: &str, many: &str| {
             if count == 1 {
                 format!("1 {one}")
@@ -302,10 +312,12 @@ impl Root {
             )
             .child(
                 div()
-                    .h(px(24.))
+                    .min_h(px(24.))
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap(px(6.))
+                    .gap_x(px(6.))
+                    .gap_y(px(2.))
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
@@ -314,20 +326,7 @@ impl Root {
                         this.child(div().size(px(4.)).rounded_full().bg(strong))
                             .child(pronouns)
                     })
-                    .when(!badges.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .h(px(22.))
-                                .px(px(3.))
-                                .py(px(1.))
-                                .rounded(px(8.))
-                                .bg(hsla(240. / 360., 0.03, 0.61, 0.12))
-                                .flex()
-                                .items_center()
-                                .gap(px(2.))
-                                .children(badges),
-                        )
-                    }),
+                    .children(self.badge_pill("popout", id, &palette, cx)),
             )
             .into_any_element();
         let mutuals: AnyElement = div()
@@ -394,7 +393,7 @@ impl Root {
             .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
             .when(private, |this| this.child(
                 div().parity("private-profile-notice").p(px(12.)).rounded(px(8.))
-                    .bg(color("--background-mod-normal"))
+                    .bg(palette.token("--background-mod-normal"))
                     .text_size(px(14.)).line_height(px(18.)).text_color(strong)
                     .child(format!("{display_name}'s profile is private, so some info is hidden. Add them as a friend to see more."))
             ))
@@ -410,7 +409,7 @@ impl Root {
                     div()
                         .h(px(44.))
                         .rounded(px(8.))
-                        .bg(hsla(0., 0., 1., 0.12))
+                        .bg(palette.token("--background-mod-subtle"))
                         .pl(px(15.))
                         .flex()
                         .items_center()
@@ -465,7 +464,7 @@ impl Root {
             ))
             .shadow(vec![
                 BoxShadow {
-                    color: hsla(0., 0., 1., 0.08),
+                    color: hsla(0., 0., if light { 0. } else { 1. }, 0.08),
                     offset: point(px(0.), px(0.)),
                     blur_radius: px(0.),
                     spread_radius: px(1.),
@@ -500,7 +499,12 @@ impl Root {
                                 .items_center()
                                 .justify_center()
                                 .gap(px(4.))
-                                .child(icon("access_lock", 16., "--text-strong"))
+                                .child(
+                                    gpui::svg()
+                                        .path("icons/access_lock.svg")
+                                        .size(px(16.))
+                                        .text_color(palette.token("--text-strong")),
+                                )
                                 .child(
                                     div()
                                         .text_size(px(14.))

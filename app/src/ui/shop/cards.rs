@@ -86,26 +86,7 @@ impl Root {
                 .into_any_element()
         };
         match product.kind {
-            data::KIND_BUNDLE => {
-                let bg = self.shop_cover_box(product.bg_static.as_deref(), size, size);
-                let fg = product
-                    .fg_static
-                    .as_deref()
-                    .and_then(|url| self.shop_img_box(url, size, size));
-                div()
-                    .relative()
-                    .size_full()
-                    .children(bg)
-                    .children(fg.map(|fg| {
-                        img(fg)
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .object_fit(ObjectFit::Cover)
-                    }))
-                    .into_any_element()
-            }
+            data::KIND_BUNDLE => self.shop_bundle_preview(product, size, hovering, brand),
             data::KIND_EXTERNAL => {
                 let url = data::external_art_url(&product.sku_id);
                 let badge = product.sku_id == data::ORB_BADGE;
@@ -151,7 +132,15 @@ impl Root {
                 if brand {
                     deco(self, &id, size * 0.46, size * 0.55)
                 } else {
-                    deco(self, &id, size * 0.4, size * 0.6)
+                    // `SIZE_120` with its 144px decoration, centred in the preview area above the 56px foot
+                    // (`productPreviewContainer_UGbKo5.hasBottomContent`), at the scale of a 242px card.
+                    let scale = size / 242.;
+                    div()
+                        .size_full()
+                        .px(px(8. * scale))
+                        .pb(px(56. * scale))
+                        .child(deco(self, &id, 120. * scale, 144. * scale))
+                        .into_any_element()
                 }
             }
             data::KIND_NAMEPLATE => {
@@ -197,7 +186,8 @@ impl Root {
                     .into_any_element()
             }
             data::KIND_PROFILE_EFFECT | data::KIND_PROFILE_FRAME => {
-                let mock = self.shop_cover_box(Some(PROFILE_MOCK), size, size);
+                // `preview_lG0NAh`: the profile mock covering the card from its top.
+                let mock = self.shop_cover_at(Some(PROFILE_MOCK), size, size, (0.5, 0.));
                 let mut urls: Vec<String> = Vec::new();
                 if let Some(item) = item {
                     if let Some(thumbnail) = &item.thumbnail {
@@ -233,6 +223,7 @@ impl Root {
                 div()
                     .relative()
                     .size_full()
+                    .overflow_hidden()
                     .children(mock)
                     .children(effect)
                     .children(layers.into_iter().map(|art| {
@@ -260,6 +251,178 @@ impl Root {
         }
     }
 
+    /// A bundle's preview (module 842385). With `fg_static` the art covers the card from its foot
+    /// (`preview_4ZmCSI`: `object-fit: cover; object-position: bottom`), the animated art in its place and 8% larger
+    /// while hovered. Without it the bundle's own items are laid out (`container_4ZmCSI`): the profile effect at the
+    /// left, the avatar decoration at the right and, with all three kinds, the nameplate across the foot.
+    fn shop_bundle_preview(
+        &mut self,
+        product: &Product,
+        size: f32,
+        hovering: bool,
+        brand: bool,
+    ) -> AnyElement {
+        if brand {
+            // The product modal: backdrop and foreground over the whole preview.
+            let bg = self.shop_cover_at(product.bg_static.as_deref(), size, size, (0.5, 0.5));
+            let fg = self.shop_cover_at(product.fg_static.as_deref(), size, size, (0.5, 1.));
+            return div()
+                .relative()
+                .size_full()
+                .overflow_hidden()
+                .children(bg)
+                .children(fg)
+                .into_any_element();
+        }
+        if let Some(fg_static) = product.fg_static.clone() {
+            let animated = product
+                .fg_animated
+                .as_deref()
+                .filter(|_| hovering && !crate::ui::motion::reduced());
+            let grow = if hovering { 1.08 } else { 1. };
+            let drawn = size * grow;
+            let art = animated
+                .and_then(|url| self.shop_cover_at(Some(url), drawn, drawn, (0.5, 1.)))
+                .or_else(|| self.shop_cover_at(Some(&fg_static), drawn, drawn, (0.5, 1.)));
+            return div()
+                .relative()
+                .size_full()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px((size - drawn) / 2.))
+                        .top(px((size - drawn) / 2.))
+                        .size(px(drawn))
+                        .children(art),
+                )
+                .into_any_element();
+        }
+        let effect = product
+            .items
+            .iter()
+            .find(|item| item.kind == data::KIND_PROFILE_EFFECT)
+            .cloned();
+        let decoration = product
+            .items
+            .iter()
+            .find(|item| item.kind == data::KIND_AVATAR_DECORATION)
+            .cloned();
+        let nameplate = product
+            .items
+            .iter()
+            .find(|item| item.kind == data::KIND_NAMEPLATE)
+            .cloned();
+        let three = effect.is_some() && decoration.is_some() && nameplate.is_some();
+        // The preview area above the card's 56px foot, and the 1.1 box inside it.
+        let scale = size / 242.;
+        let area_height = 186. * scale;
+        let box_width = area_height * 1.1;
+        let effect_art = effect.as_ref().map(|item| {
+            let height = area_height * 0.8;
+            let width = height * if three { 0.8 } else { 0.86 };
+            let mock = self.shop_cover_at(Some(PROFILE_MOCK), width, height, (0.5, 0.));
+            let still = item
+                .thumbnail
+                .clone()
+                .unwrap_or_else(|| item_static(&item.sku_id));
+            let art = self.shop_cover_at(Some(&still), width, height, (0.5, 0.));
+            div()
+                .absolute()
+                .left(px(box_width * 0.06))
+                .top(px(area_height * 0.1))
+                .w(px(width))
+                .h(px(height))
+                .rounded(px(8.))
+                .overflow_hidden()
+                .children(mock)
+                .children(art)
+        });
+        let avatar = if three { 72. } else { 80. } * scale;
+        let decoration_art = decoration.as_ref().map(|item| {
+            let ring = avatar * 1.2;
+            let art = self.shop_img_box(&item_static(&item.sku_id), ring, ring);
+            div()
+                .absolute()
+                .right(px(box_width * 0.06))
+                .top(px(area_height * if three { 0.12 } else { 0.22 }))
+                .size(px(ring))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(avatar))
+                        .rounded_full()
+                        .bg(gpui::rgb(0x0c0e0e))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("sb_discord", avatar * 0.55, "--text-muted")),
+                )
+                .children(art.map(|art| {
+                    img(art)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size(px(ring))
+                        .object_fit(ObjectFit::Contain)
+                }))
+        });
+        let nameplate_art = nameplate.filter(|_| three).map(|item| {
+            let width = box_width * 0.96;
+            let art = self.shop_cover_at(
+                Some(&item_static(&item.sku_id)),
+                width,
+                42. * scale,
+                (0.5, 0.5),
+            );
+            div()
+                .absolute()
+                .left(px(box_width * 0.02))
+                .bottom(px(area_height * 0.14))
+                .w(px(width))
+                .h(px(42. * scale))
+                .rounded(px(8.))
+                .overflow_hidden()
+                .bg(color("--background-base-low"))
+                .children(art)
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .top_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .rounded_full()
+                                .bg(color("--background-mod-strong")),
+                        )
+                        .child(skeleton_bar(80.)),
+                )
+        });
+        div()
+            .size_full()
+            .pb(px(56. * scale))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .relative()
+                    .w(px(box_width))
+                    .h(px(area_height))
+                    .children(effect_art)
+                    .children(nameplate_art)
+                    .children(decoration_art),
+            )
+            .into_any_element()
+    }
+
     /// The limited-time pill's text (module 268959): the days its collection has left, "Last day to buy" on the last.
     fn shop_limited_text(&self, product: &Product) -> Option<String> {
         let category = self
@@ -276,13 +439,13 @@ impl Root {
             .as_secs() as i64;
         let days = data::days_left(category.unpublished_at.as_deref()?, now)?;
         Some(if days > 1 {
-            format!("{days} DAYS LEFT")
+            dc_intl::t!("Io7ozn", days = days).to_uppercase()
         } else {
-            "LAST DAY TO BUY".to_owned()
+            dc_intl::tr("Last day to buy").to_uppercase()
         })
     }
 
-    /// One card. `width` is the outer width (246 on shelves, the column width in grids); the height is 246 on shelves.
+    /// One card. `width` is the outer width (246 on shelves, the column width in grids); the height is 246.
     pub(super) fn shop_card(
         &mut self,
         sku: &str,
@@ -290,6 +453,27 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.shop_card_with(sku, width, false, window, cx)
+    }
+
+    /// `shop_card`; `hide_bundle_background` leaves out a bundle's `bg_static` (the feed's
+    /// `hideStaticBundleBackgroundAsset`).
+    pub(super) fn shop_card_with(
+        &mut self,
+        sku: &str,
+        width: Option<f32>,
+        hide_bundle_background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // `tR` of module 987421: a product still loading is a skeleton card; one the answer left out is no card.
+        if self.shop_product(sku).is_none() {
+            if self.shop.absent.contains(sku) {
+                return div().into_any_element();
+            }
+            // The page asks for its missing products in one batch (`shop_featured`); a card does not ask alone.
+            return super::featured::skeleton_card(0, width, window);
+        }
         let id = SharedString::from(format!("shop-card-{sku}"));
         let outer = div()
             .id(id.clone())
@@ -300,7 +484,9 @@ impl Root {
             .h(px(246.))
             .rounded(px(8.))
             .border(px(2.))
-            .border_color(color("--border-subtle"))
+            // `border-muted`, `border-subtle` while hovered (`hovered_UGbKo5`).
+            .border_color(color("--border-muted"))
+            .hover(|card| card.border_color(color("--border-subtle")))
             .bg(color("--background-base-low"))
             .overflow_hidden()
             .on_hover({
@@ -332,7 +518,12 @@ impl Root {
         let hovering = self.shop.hover_card.as_deref() == Some(sku);
         let preview = self.shop_preview(&product, 242., false, hovering, window, cx);
         // `tb` of module 987421: a bundle with a static foreground does not lift on hover.
-        let lift = hovering && !(product.kind == data::KIND_BUNDLE && product.fg_static.is_some());
+        let static_bundle = product.kind == data::KIND_BUNDLE && product.fg_static.is_some();
+        let lift = hovering && !static_bundle;
+        // `tg`: the bundle's own backdrop behind the preview, except in the feed.
+        let backdrop = (product.kind == data::KIND_BUNDLE && !hide_bundle_background)
+            .then(|| self.shop_cover_at(product.bg_static.as_deref(), 242., 242., (0.5, 0.5)))
+            .flatten();
         let sku_owned = sku.to_owned();
         let wished = self.shop.wishlist.contains(sku);
         let name_row = |product: &Product| -> AnyElement {
@@ -353,6 +544,18 @@ impl Root {
                 None => row.child(product.name.clone()).into_any_element(),
             }
         };
+        // `_` of module 140877: a free product reads "Free", a Nitro product "Included with Nitro".
+        let price_note = if product
+            .price(data::PRICE_DEFAULT, None)
+            .is_some_and(|price| price.amount == 0)
+        {
+            Some(dc_intl::tr("Free"))
+        } else if product.premium_type.is_some() {
+            Some(dc_intl::tr("Included with Nitro"))
+        } else {
+            None
+        };
+        let price = if price_note.is_some() { None } else { price };
         let price_row = price.as_ref().map(|price| {
             let is_orb = price.currency == data::ORB;
             div()
@@ -404,26 +607,15 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.shop_open_product(&sku_owned, cx);
             }))
+            .children(backdrop.map(|art| div().absolute().inset_0().child(art)))
             .child(
                 div()
                     .absolute()
                     .inset_0()
-                    .when(lift, |wrap| wrap.top(px(-6.)))
+                    .when(lift, |wrap| wrap.top(px(-6.)).bottom(px(6.)))
                     .child(preview),
             )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(100.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(gpui::rgba(0x00000000), 0.),
-                        linear_color_stop(gpui::rgba(0x000000cc), 1.),
-                    )),
-            )
+            .child(footer_gradient(static_bundle))
             .child(
                 div()
                     .absolute()
@@ -437,7 +629,17 @@ impl Root {
                     .gap(px(4.))
                     .group_hover(id.clone(), |row| row.invisible())
                     .child(name_row(&product))
-                    .child(div().h(px(20.)).flex().items_center().children(price_row)),
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .flex()
+                            .items_center()
+                            .children(price_row)
+                            .children(
+                                price_note
+                                    .map(|note| text(16., 20., 600., "--text-strong").child(note)),
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -462,9 +664,11 @@ impl Root {
                             .children(actions),
                     ),
             )
-            .child(match (limited, orbs_only) {
-                (Some(text), _) => text_badge(&text),
-                (None, true) => orbs_badge(),
+            // The badge order of module 268959: limited time, (new), Orbs exclusive, Nitro exclusive.
+            .child(match (limited, orbs_only, product.premium_type.is_some()) {
+                (Some(text), _, _) => text_badge(&text),
+                (None, true, _) => orbs_badge(),
+                (None, false, true) => text_badge(&dc_intl::tr("Nitro exclusive").to_uppercase()),
                 _ => div().into_any_element(),
             })
             .child(heart)
@@ -538,6 +742,48 @@ impl Root {
         }
         out
     }
+}
+
+/// `footerGradient_UGbKo5` (dark theme): 146 tall from `--background-base-lowest` at the foot, 80% at 30%, clear at
+/// the top; 100 tall and in eight steps under a static bundle (`staticBundleFooterGradient_UGbKo5`).
+fn footer_gradient(static_bundle: bool) -> AnyElement {
+    let base = color("--background-base-lowest");
+    let at = |alpha: f32| gpui::Rgba { a: alpha, ..base };
+    // Stops from the foot up: (share of the height, opacity).
+    let stops: &[(f32, f32)] = if static_bundle {
+        &[
+            (0., 0.92),
+            (0.15, 0.9),
+            (0.3, 0.85),
+            (0.42, 0.72),
+            (0.5, 0.58),
+            (0.58, 0.38),
+            (0.66, 0.15),
+            (0.74, 0.),
+            (1., 0.),
+        ]
+    } else {
+        &[(0., 1.), (0.3, 0.8), (1., 0.)]
+    };
+    let height = if static_bundle { 100. } else { 146. };
+    let mut gradient = div().absolute().left_0().right_0().bottom_0().h(px(height));
+    for pair in stops.windows(2) {
+        let ((low_at, low), (high_at, high)) = (pair[0], pair[1]);
+        gradient = gradient.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(height * low_at))
+                .h(px(height * (high_at - low_at)))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(at(high), 0.),
+                    linear_color_stop(at(low), 1.),
+                )),
+        );
+    }
+    gradient.into_any_element()
 }
 
 /// A white pill with black text at the card's top left, as the Orbs pill without its mark.

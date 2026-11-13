@@ -16,7 +16,7 @@ pub(crate) fn frame_index(data: &RenderImage, window: &mut Window) -> usize {
         return 0;
     }
     let delays: Vec<Duration> = (0..count)
-        .map(|index| Duration::from(data.delay(index)))
+        .map(|index| super::gif_tiles::browser_delay(Duration::from(data.delay(index))))
         .collect();
     let total: Duration = delays.iter().sum();
     window.request_animation_frame();

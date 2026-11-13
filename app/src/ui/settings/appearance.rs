@@ -439,9 +439,8 @@ impl Root {
             .into_any_element()
     }
 
-    /// `expressive_F7qvhY`: white, black text, the Nitro mark before it, and a glow of the Nitro colours round it
-    /// (the canvas of 193 by 56 behind the 177 by 40 button). It opens the Nitro plans.
-    pub(super) fn unlock_with_nitro(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
+    /// The four-stop multi-colour glow behind `expressive_F7qvhY` Nitro upsell buttons.
+    pub(super) fn nitro_glow() -> Vec<BoxShadow> {
         let glow = |red: f32, green: f32, blue: f32, alpha: f32, x: f32, y: f32| BoxShadow {
             color: hsla_from_rgb(red, green, blue, alpha),
             offset: point(px(x), px(y)),
@@ -449,18 +448,24 @@ impl Root {
             spread_radius: px(0.),
             inset: false,
         };
+        vec![
+            glow(0.30, 0.55, 1.0, 0.55, -6., -3.),
+            glow(0.62, 0.35, 0.90, 0.55, 8., -3.),
+            glow(0.20, 0.80, 0.70, 0.45, -8., 5.),
+            glow(0.85, 0.35, 0.80, 0.40, 8., 5.),
+        ]
+    }
+
+    /// `expressive_F7qvhY`: white, black text, the Nitro mark before it, and a glow of the Nitro colours round it
+    /// (the canvas of 193 by 56 behind the 177 by 40 button). It opens the Nitro plans.
+    pub(super) fn unlock_with_nitro(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(id)
             .h(px(40.))
             .px(px(15.))
             .rounded(px(8.))
             .bg(gpui::white())
-            .shadow(vec![
-                glow(0.30, 0.55, 1.0, 0.55, -6., -3.),
-                glow(0.62, 0.35, 0.90, 0.55, 8., -3.),
-                glow(0.20, 0.80, 0.70, 0.45, -8., 5.),
-                glow(0.85, 0.35, 0.80, 0.40, 8., 5.),
-            ])
+            .shadow(Self::nitro_glow())
             .flex()
             .items_center()
             .gap(px(4.))

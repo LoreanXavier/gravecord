@@ -1,32 +1,42 @@
-//! The Go Live picker (module 742527, strings of 254429): what to share, at which quality, and the stored choices
-//! (`ApplicationStreamingSettingStore`, kept in storage.json). Measured in `design/dom/popouts/stream-modal-*`.
+//! The Go Live picker (`tJ` of module 742527, strings of 254429): what to share, at which quality, and the stored
+//! choices (`ApplicationStreamingSettingsStore`, module 929921, kept in storage.json under its persist key). Measured in
+//! `design/dom/popouts/stream-modal-*`.
 //!
-//! The pure rules (presets, what a subscription allows, the badge text, how a choice becomes capture settings) are
-//! plain functions so they are tested without a window. The window thumbnails refresh every second on a worker.
+//! The pure rules (the quality table, what an account and the call's server allow, the presets, how a choice becomes
+//! capture settings) are plain functions so they are tested without a window. The sources are listed off the UI
+//! thread the moment the picker opens, and each thumbnail is delivered as soon as it is ready.
 
 use super::video_tiles::render_image;
 use super::{Root, color, icon};
 use crate::ui::motion::Posed as _;
-use dc_media::screen::{self, Resolution, Settings, Source, SourceId, StreamQuality};
+use dc_media::screen::{self, Resolution, Settings, Source, SourceId};
 use dc_state::premium::{Feature, PremiumType};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, RenderImage, SharedString, deferred, div,
-    prelude::*, px, relative, rgba,
+    AnyElement, Context, FontWeight, IntoElement, MouseDownEvent, RenderImage, SharedString,
+    deferred, div, prelude::*, px, relative, rgba, svg,
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::debug;
 
 const STORE_KEY: &str = "ApplicationStreamingSettingStore";
 /// `thumbnailSize` of the picker: 447x251 pixels.
 const THUMB: (u32, u32) = (447, 251);
-/// The source list refreshes every second (every two while games run, which this client does not detect).
+/// The source list is asked for again a second after the last answer (two while games run, which this client does
+/// not detect): `l.start(n, e)` of `tJ`.
 const REFRESH: Duration = Duration::from_millis(1000);
+/// `GUILD_BOOSTING_PINK` (module 646514): the Nitro wheel beside the premium choices.
+const BOOSTING_PINK: u32 = 0xff73faff;
+/// `getArticleURL(0x53d41ade17)` of the empty Devices tab.
+const DEVICES_HELP: &str = "https://support.discord.com/hc/en-us/articles/360040816151";
 
 // ---- pure rules ----
 
-/// `StreamPreset` of module 753070.
+/// `StreamPreset` of module 753070 (the desktop ones; Auto stays off while `2025-10-go-live-auto-quality` is not
+/// assigned, which this client does not read).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Preset {
     /// "Gaming": smoother video.
@@ -37,40 +47,197 @@ pub(super) enum Preset {
 }
 
 impl Preset {
-    fn from_number(n: u64) -> Self {
+    fn from_number(n: u64) -> Option<Self> {
         match n {
-            2 => Self::Documents,
-            3 => Self::Custom,
-            _ => Self::Video,
+            1 => Some(Self::Video),
+            2 => Some(Self::Documents),
+            3 => Some(Self::Custom),
+            _ => None,
         }
     }
 
-    fn title(self) -> &'static str {
+    /// `to` of module 742527.
+    pub(super) fn title(self) -> &'static str {
         match self {
-            Self::Video => "Gaming",
-            Self::Documents => "Screenshare",
-            Self::Custom => "Custom",
+            Self::Video => dc_intl::tr("Gaming"),
+            Self::Documents => dc_intl::tr("Screenshare"),
+            Self::Custom => dc_intl::tr("Custom"),
         }
     }
 
-    fn subtext(self) -> Option<&'static str> {
-        match self {
-            Self::Video => Some("Smoother video (720p, 30fps)"),
-            Self::Documents => Some("Clearer text (Source, 5fps)"),
-            Self::Custom => None,
-        }
-    }
-
+    /// The footer's first word (`v` of `tq`): none for Custom.
     fn summary(self) -> Option<&'static str> {
         match self {
-            Self::Video => Some("Smoother video"),
-            Self::Documents => Some("Clearer text"),
+            Self::Video => Some(dc_intl::tr("Smoother video")),
+            Self::Documents => Some(dc_intl::tr("Clearer text")),
             Self::Custom => None,
         }
     }
 }
 
-/// The stored choices with the official defaults: preset Video, 720p, 30 fps, share the sound.
+/// What a row of the quality table asks of the account: `MID_STREAMING_QUALITY` or `HIGH_STREAMING_QUALITY`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Need {
+    Mid,
+    High,
+}
+
+/// One row of `ZV` (module 753070): a pair, the preset it belongs to, and what unlocks it.
+struct Rule {
+    resolution: Resolution,
+    fps: u32,
+    preset: Option<Preset>,
+    quality: Option<Need>,
+    /// `guildPremiumTier`: the call's server at this boost tier or above unlocks it too.
+    tier: Option<u64>,
+}
+
+const fn rule(
+    resolution: Resolution,
+    fps: u32,
+    preset: Option<Preset>,
+    quality: Option<Need>,
+    tier: Option<u64>,
+) -> Rule {
+    Rule {
+        resolution,
+        fps,
+        preset,
+        quality,
+        tier,
+    }
+}
+
+/// `ZV` of module 753070, in its order. `TVA.TIER_1` is 1 and `TIER_2` is 2.
+const RULES: [Rule; 18] = {
+    use Resolution::*;
+    [
+        rule(Source, 60, None, Some(Need::High), None),
+        rule(Source, 30, None, Some(Need::High), None),
+        rule(Source, 15, None, Some(Need::High), None),
+        rule(Source, 5, Some(Preset::Documents), None, None),
+        rule(P1440, 60, None, Some(Need::Mid), Some(2)),
+        rule(P1440, 30, None, Some(Need::Mid), Some(2)),
+        rule(P1440, 15, None, Some(Need::Mid), Some(2)),
+        rule(P1080, 60, None, Some(Need::Mid), Some(2)),
+        rule(P1080, 30, None, Some(Need::Mid), Some(2)),
+        rule(P1080, 15, None, Some(Need::Mid), Some(2)),
+        rule(P720, 60, None, Some(Need::Mid), Some(1)),
+        rule(P720, 30, None, None, None),
+        rule(P720, 15, None, None, None),
+        rule(P720, 5, None, None, None),
+        rule(P480, 60, None, Some(Need::Mid), Some(1)),
+        rule(P480, 30, None, None, None),
+        rule(P480, 15, None, None, None),
+        rule(P480, 5, None, None, None),
+    ]
+};
+
+/// Who streams: the subscription (`premium_type`, 0 none, 1 Classic, 2 Nitro, 3 Basic) and the boost tier of the
+/// server of the call (`premiumTier`, none in a DM call).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Account {
+    pub premium: Option<u64>,
+    pub guild_tier: Option<u64>,
+}
+
+impl Account {
+    /// `canStreamQuality` of module 722178: Mid with `STREAM_MID_QUALITY` (Classic, Nitro), High with
+    /// `STREAM_HIGH_QUALITY` (Nitro).
+    fn can(self, need: Need) -> bool {
+        let tier = PremiumType::from_wire(self.premium);
+        match need {
+            Need::Mid => tier.has(Feature::StreamMidQuality),
+            Need::High => tier.has(Feature::StreamHighQuality),
+        }
+    }
+
+    /// The SD/HD switch and the "Stream in HD resolution with Nitro" ribbon show while High is out of reach (`X` of
+    /// `tJ`).
+    pub(super) fn needs_hd_upsell(self) -> bool {
+        !self.can(Need::High)
+    }
+}
+
+/// `canStreamWithSettings` (module 676030): a row of the table for the pair (of this preset, or of any) that the
+/// account or the server unlocks.
+pub(super) fn can_stream(
+    account: Account,
+    preset: Preset,
+    resolution: Resolution,
+    fps: u32,
+) -> bool {
+    RULES.iter().any(|row| {
+        row.preset.is_none_or(|own| own == preset)
+            && row.resolution == resolution
+            && row.fps == fps
+            && (row.quality.is_none() && row.tier.is_none()
+                || row.quality.is_some_and(|need| account.can(need))
+                || row
+                    .tier
+                    .is_some_and(|need| account.guild_tier.is_some_and(|tier| tier >= need)))
+    })
+}
+
+/// `getStreamSettingsForPreset` (module 476697): the first pair of the preset's list the account may use; none for
+/// Custom, whose pair is the chosen one.
+pub(super) fn preset_settings(preset: Preset, account: Account) -> Option<(Resolution, u32)> {
+    let list: &[(Resolution, u32)] = match preset {
+        Preset::Video => &[
+            (Resolution::P1440, 60),
+            (Resolution::P1080, 60),
+            (Resolution::P720, 60),
+            (Resolution::P720, 30),
+        ],
+        Preset::Documents => &[(Resolution::Source, 15), (Resolution::Source, 5)],
+        Preset::Custom => &[],
+    };
+    list.iter()
+        .copied()
+        .find(|(resolution, fps)| can_stream(account, preset, *resolution, *fps))
+}
+
+/// `tc`: "Source" or "720p".
+pub(super) fn resolution_text(resolution: Resolution) -> String {
+    match resolution {
+        Resolution::Source => dc_intl::tr("Source").to_owned(),
+        other => format!("{}p", other.height()),
+    }
+}
+
+/// The subtext of a Stream Mode row (`G5O1Mz`, `8tcFL5`): the preset's pair for this account, or the menu's own
+/// defaults (720p 30 and Source 15) when it has none.
+pub(super) fn preset_subtext(preset: Preset, account: Account) -> Option<String> {
+    match preset {
+        Preset::Video => {
+            let (resolution, fps) =
+                preset_settings(preset, account).unwrap_or((Resolution::P720, 30));
+            Some(format!(
+                "Smoother video ({}, {fps}fps)",
+                resolution_text(resolution)
+            ))
+        }
+        Preset::Documents => {
+            let (resolution, fps) =
+                preset_settings(preset, account).unwrap_or((Resolution::Source, 15));
+            Some(format!(
+                "Clearer text ({}, {fps}fps)",
+                resolution_text(resolution)
+            ))
+        }
+        Preset::Custom => None,
+    }
+}
+
+/// The text of the quality pill on a stream tile: `720P 30FPS`, `SOURCE 15FPS`.
+pub(super) fn quality_badge(resolution: Resolution, fps: u32) -> String {
+    match resolution {
+        Resolution::Source => format!("SOURCE {fps}FPS"),
+        other => format!("{}P {fps}FPS", other.height()),
+    }
+}
+
+/// The stored choices of `ApplicationStreamingSettingsStore`: preset Video, 720p, 30 fps and the sound by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Prefs {
     pub preset: Preset,
@@ -78,7 +245,7 @@ pub(super) struct Prefs {
     pub fps: u32,
     /// `soundshareEnabled`: "Mute stream audio" is its inverse.
     pub sound: bool,
-    /// "Hide stream preview" (Advanced).
+    /// "Hide stream preview" (Advanced). The official keeps it in the synced user settings; here it stays local.
     pub hide_preview: bool,
 }
 
@@ -99,6 +266,7 @@ impl Prefs {
         Self::from_value(crate::storage::get(STORE_KEY).as_ref())
     }
 
+    /// `STREAM_UPDATE_SETTINGS` / `MEDIA_ENGINE_SET_GO_LIVE_SOURCE`: the store keeps what a stream started with.
     pub fn save(&self) {
         crate::storage::set(
             STORE_KEY,
@@ -106,7 +274,7 @@ impl Prefs {
                 "preset": self.preset as u64,
                 "resolution": self.resolution.height(),
                 "fps": self.fps,
-                "soundshare": self.sound,
+                "soundshareEnabled": self.sound,
                 "hide_preview": self.hide_preview,
             }),
         );
@@ -117,8 +285,9 @@ impl Prefs {
         let Some(value) = value else {
             return prefs;
         };
-        if let Some(n) = value["preset"].as_u64() {
-            prefs.preset = Preset::from_number(n);
+        // `initialize`: an unknown preset reads as Video.
+        if let Some(preset) = value["preset"].as_u64().and_then(Preset::from_number) {
+            prefs.preset = preset;
         }
         if let Some(resolution) = value["resolution"]
             .as_u64()
@@ -131,7 +300,11 @@ impl Prefs {
         {
             prefs.fps = fps;
         }
-        if let Some(on) = value["soundshare"].as_bool() {
+        // `soundshare` is how this client stored it before.
+        if let Some(on) = value["soundshareEnabled"]
+            .as_bool()
+            .or_else(|| value["soundshare"].as_bool())
+        {
             prefs.sound = on;
         }
         if let Some(on) = value["hide_preview"].as_bool() {
@@ -140,69 +313,56 @@ impl Prefs {
         prefs
     }
 
-    /// What the choices ask for: the preset's own pair, or the custom one, held to what the subscription allows.
-    pub fn effective(&self, premium: Option<u64>) -> (Resolution, u32) {
-        preset_settings(self.preset, self.resolution, self.fps, premium)
-    }
-}
-
-/// `canUseStreamQuality` for the account: Mid needs Classic or Nitro, High needs Nitro (`premium_type`), the ladder is
-/// `dc_media::screen::required_quality`. Source at 5 fps is the Screenshare preset's own pair.
-pub(super) fn can_stream(
-    premium: Option<u64>,
-    resolution: Resolution,
-    fps: u32,
-    preset: Preset,
-) -> bool {
-    let Some(need) = screen::required_quality(resolution, fps) else {
-        return false;
-    };
-    if resolution == Resolution::Source && fps == 5 && preset != Preset::Documents {
-        return false;
-    }
-    let tier = PremiumType::from_wire(premium);
-    match need {
-        StreamQuality::Standard => true,
-        StreamQuality::Mid => tier.has(Feature::StreamMidQuality),
-        StreamQuality::High => tier.has(Feature::StreamHighQuality),
-    }
-}
-
-/// `getPresetSettings`: the first pair of the preset's list the account may use.
-pub(super) fn preset_settings(
-    preset: Preset,
-    custom_resolution: Resolution,
-    custom_fps: u32,
-    premium: Option<u64>,
-) -> (Resolution, u32) {
-    let list: &[(Resolution, u32)] = match preset {
-        Preset::Video => &[
-            (Resolution::P1440, 60),
-            (Resolution::P1080, 60),
-            (Resolution::P720, 60),
-            (Resolution::P720, 30),
-        ],
-        Preset::Documents => &[(Resolution::Source, 15), (Resolution::Source, 5)],
-        Preset::Custom => {
-            return if can_stream(premium, custom_resolution, custom_fps, Preset::Custom) {
-                (custom_resolution, custom_fps)
-            } else {
-                (Resolution::P720, 30)
-            };
+    /// `useCreateGoLiveModalState`: the stored choices, with a custom pair the account may not use put back to 720p
+    /// 30.
+    pub(super) fn for_modal(self, account: Account) -> Self {
+        let mut prefs = self;
+        if !can_stream(account, Preset::Custom, prefs.resolution, prefs.fps) {
+            prefs.resolution = Resolution::P720;
+            prefs.fps = 30;
         }
-    };
-    list.iter()
-        .copied()
-        .find(|(resolution, fps)| can_stream(premium, *resolution, *fps, preset))
-        .unwrap_or((Resolution::P720, 30))
+        prefs
+    }
+
+    /// What the footer and the stream show: the preset's pair (`tm`), or the chosen one for Custom.
+    pub(super) fn shown(&self, account: Account) -> (Resolution, u32) {
+        preset_settings(self.preset, account).unwrap_or((self.resolution, self.fps))
+    }
+
+    /// `startStreamWithSource` (module 474834): the preset's pair; a custom pair the account may not use becomes
+    /// Video at 720p 30.
+    pub(super) fn start_choice(&self, account: Account) -> (Preset, Resolution, u32) {
+        match preset_settings(self.preset, account) {
+            Some((resolution, fps)) => (self.preset, resolution, fps),
+            None if can_stream(account, self.preset, self.resolution, self.fps) => {
+                (self.preset, self.resolution, self.fps)
+            }
+            None => (Preset::Video, Resolution::P720, 30),
+        }
+    }
 }
 
-/// The text of the quality pill on a stream tile: `720P 30FPS`, `SOURCE 15FPS`.
-pub(super) fn quality_badge(resolution: Resolution, fps: u32) -> String {
-    match resolution {
-        Resolution::Source => format!("SOURCE {fps}FPS"),
-        other => format!("{}P {fps}FPS", other.height()),
-    }
+/// A Frame Rate choice of the in-call Stream Quality menu (`L` of module 600125): whether the account may use it at
+/// the stored resolution, and that resolution.
+pub(super) fn frame_rate_choice(prefs: &Prefs, account: Account, fps: u32) -> (bool, Resolution) {
+    (
+        can_stream(account, Preset::Custom, prefs.resolution, fps),
+        prefs.resolution,
+    )
+}
+
+/// A Resolution choice of the same menu (`V`): with Screenshare's 5 fps the frame rate becomes 30 (`D`).
+pub(super) fn resolution_choice(
+    prefs: &Prefs,
+    account: Account,
+    resolution: Resolution,
+) -> (bool, u32) {
+    let fps = if prefs.preset == Preset::Documents {
+        30
+    } else {
+        prefs.fps
+    };
+    (can_stream(account, Preset::Custom, resolution, fps), fps)
 }
 
 /// Capture settings for a source: the wanted pair when the source takes it, else the nearest lower offered pair.
@@ -236,6 +396,17 @@ pub(super) fn settings_for(
     None
 }
 
+/// `eA` renames the native screen names: "Entire screen" and "Screen N".
+fn screen_name(name: &str) -> String {
+    if name == "Entire screen" {
+        return dc_intl::tr("Entire Screen").to_owned();
+    }
+    match name.strip_prefix("Screen ").map(str::parse::<u32>) {
+        Some(Ok(index)) => format!("Screen {index}"),
+        _ => name.to_owned(),
+    }
+}
+
 // ---- state ----
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -246,49 +417,135 @@ pub(super) enum Tab {
     Devices,
 }
 
+impl Tab {
+    fn lists(self, id: &SourceId) -> bool {
+        match self {
+            Tab::Applications => matches!(id, SourceId::Window(_)),
+            Tab::Screen => matches!(id, SourceId::Display(_)),
+            Tab::Devices => false,
+        }
+    }
+}
+
+/// The submenu of the options menu that is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Sub {
+    Resolution,
+    FrameRate,
+    Advanced,
+}
+
+/// What the content area shows (`e7`): the spinner until the first list arrives, the empty Devices page, or the
+/// cards (an empty grid when there are none, as the official draws).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Content {
+    Loading,
+    NoDevices,
+    Cards,
+}
+
+pub(super) fn content(fetching: bool, tab: Tab, devices: usize) -> Content {
+    if fetching {
+        Content::Loading
+    } else if tab == Tab::Devices && devices == 0 {
+        Content::NoDevices
+    } else {
+        Content::Cards
+    }
+}
+
+/// Which thumbnails a refresh takes, in order: every source of the shown tab (screens first on Entire Screen), then
+/// the other tab's sources that have none yet, so switching tabs never shows an empty preview.
+pub(super) fn thumb_order(
+    sources: &[SourceId],
+    tab: Tab,
+    have: &HashSet<SourceId>,
+) -> Vec<SourceId> {
+    let mut order: Vec<SourceId> = sources.iter().copied().filter(|id| tab.lists(id)).collect();
+    for id in sources {
+        if !tab.lists(id) && !have.contains(id) {
+            order.push(*id);
+        }
+    }
+    order
+}
+
+/// The last listing, kept between opens so the picker paints at once: sources, thumbnails and icons.
+#[derive(Default)]
+struct Listing {
+    sources: Vec<Source>,
+    thumbs: HashMap<SourceId, Arc<RenderImage>>,
+    icons: HashMap<SourceId, Arc<RenderImage>>,
+    devices: Vec<dc_media::camera::CameraDevice>,
+    /// A first list arrived in this run of the client.
+    fetched: bool,
+}
+
+thread_local! {
+    static LISTING: RefCell<Listing> = RefCell::new(Listing::default());
+    /// The Nitro upsell of streaming quality (module 826789) is open; `true` when closing it closes the picker too
+    /// (`tf({onClose: t})`).
+    static UPSELL: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// What one card of the grid shows.
+struct Card {
+    index: usize,
+    thumb: Option<Arc<RenderImage>>,
+    name: String,
+    icon: Option<Arc<RenderImage>>,
+    cta: &'static str,
+    hovered: bool,
+    selected: bool,
+}
+
 /// What the Go Live modal holds while it is open.
 pub(super) struct State {
     pub tab: Tab,
     pub prefs: Prefs,
-    pub sources: Vec<Source>,
-    pub thumbs: HashMap<SourceId, Arc<RenderImage>>,
-    pub icons: HashMap<SourceId, Arc<RenderImage>>,
-    pub devices: Vec<dc_media::camera::CameraDevice>,
     pub selected_device: Option<String>,
     pub hover: Option<usize>,
     pub options: bool,
-    pub advanced: bool,
+    pub sub: Option<Sub>,
+    /// `fetchingSources`: no list has arrived yet.
+    pub fetching: bool,
     /// Bumped on each open: a refresh loop of an older open stops.
     pub generation: u64,
+    pub opened_at: Instant,
 }
 
 impl State {
-    fn new(generation: u64) -> Self {
+    fn new(generation: u64, account: Account) -> Self {
         Self {
             tab: Tab::Applications,
-            prefs: Prefs::load(),
-            sources: Vec::new(),
-            thumbs: HashMap::new(),
-            icons: HashMap::new(),
-            devices: dc_voice::camera_devices(),
+            prefs: Prefs::load().for_modal(account),
             selected_device: None,
             hover: None,
             options: false,
-            advanced: false,
+            sub: None,
+            fetching: !LISTING.with(|listing| listing.borrow().fetched),
             generation,
+            opened_at: Instant::now(),
         }
     }
 
-    /// The sources the current tab lists.
-    pub fn listed(&self) -> Vec<&Source> {
-        self.sources
-            .iter()
-            .filter(|source| match self.tab {
-                Tab::Applications => matches!(source.id, SourceId::Window(_)),
-                Tab::Screen => matches!(source.id, SourceId::Display(_)),
-                Tab::Devices => false,
-            })
-            .collect()
+    /// The sources the current tab lists: their ids and shown names.
+    pub fn listed(&self) -> Vec<(SourceId, String)> {
+        LISTING.with(|listing| {
+            listing
+                .borrow()
+                .sources
+                .iter()
+                .filter(|source| self.tab.lists(&source.id))
+                .map(|source| {
+                    let name = match source.id {
+                        SourceId::Display(_) => screen_name(&source.name),
+                        SourceId::Window(_) => source.name.clone(),
+                    };
+                    (source.id, name)
+                })
+                .collect()
+        })
     }
 }
 
@@ -313,13 +570,24 @@ fn list_sources() -> Vec<Source> {
         },
         Source {
             id: SourceId::Display(1),
-            name: "Screen 1".to_owned(),
+            name: "Entire screen".to_owned(),
             width: 1920,
             height: 1080,
             refresh_hz: 60,
             icon: None,
         },
     ]
+}
+
+#[cfg(not(feature = "capture"))]
+fn list_devices() -> Vec<dc_media::camera::CameraDevice> {
+    dc_voice::camera_devices()
+}
+
+/// Capture runs list no camera.
+#[cfg(feature = "capture")]
+fn list_devices() -> Vec<dc_media::camera::CameraDevice> {
+    Vec::new()
 }
 
 /// A 16px blurple disc standing in for a window's icon.
@@ -357,174 +625,351 @@ fn list_thumbnail(id: &SourceId) -> Option<dc_media::Picture> {
     dc_media::Picture::rgba(width, height, data)
 }
 
+/// A picture with nothing in it: a capture's first frame can come back before the source drew. It is not shown in
+/// place of a real one, and the next refresh asks again.
+pub(super) fn is_blank(picture: &dc_media::Picture) -> bool {
+    matches!(picture.layout, dc_media::Layout::Rgba)
+        && picture
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[0] < 3 && pixel[1] < 3 && pixel[2] < 3)
+}
+
+/// The listed sources of the last listing, for the picker's refresh order.
+fn listing_order(tab: Tab) -> Vec<SourceId> {
+    LISTING.with(|listing| {
+        let listing = listing.borrow();
+        let sources: Vec<SourceId> = listing.sources.iter().map(|source| source.id).collect();
+        let have: HashSet<SourceId> = listing.thumbs.keys().copied().collect();
+        thumb_order(&sources, tab, &have)
+    })
+}
+
 impl Root {
-    /// The Share Your Screen buttons of the panel and the bar. While a stream of ours runs the bar's own click stops
-    /// it instead (`Tv` of module 596339); the panel button opens the picker.
+    /// Who streams, for the quality rules: the subscription and the call's server's boost tier.
+    pub(super) fn stream_account(&self) -> Account {
+        let guild_tier = self
+            .call
+            .as_ref()
+            .filter(|call| call.guild != 0)
+            .and_then(|call| {
+                self.stores
+                    .guilds
+                    .iter()
+                    .find(|guild| guild.id == call.guild)
+            })
+            .map(|guild| guild.premium_tier);
+        Account {
+            premium: self.stores.account.premium_type,
+            guild_tier,
+        }
+    }
+
+    /// The Share Your Screen buttons of the panel and the bar, and Change Stream. Lists the sources at once.
     pub(super) fn open_go_live(&mut self, cx: &mut Context<Self>) {
         if self.call.is_none() {
             return;
         }
         let generation = self.go_live_generation + 1;
         self.go_live_generation = generation;
-        self.go_live = Some(State::new(generation));
+        let account = self.stream_account();
+        self.go_live = Some(State::new(generation, account));
         self.go_live_refresh(generation, cx);
         cx.notify();
     }
 
+    /// Closes the picker. The listing and its pictures stay for the next open.
     pub(super) fn close_go_live(&mut self, cx: &mut Context<Self>) {
-        if let Some(state) = self.go_live.take() {
-            for image in state.thumbs.into_values().chain(state.icons.into_values()) {
-                cx.drop_image(image, None);
-            }
+        self.go_live = None;
+        cx.notify();
+    }
+
+    /// Opens the streaming upsell (`tf`): `close_picker` when closing it closes the picker too.
+    pub(super) fn open_stream_upsell(&mut self, close_picker: bool, cx: &mut Context<Self>) {
+        UPSELL.with(|upsell| upsell.set(Some(close_picker)));
+        cx.notify();
+    }
+
+    fn close_stream_upsell(&mut self, cx: &mut Context<Self>) {
+        if UPSELL.with(|upsell| upsell.take()) == Some(true) {
+            self.close_go_live(cx);
         }
         cx.notify();
     }
 
-    /// Lists the sources and their thumbnails on a worker, once a second, until the modal closes.
+    /// Lists the sources on a worker the moment the picker opens, then takes each thumbnail on a worker and shows it
+    /// as soon as it is there; again a second after each round, until the picker closes.
     fn go_live_refresh(&mut self, generation: u64, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut round = 0u32;
             loop {
-                let Ok(tab) = this.update(cx, |root, _| {
+                let opened = match this.update(cx, |root, _| {
                     root.go_live
                         .as_ref()
                         .filter(|state| state.generation == generation)
-                        .map(|state| state.tab)
-                }) else {
-                    return;
+                        .map(|state| state.opened_at)
+                }) {
+                    Ok(Some(opened)) => opened,
+                    _ => return,
                 };
-                let Some(tab) = tab else {
-                    return;
-                };
-                let fetched = cx
+                let known: HashSet<SourceId> =
+                    LISTING.with(|listing| listing.borrow().icons.keys().copied().collect());
+                let started = Instant::now();
+                let (sources, icons, devices) = cx
                     .background_executor()
                     .spawn(async move {
                         let sources = list_sources();
-                        let mut thumbs = Vec::new();
-                        let mut icons = Vec::new();
-                        for source in &sources {
-                            let wanted = match tab {
-                                Tab::Applications => matches!(source.id, SourceId::Window(_)),
-                                Tab::Screen => matches!(source.id, SourceId::Display(_)),
-                                Tab::Devices => false,
-                            };
-                            if wanted
-                                && let Some(image) =
-                                    list_thumbnail(&source.id).and_then(|p| render_image(&p))
-                            {
-                                thumbs.push((source.id, image));
-                            }
-                            if let Some(image) = source.icon.as_ref().and_then(render_image) {
-                                icons.push((source.id, image));
-                            }
-                        }
-                        (sources, thumbs, icons)
+                        let icons: Vec<(SourceId, Arc<RenderImage>)> = sources
+                            .iter()
+                            .filter(|source| !known.contains(&source.id))
+                            .filter_map(|source| {
+                                Some((source.id, source.icon.as_ref().and_then(render_image)?))
+                            })
+                            .collect();
+                        (sources, icons, list_devices())
                     })
                     .await;
-                let alive = this
-                    .update(cx, |root, cx| {
-                        let Some(state) = root
-                            .go_live
-                            .as_mut()
-                            .filter(|state| state.generation == generation)
-                        else {
-                            for (_, image) in fetched.1.iter().chain(fetched.2.iter()) {
-                                cx.drop_image(image.clone(), None);
-                            }
-                            return false;
-                        };
-                        let (sources, thumbs, icons) = fetched;
-                        state.sources = sources;
-                        for (id, image) in thumbs {
-                            if let Some(old) = state.thumbs.insert(id, image) {
-                                cx.drop_image(old, None);
-                            }
-                        }
-                        for (id, image) in icons {
-                            if let Some(old) = state.icons.insert(id, image) {
-                                cx.drop_image(old, None);
-                            }
-                        }
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-                if !alive {
+                debug!(
+                    "go live: round {round}: {} sources listed in {} ms, {} ms after the picker opened",
+                    sources.len(),
+                    started.elapsed().as_millis(),
+                    opened.elapsed().as_millis()
+                );
+                let Ok(Some(tab)) = this.update(cx, |root, cx| {
+                    root.go_live_listed(generation, sources, icons, devices, cx)
+                }) else {
                     return;
+                };
+                for id in listing_order(tab) {
+                    let taken = Instant::now();
+                    let picture = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let picture = list_thumbnail(&id)?;
+                            let blank = is_blank(&picture);
+                            Some((blank, if blank { None } else { render_image(&picture) }))
+                        })
+                        .await;
+                    let blank = picture.as_ref().is_some_and(|(blank, _)| *blank);
+                    debug!(
+                        "go live: {} thumbnail in {} ms ({}), {} ms after the picker opened",
+                        match id {
+                            SourceId::Display(_) => "screen",
+                            SourceId::Window(_) => "window",
+                        },
+                        taken.elapsed().as_millis(),
+                        if picture.is_none() {
+                            "none"
+                        } else if blank {
+                            "blank, kept the last"
+                        } else {
+                            "shown"
+                        },
+                        opened.elapsed().as_millis()
+                    );
+                    let image = picture.and_then(|(_, image)| image);
+                    let alive = this
+                        .update(cx, |root, cx| root.go_live_thumb(generation, id, image, cx))
+                        .unwrap_or(false);
+                    if !alive {
+                        return;
+                    }
                 }
+                round += 1;
                 cx.background_executor().timer(REFRESH).await;
             }
         })
         .detach();
     }
 
-    /// A source was picked: Go Live with it at the stored quality, at once (module 742527 `onSelect`).
+    /// A list arrived: it replaces the last one (pictures of sources that went away are released). Returns the shown
+    /// tab while the picker of `generation` is open.
+    fn go_live_listed(
+        &mut self,
+        generation: u64,
+        sources: Vec<Source>,
+        icons: Vec<(SourceId, Arc<RenderImage>)>,
+        devices: Vec<dc_media::camera::CameraDevice>,
+        cx: &mut Context<Self>,
+    ) -> Option<Tab> {
+        let mut dropped = Vec::new();
+        LISTING.with(|listing| {
+            let mut listing = listing.borrow_mut();
+            let present: HashSet<SourceId> = sources.iter().map(|source| source.id).collect();
+            listing.thumbs.retain(|id, image| {
+                let keep = present.contains(id);
+                if !keep {
+                    dropped.push(image.clone());
+                }
+                keep
+            });
+            listing.icons.retain(|id, image| {
+                let keep = present.contains(id);
+                if !keep {
+                    dropped.push(image.clone());
+                }
+                keep
+            });
+            for (id, image) in icons {
+                if let Some(old) = listing.icons.insert(id, image) {
+                    dropped.push(old);
+                }
+            }
+            listing.sources = sources;
+            listing.devices = devices;
+            listing.fetched = true;
+        });
+        for image in dropped {
+            cx.drop_image(image, None);
+        }
+        let state = self
+            .go_live
+            .as_mut()
+            .filter(|state| state.generation == generation)?;
+        state.fetching = false;
+        cx.notify();
+        Some(state.tab)
+    }
+
+    /// A thumbnail arrived. Returns whether the picker of `generation` is still open.
+    fn go_live_thumb(
+        &mut self,
+        generation: u64,
+        id: SourceId,
+        image: Option<Arc<RenderImage>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let alive = self
+            .go_live
+            .as_ref()
+            .is_some_and(|state| state.generation == generation);
+        if let Some(image) = image {
+            let listed = LISTING.with(|listing| {
+                let listing = listing.borrow();
+                listing.sources.iter().any(|source| source.id == id)
+            });
+            if listed {
+                if let Some(old) =
+                    LISTING.with(|listing| listing.borrow_mut().thumbs.insert(id, image))
+                {
+                    cx.drop_image(old, None);
+                }
+            } else {
+                cx.drop_image(image, None);
+            }
+        }
+        if alive {
+            cx.notify();
+        }
+        alive
+    }
+
+    /// A source was picked: Go Live with it at once (`el` of `tJ`), and the store keeps what it started with.
     fn go_live_pick(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(state) = &self.go_live else {
             return;
         };
-        let Some(source) = state.listed().get(index).map(|source| (*source).clone()) else {
+        let Some((id, name)) = state.listed().get(index).cloned() else {
             return;
         };
-        let premium = self.stores.account.premium_type;
-        let (resolution, fps) = state.prefs.effective(premium);
-        let Some((settings, resolution, fps)) =
-            settings_for(&source, resolution, fps, state.prefs.sound)
+        let Some(source) = LISTING.with(|listing| {
+            listing
+                .borrow()
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .cloned()
+        }) else {
+            return;
+        };
+        let account = self.stream_account();
+        let prefs = state.prefs;
+        let (preset, resolution, fps) = prefs.start_choice(account);
+        let Some((settings, resolution_used, fps_used)) =
+            settings_for(&source, resolution, fps, prefs.sound)
         else {
             self.put_app_toast("This source can't be shared.".to_owned(), false, cx);
             return;
         };
-        let name = source.name.clone();
-        let icon = self
-            .go_live
-            .as_mut()
-            .and_then(|state| state.icons.remove(&source.id));
+        Prefs {
+            preset,
+            resolution,
+            fps,
+            ..prefs
+        }
+        .save();
+        let icon = LISTING.with(|listing| listing.borrow().icons.get(&id).cloned());
         self.close_go_live(cx);
-        // Change Stream: the old stream ends first.
-        self.stream_stop(cx);
-        self.stream_start(
+        // Change Stream: the old stream ends first (the official switches the source of the running one).
+        let focus = self.vv.focus.tile;
+        self.stream_restart(
             dc_voice::StreamSource::Screen(settings),
             super::voice_video::Started {
                 name,
-                info: source.clone(),
-                quality: (resolution, fps),
+                info: source,
+                quality: (resolution_used, fps_used),
                 icon,
             },
+            focus,
             cx,
         );
     }
 
-    /// Stream Quality or Share Stream Audio changed while streaming: the capture's size, rate and audio are fixed when
-    /// it starts, so the stream restarts from the same source with the new choices.
+    /// Stream Quality or Share Stream Audio changed while streaming: the store takes the new choices; the capture's
+    /// size, rate and audio are fixed when it starts, so the stream restarts from the same source, keeping the call
+    /// view's focus.
     pub(super) fn restart_stream_with(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
         prefs.save();
         let Some(started) = self.own_started() else {
+            cx.notify();
             return;
         };
-        let premium = self.stores.account.premium_type;
-        let (resolution, fps) = prefs.effective(premium);
+        let account = self.stream_account();
+        let (_, resolution, fps) = prefs.start_choice(account);
         let Some((settings, resolution, fps)) =
             settings_for(&started.info, resolution, fps, prefs.sound)
         else {
             return;
         };
-        self.stream_stop(cx);
-        self.stream_start(
+        let focus = self.vv.focus.tile;
+        self.stream_restart(
             dc_voice::StreamSource::Screen(settings),
             super::voice_video::Started {
                 quality: (resolution, fps),
                 ..started
             },
+            focus,
             cx,
         );
     }
 
-    /// The modal, over a dimmed window.
+    /// The modal over a dimmed window, and the streaming upsell over it when it is open.
     pub(super) fn go_live_layer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let upsell = UPSELL
+            .with(|upsell| upsell.get())
+            .map(|_| self.stream_upsell(cx));
+        let modal = self.go_live_modal(cx);
+        match (modal, upsell) {
+            (None, None) => None,
+            (Some(one), None) | (None, Some(one)) => Some(one),
+            (Some(modal), Some(upsell)) => Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(modal)
+                    .child(upsell)
+                    .into_any_element(),
+            ),
+        }
+    }
+
+    fn go_live_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.go_live.as_ref()?;
-        let premium = self.stores.account.premium_type;
-        let nitro = PremiumType::from_wire(premium).has(Feature::StreamHighQuality);
-        let (resolution, fps) = state.prefs.effective(premium);
-        let hd = state.prefs.preset == Preset::Custom && resolution.height() >= 1080;
+        let account = self.stream_account();
+        let upsell = account.needs_hd_upsell();
+        let (resolution, fps) = state.prefs.shown(account);
 
         let tab = |tab: Tab, label: &'static str, glyph: &'static str, cx: &mut Context<Root>| {
             let selected = state.tab == tab;
@@ -553,6 +998,16 @@ impl Root {
                     if let Some(state) = this.go_live.as_mut() {
                         state.tab = tab;
                         state.hover = None;
+                        state.selected_device = None;
+                        // `set_source_type` to the camera: Screenshare becomes Gaming, Source becomes 720p.
+                        if tab == Tab::Devices {
+                            if state.prefs.preset == Preset::Documents {
+                                state.prefs.preset = Preset::Video;
+                            }
+                            if state.prefs.resolution == Resolution::Source {
+                                state.prefs.resolution = Resolution::P720;
+                            }
+                        }
                     }
                     cx.notify();
                 }))
@@ -569,28 +1024,51 @@ impl Root {
             .flex()
             .child(tab(
                 Tab::Applications,
-                "Applications",
+                dc_intl::tr("Applications"),
                 "golive_tab_apps",
                 cx,
             ))
-            .child(tab(Tab::Screen, "Entire Screen", "golive_tab_screen", cx))
-            .child(tab(Tab::Devices, "Devices", "golive_tab_devices", cx));
+            .child(tab(
+                Tab::Screen,
+                dc_intl::tr("Entire Screen"),
+                "golive_tab_screen",
+                cx,
+            ))
+            .child(tab(
+                Tab::Devices,
+                dc_intl::tr("Devices"),
+                "golive_tab_devices",
+                cx,
+            ));
 
-        let cards: Vec<AnyElement> = if state.tab == Tab::Devices {
-            state
+        let devices: Vec<(String, String)> = LISTING.with(|listing| {
+            listing
+                .borrow()
                 .devices
                 .iter()
+                .map(|device| (device.id.clone(), device.name.clone()))
+                .collect()
+        });
+        let shown = content(state.fetching, state.tab, devices.len());
+        let cards: Vec<AnyElement> = if shown != Content::Cards {
+            Vec::new()
+        } else if state.tab == Tab::Devices {
+            devices
+                .iter()
                 .enumerate()
-                .map(|(index, device)| {
-                    let chosen = state.selected_device.as_deref() == Some(device.id.as_str());
-                    let id = device.id.clone();
+                .map(|(index, (id, name))| {
+                    let chosen = state.selected_device.as_deref() == Some(id.as_str());
+                    let id = id.clone();
                     self.go_live_card(
-                        index,
-                        None,
-                        device.name.clone(),
-                        None,
-                        if chosen { "Selected" } else { "Select" },
-                        state.hover == Some(index),
+                        Card {
+                            index,
+                            thumb: None,
+                            name: name.clone(),
+                            icon: None,
+                            cta: dc_intl::tr("Select"),
+                            hovered: state.hover == Some(index),
+                            selected: chosen,
+                        },
                         cx,
                         move |this: &mut Root, cx: &mut Context<Root>| {
                             if let Some(state) = this.go_live.as_mut() {
@@ -602,49 +1080,39 @@ impl Root {
                 })
                 .collect()
         } else {
+            let (thumbs, icons) = LISTING.with(|listing| {
+                let listing = listing.borrow();
+                (listing.thumbs.clone(), listing.icons.clone())
+            });
             state
                 .listed()
                 .into_iter()
                 .enumerate()
-                .map(|(index, source)| {
+                .map(|(index, (id, name))| {
                     self.go_live_card(
-                        index,
-                        state.thumbs.get(&source.id).cloned(),
-                        source.name.clone(),
-                        state.icons.get(&source.id).cloned(),
-                        "Share Screen",
-                        state.hover == Some(index),
+                        Card {
+                            index,
+                            thumb: thumbs.get(&id).cloned(),
+                            name,
+                            icon: icons.get(&id).cloned(),
+                            cta: dc_intl::tr("Share Screen"),
+                            hovered: state.hover == Some(index),
+                            selected: false,
+                        },
                         cx,
                         move |this: &mut Root, cx: &mut Context<Root>| this.go_live_pick(index, cx),
                     )
                 })
                 .collect()
         };
-        let empty = cards.is_empty();
 
-        let details = {
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(summary) = state.prefs.preset.summary() {
-                parts.push(summary.to_owned());
-            }
-            parts.push(match resolution {
-                Resolution::Source => "Source".to_owned(),
-                other => format!("{}p", other.height()),
-            });
-            parts.push(format!("{fps}fps"));
-            if state.tab == Tab::Devices {
-                parts.push(
-                    state
-                        .selected_device
-                        .as_ref()
-                        .and_then(|id| state.devices.iter().find(|d| &d.id == id))
-                        .map(|device| device.name.clone())
-                        .unwrap_or_default(),
-                );
-                parts.retain(|part| !part.is_empty());
-            }
-            parts
-        };
+        let selected_device = state
+            .selected_device
+            .as_ref()
+            .filter(|_| state.tab == Tab::Devices)
+            .and_then(|id| devices.iter().find(|(known, _)| known == id))
+            .map(|(_, name)| name.clone());
+        let bullet = || div().text_color(rgba(0x97979f1f)).child("\u{2022}");
         let mut detail_row = div()
             .flex()
             .items_center()
@@ -653,11 +1121,36 @@ impl Root {
             .line_height(px(16.))
             .font_weight(FontWeight(500.))
             .text_color(color("--text-muted"));
-        for (index, part) in details.into_iter().enumerate() {
-            if index > 0 {
-                detail_row = detail_row.child(div().text_color(rgba(0x97979f1f)).child("\u{2022}"));
-            }
-            detail_row = detail_row.child(part);
+        // `tq`: with a source chosen, the settings glyph and the preset's name lead; else the preset's word. Then
+        // the resolution and the frame rate, each after a bullet, and "Stream Muted" when muted.
+        if selected_device.is_some() {
+            detail_row = detail_row
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon("voice_view_gear", 12., "--text-muted"))
+                        .child(state.prefs.preset.title()),
+                )
+                .child(bullet());
+        } else if let Some(summary) = state.prefs.preset.summary() {
+            detail_row = detail_row.child(summary);
+        }
+        detail_row = detail_row
+            .child(bullet())
+            .child(resolution_text(resolution))
+            .child(bullet())
+            .child(format!("{fps}fps"));
+        if !state.prefs.sound {
+            detail_row = detail_row.child(bullet()).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(icon("vm_voice_x", 12., "--text-muted"))
+                    .child(dc_intl::tr("Stream Muted")),
+            );
         }
 
         let pill_item = |label: &'static str, selected: bool, premium: bool| {
@@ -683,46 +1176,27 @@ impl Root {
                 })
                 .child(label)
         };
-        let sd_hd = div()
-            .h(px(40.))
-            .p(px(4.))
-            .gap(px(4.))
-            .rounded(px(12.))
-            .bg(color("--background-base-lowest"))
-            .flex()
-            .child(
-                div()
-                    .id("golive-sd")
-                    .cursor_pointer()
-                    .child(pill_item("SD", !hd, false))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(state) = this.go_live.as_mut() {
-                            state.prefs.preset = Preset::Video;
-                            state.prefs.save();
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("golive-hd")
-                    .cursor_pointer()
-                    .child(pill_item("HD", hd, !nitro))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if nitro {
-                            if let Some(state) = this.go_live.as_mut() {
-                                state.prefs.preset = Preset::Custom;
-                                state.prefs.resolution = Resolution::P1080;
-                                state.prefs.fps = 60;
-                                state.prefs.save();
-                            }
-                        } else {
-                            this.go_live = None;
-                            this.open_nitro(cx);
-                        }
-                        cx.notify();
-                    })),
-            );
+        // `tI`: shown while HD is out of reach. It always reads SD; HD opens the upsell, and closing that closes the
+        // picker.
+        let sd_hd = upsell.then(|| {
+            div()
+                .h(px(40.))
+                .p(px(4.))
+                .gap(px(4.))
+                .rounded(px(12.))
+                .bg(color("--background-base-lowest"))
+                .flex()
+                .child(div().id("golive-sd").child(pill_item("SD", true, false)))
+                .child(
+                    div()
+                        .id("golive-hd")
+                        .cursor_pointer()
+                        .child(pill_item("HD", false, true))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_stream_upsell(true, cx);
+                        })),
+                )
+        });
         let gear = div()
             .id("golive-gear")
             .size(px(40.))
@@ -733,50 +1207,113 @@ impl Root {
             .justify_center()
             .cursor_pointer()
             .hover(|style| style.bg(rgba(0x97979f3d)))
+            .child(self.anchor_probe("golive-gear"))
             .on_click(cx.listener(|this, _, _, cx| {
                 if let Some(state) = this.go_live.as_mut() {
                     state.options = !state.options;
-                    state.advanced = false;
+                    state.sub = None;
                 }
                 cx.notify();
             }))
             .child(icon("voice_view_gear", 20., "--text-strong"));
+        // The Devices tab's "Stream", off until a device is chosen.
+        let stream_button = (state.tab == Tab::Devices).then(|| {
+            let ready = selected_device.is_some();
+            div()
+                .id("golive-stream")
+                .h(px(40.))
+                .px(px(16.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .bg(color("--control-primary-background-default"))
+                .text_color(color("--control-primary-text-default"))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .when(!ready, |this| this.opacity(0.5))
+                .when(ready, |this| {
+                    this.cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.put_app_toast(
+                                "This source can't be shared.".to_owned(),
+                                false,
+                                cx,
+                            );
+                        }))
+                })
+                .child(dc_intl::tr("Stream"))
+        });
 
         let footer = div()
             .w_full()
-            .h(px(112.))
             .flex_none()
             .bg(color("--background-surface-high"))
             .flex()
             .flex_col()
             .child(
                 div()
-                    .h(px(56.))
                     .px(px(24.))
                     .pt(px(16.))
                     .flex()
                     .items_start()
                     .justify_between()
+                    .gap(px(32.))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap(px(2.))
+                            .min_w(px(0.))
                             .child(
                                 div()
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child(state.prefs.preset.title()),
+                                    .truncate()
+                                    .child(match &selected_device {
+                                        Some(name) => SharedString::from(name.clone()),
+                                        None => SharedString::from(state.prefs.preset.title()),
+                                    }),
                             )
                             .child(detail_row),
                     )
-                    .child(div().flex().gap(px(8.)).child(sd_hd).child(gear)),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .children(sd_hd)
+                            .children(stream_button)
+                            .child(gear),
+                    ),
             )
-            .when(!nitro, |this| this.child(self.go_live_ribbon(cx)));
+            .when(upsell, |this| this.child(self.go_live_ribbon(cx)));
 
-        let menu = state.options.then(|| self.go_live_options(state, cx));
+        let menu = state
+            .options
+            .then(|| self.go_live_options(state, account, upsell, cx));
+
+        let body: AnyElement = match shown {
+            Content::Loading => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::login::wandering_cubes())
+                .into_any_element(),
+            Content::NoDevices => self.go_live_no_devices(cx),
+            Content::Cards => div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .content_start()
+                .gap_x(px(16.))
+                .gap_y(px(24.))
+                .children(cards)
+                .into_any_element(),
+        };
 
         let modal = div()
             .id("golive-modal")
@@ -785,6 +1322,7 @@ impl Root {
             .w(px(960.))
             .h(px(608.))
             .pt(px(8.))
+            .pb(px(16.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
@@ -802,33 +1340,12 @@ impl Root {
             .child(
                 div()
                     .id("golive-content")
-                    .h(px(398.))
-                    .flex_none()
+                    .flex_1()
+                    .min_h(px(0.))
                     .overflow_y_scroll()
                     .px(px(24.))
                     .py(px(8.))
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap_x(px(16.))
-                    .gap_y(px(24.))
-                    .children(cards)
-                    .when(empty, |this| {
-                        this.child(
-                            div()
-                                .w_full()
-                                .py(px(48.))
-                                .flex()
-                                .justify_center()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .text_color(color("--text-muted"))
-                                .child(match state.tab {
-                                    Tab::Devices => "No devices found.",
-                                    _ => "Nothing to share.",
-                                }),
-                        )
-                    }),
+                    .child(body),
             )
             .child(footer)
             .children(menu);
@@ -852,19 +1369,75 @@ impl Root {
         )
     }
 
-    /// One source: a 439x247 preview with a 2px ring, and its icon and name below. Hover dims it with a button.
-    #[allow(clippy::too_many_arguments)]
+    /// `e9`: no capture device. The camera glyph, the two lines and Learn More.
+    fn go_live_no_devices(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .mb(px(16.))
+                    .child(icon("golive_tab_devices", 24., "--icon-muted")),
+            )
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::tr(
+                        "You don\u{2019}t have any Capture Devices available.",
+                    )),
+            )
+            .child(
+                div()
+                    .mb(px(16.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-subtle"))
+                    .child(dc_intl::tr(
+                        "In the future, you can use this tab to share from specific devices like your Camera.",
+                    )),
+            )
+            .child(
+                div()
+                    .id("golive-devices-learn")
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-link"))
+                    .hover(|style| style.underline())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.follow_link(DEVICES_HELP, "Learn More", cx);
+                    }))
+                    .child(dc_intl::tr("Learn More")),
+            )
+            .into_any_element()
+    }
+
+    /// One source (`e4`): a 16:9 preview on black with a 2px ring when hovered (brand when chosen), its icon and name
+    /// below. Hover dims it with the call to action.
     fn go_live_card(
         &self,
-        index: usize,
-        thumb: Option<Arc<RenderImage>>,
-        name: String,
-        icon_image: Option<Arc<RenderImage>>,
-        cta: &'static str,
-        hovered: bool,
+        card: Card,
         cx: &mut Context<Self>,
         run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
     ) -> AnyElement {
+        let Card {
+            index,
+            thumb,
+            name,
+            icon: icon_image,
+            cta,
+            hovered,
+            selected,
+        } = card;
         let hover_id = index;
         div()
             .id(SharedString::from(format!("golive-card-{index}")))
@@ -894,7 +1467,7 @@ impl Root {
                     .rounded(px(10.))
                     .p(px(2.))
                     .bg(rgba(0x97979f33))
-                    .when(hovered, |this| {
+                    .when(hovered || selected, |this| {
                         this.child(
                             div()
                                 .absolute()
@@ -904,7 +1477,11 @@ impl Root {
                                 .bottom(px(-4.))
                                 .rounded(px(12.))
                                 .border_2()
-                                .border_color(rgba(0x97979f80)),
+                                .border_color(if selected {
+                                    color("--brand-500")
+                                } else {
+                                    rgba(0x97979f80)
+                                }),
                         )
                     })
                     .child(
@@ -959,8 +1536,21 @@ impl Root {
             .into_any_element()
     }
 
-    /// "Stream in HD resolution with Nitro" (`upsellRibbon`): a gradient bar with Get Nitro.
+    /// "Stream in HD resolution with Nitro" (`tD`): a gradient bar with Get Nitro. The Nitro link opens the upsell
+    /// (closing it closes the picker); Get Nitro closes the picker and starts the purchase.
     fn go_live_ribbon(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `sLJ3EV`: the sentence, and its `$link` run.
+        let runs = dc_intl::format_runs("sLJ3EV", &[]);
+        let lead: String = runs
+            .iter()
+            .filter(|(_, tag)| tag.is_none())
+            .map(|(text, _)| text.as_str())
+            .collect();
+        let link: String = runs
+            .iter()
+            .filter(|(_, tag)| tag.is_some())
+            .map(|(text, _)| text.as_str())
+            .collect();
         div()
             .mx(px(16.))
             .mt(px(16.))
@@ -1010,17 +1600,16 @@ impl Root {
                     .items_center()
                     .gap(px(4.))
                     .child(icon("golive_lock", 12., "--white"))
-                    .child("Stream in HD resolution with ")
+                    .child(lead)
                     .child(
                         div()
                             .id("golive-nitro-link")
                             .font_weight(FontWeight(700.))
                             .cursor_pointer()
                             .underline()
-                            .child("Nitro")
+                            .child(link)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.go_live = None;
-                                this.open_nitro(cx);
+                                this.open_stream_upsell(true, cx);
                             })),
                     ),
             )
@@ -1055,218 +1644,767 @@ impl Root {
                             .cursor_pointer()
                             .font_weight(FontWeight(600.))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.go_live = None;
-                                this.open_nitro(cx);
+                                this.close_go_live(cx);
+                                this.open_purchase(false, cx);
                             }))
                             .child(icon("golive_nitro", 16., "--brand-500"))
-                            .child("Get Nitro"),
+                            .child(dc_intl::tr("Get Nitro")),
                     ),
             )
             .into_any_element()
     }
 
-    /// The gear menu: Stream Mode, Mute stream audio, Advanced.
-    fn go_live_options(&self, state: &State, cx: &mut Context<Self>) -> AnyElement {
-        let row = |id: &'static str, preset: Preset, cx: &mut Context<Root>| {
-            let selected = state.prefs.preset == preset;
-            div()
-                .id(id)
-                .h(px(if preset.subtext().is_some() { 52. } else { 44. }))
-                .px(px(8.))
-                .rounded(px(4.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .cursor_pointer()
-                .hover(|style| style.bg(color("--background-mod-subtle")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(state) = this.go_live.as_mut() {
-                        state.prefs.preset = preset;
-                        state.prefs.save();
-                    }
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(preset.title()),
-                        )
-                        .children(preset.subtext().map(|text| {
-                            div()
-                                .text_size(px(12.))
-                                .line_height(px(16.))
-                                .text_color(color("--text-muted"))
-                                .child(text)
-                        })),
-                )
-                .child(
-                    div()
-                        .size(px(20.))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(if selected {
-                            color("--brand-500")
-                        } else {
-                            color("--interactive-icon-default")
-                        })
-                        .when(selected, |this| this.bg(color("--brand-500")))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(selected, |this| {
-                            this.child(div().size(px(8.)).rounded_full().bg(rgba(0xffffffff)))
-                        }),
-                )
+    /// The gear's menu (`tC`, `stream-options`): Stream Mode; with Custom, Screen Resolution and Frame Rate; Mute
+    /// stream audio; Advanced. A choice the account may not use closes the menu and opens the upsell.
+    fn go_live_options(
+        &self,
+        state: &State,
+        account: Account,
+        ribbon: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tint: Tint = app_tint;
+        let mut rows: Vec<(AnyElement, f32)> = Vec::new();
+        rows.push((group_label(dc_intl::tr("Stream Mode"), tint), 36.));
+        let presets: &[Preset] = if state.tab == Tab::Devices {
+            &[Preset::Video, Preset::Custom]
+        } else {
+            &[Preset::Video, Preset::Documents, Preset::Custom]
         };
-        let check_row = |id: &'static str,
-                         label: &'static str,
-                         on: bool,
-                         cx: &mut Context<Root>,
-                         run: fn(&mut Prefs)| {
-            div()
-                .id(id)
-                .h(px(36.))
-                .px(px(8.))
-                .rounded(px(4.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .cursor_pointer()
-                .hover(|style| style.bg(color("--background-mod-subtle")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(state) = this.go_live.as_mut() {
-                        run(&mut state.prefs);
-                        state.prefs.save();
-                    }
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(color("--text-strong"))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .size(px(20.))
-                        .rounded(px(4.))
-                        .border_2()
-                        .border_color(if on {
-                            color("--brand-500")
-                        } else {
-                            color("--interactive-icon-default")
-                        })
-                        .when(on, |this| this.bg(color("--brand-500")))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(on, |this| {
-                            this.child(icon("checkbox_check", 14., "--white"))
-                        }),
-                )
-        };
-        let menu = div()
-            .occlude()
-            .w(px(213.56))
-            .p(px(8.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-surface-higher"))
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .h(px(36.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .text_color(color("--text-muted"))
-                    .child("Stream Mode"),
-            )
-            .child(row("golive-mode-video", Preset::Video, cx))
-            .child(row("golive-mode-documents", Preset::Documents, cx))
-            .child(row("golive-mode-custom", Preset::Custom, cx))
-            .child(
-                div()
-                    .mt(px(4.))
-                    .mb(px(5.))
-                    .h(px(1.))
-                    .bg(color("--border-subtle")),
-            )
-            .child(check_row(
-                "golive-mute-audio",
-                "Mute stream audio",
-                !state.prefs.sound,
-                cx,
-                |prefs| prefs.sound = !prefs.sound,
-            ))
-            .child(
-                div()
-                    .id("golive-advanced")
-                    .h(px(36.))
-                    .px(px(8.))
-                    .rounded(px(4.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                    .on_click(cx.listener(|this, _, _, cx| {
+        for &preset in presets {
+            let subtext = preset_subtext(preset, account);
+            let height = if subtext.is_some() { 52. } else { 36. };
+            rows.push((
+                radio_row(
+                    SharedString::from(format!("stream-preset-{}", preset as u8)),
+                    div().child(preset.title()).into_any_element(),
+                    subtext,
+                    state.prefs.preset == preset,
+                    tint,
+                    cx,
+                    move |this, cx| {
+                        // A radio keeps the menu open (`MenuRadioItem` only reports the interaction).
                         if let Some(state) = this.go_live.as_mut() {
-                            state.advanced = !state.advanced;
+                            state.prefs.preset = preset;
                         }
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child("Advanced"),
-                    )
-                    .child(icon("golive_caret", 24., "--interactive-icon-default")),
-            );
-        let advanced = state.advanced.then(|| {
-            div()
-                .occlude()
-                .w(px(213.56))
-                .p(px(8.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-higher"))
-                .child(check_row(
-                    "golive-hide-preview",
-                    "Hide stream preview",
-                    state.prefs.hide_preview,
+                    },
+                )
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    if *inside && let Some(state) = this.go_live.as_mut() {
+                        state.sub = None;
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+                height,
+            ));
+        }
+        let custom = state.prefs.preset == Preset::Custom;
+        let sub_row = |id: &'static str, label: &'static str, sub: Sub, cx: &mut Context<Root>| {
+            caret_row(
+                id,
+                label,
+                state.sub == Some(sub),
+                tint,
+                cx,
+                move |this, open, cx| {
+                    if let Some(state) = this.go_live.as_mut() {
+                        state.sub = if open { Some(sub) } else { None };
+                    }
+                    cx.notify();
+                },
+            )
+            .into_any_element()
+        };
+        // The offset of each submenu's row from the menu's top, for the submenu's own top.
+        let mut row_tops: HashMap<Sub, f32> = HashMap::new();
+        let mut top = 9.;
+        if custom {
+            rows.push((separator(tint), 17.));
+            rows.push((
+                sub_row(
+                    "stream-option-resolution",
+                    dc_intl::tr("Screen Resolution"),
+                    Sub::Resolution,
                     cx,
-                    |prefs| prefs.hide_preview = !prefs.hide_preview,
-                ))
+                ),
+                36.,
+            ));
+            rows.push((
+                sub_row(
+                    "stream-option-frame-rate",
+                    dc_intl::tr("Frame Rate"),
+                    Sub::FrameRate,
+                    cx,
+                ),
+                36.,
+            ));
+        }
+        rows.push((separator(tint), 17.));
+        rows.push((
+            check_row(
+                "stream-option-mute",
+                dc_intl::tr("Mute stream audio"),
+                !state.prefs.sound,
+                tint,
+                cx,
+                |this, cx| {
+                    if let Some(state) = this.go_live.as_mut() {
+                        state.prefs.sound = !state.prefs.sound;
+                    }
+                    cx.notify();
+                },
+            )
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if *inside && let Some(state) = this.go_live.as_mut() {
+                    state.sub = None;
+                    cx.notify();
+                }
+            }))
+            .into_any_element(),
+            36.,
+        ));
+        rows.push((
+            sub_row("advanced-items", dc_intl::tr("Advanced"), Sub::Advanced, cx),
+            36.,
+        ));
+        // Record where the submenu rows sit (the menu's 8px padding and 1px border above the first row).
+        for (index, (_, height)) in rows.iter().enumerate() {
+            let sub = match (custom, index) {
+                (true, i) if i == presets.len() + 2 => Some(Sub::Resolution),
+                (true, i) if i == presets.len() + 3 => Some(Sub::FrameRate),
+                (_, i) if i == rows.len() - 1 => Some(Sub::Advanced),
+                _ => None,
+            };
+            if let Some(sub) = sub {
+                row_tops.insert(sub, top);
+            }
+            top += height;
+        }
+        let menu_height = 2. + 16. + rows.iter().map(|(_, height)| height).sum::<f32>();
+
+        let submenu = state.sub.map(|sub| {
+            let mut items: Vec<AnyElement> = Vec::new();
+            match sub {
+                Sub::Resolution => {
+                    for resolution in [
+                        Resolution::P720,
+                        Resolution::P1080,
+                        Resolution::P1440,
+                        Resolution::Source,
+                    ] {
+                        if state.tab == Tab::Devices && resolution == Resolution::Source {
+                            continue;
+                        }
+                        let label = resolution_text(resolution);
+                        let fps = state.prefs.fps;
+                        items.push(
+                            radio_row(
+                                SharedString::from(format!(
+                                    "stream-option-resolution-{}",
+                                    resolution.height()
+                                )),
+                                if resolution == Resolution::P720 {
+                                    div().child(label).into_any_element()
+                                } else {
+                                    premium_label(label)
+                                },
+                                None,
+                                state.prefs.resolution == resolution,
+                                tint,
+                                cx,
+                                move |this, cx| {
+                                    let account = this.stream_account();
+                                    let Some(state) = this.go_live.as_mut() else {
+                                        return;
+                                    };
+                                    if can_stream(account, state.prefs.preset, resolution, fps) {
+                                        state.prefs.resolution = resolution;
+                                    } else {
+                                        state.options = false;
+                                        state.sub = None;
+                                        this.open_stream_upsell(false, cx);
+                                    }
+                                    cx.notify();
+                                },
+                            )
+                            .into_any_element(),
+                        );
+                    }
+                }
+                Sub::FrameRate => {
+                    for fps in [15u32, 30, 60] {
+                        let label = format!("{fps}fps");
+                        let resolution = state.prefs.resolution;
+                        items.push(
+                            radio_row(
+                                SharedString::from(format!("stream-option-frame-rate-{fps}")),
+                                if fps == 60 {
+                                    premium_label(label)
+                                } else {
+                                    div().child(label).into_any_element()
+                                },
+                                None,
+                                state.prefs.fps == fps,
+                                tint,
+                                cx,
+                                move |this, cx| {
+                                    let account = this.stream_account();
+                                    let Some(state) = this.go_live.as_mut() else {
+                                        return;
+                                    };
+                                    if can_stream(account, state.prefs.preset, resolution, fps) {
+                                        state.prefs.fps = fps;
+                                    } else {
+                                        state.options = false;
+                                        state.sub = None;
+                                        this.open_stream_upsell(false, cx);
+                                    }
+                                    cx.notify();
+                                },
+                            )
+                            .into_any_element(),
+                        );
+                    }
+                }
+                Sub::Advanced => {
+                    items.push(
+                        check_row(
+                            "stream-option-share-preview",
+                            dc_intl::tr("Hide stream preview"),
+                            state.prefs.hide_preview,
+                            tint,
+                            cx,
+                            |this, cx| {
+                                if let Some(state) = this.go_live.as_mut() {
+                                    state.prefs.hide_preview = !state.prefs.hide_preview;
+                                }
+                                cx.notify();
+                            },
+                        )
+                        .into_any_element(),
+                    );
+                }
+            }
+            let offset = row_tops.get(&sub).copied().unwrap_or(9.) - 9.;
+            menu_frame("stream-options-sub", tint)
+                .min_w(px(188.))
+                .mt(px(offset))
+                .children(items)
         });
         div()
+            .id("stream-options-layer")
             .absolute()
             .right(px(25.44))
-            .bottom(px(121.))
+            // 8px over the gear, whose top is 113px over the modal's bottom with the ribbon and 57 without.
+            .bottom(px(if ribbon { 121. } else { 65. }))
+            .h(px(menu_height))
             .flex()
-            .items_end()
-            .gap(px(8.))
-            .children(advanced)
-            .child(menu)
+            .items_start()
+            .gap(px(4.))
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                // The gear's own press toggles the menu.
+                let on_gear = this
+                    .tip_anchors
+                    .borrow()
+                    .get("golive-gear")
+                    .is_some_and(|bounds| bounds.contains(&event.position));
+                if !on_gear && let Some(state) = this.go_live.as_mut() {
+                    state.options = false;
+                    state.sub = None;
+                    cx.notify();
+                }
+            }))
+            .children(submenu)
+            .child(
+                menu_frame("stream-options", tint)
+                    .min_w(px(188.))
+                    .children(rows.into_iter().map(|(row, _)| row)),
+            )
             .into_any_element()
     }
+
+    /// The streaming upsell (module 826789 in the premium upsell shell, module 831318): "Unlock HD streaming in 4k at
+    /// 60 fps", View All Nitro Perks and Get Nitro. Not drawn: the header's looping video; its space is kept.
+    fn stream_upsell(&self, cx: &mut Context<Self>) -> AnyElement {
+        let perks = super::modal::footer_button(
+            super::modal::button(
+                "stream-upsell-perks",
+                dc_intl::tr("View All Nitro Perks"),
+                super::modal::Tone::Secondary,
+                |this, _, cx| {
+                    UPSELL.with(|upsell| upsell.set(None));
+                    this.close_go_live(cx);
+                    this.open_nitro(cx);
+                },
+            ),
+            cx,
+        );
+        let get_nitro = div()
+            .id("stream-upsell-get")
+            .flex_none()
+            .w(px(202.))
+            .h(px(40.))
+            .px(px(16.))
+            .rounded(px(8.))
+            .bg(rgba(0xffffffff))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(4.))
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .font_weight(FontWeight(500.))
+            .text_color(rgba(0x000000ff))
+            .child(icon("nitro_wheel", 20., "--black"))
+            .child(dc_intl::tr("Get Nitro"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                UPSELL.with(|upsell| upsell.set(None));
+                this.close_go_live(cx);
+                this.open_purchase(false, cx);
+            }));
+        let pose = crate::ui::motion::modal_pose("stream-upsell");
+        let layer = div()
+            .id("stream-upsell-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(pose.dim(rgba(0x000000b8)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _, _, cx| this.close_stream_upsell(cx)))
+            .child(
+                div()
+                    .posed(pose)
+                    .id("stream-upsell")
+                    .occlude()
+                    .relative()
+                    .overflow_hidden()
+                    .w(px(480.))
+                    .pt(px(8.))
+                    .pb(px(16.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w(px(478.))
+                            .h(px(241.))
+                            .child(
+                                gpui::img(super::upload_error::header_glow(478, 241))
+                                    .w(px(478.))
+                                    .h(px(241.)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .px(px(32.))
+                            .pt(px(16.))
+                            .pb(px(16.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().h(px(112.)).w_full())
+                            .child(
+                                div()
+                                    .text_size(px(24.))
+                                    .line_height(px(32.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_center()
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::tr("Unlock HD streaming in 4k at 60 fps")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_center()
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::tr(
+                                        "Stream your clutchest moments in 4k resolution with Nitro. Or stream funny cat videos, we don't judge.",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("stream-upsell-close")
+                                    .absolute()
+                                    .top(px(0.))
+                                    .right(px(8.))
+                                    .size(px(38.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 20., "--text-strong"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.close_stream_upsell(cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .px(px(32.))
+                            .pt(px(16.))
+                            .flex()
+                            .gap(px(8.))
+                            .child(perks)
+                            .child(get_nitro),
+                    ),
+            );
+        deferred(layer).with_priority(3).into_any_element()
+    }
+
+    /// Capture only: the picker's state for scripts (`golive state`), and `golive open`, `golive close`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_go_live(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        match words {
+            ["open"] => {
+                self.open_go_live(cx);
+                if self.go_live.is_some() {
+                    "opened".to_owned()
+                } else {
+                    "not in a call".to_owned()
+                }
+            }
+            ["close"] => {
+                self.close_go_live(cx);
+                "closed".to_owned()
+            }
+            ["state"] => {
+                let account = self.stream_account();
+                let stored = Prefs::load();
+                let modal = match &self.go_live {
+                    Some(state) => format!(
+                        "open tab={:?} fetching={} listed={} options={} sub={:?} prefs={:?}/{:?}/{}/sound={} shown={:?} sd_hd={}",
+                        state.tab,
+                        state.fetching,
+                        state.listed().len(),
+                        state.options,
+                        state.sub,
+                        state.prefs.preset,
+                        state.prefs.resolution,
+                        state.prefs.fps,
+                        state.prefs.sound,
+                        state.prefs.shown(account),
+                        account.needs_hd_upsell(),
+                    ),
+                    None => "closed".to_owned(),
+                };
+                let thumbs = LISTING.with(|listing| listing.borrow().thumbs.len());
+                format!(
+                    "{modal}; thumbs={thumbs}; upsell={:?}; stored={:?}/{:?}/{}/sound={}; focus={:?}; stream={:?}",
+                    UPSELL.with(|upsell| upsell.get()),
+                    stored.preset,
+                    stored.resolution,
+                    stored.fps,
+                    stored.sound,
+                    self.vv.focus.tile,
+                    self.own_started().map(|started| started.quality),
+                )
+            }
+            _ => "usage: golive open | golive close | golive state".to_owned(),
+        }
+    }
+}
+
+// ---- the menu component (`menu_M3qk4j`) ----
+
+/// The palette a menu draws with: the app's theme in the picker, `midnight` over the call view.
+pub(super) type Tint = fn(&str) -> gpui::Rgba;
+
+/// The app's theme.
+pub(super) fn app_tint(name: &str) -> gpui::Rgba {
+    color(name)
+}
+
+/// `menu_M3qk4j`: 8px of padding, the 1px subtle border, 8px corners, the higher surface and its shadow. A press in
+/// it stays in it.
+pub(super) fn menu_frame(id: impl Into<gpui::ElementId>, tint: Tint) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .occlude()
+        .p(px(8.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(tint("--border-subtle"))
+        .bg(tint("--background-surface-higher"))
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::hsla(0., 0., 0., 0.24),
+            offset: gpui::point(px(0.), px(12.)),
+            blur_radius: px(24.),
+            spread_radius: px(0.),
+            inset: false,
+        }])
+        .flex()
+        .flex_col()
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// `groupLabel_M3qk4j`: 14px medium, muted, 8px in, 36 high.
+pub(super) fn group_label(text: &str, tint: Tint) -> AnyElement {
+    div()
+        .h(px(36.))
+        .flex_none()
+        .px(px(8.))
+        .pt(px(8.))
+        .text_size(px(14.))
+        .line_height(px(20.))
+        .font_weight(FontWeight(500.))
+        .text_color(tint("--text-muted"))
+        .child(SharedString::from(text.to_owned()))
+        .into_any_element()
+}
+
+/// `separator_M3qk4j`: a 1px line with 8px above and below.
+pub(super) fn separator(tint: Tint) -> AnyElement {
+    div()
+        .my(px(8.))
+        .h(px(1.))
+        .flex_none()
+        .bg(tint("--border-subtle"))
+        .into_any_element()
+}
+
+/// `item_M3qk4j`: 8px of padding, 2px corners; hovered it is the focused item (`focused_M3qk4j`, 4px corners).
+fn item(id: impl Into<gpui::ElementId>, height: f32, tint: Tint) -> gpui::Stateful<gpui::Div> {
+    item_with_hover(id, height, tint("--interactive-background-hover"))
+}
+
+/// An item with its own focused colour (a danger item's is `--background-feedback-mod-critical`).
+fn item_with_hover(
+    id: impl Into<gpui::ElementId>,
+    height: f32,
+    hover: gpui::Rgba,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(height))
+        .flex_none()
+        .p(px(8.))
+        .rounded(px(2.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .hover(move |style| style.bg(hover).rounded(px(4.)))
+}
+
+/// The label column of an item: `body-sm/medium` in the strong text colour, and the subtext (`body-xs/normal`).
+fn item_label(label: AnyElement, subtext: Option<String>, tint: Tint) -> gpui::Div {
+    // `label_M3qk4j`: `flex: 1 1 auto`, so a menu sized by its content is as wide as its longest label.
+    div()
+        .flex_grow(1.)
+        .flex_shrink(1.)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(tint("--text-strong"))
+                .child(label),
+        )
+        .children(subtext.map(|text| {
+            div()
+                .mt(px(2.))
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight(400.))
+                .text_color(tint("--text-muted"))
+                .child(text)
+        }))
+}
+
+/// A label with the Nitro wheel after it (`tA`, `premiumOptionContainer_B6ppCQ`): 4px apart, 32px kept free after.
+fn premium_label(text: String) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .mr(px(32.))
+        .child(text)
+        .child(
+            svg()
+                .path("icons/nitro_wheel.svg")
+                .size(px(16.))
+                .flex_none()
+                .text_color(rgba(BOOSTING_PINK)),
+        )
+        .into_any_element()
+}
+
+/// `MenuRadioItem`: the label (and its subtext) and the 20px radio of the radio group (`radioIndicator_oJuRbG`). A
+/// click does not close the menu.
+pub(super) fn radio_row(
+    id: impl Into<gpui::ElementId>,
+    label: AnyElement,
+    subtext: Option<String>,
+    checked: bool,
+    tint: Tint,
+    cx: &mut Context<Root>,
+    run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let height = if subtext.is_some() { 52. } else { 36. };
+    item(id, height, tint)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            run(this, cx);
+        }))
+        .child(item_label(label, subtext, tint))
+        .child(
+            div()
+                .ml(px(8.))
+                .size(px(20.))
+                .flex_none()
+                .child(super::settings::radio_dot(checked)),
+        )
+}
+
+/// `MenuCheckboxItem`: the label and the 20px checkbox indicator (`checkboxIndicator_vTUVyc`, its drawn check).
+pub(super) fn check_row(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    checked: bool,
+    tint: Tint,
+    cx: &mut Context<Root>,
+    run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    item(id, 36., tint)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            run(this, cx);
+        }))
+        .child(item_label(
+            div()
+                .whitespace_nowrap()
+                .child(SharedString::from(label.to_owned()))
+                .into_any_element(),
+            None,
+            tint,
+        ))
+        .child(
+            div()
+                .ml(px(8.))
+                .flex_none()
+                .child(super::server_onboarding::checkbox(checked, false)),
+        )
+}
+
+/// A plain `MenuItem` with its leading icon (`iconContainerLeft_M3qk4j`, 20px, 8px before the label); `danger` is
+/// `colorDanger_M3qk4j`.
+pub(super) fn icon_row(
+    id: impl Into<gpui::ElementId>,
+    glyph: &'static str,
+    label: &str,
+    danger: bool,
+    tint: Tint,
+    cx: &mut Context<Root>,
+    run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let (glyph_tint, hover, text) = if danger {
+        (
+            tint("--text-feedback-critical"),
+            tint("--background-feedback-mod-critical"),
+            tint("--text-feedback-critical"),
+        )
+    } else {
+        (
+            tint("--interactive-text-default"),
+            tint("--interactive-background-hover"),
+            tint("--text-strong"),
+        )
+    };
+    item_with_hover(id, 36., hover)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            run(this, cx);
+        }))
+        .child(
+            div().mr(px(8.)).child(
+                svg()
+                    .path(format!("icons/{glyph}.svg"))
+                    .size(px(20.))
+                    .flex_none()
+                    .text_color(glyph_tint),
+            ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .whitespace_nowrap()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(text)
+                .child(SharedString::from(label.to_owned())),
+        )
+}
+
+/// A `MenuItem` with children: the label and the caret (`caret_M3qk4j`, 20px, muted). Hovering or pressing it opens
+/// its submenu (a press does not close it); `run` gets whether it should be open. It reads as focused while its submenu is open.
+pub(super) fn caret_row(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    open: bool,
+    tint: Tint,
+    cx: &mut Context<Root>,
+    run: impl Fn(&mut Root, bool, &mut Context<Root>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let run = std::rc::Rc::new(run);
+    let hovered = run.clone();
+    item(id, 36., tint)
+        .when(open, |this| {
+            this.bg(tint("--interactive-background-hover"))
+                .rounded(px(4.))
+        })
+        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+            if *inside {
+                (*hovered)(this, true, cx);
+            }
+        }))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            (*run)(this, true, cx);
+        }))
+        .child(item_label(
+            div()
+                .whitespace_nowrap()
+                .child(SharedString::from(label.to_owned()))
+                .into_any_element(),
+            None,
+            tint,
+        ))
+        .child(
+            div().ml(px(8.)).child(
+                svg()
+                    .path("icons/menu_caret.svg")
+                    .size(px(20.))
+                    .flex_none()
+                    .text_color(tint("--text-muted")),
+            ),
+        )
 }
 
 #[cfg(test)]
@@ -1284,6 +2422,13 @@ mod tests {
         }
     }
 
+    fn account(premium: u64) -> Account {
+        Account {
+            premium: Some(premium),
+            guild_tier: None,
+        }
+    }
+
     #[test]
     fn defaults_are_the_official_ones() {
         let prefs = Prefs::default();
@@ -1294,7 +2439,7 @@ mod tests {
     }
 
     #[test]
-    fn prefs_round_trip_through_json() {
+    fn prefs_round_trip_through_the_store_shape() {
         let prefs = Prefs {
             preset: Preset::Custom,
             resolution: Resolution::P1080,
@@ -1302,39 +2447,176 @@ mod tests {
             sound: false,
             hide_preview: true,
         };
-        let value = json!({"preset": 3, "resolution": 1080, "fps": 60, "soundshare": false, "hide_preview": true});
+        let value = json!({"preset": 3, "resolution": 1080, "fps": 60, "soundshareEnabled": false, "hide_preview": true});
         assert_eq!(Prefs::from_value(Some(&value)), prefs);
+        // The key this client wrote before still reads.
+        let old = json!({"preset": 3, "resolution": 1080, "fps": 60, "soundshare": false, "hide_preview": true});
+        assert_eq!(Prefs::from_value(Some(&old)), prefs);
+        // Source is stored as 0, like `RESOLUTION_SOURCE`.
+        let source = json!({"preset": 2, "resolution": 0, "fps": 15});
+        assert_eq!(
+            Prefs::from_value(Some(&source)).resolution,
+            Resolution::Source
+        );
         // Junk keeps the defaults.
         let junk = json!({"preset": 99, "fps": 7, "resolution": 5});
         assert_eq!(Prefs::from_value(Some(&junk)), Prefs::default());
     }
 
     #[test]
-    fn the_account_decides_what_is_allowed() {
+    fn the_table_decides_what_each_account_may_use() {
         use Resolution::*;
-        assert!(can_stream(None, P720, 30, Preset::Video));
-        assert!(!can_stream(None, P1080, 60, Preset::Video));
-        assert!(can_stream(Some(1), P1080, 60, Preset::Custom));
-        assert!(!can_stream(Some(1), Source, 30, Preset::Custom));
-        assert!(can_stream(Some(2), Source, 60, Preset::Custom));
-        // Source at 5 fps belongs to Screenshare only.
-        assert!(can_stream(None, Source, 5, Preset::Documents));
-        assert!(!can_stream(None, Source, 5, Preset::Video));
-        assert!(!can_stream(None, P720, 7, Preset::Custom));
+        let none = account(0);
+        let classic = account(1);
+        let nitro = account(2);
+        let basic = account(3);
+        // 720p 30 and below for everyone.
+        assert!(can_stream(none, Preset::Custom, P720, 30));
+        assert!(can_stream(basic, Preset::Custom, P480, 15));
+        // 720p 60, 1080p, 1440p: Mid (Classic, Nitro); Basic has no streaming perk.
+        assert!(!can_stream(none, Preset::Custom, P720, 60));
+        assert!(!can_stream(basic, Preset::Custom, P1080, 30));
+        assert!(can_stream(classic, Preset::Custom, P1440, 60));
+        // Source above 5 fps: High, Nitro only.
+        assert!(!can_stream(classic, Preset::Custom, Source, 30));
+        assert!(can_stream(nitro, Preset::Custom, Source, 60));
+        // Source 5 fps belongs to Screenshare only, for anyone.
+        assert!(can_stream(none, Preset::Documents, Source, 5));
+        assert!(!can_stream(nitro, Preset::Custom, Source, 5));
+        // Pairs outside the table never.
+        assert!(!can_stream(nitro, Preset::Custom, P1080, 5));
+        assert!(!can_stream(nitro, Preset::Custom, P720, 7));
     }
 
     #[test]
-    fn presets_pick_the_first_allowed_pair() {
+    fn a_boosted_server_unlocks_its_tiers() {
         use Resolution::*;
-        let pick = |preset, premium| preset_settings(preset, P720, 30, premium);
-        assert_eq!(pick(Preset::Video, None), (P720, 30));
-        assert_eq!(pick(Preset::Video, Some(2)), (P1440, 60));
-        assert_eq!(pick(Preset::Video, Some(1)), (P1440, 60));
-        assert_eq!(pick(Preset::Documents, None), (Source, 5));
-        assert_eq!(pick(Preset::Documents, Some(2)), (Source, 15));
-        // A custom pair the account may not use falls back to 720p30.
-        assert_eq!(preset_settings(Preset::Custom, P1440, 60, None), (P720, 30));
-        assert_eq!(preset_settings(Preset::Custom, P480, 15, None), (P480, 15));
+        let tier = |tier| Account {
+            premium: Some(0),
+            guild_tier: Some(tier),
+        };
+        assert!(can_stream(tier(1), Preset::Custom, P720, 60));
+        assert!(!can_stream(tier(1), Preset::Custom, P1080, 30));
+        assert!(can_stream(tier(2), Preset::Custom, P1440, 60));
+        assert!(can_stream(tier(3), Preset::Custom, P1080, 60));
+        // Source stays Nitro's.
+        assert!(!can_stream(tier(3), Preset::Custom, Source, 30));
+    }
+
+    #[test]
+    fn presets_pick_the_first_pair_the_account_may_use() {
+        use Resolution::*;
+        assert_eq!(preset_settings(Preset::Video, account(0)), Some((P720, 30)));
+        assert_eq!(preset_settings(Preset::Video, account(3)), Some((P720, 30)));
+        assert_eq!(
+            preset_settings(Preset::Video, account(1)),
+            Some((P1440, 60))
+        );
+        assert_eq!(
+            preset_settings(Preset::Video, account(2)),
+            Some((P1440, 60))
+        );
+        assert_eq!(
+            preset_settings(Preset::Documents, account(0)),
+            Some((Source, 5))
+        );
+        assert_eq!(
+            preset_settings(Preset::Documents, account(1)),
+            Some((Source, 5))
+        );
+        assert_eq!(
+            preset_settings(Preset::Documents, account(2)),
+            Some((Source, 15))
+        );
+        assert_eq!(preset_settings(Preset::Custom, account(2)), None);
+    }
+
+    #[test]
+    fn the_stream_mode_rows_name_the_accounts_own_pairs() {
+        assert_eq!(
+            preset_subtext(Preset::Video, account(0)).as_deref(),
+            Some("Smoother video (720p, 30fps)")
+        );
+        assert_eq!(
+            preset_subtext(Preset::Documents, account(0)).as_deref(),
+            Some("Clearer text (Source, 5fps)")
+        );
+        assert_eq!(
+            preset_subtext(Preset::Video, account(2)).as_deref(),
+            Some("Smoother video (1440p, 60fps)")
+        );
+        assert_eq!(
+            preset_subtext(Preset::Documents, account(2)).as_deref(),
+            Some("Clearer text (Source, 15fps)")
+        );
+        assert_eq!(preset_subtext(Preset::Custom, account(2)), None);
+    }
+
+    #[test]
+    fn only_accounts_without_high_quality_see_sd_hd_and_the_ribbon() {
+        assert!(account(0).needs_hd_upsell());
+        assert!(account(1).needs_hd_upsell());
+        assert!(account(3).needs_hd_upsell());
+        assert!(!account(2).needs_hd_upsell());
+    }
+
+    #[test]
+    fn the_modal_and_the_start_follow_the_official_fallbacks() {
+        use Resolution::*;
+        let custom = Prefs {
+            preset: Preset::Custom,
+            resolution: P1440,
+            fps: 60,
+            ..Prefs::default()
+        };
+        // A custom pair the account may not use opens as 720p 30, and starts as Gaming 720p 30.
+        let opened = custom.for_modal(account(0));
+        assert_eq!((opened.resolution, opened.fps), (P720, 30));
+        assert_eq!(custom.start_choice(account(0)), (Preset::Video, P720, 30));
+        assert_eq!(custom.start_choice(account(2)), (Preset::Custom, P1440, 60));
+        // A preset starts with its own pair, whatever the stored one.
+        let video = Prefs {
+            preset: Preset::Video,
+            ..custom
+        };
+        assert_eq!(video.start_choice(account(2)), (Preset::Video, P1440, 60));
+        assert_eq!(video.shown(account(0)), (P720, 30));
+        // Custom shows its chosen pair.
+        assert_eq!(custom.shown(account(2)), (P1440, 60));
+    }
+
+    #[test]
+    fn the_in_call_quality_choices_follow_module_600125() {
+        use Resolution::*;
+        let screenshare = Prefs {
+            preset: Preset::Documents,
+            resolution: Source,
+            fps: 5,
+            ..Prefs::default()
+        };
+        // A resolution from Screenshare takes 30 fps.
+        assert_eq!(
+            resolution_choice(&screenshare, account(2), P1080),
+            (true, 30)
+        );
+        assert_eq!(
+            resolution_choice(&screenshare, account(0), P1080),
+            (false, 30)
+        );
+        assert_eq!(
+            resolution_choice(&screenshare, account(0), P720),
+            (true, 30)
+        );
+        // A frame rate keeps the stored resolution.
+        let custom = Prefs {
+            preset: Preset::Custom,
+            resolution: P720,
+            fps: 30,
+            ..Prefs::default()
+        };
+        assert_eq!(frame_rate_choice(&custom, account(0), 60), (false, P720));
+        assert_eq!(frame_rate_choice(&custom, account(0), 15), (true, P720));
+        assert_eq!(frame_rate_choice(&custom, account(1), 60), (true, P720));
     }
 
     #[test]
@@ -1357,19 +2639,57 @@ mod tests {
     }
 
     #[test]
-    fn the_tabs_list_their_own_kinds() {
-        let mut state = State::new(1);
-        state.sources = vec![
-            window(100, 100),
-            Source {
-                id: SourceId::Display(1),
-                ..window(1920, 1080)
-            },
-        ];
-        assert_eq!(state.listed().len(), 1);
-        state.tab = Tab::Screen;
-        assert!(matches!(state.listed()[0].id, SourceId::Display(1)));
-        state.tab = Tab::Devices;
-        assert!(state.listed().is_empty());
+    fn the_spinner_shows_until_the_first_list_and_never_an_empty_string() {
+        assert_eq!(content(true, Tab::Applications, 0), Content::Loading);
+        assert_eq!(content(true, Tab::Devices, 0), Content::Loading);
+        assert_eq!(content(false, Tab::Applications, 0), Content::Cards);
+        assert_eq!(content(false, Tab::Screen, 0), Content::Cards);
+        assert_eq!(content(false, Tab::Devices, 0), Content::NoDevices);
+        assert_eq!(content(false, Tab::Devices, 1), Content::Cards);
+    }
+
+    #[test]
+    fn thumbnails_come_for_the_shown_tab_first_then_the_missing_others() {
+        let window_a = SourceId::Window(1);
+        let window_b = SourceId::Window(2);
+        let screen = SourceId::Display(9);
+        let sources = [window_a, screen, window_b];
+        let mut have = HashSet::new();
+        assert_eq!(
+            thumb_order(&sources, Tab::Applications, &have),
+            vec![window_a, window_b, screen]
+        );
+        assert_eq!(
+            thumb_order(&sources, Tab::Screen, &have),
+            vec![screen, window_a, window_b]
+        );
+        // Once the other tab has its pictures, a round refreshes the shown tab only.
+        have.insert(screen);
+        assert_eq!(
+            thumb_order(&sources, Tab::Applications, &have),
+            vec![window_a, window_b]
+        );
+        have.insert(window_a);
+        have.insert(window_b);
+        assert_eq!(thumb_order(&sources, Tab::Screen, &have), vec![screen]);
+        assert_eq!(
+            thumb_order(&sources, Tab::Devices, &HashSet::new()),
+            vec![window_a, screen, window_b]
+        );
+    }
+
+    #[test]
+    fn a_blank_first_frame_is_not_shown() {
+        let black = dc_media::Picture::rgba(2, 1, vec![0, 0, 0, 255, 1, 2, 0, 255]).unwrap();
+        assert!(is_blank(&black));
+        let drawn = dc_media::Picture::rgba(2, 1, vec![0, 0, 0, 255, 90, 2, 0, 255]).unwrap();
+        assert!(!is_blank(&drawn));
+    }
+
+    #[test]
+    fn native_screen_names_read_like_the_official() {
+        assert_eq!(screen_name("Entire screen"), "Entire Screen");
+        assert_eq!(screen_name("Screen 2"), "Screen 2");
+        assert_eq!(screen_name("Something"), "Something");
     }
 }

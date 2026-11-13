@@ -1,7 +1,7 @@
 //! Home: the DM sidebar, the friends panel and direct messages. Geometry is from `design/dom/home/friends-darker-cozy.json`.
 
 use super::tooltip::{Body, Tip};
-use super::{Root, avatar_source, color, icon, motion, status_dot};
+use super::{Root, avatar_source, color, icon, motion};
 use crate::parity::Parity;
 use dc_state::{Id, PrivateChannel};
 use gpui::{
@@ -108,9 +108,7 @@ impl Root {
         if let Some(user) = recipient {
             let _ = self.requests.send(crate::net::Request::Fetch {
                 key: format!("profile:{user}"),
-                route: format!(
-                    "/users/{user}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
-                ),
+                route: self.dm_profile_route(user),
             });
         }
         self.stop_lurking_elsewhere();
@@ -292,14 +290,25 @@ impl Root {
             .filter(|call| call.guild == 0 && call.channel == id)
             .and_then(|_| self.call_timer());
         let selected = self.channel == Some(id);
+        let hovered = self.hovered_dm == Some(id);
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
         let status = self.stores.status(recipient.id).to_owned();
+        let look = row_look(
+            selected,
+            hovered,
+            self.stores.read_states.mentions(id) > 0,
+            marked
+                || self
+                    .stores
+                    .guild_settings
+                    .channel_muted(0, id, chrono::Utc::now()),
+        );
         // Text takes its hover colour at layout time, which gpui's `hover` cannot reach, so the row tracks it.
-        let tint = if selected || self.hovered_dm == Some(id) {
-            "--text-strong"
-        } else {
-            "--text-muted"
-        };
+        let tint = look.row;
+        let typing = self
+            .stores
+            .typing_users(id, std::time::Instant::now())
+            .contains(&recipient.id);
         let group = SharedString::from(format!("dm-row-{id}"));
         // `Pinned` (flag 2048 of the "@me" channel override, `xl` of module 816662).
         let pinned = self.stores.guild_settings.channel(0, id).flags & 2048 != 0;
@@ -327,6 +336,7 @@ impl Root {
                     cx.notify();
                 }))
                 .flex_none()
+                .relative()
                 .h(px(44.))
                 .pt(px(1.))
                 .pl(px(9.))
@@ -335,6 +345,7 @@ impl Root {
                     this.select_home(Some(id));
                     cx.notify();
                 }))
+                .children(look.pill.then(|| unread_pill(look.dimmed)))
                 .child(
                     div()
                         .id(SharedString::from(format!("dm-inner-{id}")))
@@ -361,6 +372,8 @@ impl Root {
                             div()
                                 .relative()
                                 .size(px(32.))
+                                // `.muted_TBNqol .avatar_TBNqol`.
+                                .when(look.dimmed, |avatar| avatar.opacity(0.3))
                                 .children(
                                     self.live_avatar(
                                         &recipient,
@@ -377,7 +390,14 @@ impl Root {
                                         })
                                     }),
                                 )
-                                .child(status_dot(&status, "--background-base-lowest")),
+                                .child(super::typing_avatar::status_corner(
+                                    &status,
+                                    typing,
+                                    "--background-base-lowest",
+                                    32.,
+                                    motion::key(&("dm-row-avatar", id)),
+                                    super::typing_avatar::css_dots(&self.stores.experiments),
+                                )),
                         )
                         .child(
                             div()
@@ -385,6 +405,7 @@ impl Root {
                                 .min_w(px(0.))
                                 .flex()
                                 .flex_col()
+                                .text_color(color(look.text))
                                 .child(
                                     div()
                                         .flex()
@@ -396,7 +417,7 @@ impl Root {
                                                 .text_ellipsis()
                                                 .text_size(px(16.))
                                                 .line_height(px(20.))
-                                                .font_weight(FontWeight(500.))
+                                                .font_weight(look.weight())
                                                 .child(super::name_styles::name(
                                                     format!("dm-name-{id}"),
                                                     self.private_channel_name(channel),
@@ -414,25 +435,16 @@ impl Root {
                                                     },
                                                 )),
                                         )
-                                        .children(
-                                            recipient
-                                                .tag
-                                                .as_ref()
-                                                .map(|tag| self.server_tag_chip(tag)),
-                                        ),
+                                        // `clanTag_zln_tS` 4px on; `clanTagMuted_zln_tS` at .3.
+                                        .children(recipient.tag.as_ref().map(|tag| {
+                                            self.server_tag_chip(tag)
+                                                .when(look.dimmed, |chip| chip.opacity(0.3))
+                                        })),
                                 )
-                                .children(self.presence_line_with(
-                                    &recipient,
-                                    None,
-                                    true,
-                                    16.,
-                                    // A selected or hovered row lifts its activity line to the row's text colour.
-                                    if selected || self.hovered_dm == Some(id) {
-                                        "--text-strong"
-                                    } else {
-                                        "--channels-default"
-                                    },
-                                )),
+                                // `activityStatusText_zln_tS` is `color: inherit`: the line takes the row's text colour.
+                                .children(
+                                    self.presence_line_with(&recipient, None, true, 16., look.text),
+                                ),
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
@@ -738,68 +750,180 @@ impl Root {
                     .flex_1()
                     .min_h(px(0.))
                     .bg(color("--background-base-lower"))
+                    // `peopleColumn_zrUwGA` is `flex: 1 1 auto`, `nowPlayingColumn_zrUwGA` `flex: 0 1 30%` between 360 and
+                    // 420 wide and `display: none` at a window of 1200 or less (599618's stylesheet).
                     .child(
                         div()
                             .parity("people-column")
-                            .w(px(545.))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
                             .flex()
                             .flex_col()
                             .child(people),
                     )
-                    .child(
-                        div()
-                            .parity_left("active-now", 1.)
-                            .w(px(360.))
-                            .h_full()
-                            .border_l_1()
-                            .border_color(color("--background-mod-subtle"))
-                            .pl(px(16.))
-                            .pr(px(16.))
-                            .pt(px(14.))
-                            .child(
-                                div()
-                                    .text_size(px(20.))
-                                    .line_height(px(24.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(dc_intl::tr("Active Now")),
-                            )
-                            .child(
-                                div()
-                                    .parity("active-card")
-                                    .mt(px(9.))
-                                    .h(px(92.))
-                                    .rounded(px(8.))
-                                    .bg(color("--background-base-low"))
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .p(px(16.))
-                                    .child(
-                                        div()
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-strong"))
-                                            .child(dc_intl::tr("It's quiet for now...")),
-                                    )
-                                    .child(
-                                        div()
-                                            .mt(px(4.))
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .text_center()
-                                            .text_color(color("--interactive-text-default"))
-                                            .child(dc_intl::t!("99ZWxQ")),
-                                    ),
-                            ),
-                    ),
+                    .when(f32::from(window.viewport_size().width) > 1200., |row| {
+                        row.child(
+                            div()
+                                .parity_left("active-now", 1.)
+                                .flex_grow_0()
+                                .flex_shrink_1()
+                                .flex_basis(gpui::relative(0.3))
+                                .min_w(px(360.))
+                                .max_w(px(420.))
+                                .h_full()
+                                .border_l_1()
+                                .border_color(color("--background-mod-subtle"))
+                                .pl(px(16.))
+                                .pr(px(16.))
+                                .pt(px(14.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .line_height(px(24.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::tr("Active Now")),
+                                )
+                                .child(
+                                    div()
+                                        .parity("active-card")
+                                        .mt(px(9.))
+                                        .h(px(92.))
+                                        .rounded(px(8.))
+                                        .bg(color("--background-base-low"))
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .p(px(16.))
+                                        .child(
+                                            div()
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::tr("It's quiet for now...")),
+                                        )
+                                        .child(
+                                            div()
+                                                .mt(px(4.))
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .text_center()
+                                                .text_color(color("--interactive-text-default"))
+                                                .child(dc_intl::t!("99ZWxQ")),
+                                        ),
+                                ),
+                        )
+                    }),
             )
     }
 }
 
+/// How a row of the DM list looks (module 181254 `eY` and its stylesheets 834050, 884848 and 121046).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RowLook {
+    /// The row's text colour: `.interactive_zln_tS` (`--text-muted`), `.interactive_nl_k3a:hover`
+    /// (`--interactive-text-hover`, which outranks the selected rule) and `.interactiveSelected_zln_tS`
+    /// (`--text-default`; the DOM of a selected row computes to it).
+    pub row: &'static str,
+    /// The name's and the activity line's colour (`layout_TBNqol`): `--text-strong` when highlighted, `--text-muted`
+    /// when muted, else the row's.
+    pub text: &'static str,
+    /// `unreadPill_zln_tS`: the account has mentions waiting here (for a DM every message counts).
+    pub pill: bool,
+    /// `eZ`: muted, ignored or blocked, and neither selected nor hovered: the pill, the avatar, the clan tag and
+    /// the activity icon at .3.
+    pub dimmed: bool,
+    /// `highlighted: e$ && !eZ`.
+    pub highlighted: bool,
+}
+
+impl RowLook {
+    /// `.highlighted_TBNqol .name_TBNqol` is `var(--font-weight-semibold-1x-light-theme, 500)`: 600 in the light
+    /// theme, 500 in the others (the name is `body-md/medium`, 500, at rest).
+    pub(super) fn weight(&self) -> FontWeight {
+        if self.highlighted && super::theme() == dc_tokens::Theme::Light {
+            FontWeight(600.)
+        } else {
+            FontWeight(500.)
+        }
+    }
+}
+
+/// Module 181254: `eZ = (muted || ignored || blocked) && !(selected || hovered)`, `e$ = mentionCount > 0`.
+pub(super) fn row_look(selected: bool, hovered: bool, mentions: bool, quiet: bool) -> RowLook {
+    let dimmed = quiet && !(selected || hovered);
+    let highlighted = mentions && !dimmed;
+    let row = if hovered {
+        "--interactive-text-hover"
+    } else if selected {
+        "--text-default"
+    } else {
+        "--text-muted"
+    };
+    let text = if highlighted {
+        "--text-strong"
+    } else if dimmed {
+        "--text-muted"
+    } else {
+        row
+    };
+    RowLook {
+        row,
+        text,
+        pill: mentions,
+        dimmed,
+        highlighted,
+    }
+}
+
+/// `unreadPill_zln_tS`: 4 x 8 in `--interactive-text-active`, `--radius-xs` on its right corners, 8px left of the
+/// row (the list's edge), centred on the 44px item; at .3 for a muted row.
+pub(super) fn unread_pill(dimmed: bool) -> AnyElement {
+    div()
+        .absolute()
+        .left(px(1.))
+        .top(px(18.))
+        .w(px(4.))
+        .h(px(8.))
+        .rounded_r(px(4.))
+        .bg(color("--interactive-text-active"))
+        .when(dimmed, |pill| pill.opacity(0.3))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rail_icon_crop;
+    use super::{rail_icon_crop, row_look};
+
+    #[test]
+    fn an_unread_dm_row_is_highlighted_unless_muted_and_at_rest() {
+        // Unread at rest: the pill and the strong name (the owner's report: the row only moved up).
+        let look = row_look(false, false, true, false);
+        assert!(look.pill && look.highlighted && !look.dimmed);
+        assert_eq!((look.row, look.text), ("--text-muted", "--text-strong"));
+        // Read at rest: muted text, no pill.
+        let look = row_look(false, false, false, false);
+        assert!(!look.pill && !look.highlighted);
+        assert_eq!(look.text, "--text-muted");
+        // Selected: `--text-default`; hovered: `--interactive-text-hover`, even when selected.
+        assert_eq!(row_look(true, false, false, false).text, "--text-default");
+        assert_eq!(
+            row_look(true, true, false, false).text,
+            "--interactive-text-hover"
+        );
+        assert_eq!(
+            row_look(false, true, false, false).text,
+            "--interactive-text-hover"
+        );
+        // Muted with mentions at rest: dimmed pill, no highlight; hovered it is a plain highlighted row again.
+        let look = row_look(false, false, true, true);
+        assert!(look.pill && look.dimmed && !look.highlighted);
+        assert_eq!(look.text, "--text-muted");
+        let look = row_look(false, true, true, true);
+        assert!(!look.dimmed && look.highlighted);
+        assert_eq!(look.text, "--text-strong");
+    }
 
     #[test]
     fn the_home_button_shows_the_middle_of_a_48px_icon() {

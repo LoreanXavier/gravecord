@@ -8,6 +8,7 @@
 
 mod activity;
 mod colour;
+mod geometry;
 mod panel;
 mod picker;
 mod preview;
@@ -33,6 +34,10 @@ use save::{Equipped, Pending, Write};
 use serde_json::Value;
 
 pub(super) const FETCH_PREFIX: &str = "pedit:";
+/// `DismissibleContent.USER_PROFILE_PREMIUM_AND_SHOP_ENTRY_POINTS` (module 554146).
+const UPSELL_CONTENT: u16 = 458;
+/// `DismissibleContent.DISPLAY_NAME_STYLES_FLYWHEEL_NEW_BADGE_PROFILE_PAGE` (module 554146).
+pub(super) const NAME_STYLES_NEW_CONTENT: u16 = 774;
 
 /// The left panel shows the profile's own styles, or the Nitro preview ("Preview Nitro").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +102,15 @@ pub(super) struct Open {
     pronouns: Entity<Editor>,
     bio: Entity<Editor>,
     select_open: bool,
+    panel_collapsed: bool,
     upsell_closed: bool,
+    /// The status bubble's prompt, drawn once per open from the prompt list (module 645507).
+    prompt: &'static str,
+    /// The editor's sizes for the window it is drawn in (`geometry.rs`), updated every frame.
+    geometry: geometry::Geometry,
+    /// Harness only: the widget suggestions' `maxWidgetOptions` in place of the account's experiment.
+    #[cfg(feature = "capture")]
+    suggestions: Option<usize>,
     saving: bool,
     error: Option<String>,
     owned: Vec<Product>,
@@ -116,10 +129,11 @@ impl Open {
     }
 }
 
-/// `GET /users/{id}/profile` for the editor, as the profile fetch of the full profile asks it.
+/// `GET /users/{id}/profile` as the editor (`u7` of module 927071) asks it: `type: "modal"`, `withMutualGuilds`,
+/// `withMutualFriendsCount` and not `withMutualFriends`, in the query order of `fetchProfile` (module 803306).
 fn profile_route(user: Id, guild: Option<Id>) -> String {
     let mut route = format!(
-        "/users/{user}/profile?type=popout&with_mutual_guilds=false&with_mutual_friends=false&with_mutual_friends_count=false"
+        "/users/{user}/profile?type=modal&with_mutual_guilds=true&with_mutual_friends=false&with_mutual_friends_count=true"
     );
     if let Some(guild) = guild {
         route.push_str(&format!("&guild_id={guild}"));
@@ -212,7 +226,12 @@ impl Root {
             pronouns,
             bio,
             select_open: false,
+            panel_collapsed: false,
             upsell_closed: false,
+            prompt: preview::random_prompt(),
+            geometry: geometry::Geometry::of(1280., 720.),
+            #[cfg(feature = "capture")]
+            suggestions: None,
             saving: false,
             error: None,
             owned: Vec::new(),
@@ -313,20 +332,52 @@ impl Root {
         };
         match what {
             "profile" => {
+                // `USER_PROFILE_FETCH_SUCCESS` fills the one `UserProfileStore` every surface reads: the badges, the
+                // effect and the theme of the main profile are the account's own profile there too.
+                if open.guild.is_none()
+                    && let Some(me) = self.stores.current_user.as_ref().map(|user| user.id)
+                {
+                    self.fetched.insert(format!("profile:{me}"), body.clone());
+                    self.request_profile_images(me);
+                }
+                let Some(open) = self.profile_editor.as_mut() else {
+                    return;
+                };
                 let color = |value: &Value| value.as_u64().map(|number| number as u32);
-                let profile = &body["user_profile"];
+                let guild = open.guild;
+                let for_guild = guild.is_some_and(|g| {
+                    body["guild_member_profile"]["guild_id"].as_str()
+                        == Some(g.to_string().as_str())
+                });
+                let profile = if for_guild {
+                    &body["guild_member_profile"]
+                } else {
+                    &body["user_profile"]
+                };
                 open.saved.bio = profile["bio"].as_str().unwrap_or_default().to_owned();
                 open.saved.pronouns = profile["pronouns"].as_str().unwrap_or_default().to_owned();
                 open.saved.banner = profile["banner"].as_str().map(str::to_owned);
-                open.saved.accent_color = color(&body["user"]["accent_color"]);
-                open.saved.theme_colors = body["user_profile"]["theme_colors"]
+                open.saved.accent_color = color(&profile["accent_color"]).or_else(|| {
+                    guild
+                        .is_none()
+                        .then(|| color(&body["user"]["accent_color"]))
+                        .flatten()
+                });
+                open.saved.theme_colors = profile["theme_colors"]
                     .as_array()
                     .and_then(|list| Some([color(list.first()?)?, color(list.get(1)?)?]));
-                for entry in body["user_profile"]["collectibles"]
+                for entry in profile["collectibles"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .chain(body["collectibles"].as_array().into_iter().flatten())
+                    .chain(
+                        guild
+                            .is_none()
+                            .then(|| body["collectibles"].as_array())
+                            .flatten()
+                            .into_iter()
+                            .flatten(),
+                    )
                 {
                     let sku = entry["sku_id"].as_str().and_then(|sku| sku.parse().ok());
                     match entry["type"].as_i64() {
@@ -335,7 +386,18 @@ impl Root {
                         _ => {}
                     }
                 }
-                let (bio, pronouns) = (open.saved.bio.clone(), open.saved.pronouns.clone());
+                let bio = open
+                    .pending
+                    .bio
+                    .as_deref()
+                    .unwrap_or(&open.saved.bio)
+                    .to_owned();
+                let pronouns = open
+                    .pending
+                    .pronouns
+                    .as_deref()
+                    .unwrap_or(&open.saved.pronouns)
+                    .to_owned();
                 let (bio_field, pronoun_field) = (open.bio.clone(), open.pronouns.clone());
                 bio_field.update(cx, |editor, _| editor.set_text(&bio));
                 pronoun_field.update(cx, |editor, _| editor.set_text(&pronouns));
@@ -369,7 +431,7 @@ impl Root {
 
     /// `true` when the editor opened a premium-gated choice without Nitro (the official shows its upsell).
     pub(super) fn profile_editor_premium(&self) -> bool {
-        self.premium() != dc_state::premium::PremiumType::None
+        self.premium() == dc_state::premium::PremiumType::Nitro
     }
 
     /// Sends every request the pending changes need (`USER_PROFILE_SETTINGS_SUBMIT`). A change that needs Nitro
@@ -445,13 +507,17 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        self.profile_editor.as_ref()?;
+        let viewport = window.viewport_size();
+        let geometry =
+            geometry::Geometry::of(f32::from(viewport.width), f32::from(viewport.height));
+        self.profile_editor.as_mut()?.geometry = geometry;
         let user = self.profile_editor_user();
         self.profile_editor_request_art(&user);
+        // `modalHeaderButtons_ZhNJfE`: 8px from the top (below the title bar under 785px) and the right.
         let close = div()
             .id("profile-editor-close")
             .absolute()
-            .top(px(40.))
+            .top(px(geometry.close_top()))
             .right(px(8.))
             .child(
                 div()
@@ -459,6 +525,7 @@ impl Root {
                     .size(px(32.))
                     .rounded(px(8.))
                     .bg(color("--control-secondary-background-default"))
+                    .hover(|style| style.bg(color("--control-secondary-background-hover")))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -471,26 +538,80 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| this.close_profile_editor(cx))),
             );
         // `UserProfileModalV2` (module 927071) is on the legacy modal root (`root__KoJTP` in the capture, `EO` in
-        // module 935462): the scrim fades in on `hP`, the editor from opacity 0 and `scale(.7)` over 200 ms.
+        // module 935462): the scrim fades in on `hP`, the editor from opacity 0 and `scale(.7)` over 200 ms. Its box
+        // follows the window (`geometry.rs`).
         let pose =
             super::motion::legacy_modal_pose("profile-editor", "profile-editor-layer", false);
+        let panel_collapsed = self
+            .profile_editor
+            .as_ref()
+            .is_some_and(|open| geometry.panel_over && open.panel_collapsed);
+        let panel = if panel_collapsed {
+            None
+        } else {
+            let panel = self.profile_editor_panel(&user, window, cx);
+            Some(if geometry.panel_over {
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .child(panel)
+                    .into_any_element()
+            } else {
+                panel
+            })
+        };
+        let expand = panel_collapsed.then(|| {
+            div()
+                .id("profile-editor-expand")
+                .absolute()
+                .top(px(geometry.close_top()))
+                .right(px(48.))
+                .size(px(32.))
+                .rounded(px(8.))
+                .bg(color("--control-secondary-background-default"))
+                .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(super::icon(
+                    "profile_editor_collapse",
+                    16.,
+                    "--control-secondary-text-default",
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(open) = this.profile_editor.as_mut() {
+                        open.panel_collapsed = false;
+                    }
+                    cx.notify();
+                }))
+        });
+        let stage = self.profile_editor_stage(&user, window, cx);
         let root = div()
             .parity("profile-editor")
             .id("profile-editor")
             .posed(pose)
             .occlude()
-            .relative()
-            .w(px(1184.))
-            .h_full()
-            .flex_none()
-            .rounded(px(12.))
+            .absolute()
+            .left(px(geometry.left))
+            .top(px(geometry.top))
+            .w(px(geometry.width))
+            .h(px(geometry.height))
+            .rounded(px(geometry.radius))
             .overflow_hidden()
             .bg(color("--background-base-lower"))
             .flex()
             .font_family(SANS)
-            .font_features(kerning())
-            .child(self.profile_editor_panel(&user, window, cx))
-            .child(self.profile_editor_stage(&user, window, cx))
+            .font_features(kerning());
+        let root = if geometry.panel_over {
+            root.child(stage).children(panel.map(panel_slot))
+        } else {
+            root.children(panel.map(panel_slot)).child(stage)
+        };
+        let root = root
+            .children(expand)
             .child(close)
             .children(self.profile_editor_banner_popout(cx))
             .children(self.profile_editor_server_list(cx));
@@ -503,8 +624,6 @@ impl Root {
                 .left_0()
                 .size_full()
                 .bg(pose.dim(color("--background-scrim")))
-                .flex()
-                .justify_center()
                 .child(root),
         )
         .with_priority(2)
@@ -512,10 +631,56 @@ impl Root {
         Some(layer)
     }
 
+    /// `ee` of module 560296: the "Amp up your profile" card shows until `USER_PROFILE_PREMIUM_AND_SHOP_ENTRY_POINTS`
+    /// is dismissed in the account's `dismissed_contents` (or closed in this session).
+    pub(super) fn profile_editor_upsell_shown(&self) -> bool {
+        let Some(open) = self.profile_editor.as_ref() else {
+            return false;
+        };
+        open.mode != Mode::Nitro
+            && !open.upsell_closed
+            && !self.stores.content_dismissed(UPSELL_CONTENT)
+    }
+
+    /// The upsell's close (`Dr(..., {dismissAction: USER_DISMISS})`): the content's bit in `dismissed_contents`, a
+    /// settings-proto write that a harness run holds back.
+    pub(super) fn profile_editor_dismiss_upsell(&mut self) {
+        if let Some(open) = self.profile_editor.as_mut() {
+            open.upsell_closed = true;
+        }
+        self.dismiss_profile_content(UPSELL_CONTENT);
+    }
+
+    /// Sets a dismissible content's bit and sends the settings patch (`markAsDismissed`).
+    pub(super) fn dismiss_profile_content(&mut self, content: u16) {
+        if self.stores.content_dismissed(content) {
+            return;
+        }
+        let patch = self.stores.dismiss_content(content);
+        if patch.is_empty() || crate::storage::settings_writes_blocked() {
+            return;
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: "/users/@me/settings-proto/1".into(),
+            body: Some(serde_json::json!({"settings": patch})),
+        });
+    }
+
     /// The banner colour popout over the editor, and the click-away layer that closes it.
     fn profile_editor_banner_popout(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let geometry = self.profile_editor.as_ref()?.geometry;
         self.profile_editor.as_ref()?.banner_color.as_ref()?;
-        let popout = self.profile_editor_colour_popout(234., 364., cx)?;
+        let x = if geometry.panel_over {
+            (geometry.width - geometry.panel_width - 280.).max(8.)
+        } else {
+            234.
+        };
+        let y = (geometry.system_bar + 332.)
+            .min(geometry.height - 260.)
+            .max(8.);
+        let popout = self.profile_editor_colour_popout(x, y, cx)?;
         Some(
             div()
                 .id("profile-editor-colour-away")
@@ -532,8 +697,26 @@ impl Root {
         )
     }
 
+    /// The saved profile's banner picture, once the account's profile and the picture arrived.
+    pub(super) fn profile_editor_saved_banner(&self) -> Option<std::sync::Arc<gpui::Image>> {
+        let open = self.profile_editor.as_ref()?;
+        if matches!(open.pending.banner, Some(None)) {
+            return None;
+        }
+        let me = self.stores.current_user.as_ref()?.id;
+        let guild = open.guild;
+        let body = guild
+            .and_then(|_| self.fetched.get(&format!("{FETCH_PREFIX}profile")))
+            .or_else(|| self.fetched.get(&format!("profile:{me}")))?;
+        let (key, _) = super::profile_art::banner_source(me, guild, body)?;
+        self.images.get(&key).cloned()
+    }
+
     /// Asks for the art the preview needs: the avatar decoration of the pending choice.
     fn profile_editor_request_art(&mut self, user: &User) {
+        if let Some(url) = user.tag.as_ref().and_then(|tag| tag.badge_url()) {
+            self.request_image(url.clone(), url);
+        }
         if let Some(decoration) = user.avatar_decoration.as_deref() {
             self.request_image(
                 format!("avatar-decoration:{}", decoration.sku_id),
@@ -541,6 +724,11 @@ impl Root {
             );
         }
     }
+}
+
+/// The panel's place in the editor's row.
+fn panel_slot(panel: AnyElement) -> gpui::Div {
+    div().h_full().flex_none().child(panel)
 }
 
 /// A body-sm label above a panel group (`label_Z5MObs`).
@@ -572,7 +760,7 @@ pub(super) fn text(
 #[cfg(feature = "capture")]
 impl Root {
     /// Harness step `profile-editor <command>`: drives the editor without a pointer. `open`, `close`, `nitro`,
-    /// `main`, `preset <name>`, `pick <nameplate|decoration|effect|frame> [sku]`, `banner-color`, `styles`,
+    /// `main`, `inject <file>`, `suggestions <n>`, `preset <name>`, `pick <nameplate|decoration|effect|frame> [sku]`, `banner-color`, `styles`,
     /// `font <id>`, `effect <id>`, `colors <hex>...`, `custom-color <hex>`. Nothing is sent to the network.
     pub(crate) fn script_profile_editor(
         &mut self,
@@ -623,6 +811,26 @@ impl Root {
                         "wishlist" => Tab::Wishlist,
                         _ => Tab::Board,
                     };
+                }
+            }
+            // `inject <file>`: answers the open editor's profile fetch with a JSON payload read from the file, as
+            // `GET /users/@me/profile` would (the harness account's own profile is bare).
+            ["inject", path] => {
+                let body = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+                let Some(body) = body else {
+                    return format!("profile-editor: cannot read {path}");
+                };
+                let key = format!("{FETCH_PREFIX}profile");
+                self.fetched.insert(key.clone(), body);
+                self.profile_editor_fetched(&key, cx);
+            }
+            // `suggestions <n>`: the widget board as `2026-09-profile-widget-empty-state-suggestions` with
+            // `maxWidgetOptions` n (0 restores the account's own assignment).
+            ["suggestions", count] => {
+                if let Some(open) = self.profile_editor.as_mut() {
+                    open.suggestions = count.parse().ok().filter(|count| *count > 0);
                 }
             }
             ["banner-color"] => self.profile_editor_script_banner(cx),
@@ -698,5 +906,21 @@ impl Root {
             change(state);
             state.refit();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_route;
+
+    /// The editor asks for its profile as `u7` of module 927071 does: the modal type with mutual guilds and the mutual
+    /// friends' count.
+    #[test]
+    fn the_editor_fetches_the_modal_profile() {
+        assert_eq!(
+            profile_route(7, None),
+            "/users/7/profile?type=modal&with_mutual_guilds=true&with_mutual_friends=false&with_mutual_friends_count=true"
+        );
+        assert!(profile_route(7, Some(9)).ends_with("&guild_id=9"));
     }
 }

@@ -495,7 +495,96 @@ fn render_sized_at(
     .into_any_element()
 }
 
+/// What the fixed system bar does over the window's top 32px.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SystemBar {
+    /// Nothing covers the title bar: the page's own bar takes the pointer.
+    Hidden,
+    /// A dialog or User Settings is open: the bar is a drag area with the window's buttons, above every scrim, so
+    /// a press there moves the window and never reaches the scrim that closes the dialog.
+    Drag,
+    /// A full-window layer (Server or Channel Settings) is open: only the buttons take the pointer
+    /// (`disablePointerEvents_3zSH5d`).
+    ButtonsOnly,
+}
+
+/// `v5` of module 71855 as module 446269 mounts it: `fixed`, shown while a layer or a modal is open, without pointer
+/// events but for its buttons while a layer is. A layer alone draws the same buttons itself, in the same place, so
+/// the bar adds them only once a dialog's scrim covers the layer's.
+pub(super) fn system_bar_mode(dialogs: usize, layer: bool) -> SystemBar {
+    match (dialogs > 0, layer) {
+        (false, _) => SystemBar::Hidden,
+        (true, true) => SystemBar::ButtonsOnly,
+        (true, false) => SystemBar::Drag,
+    }
+}
+
 impl Root {
+    /// Dialogs and User Settings, without the menus and popouts that `modal_open` also counts: those do not cover
+    /// the title bar, and a press on it still closes them.
+    fn covering_dialogs(&self) -> usize {
+        let popouts = [
+            self.menu.is_some(),
+            self.context.open.is_some(),
+            self.snooze_menu.is_some(),
+            self.friend_menu.is_some(),
+            self.profile_menu.is_some(),
+            self.file_menu.is_some(),
+            self.audio_menu.is_some(),
+            self.account_switcher_open(),
+            self.search_filters.is_some(),
+        ]
+        .into_iter()
+        .filter(|open| *open)
+        .count();
+        // The `modal_open` counts the settings layers as one; of them only User Settings and the profile editor are
+        // dialogs over the window, Server and Channel Settings fill it.
+        let dialog_layers = usize::from(self.settings.is_some() || self.profile_editor.is_some());
+        let layers = usize::from(
+            dialog_layers > 0 || self.server_settings.is_some() || self.channel_settings.is_some(),
+        );
+        let settings_confirm = usize::from(
+            self.channel_settings
+                .as_ref()
+                .is_some_and(|open| open.confirm_delete)
+                || self.overview_confirm_open()
+                || self.webhook_confirm_open()
+                || self.safety_confirm_open(),
+        );
+        (self.modal_open() + dialog_layers + settings_confirm).saturating_sub(popouts + layers)
+    }
+
+    /// The app's fixed system bar (`bar_3zSH5d systemBar_3zSH5d fixed_3zSH5d show_3zSH5d`, z-index 999999, the
+    /// whole 32px top row with `-webkit-app-region: drag` in design/dom/settings/account-darker-cozy.json): over
+    /// the scrim of every dialog, so pressing the title bar drags the window or works the button under it instead of
+    /// closing the dialog. (The official bar's `onClick` also closes the Quick Switcher; here a press on the drag
+    /// area goes to the window manager, as a drag.)
+    pub(super) fn system_bar(&self) -> Option<AnyElement> {
+        let dialog_over_layer = self.settings.is_some() || self.profile_editor.is_some();
+        let layer = !dialog_over_layer
+            && (self.server_settings.is_some() || self.channel_settings.is_some());
+        let mode = system_bar_mode(self.covering_dialogs(), layer);
+        if mode == SystemBar::Hidden {
+            return None;
+        }
+        let bar = div()
+            .id("system-bar")
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .h(px(32.))
+            .flex()
+            .justify_end()
+            .when(mode == SystemBar::Drag, |bar| {
+                bar.occlude()
+                    .window_control_area(gpui::WindowControlArea::Drag)
+            })
+            .child(super::window_controls());
+        // Above every dialog's scrim (priorities up to 4), under the motion driver.
+        Some(deferred(bar).with_priority(5).into_any_element())
+    }
+
     /// `message_LE5yVN`: a message as it appears in a confirmation, on `--background-base-low` with a 1px ring and a
     /// soft drop shadow, 10px above and below.
     pub(super) fn message_preview(&self, message: &Message) -> AnyElement {
@@ -609,5 +698,21 @@ impl Root {
             },
             cx,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SystemBar, system_bar_mode};
+
+    /// Module 446269 shows the fixed bar while a modal or a layer is open; over a layer it takes no pointer but
+    /// for its buttons. Here a layer alone keeps its own buttons, so the bar waits for a dialog over it.
+    #[test]
+    fn the_system_bar_covers_the_title_bar_while_a_dialog_is_open() {
+        assert_eq!(system_bar_mode(0, false), SystemBar::Hidden);
+        assert_eq!(system_bar_mode(1, false), SystemBar::Drag);
+        assert_eq!(system_bar_mode(3, false), SystemBar::Drag);
+        assert_eq!(system_bar_mode(0, true), SystemBar::Hidden);
+        assert_eq!(system_bar_mode(1, true), SystemBar::ButtonsOnly);
     }
 }

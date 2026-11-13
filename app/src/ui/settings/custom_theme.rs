@@ -391,6 +391,25 @@ pub(super) fn next_colour(last: u32) -> u32 {
     (along(1. / 3.) << 16) | (along(0.) << 8) | along(-1. / 3.)
 }
 
+/// "Add Color" is offered while fewer than five colours are held (module 500779: `a.length<5&&` around the button and
+/// `if(5===a.length)return` in its handler).
+fn can_add_colour(held: usize) -> bool {
+    held < MAX_COLOURS
+}
+
+/// The editor's three fields while it is open.
+#[cfg(feature = "capture")]
+pub(super) fn editors() -> Vec<Entity<Editor>> {
+    with_state(|state| {
+        vec![
+            state.hex.clone(),
+            state.intensity.clone(),
+            state.angle.clone(),
+        ]
+    })
+    .unwrap_or_default()
+}
+
 fn with_state<R>(run: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|state| state.borrow_mut().as_mut().map(run))
 }
@@ -538,7 +557,7 @@ fn custom_slider(
 
 impl Root {
     /// Opens the editor from "Try it out": the whole app takes the theme, the panel goes on the right.
-    pub(super) fn open_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn open_custom_theme_editor(&mut self, cx: &mut Context<Self>) {
         // The editor opens on the custom theme worn now (`customUserThemeSettings` fills its store, module 590703), else
         // on the defaults; its Appearance pair follows the theme of the app.
         let theme = self.theme_wanted().theme;
@@ -831,7 +850,7 @@ impl Root {
 
     fn custom_theme_add_colour(&mut self, cx: &mut Context<Self>) {
         let added = with_state(|state| {
-            if state.custom.colors.len() >= MAX_COLOURS {
+            if !can_add_colour(state.custom.colors.len()) {
                 return false;
             }
             let next = next_colour(*state.custom.colors.last().unwrap_or(&DEFAULT_COLOUR));
@@ -1269,7 +1288,11 @@ impl Root {
 
         let at_default = custom == default_custom();
         let on_unlock = "--black";
-        Some(
+        // The panel is a sibling of the app (`appAsidePanelWrapper_YRXZu0`: the app's `notAppAsidePanel` takes what is
+        // left of the row), so nothing of the app is ever drawn over it; the app's layers (`layerContainer_VVADeK`,
+        // z-index 1002, the whole window wide) are. Deferred at the lowest priority: after every page, under every
+        // popout, menu and modal (their layers are deferred later or higher).
+        Some(gpui::deferred(
             div()
                 .id("custom-theme-panel")
                 .absolute()
@@ -1405,19 +1428,20 @@ impl Root {
                                             )
                                             .children(remove),
                                     )
-                                    .child(
-                                        button(
-                                            "custom-theme-add",
-                                            "theme_editor_plus",
-                                            dc_intl::tr("Add Color"),
-                                            false,
-                                        )
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| {
+                                    // `a.length<5&&`: the button is gone while five colours are held.
+                                    .when(can_add_colour(custom.colors.len()), |colours| {
+                                        colours.child(
+                                            button(
+                                                "custom-theme-add",
+                                                "theme_editor_plus",
+                                                dc_intl::tr("Add Color"),
+                                                false,
+                                            )
+                                            .on_click(cx.listener(|this, _, _, cx| {
                                                 this.custom_theme_add_colour(cx)
-                                            }),
-                                        ),
-                                    ),
+                                            })),
+                                        )
+                                    }),
                             ),
                         )
                         .child(
@@ -1487,9 +1511,9 @@ impl Root {
                     div()
                         .absolute()
                         .top_0()
+                        .bottom(px(footer_height))
                         .left_0()
                         .w_full()
-                        .h(px(718. - footer_height))
                         .child(crate::ui::menu::menu_scrollbar(scroll)),
                 )
                 .children(nitro_footer)
@@ -1517,7 +1541,7 @@ impl Root {
                                         .size(px(40.))
                                         .flex_none()
                                         .rounded(px(8.))
-                                        .bg(rgba(0x0000008f))
+                                        .bg(color("--control-secondary-background-default"))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1530,6 +1554,7 @@ impl Root {
                                         .h(px(40.))
                                         .rounded(px(8.))
                                         .bg(color("--white"))
+                                        .shadow(Self::nitro_glow())
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1565,9 +1590,10 @@ impl Root {
                                         .child(dc_intl::tr("Back to Settings")),
                                 ),
                         ),
-                ))
-                .into_any_element(),
+                )),
         )
+        .with_priority(0)
+        .into_any_element())
     }
 
     /// `eV` for a Nitro subscriber: Share (`ej`), the secondary Back (`13/7kX`, which closes the editor for the
@@ -1606,7 +1632,6 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_pointer()
                     .child(mask_icon(
                         "clips_share",
                         20.,
@@ -1844,6 +1869,13 @@ mod tests {
                 custom.colors
             );
         }
+    }
+
+    #[test]
+    fn add_color_stops_at_five() {
+        assert!(can_add_colour(1));
+        assert!(can_add_colour(4));
+        assert!(!can_add_colour(5));
     }
 
     #[test]

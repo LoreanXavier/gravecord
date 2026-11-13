@@ -139,6 +139,8 @@ impl Root {
             self.streams_stop_all(cx);
         }
         self.soundboard_stop();
+        // A new connection of this session (`S = null`): the notice of a call taken elsewhere goes.
+        self.vv.notices.clear();
         info!("joining voice");
         self.open_call(guild, channel);
         if let Some(sound) = super::voice_sounds::connect_start_sound(
@@ -204,6 +206,9 @@ impl Root {
 
     /// After a dispatch reached the stores: what it means for the voice connection of the call here.
     pub(super) fn voice_after_dispatch(&mut self, name: &str, cx: &mut Context<Self>) {
+        if name == "READY" {
+            self.vv.notices.clear();
+        }
         let Some(call) = &self.call else {
             return;
         };
@@ -330,6 +335,9 @@ impl Root {
             (call.guild, call.channel),
             (id(&data["guild_id"]).unwrap_or(0), id(&data["channel_id"])),
         ) {
+            // Module 495867: `S = i.channelId`, which raises the VOICE_DISABLED notice (module 596339).
+            let (guild, channel) = (call.guild, call.channel);
+            self.vv.notices.voice_taken(guild, channel);
             self.end_voice(false, cx);
         }
     }

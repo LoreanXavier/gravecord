@@ -466,7 +466,8 @@ impl Root {
             return None;
         }
         let url = video.proxy_url.as_deref().unwrap_or(&video.url);
-        let (width, height) = Embed::fitted(embed.image.as_ref()?);
+        // The clip is drawn at its poster's size (`eh` in module 265705 passes the thumbnail's).
+        let (width, height) = super::embed_layout::gifv_size(embed)?;
         let key = key(message, index, url);
         self.inline_videos.borrow_mut().register(
             &key,

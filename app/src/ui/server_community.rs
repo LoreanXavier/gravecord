@@ -2204,6 +2204,13 @@ impl Root {
         )
     }
 
+    pub(super) fn overview_confirm_open(&self) -> bool {
+        self.server_settings
+            .as_ref()
+            .and_then(|open| open.overview.as_ref())
+            .is_some_and(|overview| overview.confirm_disable)
+    }
+
     /// The question before a discoverable server stops being a community.
     pub(super) fn overview_confirm_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overview = self.server_settings.as_ref()?.overview.as_ref()?;

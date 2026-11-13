@@ -37,6 +37,23 @@ pub(super) fn plus_badge() -> Div {
     )
 }
 
+/// The "new" badge (`TextBadge` type new, primary) in `newBadgeHost_cuaHiV`.
+fn new_pill() -> Div {
+    div()
+        .h(px(16.))
+        .px(px(8.))
+        .ml(px(4.))
+        .rounded(px(8.))
+        .bg(color("--brand-500"))
+        .flex()
+        .items_center()
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight(600.))
+        .text_color(color("--white"))
+        .child(dc_intl::tr("NEW"))
+}
+
 /// `profileSkeletonImage_ywx4Ps` of the capture: the skeleton profile behind an equipped effect or frame.
 const SKELETON_PROFILE: &str = "https://cdn.discordapp.com/assets/content/6ccc97f30d0e11f23e116bb2534831ca573533a9dd726f5859ae527e82cdf37a.png";
 
@@ -55,18 +72,34 @@ impl Root {
             return div().into_any_element();
         };
         let mode = open.mode;
+        let geometry = open.geometry;
         let body = match mode {
             Mode::Main => self.profile_editor_main_panel(user, cx),
             Mode::Nitro => self.profile_editor_nitro_panel(user, cx),
         };
+        // `editingPanel_s3DB6Y`: the 240px inner panel between its borders (the start one from 1169px), padded under
+        // the title bar below 785px.
         div()
             .parity("profile-editor-panel")
-            .w(px(242.))
+            .w(px(geometry.panel_width))
             .h_full()
             .flex_none()
             .bg(color("--background-surface-high"))
-            .pt(px(32.))
-            .pl(px(1.))
+            .pt(px(geometry.system_bar))
+            .relative()
+            .when(geometry.panel_width > 241., |this| {
+                this.pl(px(1.)).child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(1.))
+                        .bg(color("--border-normal")),
+                )
+            })
+            .border_r_1()
+            .border_color(color("--border-subtle"))
             .flex()
             .flex_col()
             .child(body)
@@ -132,11 +165,27 @@ impl Root {
             .child(div().flex_1())
             .child(
                 div()
+                    .id("profile-editor-collapse")
                     .size(px(32.))
                     .mt(px(4.))
+                    .when(
+                        self.profile_editor
+                            .as_ref()
+                            .is_some_and(|open| open.geometry.panel_over),
+                        |this| this.mr(px(36.)),
+                    )
+                    .rounded(px(8.))
+                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.profile_editor.as_mut() {
+                            open.panel_collapsed = !open.panel_collapsed;
+                        }
+                        cx.notify();
+                    }))
                     .child(icon("profile_editor_collapse", 16., "--icon-subtle")),
             )
             .into_any_element()
@@ -169,11 +218,14 @@ impl Root {
             .theme_colors
             .flatten()
             .or(open.saved.theme_colors);
-        let banner_image = open.banner_image.clone();
+        let banner_image = open
+            .banner_image
+            .clone()
+            .or_else(|| self.profile_editor_saved_banner());
 
         let nameplate =
             tile("profile-editor-tile-nameplate", 208., 42.)
-                .child(self.nameplate_preview(user, 208., None))
+                .child(self.nameplate_preview(user, 208., true))
                 .child(div().absolute().right(px(8.)).top(px(9.)).child(
                     if user.nameplate.is_some() {
                         div()
@@ -333,16 +385,28 @@ impl Root {
         let locked = guild_mode && !premium;
         let nitro_groups = premium || guild_mode;
         let display_styles = user.display_name_styles.as_deref().cloned();
+        // `nH` of module 927071: the styled name in `heading-xl/semibold`, or the plain name muted
+        // (`previewTextUnstyled_ewY9mf`); `nY`'s affordance is the add badge while no style is set.
+        let unstyled = display_styles.is_none();
         let name_bar = tile("profile-editor-tile-name-style", 208., 42.)
             .flex()
             .items_center()
-            .justify_center()
             .child(
                 div()
-                    .text_size(px(24.))
-                    .line_height(px(32.))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .px(px(8.))
+                    .flex()
+                    .justify_center()
+                    .overflow_hidden()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
                     .font_weight(FontWeight(600.))
-                    .text_color(color("--text-default"))
+                    .text_color(color(if unstyled {
+                        "--text-muted"
+                    } else {
+                        "--text-default"
+                    }))
                     .child(name_styles::name(
                         "profile-editor-tile-name-style",
                         user.display_name().to_owned(),
@@ -350,14 +414,43 @@ impl Root {
                         name_styles::Display::Animated,
                     )),
             )
+            .children(unstyled.then(|| div().flex_none().mr(px(8.)).child(plus_badge())))
             .on_click(cx.listener(|this, _, _, cx| this.profile_editor_open_styles(cx)));
+        // `iC` / `iy` of module 927071: the theme's two colours as a top-to-bottom gradient with a swatch at each end
+        // (`gradient_Z2TFt5`, `swatchOuter_Z2TFt5` 32px, `swatchInner_Z2TFt5` 16px with a 2px white border and 2px
+        // padding).
         let theme_colors = theme_pending.unwrap_or([banner, banner]);
-        let theme_tile = tile("profile-editor-tile-theme", 100., 100.).bg(linear_gradient(
-            180.,
-            linear_color_stop(rgba((theme_colors[0] << 8) | 0xff), 0.),
-            linear_color_stop(rgba((theme_colors[1] << 8) | 0xff), 1.),
-        ));
+        let swatch = |value: u32| {
+            div()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(24.))
+                        .rounded(px(8.))
+                        .border_2()
+                        .border_color(color("--white"))
+                        .bg(rgba((value << 8) | 0xff)),
+                )
+        };
+        let theme_tile = tile("profile-editor-tile-theme", 100., 100.)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba((theme_colors[0] << 8) | 0xff), 0.),
+                linear_color_stop(rgba((theme_colors[1] << 8) | 0xff), 1.),
+            ))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_between()
+            .child(swatch(theme_colors[0]))
+            .child(swatch(theme_colors[1]));
+
+        // `nG`: the banner over the profile's colour; the add badge while there is no picture.
         let banner_picture = tile("profile-editor-tile-banner-image", 100., 100.)
+            .bg(rgba((banner << 8) | 0xff))
             .flex()
             .items_center()
             .justify_center()
@@ -371,6 +464,12 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.profile_editor_pick_image(super::upload::Target::Banner, cx);
             }));
+        // `ly`: the NEW badge until `DISPLAY_NAME_STYLES_FLYWHEEL_NEW_BADGE_PROFILE_PAGE` is dismissed (opening the
+        // styles takes that action); not on a disabled group.
+        let new_styles = !locked
+            && !self
+                .stores
+                .content_dismissed(super::NAME_STYLES_NEW_CONTENT);
         let section = |heading: Div, content: Div, locked: bool| {
             div()
                 .flex()
@@ -402,7 +501,8 @@ impl Root {
         if nitro_groups {
             groups = groups
                 .child(section(
-                    servers::nitro_label(dc_intl::tr("Display Name Style"), locked),
+                    servers::nitro_label(dc_intl::tr("Display Name Style"), locked)
+                        .children(new_styles.then(new_pill)),
                     div().child(name_bar),
                     locked,
                 ))
@@ -746,6 +846,14 @@ impl Root {
     }
 
     pub(super) fn profile_editor_open_styles(&mut self, cx: &mut Context<Self>) {
+        // `ly`'s `onOpen`: the NEW badge's content is dismissed with `TAKE_ACTION`.
+        if self
+            .profile_editor
+            .as_ref()
+            .is_some_and(|open| open.mode == Mode::Main)
+        {
+            self.dismiss_profile_content(super::NAME_STYLES_NEW_CONTENT);
+        }
         let user = self.stores.current_user.clone().unwrap_or_default();
         if let Some(open) = self.profile_editor.as_mut() {
             let start = open

@@ -124,6 +124,13 @@ fn custom_params() -> Option<Custom> {
     CUSTOM.with(|slot| slot.borrow().as_ref().map(|(_, custom)| custom.clone()))
 }
 
+/// The custom theme editor's text fields (hex, intensity, direction) while it is open, for the test harness to find
+/// the focused one.
+#[cfg(feature = "capture")]
+pub(in crate::ui) fn editor_fields() -> Vec<gpui::Entity<crate::editor::Editor>> {
+    super::custom_theme::editors()
+}
+
 pub(in crate::ui) fn editing() -> bool {
     EDITING.load(Ordering::Relaxed)
 }
@@ -210,9 +217,9 @@ fn level(name: &str, light: bool) -> Option<f32> {
         "--background-base-lowest" => ((0.45, 0.75), (0.42, 0.70)),
         // `chat`: 0.48 + 0.4 * 0.8, light 0.85 * (0.6 + 0.4).
         "--background-base-lower" | "--channel-background-default" => ((0.48, 0.80), (0.51, 0.85)),
-        // `highest`: 0.39 + 0.4 * 0.65, light 0.95.
+        // `highest`: 0.39 + 0.4 * 0.65, light 0.95 * (0.8 + amount * 0.2) = 0.76 + 0.4 * 0.475.
         "--background-base-low" | "--chat-background-default" | "--chat-background" => {
-            ((0.39, 0.65), (0.95, 0.))
+            ((0.39, 0.65), (0.76, 0.475))
         }
         _ => return None,
     };
@@ -291,15 +298,64 @@ fn mid_surface(swatch: &Swatch, light: bool) -> Rgba {
     }
 }
 
+/// `--custom-background-gradient-highest-opacity` of `.custom-theme-background.custom-client-theme` (`419070`): dark
+/// `0.39 + amount * 0.4 * 0.65`, light `0.95 * (0.8 + amount * 0.2)`, `amount` being the mix amount (1 for a preset).
+fn highest_opacity(light: bool, amount: f32) -> f32 {
+    if light {
+        0.95 * (0.8 + amount * 0.2)
+    } else {
+        0.39 + amount * 0.4 * 0.65
+    }
+}
+
 /// A surface that repaints the gradient instead of lying over the surface behind it: the chat input
-/// (`--background-gradient-highest`: the window's gradient under 0.65 black, or 0.95 white). It fills its parent, so
-/// the parent has to be positioned, and it is drawn first.
+/// (`--background-gradient-highest`: the window's gradient under the highest layer). It fills its parent, so the
+/// parent has to be positioned, and it is drawn first.
 pub(in crate::ui) fn cover(radius: f32) -> Option<AnyElement> {
+    let amount = custom_mix_amount().unwrap_or(1.);
     cover_with(
         radius,
-        0.95,
-        0.39 + custom_mix_amount().unwrap_or(1.) * 0.26,
+        0.,
+        highest_opacity(true, amount),
+        highest_opacity(false, amount),
     )
+}
+
+/// The user panel at the bottom of the sidebar (`.panels_pog62O`, module 4396's stylesheet): its background is
+/// `var(--background-gradient-highest, var(--background-base-low))`, so under a colour theme it is opaque: the
+/// window's gradient at its own place under the highest layer, out to the outer edge of its 1px border (CSS paints a
+/// background under the border) with the 8px corners. Nothing of the channel list or the guild rail running behind
+/// it shows through, and the sidebar's own layer does not add to it.
+pub(in crate::ui) fn panels_cover() -> Option<AnyElement> {
+    let amount = custom_mix_amount().unwrap_or(1.);
+    cover_with(
+        8.,
+        1.,
+        highest_opacity(true, amount),
+        highest_opacity(false, amount),
+    )
+}
+
+/// A surface filled with a level token (`--background-base-low`, `-lower`, `-lowest` and the chat ones) under a colour
+/// theme, painted the way the official paints its `--background-gradient-*` surfaces: the window's gradient at its own
+/// place under that level's layer, so it is opaque and comes out the colour of the surface of that level around it.
+/// The token's flat colour is a translucent layer that lets whatever lies under it show through: an avatar under its
+/// status ring, the rows under a floating panel. `None` while no colour theme is on or for a token that is no level.
+pub(in crate::ui) fn token_cover(name: &str, radius: f32) -> Option<AnyElement> {
+    let swatch = active()?;
+    let light = is_light(swatch);
+    let opacity = level(name, light)?;
+    cover_with(radius, 0., opacity, opacity)
+}
+
+/// `.custom-theme-background .panels_pog62O { border-color: var(--app-frame-border) }`: the user panel's border while
+/// a colour theme is on, `--border-muted` otherwise.
+pub(in crate::ui) fn panels_border() -> &'static str {
+    if active().is_some() {
+        "--app-frame-border"
+    } else {
+        "--border-muted"
+    }
 }
 
 /// The cards of the member list (`--background-surface-high`): the window's gradient at the card's own place under a
@@ -307,10 +363,17 @@ pub(in crate::ui) fn cover(radius: f32) -> Option<AnyElement> {
 /// is the first stop under 0.70 white.
 pub(in crate::ui) fn surface_cover(radius: f32) -> Option<AnyElement> {
     let amount = custom_mix_amount().unwrap_or(1.);
-    cover_with(radius, 0.42 + amount * 0.28, 0.45 + amount * 0.3)
+    cover_with(radius, 0., 0.42 + amount * 0.28, 0.45 + amount * 0.3)
 }
 
-fn cover_with(radius: f32, light_opacity: f32, dark_opacity: f32) -> Option<AnyElement> {
+/// `outset`: how far the cover reaches past its parent's padding box on every side (a border's width, so it lies
+/// under the border as a CSS background does).
+fn cover_with(
+    radius: f32,
+    outset: f32,
+    light_opacity: f32,
+    dark_opacity: f32,
+) -> Option<AnyElement> {
     let swatch = active()?;
     let light = is_light(swatch);
     let opacity = if light { light_opacity } else { dark_opacity };
@@ -337,9 +400,10 @@ fn cover_with(radius: f32, light_opacity: f32, dark_opacity: f32) -> Option<AnyE
             },
         )
         .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
+        .top(px(-outset))
+        .left(px(-outset))
+        .right(px(-outset))
+        .bottom(px(-outset))
         .into_any_element(),
     )
 }
@@ -354,6 +418,54 @@ fn backdrop_for(swatch: &'static Swatch, width: f32, height: f32) -> Arc<gpui::R
         }
         cache.as_ref().map(|(_, picture)| picture.clone()).unwrap()
     })
+}
+
+/// One shaded rectangle of the window's backdrop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Shade {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    opacity: f32,
+}
+
+/// The frame around the chat over the gradient: the title bar and the guild list (`--background-gradient-app-frame`:
+/// `higher`, 0.42 + amount * 0.28 black, 0.325 + amount * 0.325 white) and the channel list (`guildSidebar_iar92T`
+/// and `privateChannels_u88IQl`: `high`, 0.45 + amount * 0.3 black, 0.42 + amount * 0.28 white), both down to the
+/// window's bottom edge. The captures (`appearance-theme-preview-dark`, `custom-theme-editor-nonnitro`) show the rail's
+/// and the sidebar's colours unchanged in the 8px around the user panel and under it; the panel paints its own opaque
+/// cover over them (`panels_cover`), so nothing is cut out for it here.
+fn backdrop_shades(width: f32, height: f32, light: bool, amount: f32) -> [Shade; 3] {
+    let (frame, side) = if light {
+        (0.325 + amount * 0.5 * 0.65, 0.42 + amount * 0.4 * 0.7)
+    } else {
+        (0.42 + amount * 0.4 * 0.7, 0.45 + amount * 0.4 * 0.75)
+    };
+    let below_title = (height - 32.).max(0.);
+    [
+        Shade {
+            x: 0.,
+            y: 0.,
+            w: width,
+            h: 32.,
+            opacity: frame,
+        },
+        Shade {
+            x: 0.,
+            y: 32.,
+            w: 72.,
+            h: below_title,
+            opacity: frame,
+        },
+        Shade {
+            x: 72.,
+            y: 32.,
+            w: 303.,
+            h: below_title,
+            opacity: side,
+        },
+    ]
 }
 
 /// A black (dark) or white (light) layer of `opacity`.
@@ -650,6 +762,21 @@ fn mixed(name: &str, swatch: &'static Swatch) -> Option<Rgba> {
     })
 }
 
+/// A token as an element's plain `background-color` reads it (`background-color: var(--background-base-lower)`), not
+/// as one of the gradient surfaces (`background: var(--background-gradient-chat, var(--background-base-lower))`).
+/// Under a colour theme the official's palette token is opaque: the palette colour with the theme's base colour mixed
+/// in (`theme_mix_tokens`). `color()` gives the level tokens as the translucent layer of the gradient surface, which
+/// is right for the surfaces laid on the window's gradient and doubles up on a card inside one of them (the audio
+/// player's `wrapperAudio_FJ99sr` came out nearly black in the chat). Without a colour theme this is `color()`.
+pub(in crate::ui) fn solid(name: &str) -> Rgba {
+    if let Some(swatch) = active()
+        && let Some(mixed) = mixed(name, swatch)
+    {
+        return mixed;
+    }
+    crate::ui::color(name)
+}
+
 /// A panel colour of the palette with the theme's base colour mixed in, as the preview panel of the captures.
 pub(super) fn tinted(name: &str) -> Rgba {
     let own = rgba(theme().color(name));
@@ -773,43 +900,27 @@ impl Root {
     pub(in crate::ui) fn theme_backdrop(&self, width: f32, height: f32) -> Option<AnyElement> {
         let swatch = active()?;
         let picture = backdrop_for(swatch, width, height);
-        // The frame around the chat: the title bar and the guild list (`--custom-background-gradient-app-frame`:
-        // 0.70 black, 0.65 white) and the sidebar (`high`: 0.75, 0.70), measured on the capture at their pixels.
-        // The user panel at the bottom keeps its own token layer.
         let light = is_light(swatch);
         let amount = custom_mix_amount().unwrap_or(1.);
-        let (frame, side) = if light {
-            (0.325 + amount * 0.5 * 0.65, 0.42 + amount * 0.4 * 0.7)
-        } else {
-            (0.42 + amount * 0.4 * 0.7, 0.45 + amount * 0.4 * 0.75)
-        };
-        let shade = |x: f32, y: f32, w: f32, h: f32, opacity: f32| {
-            div()
-                .absolute()
-                .left(px(x))
-                .top(px(y))
-                .w(px(w))
-                .h(px(h))
-                .bg(layer(opacity, light))
-        };
-        let panel = 64.;
-        Some(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .child(img(picture).size_full().object_fit(gpui::ObjectFit::Fill))
-                .child(shade(0., 0., width, 32., frame))
-                .child(shade(0., 32., 72., height - 32. - panel, frame))
-                .child(shade(72., 32., 303., height - 32. - panel, side))
-                // The margins around the user panel (8px, the panel at x 8 to 366 of the capture).
-                .child(shade(0., height - panel, 375., 8., frame))
-                .child(shade(0., height - 8., 375., 8., frame))
-                .child(shade(0., height - panel + 8., 8., panel - 16., frame))
-                .child(shade(366., height - panel + 8., 9., panel - 16., side))
-                .into_any_element(),
-        )
+        let shades = backdrop_shades(width, height, light, amount);
+        let mut backdrop = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(img(picture).size_full().object_fit(gpui::ObjectFit::Fill));
+        for shade in shades {
+            backdrop = backdrop.child(
+                div()
+                    .absolute()
+                    .left(px(shade.x))
+                    .top(px(shade.y))
+                    .w(px(shade.w))
+                    .h(px(shade.h))
+                    .bg(layer(shade.opacity, light)),
+            );
+        }
+        Some(backdrop.into_any_element())
     }
 
     /// The right panel of Preview Theme mode (`design/golden/windows/settings/appearance-theme-preview-*`): 298 wide.
@@ -914,8 +1025,9 @@ impl Root {
                 .font_weight(FontWeight(weight))
                 .text_color(color(tint))
         };
+        // Beside the app like the editor's panel (`custom_theme_panel`): drawn after every page, under every layer.
         Some(
-            div()
+            gpui::deferred(div()
                 .id("theme-preview-panel")
                 .absolute()
                 .top_0()
@@ -1084,6 +1196,7 @@ impl Root {
                                         } else {
                                             color("--white")
                                         })
+                                        .shadow(Self::nitro_glow())
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1119,7 +1232,8 @@ impl Root {
                                         .child(dc_intl::tr("Exit Preview")),
                                 ),
                         ),
-                )
+                ))
+                .with_priority(0)
                 .into_any_element(),
         )
     }
@@ -1179,6 +1293,36 @@ mod tests {
         }
         assert!(BASE_DARK.contains(&"--modal-background"));
         assert!(TEXT_DARK.contains(&"--icon-default"));
+    }
+
+    #[test]
+    fn the_backdrop_leaves_no_hole_under_the_user_panel() {
+        // The captures keep the rail's and the sidebar's colours down to the bottom edge, around and under the user
+        // panel; the old hole for a 48px panel put a near-black band over the top of the 58px one.
+        for light in [false, true] {
+            let shades = backdrop_shades(1280., 720., light, 0.482);
+            for shade in &shades[1..] {
+                assert_eq!(shade.y + shade.h, 720.);
+            }
+            assert_eq!(shades[1].x + shades[1].w, shades[2].x);
+            assert_eq!(shades[2].x + shades[2].w, 375.);
+        }
+    }
+
+    #[test]
+    fn the_highest_level_follows_the_intensity_in_both_bases() {
+        // A preset (amount 1): 0.65 black, 0.95 white.
+        assert!((highest_opacity(false, 1.) - 0.65).abs() < 1e-6);
+        assert!((highest_opacity(true, 1.) - 0.95).abs() < 1e-6);
+        // The custom editor's default (74%: amount 0.482): the user panel over #5865F2 is (43, 49, 117) on
+        // `custom-theme-editor-nonnitro-darker-cozy@1.png` at (200, 680).
+        let opacity = highest_opacity(false, (30. + 0.7 * 26.) / 100.);
+        let panel = [88., 101., 242.].map(|channel: f32| (channel * (1. - opacity)).round());
+        assert_eq!(panel, [43., 49., 117.]);
+        // Light: 0.95 * (0.8 + 0.2 * amount), lower than 0.95 below 100% intensity.
+        assert!((highest_opacity(true, 0.3) - 0.95 * 0.86).abs() < 1e-6);
+        // The token layer of `--background-base-low` is the same number.
+        assert!((overlay_opacity("--background-base-low", true).unwrap() - 0.95).abs() < 1e-6);
     }
 
     #[test]

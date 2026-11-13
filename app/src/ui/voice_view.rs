@@ -36,7 +36,6 @@ const ART_URL: &str = "https://discord.com/assets/664390de11a80444.svg";
 const CONNECT: u64 = 1 << 20;
 const CHAT_WIDTH: f32 = 450.;
 const MORE_WIDTH: f32 = 239.6;
-const TILE_MENU_WIDTH: f32 = 220.;
 
 /// The four checkboxes of the More Options menu; all on until the person changes them.
 pub(super) fn call_setting(key: &str) -> bool {
@@ -49,7 +48,7 @@ pub(super) fn set_call_setting(key: &str, on: bool) {
     storage::set(key, serde_json::json!(on));
 }
 
-fn toggle_call_setting(key: &str) {
+pub(super) fn toggle_call_setting(key: &str) {
     storage::set(key, serde_json::json!(!call_setting(key)));
 }
 
@@ -152,6 +151,8 @@ pub(super) struct State {
     /// Channels whose chat is docked at the right.
     pub chat_open: HashSet<Id>,
     pub last_move: Instant,
+    /// The pointer left the call area (`onForceIdle`).
+    pub forced_idle: bool,
     /// A task is waiting for the idle time to run out.
     watching: bool,
     /// A task redraws every second for the call timer.
@@ -187,6 +188,15 @@ pub(super) struct State {
     /// The call view is being built for a call this account has not joined (`inCall` is false): every participant
     /// has a tile, none can be focused, and the bar and its menus are left to the join buttons.
     pub outside: bool,
+    /// The call-bar control the last press landed on, and whether its popup was open at that press (read in the
+    /// capture phase, before a popup's press-outside closes it), so its click closes instead of reopening.
+    pub opener: std::cell::Cell<Option<(&'static str, bool)>>,
+    /// Where the last press on the call bar was: a popup closed by that press lets it through to the control.
+    pub bar_press: std::cell::Cell<Option<Point<Pixels>>>,
+    /// The open right-click or Options menu of a tile (`call_menus.rs`).
+    pub tile_menu: Option<super::call_menus::Open>,
+    /// The notices of the call (`notice_bar.rs`): "Your voice has been disconnected ...".
+    pub notices: super::notice_bar::State,
     /// Dominant colour of an avatar by its image key, decoded once.
     colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
     pub(super) background: super::call_background::State,
@@ -197,6 +207,7 @@ impl Default for State {
         Self {
             chat_open: HashSet::new(),
             last_move: Instant::now(),
+            forced_idle: false,
             watching: false,
             ticking: false,
             menu: None,
@@ -214,6 +225,10 @@ impl Default for State {
             end_shows_stream: std::cell::Cell::new(false),
             controls_bottom: std::cell::Cell::new(0.),
             shown_call: (0, 0),
+            opener: std::cell::Cell::new(None),
+            bar_press: std::cell::Cell::new(None),
+            tile_menu: None,
+            notices: Default::default(),
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
         }
@@ -519,7 +534,8 @@ impl Root {
 
     /// The pointer moved over the view: the bar shows, and a redraw is due when the two seconds are over.
     pub(super) fn voice_view_moved(&mut self, cx: &mut Context<Self>) {
-        let was_idle = self.vv.last_move.elapsed() >= IDLE;
+        let was_idle = self.vv.last_move.elapsed() >= IDLE || self.vv.forced_idle;
+        self.vv.forced_idle = false;
         self.vv.last_move = Instant::now();
         if was_idle {
             cx.notify();
@@ -551,6 +567,35 @@ impl Root {
         .detach();
     }
 
+    /// `onMouseLeave: onForceIdle` of the call's root (module 156652): the pointer left the call area, so it is idle at
+    /// once unless something holds the idle off.
+    pub(super) fn voice_view_left(&mut self, cx: &mut Context<Self>) {
+        if !self.vv.forced_idle {
+            self.vv.forced_idle = true;
+            cx.notify();
+        }
+    }
+
+    /// How far the idle fade has gone back in, 1 shown and 0 idle: one value for the header, the bar and the
+    /// gradients, with their `.2s ease-in-out` (stylesheet 770583; none with reduced motion, `.full-motion` only).
+    pub(super) fn call_idle_t(&self, shown: bool) -> f32 {
+        let target = if shown { 1. } else { 0. };
+        if super::motion::reduced() {
+            return target;
+        }
+        super::motion::value(
+            super::motion::key(&("call-idle-fade", self.vv.popout_render)),
+            target,
+            super::motion::css(200., super::motion::Ease::EaseInOut),
+        )
+    }
+
+    /// The raw idle state of the call view (`idle` of module 461782): two seconds without a move or press in the area,
+    /// or the pointer gone from it, unless a menu or a popout of the call holds it off (`onPreventIdle`).
+    pub(super) fn call_idle(&self) -> bool {
+        !self.controls_shown()
+    }
+
     pub(super) fn controls_shown(&self) -> bool {
         // `dmcall controls`: a capture keeps the idle fade away, as the pointer resting in the area does.
         #[cfg(feature = "capture")]
@@ -558,8 +603,10 @@ impl Root {
             return true;
         }
         // The zoom controls hold the idle off while hovered or pressed (`onPreventIdle("interact")`, 117029).
-        self.vv.last_move.elapsed() < IDLE
+        (self.vv.last_move.elapsed() < IDLE && !self.vv.forced_idle)
             || self.vv.menu.is_some()
+            || self.audio_menu.as_ref().is_some_and(|menu| menu.call)
+            || self.panel.popout.is_some()
             || self.stream_zoom.box_hover
             || self.stream_zoom.held()
     }
@@ -640,10 +687,14 @@ impl Root {
                 name: user.display_name().to_owned(),
                 video,
                 going_live,
-                local_video_disabled: is_me && hide_own,
+                // Show My Own Camera off, or Disable Video of the person's menu (`isLocalVideoDisabled`).
+                local_video_disabled: (is_me && hide_own)
+                    || (!is_me && super::call_menus::video_disabled(state.user_id)),
                 connected: false,
             };
-            if going_live {
+            // Show My Screen Share off (module 666328): our own stream's tile is hidden from our own view only.
+            let hidden_stream = is_me && super::call_menus::own_stream_hidden(channel);
+            if going_live && !hidden_stream {
                 out.push(Participant {
                     user: user.clone(),
                     mute,
@@ -996,6 +1047,15 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
+                    // Module 156652: a press wakes the controls as a move does; the pointer leaving the area makes it idle at once.
+                    .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                        this.voice_view_moved(cx);
+                    }))
+                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                        if !*inside {
+                            this.voice_view_left(cx);
+                        }
+                    }))
                     .bg(mid("--background-base-lowest"))
                     .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
                         this.voice_view_moved(cx);
@@ -1039,6 +1099,15 @@ impl Root {
             .h_full()
             .overflow_hidden()
             .bg(mid("--background-base-lowest"))
+            // Module 156652: a press wakes the controls as a move does; the pointer leaving the area makes it idle at once.
+            .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                this.voice_view_moved(cx);
+            }))
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if !*inside {
+                    this.voice_view_left(cx);
+                }
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button.is_none() {
                     this.call_drags_end();
@@ -1207,7 +1276,7 @@ impl Root {
                 div()
                     .absolute()
                     .inset_0()
-                    .when(!shown, |this| this.opacity(0.).invisible())
+                    .opacity(self.call_idle_t(shown))
                     .child(fade(true))
                     .child(fade(false)),
             )
@@ -1314,30 +1383,38 @@ impl Root {
         } else {
             None
         };
-        let pill = div().h(px(32.)).flex().items_center().child(
-            div()
-                .h(px(32.))
-                .px(px(8.))
-                .py(px(6.))
-                .rounded(px(8.))
-                .bg(mid("--control-overlay-secondary-background-default"))
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_size(px(16.))
-                .line_height(px(20.))
-                .text_color(rgba(0xffffffff))
-                .when(stream_tile, |this| {
-                    this.child(icon("voice_view_stream", 16., "--white"))
-                })
-                .when(!stream_tile && person.mute, |this| {
-                    this.child(icon("voice_view_mic_slash", 16., "--white"))
-                })
-                .when(!stream_tile && person.deaf && !person.mute, |this| {
-                    this.child(icon("headphones_deafened", 16., "--white"))
-                })
-                .child(person.user.display_name().to_owned()),
-        );
+        // `overlayTitle_7NOr2f.idle_7NOr2f{opacity:0}` and `overlayButtonContainer_7NOr2f.idle_7NOr2f{opacity:0}`
+        // (stylesheet 655282): the name and the buttons go while the call is idle (module 175203 reads the idle context).
+        let idle = self.call_idle() && !self.vv.outside;
+        let pill = div()
+            .h(px(32.))
+            .flex()
+            .items_center()
+            .when(idle, |this| this.opacity(0.))
+            .child(
+                div()
+                    .h(px(32.))
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(8.))
+                    .bg(mid("--control-overlay-secondary-background-default"))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(rgba(0xffffffff))
+                    .when(stream_tile, |this| {
+                        this.child(icon("voice_view_stream", 16., "--white"))
+                    })
+                    .when(!stream_tile && person.mute, |this| {
+                        this.child(icon("voice_view_mic_slash", 16., "--white"))
+                    })
+                    .when(!stream_tile && person.deaf && !person.mute, |this| {
+                        this.child(icon("headphones_deafened", 16., "--white"))
+                    })
+                    .child(person.user.display_name().to_owned()),
+            );
         let options = div()
             .id(SharedString::from(format!("{tag}-options-{user_id}")))
             .size(px(32.))
@@ -1347,18 +1424,30 @@ impl Root {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .when(!menu_open, |this| {
+            .when(!menu_open && !idle, |this| {
                 this.opacity(0.)
                     .group_hover(group.clone(), |style| style.opacity(1.))
             })
+            .when(!menu_open && idle, |this| this.opacity(0.))
+            .capture_any_mouse_down(cx.listener(move |this, _: &gpui::MouseDownEvent, _, _| {
+                this.vv.opener.set(Some(("tile-options", menu_open)));
+            }))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 cx.stop_propagation();
-                this.vv.menu = Some(if stream_tile {
-                    Menu::Stream(user_id, event.position())
+                // Module 175203: Options opens the menu with `minimal: true` at the press; a press on it while its
+                // menu is open closes it.
+                if this.opener_was_open("tile-options") {
+                    this.vv.menu = None;
+                    this.vv.tile_menu = None;
+                    cx.notify();
+                    return;
+                }
+                let subject = if stream_tile {
+                    super::call_menus::Subject::Stream(user_id)
                 } else {
-                    Menu::Tile(user_id, event.position())
-                });
-                cx.notify();
+                    super::call_menus::Subject::User(user_id)
+                };
+                this.open_tile_menu(subject, true, event.position(), cx);
             }))
             .child(icon("voice_view_more", 16., "--white"));
         let outside = self.vv.outside;
@@ -1419,6 +1508,21 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(background)
+            .when(!outside, |this| {
+                // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream.
+                this.on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let subject = if stream_tile {
+                            super::call_menus::Subject::Stream(user_id)
+                        } else {
+                            super::call_menus::Subject::User(user_id)
+                        };
+                        this.open_tile_menu(subject, stream_tile, event.position, cx);
+                    }),
+                )
+            })
             .when(outside && stream_tile, |this| {
                 // `handleSelectParticipant` on a stream from outside the call: join it and watch.
                 this.cursor_pointer()
@@ -1928,7 +2032,9 @@ impl Root {
             .px(px(16.))
             .flex()
             .items_center()
-            .when(!shown, |this| this.opacity(0.).invisible())
+            // `topControls_rTsZa_` while idle: opacity 0 and 8px up, `.2s ease-in-out` (stylesheet 770583).
+            .opacity(self.call_idle_t(shown))
+            .mt(px(-8. * (1. - self.call_idle_t(shown))))
             .child(
                 div()
                     .ml(px(-1.))
@@ -1997,11 +2103,12 @@ impl Root {
         let muted = self.self_mute || self.self_deaf;
         let soundboard_reason = self.soundboard_disabled();
         let tray = |id: &'static str, glyph: &'static str| {
-            div().id(id).size(px(24.)).cursor_pointer().child(icon(
-                glyph,
-                24.,
-                "--interactive-icon-default",
-            ))
+            div()
+                .id(id)
+                .occlude()
+                .size(px(24.))
+                .cursor_pointer()
+                .child(icon(glyph, 24., "--interactive-icon-default"))
         };
         let primary_box = |id: &'static str| {
             div()
@@ -2108,7 +2215,16 @@ impl Root {
                     ),
             )
         })
-        .on_click(cx.listener(|this, _, _, cx| this.toggle_call_audio_menu(cx)));
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.clear_tip();
+            if this.opener_was_open("call-mic-chevron") {
+                this.audio_menu = None;
+                cx.notify();
+            } else if !this.audio_menu.as_ref().is_some_and(|menu| menu.call) {
+                this.toggle_call_audio_menu(cx);
+            }
+        }));
+        let mic_nub = self.bar_opener(mic_nub, "call-mic-chevron", mic_open, cx);
         let mic = div()
             .flex()
             .gap(px(1.))
@@ -2121,10 +2237,11 @@ impl Root {
                 mic_main,
                 cx,
             ))
-            .child(self.with_tip(
+            .child(self.bar_tip(
                 "call-mic-chevron-tip",
                 Tip::text(dc_intl::tr("More Microphone Options"), Side::Top),
                 mic_nub,
+                mic_open,
                 cx,
             ));
         let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
@@ -2176,29 +2293,33 @@ impl Root {
                 camera_button.on_click(cx.listener(|this, _, _, cx| this.voice_camera_clicked(cx))),
                 cx,
             ))
-            .child(
-                self.with_tip(
+            .child({
+                let open = self.vv.menu == Some(Menu::Camera);
+                self.bar_tip(
                     "call-camera-chevron-tip",
                     Tip::text(dc_intl::tr("More Camera Options"), Side::Top),
-                    nub(
+                    self.bar_opener(
+                        nub(
+                            "call-camera-chevron",
+                            if camera_on { active_text } else { "--white" },
+                        ),
                         "call-camera-chevron",
-                        if camera_on { active_text } else { "--white" },
+                        open,
+                        cx,
                     )
                     .when(camera_on, |this| this.bg(active_fill))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.vv.menu = if this.vv.menu == Some(Menu::Camera) {
-                            None
-                        } else {
-                            Some(Menu::Camera)
-                        };
-                        cx.notify();
+                        this.toggle_bar_menu("call-camera-chevron", Menu::Camera, cx);
                     })),
+                    open,
                     cx,
-                ),
-            );
+                )
+            });
         let streaming = self.own_stream().is_some();
         let section = |children: Vec<AnyElement>| {
+            // A press on the tray stays on the tray: it never reaches the tile or the background under it.
             div()
+                .occlude()
                 .flex()
                 .flex_none()
                 .items_center()
@@ -2212,18 +2333,20 @@ impl Root {
                 .children(children)
         };
         let more_open = self.vv.menu == Some(Menu::More);
-        let more = primary("call-more", "voice_view_more")
+        let more = self
+            .bar_opener(
+                primary("call-more", "voice_view_more"),
+                "call-more",
+                more_open,
+                cx,
+            )
             .relative()
             .child(self.anchor_probe("call-more"))
             .when(more_open, |this| this.bg(gpui::hsla(0., 0., 1., 0.1)))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.vv.menu = if this.vv.menu == Some(Menu::More) {
-                    None
-                } else {
-                    Some(Menu::More)
-                };
-                cx.notify();
+                this.toggle_bar_menu("call-more", Menu::More, cx);
             }));
+        let soundboard_open = self.panel.popout == Some(super::voice_panel::Popout::Soundboard);
         // Module 533978: `play()` when a click opens the picker (`ed`), and the leave half of the hover events only
         // while no popout is open.
         let soundboard = animated(
@@ -2236,12 +2359,23 @@ impl Root {
         .when(soundboard_reason.is_some(), |this| this.opacity(0.3))
         .when(soundboard_reason.is_none(), |this| {
             let id = soundboard_id.clone();
-            this.on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_soundboard(window, cx);
-                if this.panel.popout == Some(super::voice_panel::Popout::Soundboard) {
-                    lottie_icon::click(&id);
-                }
-            }))
+            self.bar_opener(this, "call-soundboard", soundboard_open, cx)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.clear_tip();
+                    let open = this.panel.popout == Some(super::voice_panel::Popout::Soundboard);
+                    if this.opener_was_open("call-soundboard") {
+                        if open {
+                            this.close_panel_popout(cx);
+                        }
+                        return;
+                    }
+                    if !open {
+                        this.toggle_soundboard(window, cx);
+                    }
+                    if this.panel.popout == Some(super::voice_panel::Popout::Soundboard) {
+                        lottie_icon::click(&id);
+                    }
+                }))
         });
         let centre = div()
             .parity("dm-call-tray")
@@ -2281,24 +2415,32 @@ impl Root {
                                 cx,
                             ),
                         )
-                        .child(
-                            self.with_tip(
+                        .child({
+                            let open = self.vv.menu == Some(Menu::Share);
+                            self.bar_tip(
                                 "call-screen-chevron-tip",
                                 Tip::text("More Stream Options", Side::Top),
-                                nub("call-screen-chevron", "--icon-voice-connected")
-                                    .bg(active_fill)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                self.bar_opener(
+                                    nub("call-screen-chevron", "--icon-voice-connected"),
+                                    "call-screen-chevron",
+                                    open,
+                                    cx,
+                                )
+                                .bg(active_fill)
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.vv.quality_open = false;
-                                        this.vv.menu = if this.vv.menu == Some(Menu::Share) {
-                                            None
-                                        } else {
-                                            Some(Menu::Share)
-                                        };
-                                        cx.notify();
-                                    })),
+                                        this.toggle_bar_menu(
+                                            "call-screen-chevron",
+                                            Menu::Share,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                                open,
                                 cx,
-                            ),
-                        )
+                            )
+                        })
                         .into_any_element()
                 } else {
                     self.with_tip(
@@ -2352,23 +2494,24 @@ impl Root {
                             this.soundboard_hover(*inside, cx);
                         })
                     })
-                    .child(self.with_tip(
+                    .child(self.bar_tip(
                         "call-soundboard-tip",
                         Tip::text(
                             dc_intl::tr(soundboard_reason.unwrap_or("Open Soundboard")),
                             Side::Top,
                         ),
                         soundboard,
+                        soundboard_open,
                         cx,
                     ))
                     .into_any_element(),
-                self.with_tip(
+                self.bar_tip(
                     "call-more-tip",
                     Tip::text(dc_intl::tr("More Options"), Side::Top),
                     more,
+                    more_open,
                     cx,
-                )
-                .into_any_element(),
+                ),
             ]))
             .child({
                 // `eT` of module 105225: Stop Watching while the focused tile is a stream of someone else that this
@@ -2462,6 +2605,7 @@ impl Root {
                 // `onPopoutClick`: the chevron exists while other streams are watched, more than one beside Stop
                 // Watching (module 105225: `N.length > 0`, `N.length > 1`).
                 div()
+                    .occlude()
                     .relative()
                     .h(px(50.))
                     .flex()
@@ -2473,29 +2617,33 @@ impl Root {
                     .flex_row_reverse()
                     .child(self.anchor_probe("call-end-group"))
                     .when(nub_shown, |this| {
+                        let open = self.vv.menu == Some(Menu::Watched);
                         this.child(
-                            div()
-                                .id("call-end-chevron")
-                                .w(px(20.))
-                                .h(px(50.))
-                                .rounded_r(px(12.))
-                                .bg(mid("--control-critical-primary-background-default"))
-                                .hover(|style| {
-                                    style.bg(mid("--control-critical-primary-background-hover"))
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.vv.menu = if this.vv.menu == Some(Menu::Watched) {
-                                        None
-                                    } else {
-                                        Some(Menu::Watched)
-                                    };
-                                    cx.notify();
-                                }))
-                                .child(icon("voice_view_caret", 16., "--white")),
+                            self.bar_opener(
+                                div().id("call-end-chevron"),
+                                "call-end-chevron",
+                                open,
+                                cx,
+                            )
+                            .w(px(20.))
+                            .h(px(50.))
+                            .rounded_r(px(12.))
+                            .bg(mid("--control-critical-primary-background-default"))
+                            .hover(|style| {
+                                style.bg(mid("--control-critical-primary-background-hover"))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_bar_menu("call-end-chevron", Menu::Watched, cx);
+                            }))
+                            .child(icon(
+                                "voice_view_caret",
+                                16.,
+                                "--white",
+                            )),
                         )
                     })
                     .child(self.with_tip(
@@ -2512,15 +2660,18 @@ impl Root {
                         cx,
                     ))
             });
+        // `bottomControls_rTsZa_` while idle: opacity 0 and 8px down, `.2s ease-in-out`; it keeps taking presses
+        // (`controlSection_rTsZa_{pointer-events:all}`).
+        let idle_t = self.call_idle_t(shown);
         div()
             .absolute()
             .left(px(16.))
             .right(px(16.))
-            .bottom(px(16.))
+            .bottom(px(16. - 8. * (1. - idle_t)))
+            .opacity(idle_t)
             .h(px(50.))
             .flex()
             .items_center()
-            .when(!shown, |this| this.opacity(0.).invisible())
             .child(
                 // A DM call has no Invite: its left slot is empty (Show/Hide chat only appears with video, module 156652).
                 div()
@@ -2533,105 +2684,145 @@ impl Root {
                     .when(guild == 0 && self.dm_call_can_hide_chat(), |this| {
                         let hidden = self.dm_call_chat_hidden();
                         this.child(
-                            self.with_tip(
-                                "call-chat-tip",
-                                Tip::text(
-                                    dc_intl::tr(if hidden { "Show chat" } else { "Hide chat" }),
-                                    Side::Top,
+                            div()
+                                .capture_any_mouse_down(cx.listener(
+                                    |this, event: &gpui::MouseDownEvent, _, _| {
+                                        this.vv.bar_press.set(Some(event.position));
+                                    },
+                                ))
+                                .child(
+                                    self.with_tip(
+                                        "call-chat-tip",
+                                        Tip::text(
+                                            dc_intl::tr(if hidden {
+                                                "Show chat"
+                                            } else {
+                                                "Hide chat"
+                                            }),
+                                            Side::Top,
+                                        ),
+                                        tray(
+                                            "call-chat",
+                                            if hidden {
+                                                "clips_chevron_up"
+                                            } else {
+                                                "clips_chevron_down"
+                                            },
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.tip = None;
+                                                this.toggle_dm_call_chat(cx);
+                                            }),
+                                        ),
+                                        cx,
+                                    ),
                                 ),
-                                tray(
-                                    "call-chat",
-                                    if hidden {
-                                        "clips_chevron_up"
-                                    } else {
-                                        "clips_chevron_down"
-                                    },
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.tip = None;
-                                        this.toggle_dm_call_chat(cx);
-                                    },
-                                )),
-                                cx,
-                            ),
                         )
                     })
                     .when(guild != 0, |this| {
                         this.child(
-                            self.with_tip(
-                                "call-invite-tip",
-                                Tip::text(dc_intl::tr("Invite"), Side::Top),
-                                tray("call-invite", "voice_view_invite")
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx))),
-                                cx,
-                            ),
+                            div()
+                                .capture_any_mouse_down(cx.listener(
+                                    |this, event: &gpui::MouseDownEvent, _, _| {
+                                        this.vv.bar_press.set(Some(event.position));
+                                    },
+                                ))
+                                .child(self.with_tip(
+                                    "call-invite-tip",
+                                    Tip::text(dc_intl::tr("Invite"), Side::Top),
+                                    tray("call-invite", "voice_view_invite").on_click(
+                                        cx.listener(|this, _, _, cx| this.open_invite(cx)),
+                                    ),
+                                    cx,
+                                )),
                         )
                     }),
             )
-            .child(centre)
             .child(
                 div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(20.))
-                    .children(self.call_volume_control(cx))
-                    // `canStayOnTop`: in the popped-out window (module 619344).
-                    .when(self.vv.popout_render, |this| {
-                        let on = self.vv.popout_on_top;
-                        this.child(
-                            self.with_tip(
-                                "call-stay-on-top-tip",
+                    .flex_none()
+                    .capture_any_mouse_down(cx.listener(
+                        |this, event: &gpui::MouseDownEvent, _, _| {
+                            this.vv.bar_press.set(Some(event.position));
+                        },
+                    ))
+                    .child(centre),
+            )
+            .child(
+                div().flex_1().flex().items_center().justify_end().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(20.))
+                        .capture_any_mouse_down(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, _| {
+                                this.vv.bar_press.set(Some(event.position));
+                            },
+                        ))
+                        .children(
+                            self.call_volume_control(cx)
+                                .map(|control| div().occlude().child(control)),
+                        )
+                        // `canStayOnTop`: in the popped-out window (module 619344).
+                        .when(self.vv.popout_render, |this| {
+                            let on = self.vv.popout_on_top;
+                            this.child(
+                                self.with_tip(
+                                    "call-stay-on-top-tip",
+                                    Tip::text(
+                                        dc_intl::tr(if on {
+                                            "Remove From Top"
+                                        } else {
+                                            "Stay On Top"
+                                        }),
+                                        Side::Top,
+                                    ),
+                                    tray(
+                                        "call-stay-on-top",
+                                        if on {
+                                            "voice_view_pin_upright_slash"
+                                        } else {
+                                            "voice_view_pin_upright"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| this.toggle_call_popout_on_top(cx),
+                                    )),
+                                    cx,
+                                ),
+                            )
+                        })
+                        // Module 540462: Pop Out and Full Screen only exist in video mode (`mode === VIDEO && inCall`),
+                        // so a DM's voice call has neither (golden `dm-call/in-call-alone`).
+                        .when(guild != 0 || self.dmc.video, |this| {
+                            this.child(self.with_tip(
+                                "call-popout-tip",
+                                Tip::text(dc_intl::tr("Pop Out"), Side::Top),
+                                tray("call-popout", "voice_view_popout").on_click(
+                                    cx.listener(|this, _, _, cx| this.toggle_call_popout(cx)),
+                                ),
+                                cx,
+                            ))
+                            .child(self.with_tip(
+                                "call-fullscreen-tip",
                                 Tip::text(
-                                    dc_intl::tr(if on { "Remove From Top" } else { "Stay On Top" }),
+                                    dc_intl::tr(if self.vv.fullscreen {
+                                        "Exit Full Screen"
+                                    } else {
+                                        "Full Screen"
+                                    }),
                                     Side::Top,
                                 ),
-                                tray(
-                                    "call-stay-on-top",
-                                    if on {
-                                        "voice_view_pin_upright_slash"
-                                    } else {
-                                        "voice_view_pin_upright"
-                                    },
-                                )
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.toggle_call_popout_on_top(cx)
+                                tray("call-fullscreen", "voice_view_fullscreen").on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.toggle_call_fullscreen(window, cx)
                                     }),
                                 ),
                                 cx,
-                            ),
-                        )
-                    })
-                    // Module 540462: Pop Out and Full Screen only exist in video mode (`mode === VIDEO && inCall`),
-                    // so a DM's voice call has neither (golden `dm-call/in-call-alone`).
-                    .when(guild != 0 || self.dmc.video, |this| {
-                        this.child(self.with_tip(
-                            "call-popout-tip",
-                            Tip::text(dc_intl::tr("Pop Out"), Side::Top),
-                            tray("call-popout", "voice_view_popout").on_click(
-                                cx.listener(|this, _, _, cx| this.toggle_call_popout(cx)),
-                            ),
-                            cx,
-                        ))
-                        .child(self.with_tip(
-                            "call-fullscreen-tip",
-                            Tip::text(
-                                dc_intl::tr(if self.vv.fullscreen {
-                                    "Exit Full Screen"
-                                } else {
-                                    "Full Screen"
-                                }),
-                                Side::Top,
-                            ),
-                            tray("call-fullscreen", "voice_view_fullscreen").on_click(cx.listener(
-                                |this, _, window, cx| this.toggle_call_fullscreen(window, cx),
-                            )),
-                            cx,
-                        ))
-                    }),
+                            ))
+                        }),
+                ),
             )
             .into_any_element()
     }
@@ -2787,18 +2978,40 @@ impl Root {
         let Some(menu) = self.vv.menu else {
             return Vec::new();
         };
-        let close = |this: &mut Root, cx: &mut Context<Root>| {
-            this.vv.menu = None;
-            cx.notify();
-        };
-        let _ = channel;
+        let _ = (channel, width, height);
         match menu {
             Menu::More => {
                 let Some(anchor) = self.tip_anchors.borrow().get("call-more").copied() else {
                     return Vec::new();
                 };
-                let rows = vec![
-                    self.vmenu_row(
+                // Module 592982 `more-settings-context`: Invite to Voice (834857: a server's voice channel where we may
+                // invite); Grid View (973937, not on a Stage), Show My Own Camera (575079), Show Non-Video Participants
+                // (854182, not on a Stage), Show New Message Previews (956747, a server's voice channel or Stage); Voice &
+                // Video Settings (470743); Report Problem (74329) while a stream is focused.
+                let (guild, call_channel) = self.vv.shown_call;
+                let stage = guild != 0
+                    && self.stores.guild(guild).is_some_and(|known| {
+                        known.channels.iter().any(|found| {
+                            found.id == call_channel
+                                && found.kind == dc_state::ChannelKind::Other(13)
+                        })
+                    });
+                let can_invite = guild != 0
+                    && !stage
+                    && self.stores.guild(guild).is_some_and(|known| {
+                        known.channels.iter().any(|found| {
+                            found.id == call_channel
+                                && self.can_in_channel(
+                                    found,
+                                    dc_state::permissions::CREATE_INSTANT_INVITE,
+                                )
+                        })
+                    });
+                let focused_stream = matches!(self.vv.focus.tile, Some((_, TileKind::Stream)));
+                let mut rows = Vec::new();
+                let mut rows_height = 16.;
+                if can_invite {
+                    rows.push(self.vmenu_row(
                         "vmenu-invite",
                         Some("voice_view_invite_menu"),
                         "Invite to Voice",
@@ -2809,9 +3022,12 @@ impl Root {
                             this.vv.menu = None;
                             this.open_invite(cx);
                         },
-                    ),
-                    Self::menu_separator(true),
-                    self.vmenu_row(
+                    ));
+                    rows.push(Self::menu_separator(true));
+                    rows_height += 36. + 17.;
+                }
+                if !stage {
+                    rows.push(self.vmenu_row(
                         "vmenu-grid",
                         None,
                         "Grid View",
@@ -2819,28 +3035,35 @@ impl Root {
                         true,
                         cx,
                         |this, _, _| {
-                            // Checked: the grid shows. Unchecking it focuses the first tile (a stream sorts first).
+                            // Checked: the grid shows. Unchecking it focuses the first tile (`AUTO`; a stream sorts
+                            // first).
                             if this.vv.focus.tile.is_some() {
                                 this.vv.focus.grid();
-                            } else if let (Some(guild), Some(channel)) = (this.guild, this.channel)
-                                && let Some(first) =
+                            } else {
+                                let (guild, channel) = this.vv.shown_call;
+                                if let Some(first) =
                                     this.participants(guild, channel).into_iter().next()
-                            {
-                                this.vv.focus.click(first.tile.user, first.tile.kind);
+                                {
+                                    this.vv.focus.click(first.tile.user, first.tile.kind);
+                                }
                             }
                             set_call_setting(GRID_VIEW, this.vv.focus.tile.is_none());
                         },
-                    ),
-                    self.vmenu_row(
-                        "vmenu-own-camera",
-                        None,
-                        "Show My Own Camera",
-                        Some(call_setting(SHOW_OWN_CAMERA)),
-                        true,
-                        cx,
-                        |_, _, _| toggle_call_setting(SHOW_OWN_CAMERA),
-                    ),
-                    self.vmenu_row(
+                    ));
+                    rows_height += 36.;
+                }
+                rows.push(self.vmenu_row(
+                    "vmenu-own-camera",
+                    None,
+                    "Show My Own Camera",
+                    Some(call_setting(SHOW_OWN_CAMERA)),
+                    true,
+                    cx,
+                    |_, _, _| toggle_call_setting(SHOW_OWN_CAMERA),
+                ));
+                rows_height += 36.;
+                if !stage {
+                    rows.push(self.vmenu_row(
                         "vmenu-non-video",
                         None,
                         "Show Non-Video Participants",
@@ -2848,8 +3071,11 @@ impl Root {
                         true,
                         cx,
                         |_, _, _| toggle_call_setting(SHOW_NON_VIDEO),
-                    ),
-                    self.vmenu_row(
+                    ));
+                    rows_height += 36.;
+                }
+                if guild != 0 {
+                    rows.push(self.vmenu_row(
                         "vmenu-previews",
                         None,
                         "Show New Message Previews",
@@ -2857,29 +3083,52 @@ impl Root {
                         true,
                         cx,
                         |_, _, _| toggle_call_setting(MESSAGE_PREVIEWS),
-                    ),
-                    Self::menu_separator(true),
-                    self.vmenu_row(
-                        "vmenu-settings",
-                        Some("voice_view_gear"),
-                        "Voice & Video Settings",
-                        None,
-                        true,
-                        cx,
-                        |this, _, cx| {
-                            this.vv.menu = None;
-                            this.open_settings_section("Voice & Video", cx);
-                        },
-                    ),
-                ];
-                // Right edges meet, 16px above the button; the panel is 268px tall.
+                    ));
+                    rows_height += 36.;
+                }
+                rows.push(Self::menu_separator(true));
+                rows.push(self.vmenu_row(
+                    "vmenu-settings",
+                    Some("voice_view_gear"),
+                    "Voice & Video Settings",
+                    None,
+                    true,
+                    cx,
+                    |this, _, cx| {
+                        this.vv.menu = None;
+                        this.open_settings_section("Voice & Video", cx);
+                    },
+                ));
+                rows_height += 17. + 36.;
+                if focused_stream {
+                    // The report form of module 74329 has no counterpart here: the row is shown disabled.
+                    rows.push(Self::menu_separator(true));
+                    rows.push(
+                        div()
+                            .opacity(0.5)
+                            .child(self.vmenu_row_ex(
+                                "vmenu-report-stream",
+                                Some("shop_circle_error"),
+                                dc_intl::tr("Report Problem"),
+                                None,
+                                true,
+                                true,
+                                false,
+                                cx,
+                                |_, _, _| {},
+                            ))
+                            .into_any_element(),
+                    );
+                    rows_height += 17. + 36.;
+                }
+                // Right edges meet, 16px above the button.
                 let (ox, oy) = self.call_origin();
                 let left = f32::from(anchor.right()) - MORE_WIDTH - ox;
                 // Over the button when there is room, under it in a call area at the top of the window.
                 let top = super::audio_menu::popout_top(
                     f32::from(anchor.top()),
                     f32::from(anchor.bottom()),
-                    268.,
+                    rows_height,
                     16.,
                     self.viewport.1,
                 ) - oy;
@@ -2889,9 +3138,11 @@ impl Root {
                             self.menu_panel(MORE_WIDTH, true)
                                 .id("voice-more-menu")
                                 .popout("voice-more-menu", PopKind::Fade, PopSide::Top)
-                                .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                    close(this, cx);
-                                }))
+                                .on_mouse_down_out(cx.listener(
+                                    |this, event: &gpui::MouseDownEvent, _, cx| {
+                                        this.close_call_popup(event.position, cx);
+                                    },
+                                ))
                                 .children(rows),
                         ),
                     )
@@ -2899,256 +3150,11 @@ impl Root {
                     .into_any_element(),
                 ]
             }
-            Menu::Tile(user, at) => {
-                let me = self.stores.current_user.as_ref().map(|user| user.id);
-                let own = Some(user) == me;
-                let mut rows = vec![
-                    self.vmenu_row(
-                        "vmenu-profile",
-                        Some("voice_view_profile"),
-                        "View Profile",
-                        None,
-                        false,
-                        cx,
-                        move |this, window, cx| {
-                            this.vv.menu = None;
-                            this.open_full_profile(user, window, cx);
-                        },
-                    ),
-                    Self::menu_separator(false),
-                ];
-                if own {
-                    rows.push(self.vmenu_row(
-                        "vmenu-mute",
-                        None,
-                        "Mute",
-                        Some(self.self_mute || self.self_deaf),
-                        false,
-                        cx,
-                        |this, _, cx| this.toggle_self_mute(cx),
-                    ));
-                    rows.push(self.vmenu_row(
-                        "vmenu-deafen",
-                        None,
-                        "Deafen",
-                        Some(self.self_deaf),
-                        false,
-                        cx,
-                        |this, _, cx| this.toggle_self_deaf(cx),
-                    ));
-                    rows.push(self.vmenu_row(
-                        "vmenu-own-camera",
-                        None,
-                        "Show My Own Camera",
-                        Some(call_setting(SHOW_OWN_CAMERA)),
-                        false,
-                        cx,
-                        |_, _, _| toggle_call_setting(SHOW_OWN_CAMERA),
-                    ));
-                    // `change-video-background` (module 855187): "Preview Camera" with video off, "Change Video
-                    // Background" with it on when the engine has the background filter.
-                    let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
-                    if (!camera_on || self.video_background_shown())
-                        && !dc_voice::camera_devices().is_empty()
-                    {
-                        rows.push(self.vmenu_row(
-                            "vmenu-preview-camera",
-                            Some(if camera_on {
-                                "vbg_blur"
-                            } else {
-                                "voice_view_preview"
-                            }),
-                            if camera_on {
-                                dc_intl::tr("Change Video Background")
-                            } else {
-                                dc_intl::tr("Preview Camera")
-                            },
-                            None,
-                            false,
-                            cx,
-                            |this, _, cx| {
-                                this.vv.menu = None;
-                                this.open_camera_preview(cx);
-                            },
-                        ));
-                    }
-                }
-                rows.push(self.vmenu_row(
-                    "vmenu-settings",
-                    Some("voice_view_gear"),
-                    "Voice & Video Settings",
-                    None,
-                    false,
-                    cx,
-                    |this, _, cx| {
-                        this.vv.menu = None;
-                        this.open_settings_section("Voice & Video", cx);
-                    },
-                ));
-                let rows_height = 36. * (rows.len() as f32 - 1.) + 17. + 18.;
-                // Opens at the pointer, 16px from the window's edges.
-                let (ox, oy) = self.call_origin();
-                let window_w = width + ox;
-                let window_h = height + oy;
-                let left = f32::from(at.x).min(window_w - 16. - TILE_MENU_WIDTH);
-                let top = f32::from(at.y).min(window_h - 16. - rows_height);
-                vec![
-                    deferred(
-                        div()
-                            .absolute()
-                            .left(px(left - ox))
-                            .top(px(top - oy))
-                            .child(
-                                self.menu_panel(TILE_MENU_WIDTH, false)
-                                    .id("voice-tile-menu")
-                                    .popout("voice-tile-menu", PopKind::Fade, PopSide::Top)
-                                    .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                        close(this, cx);
-                                    }))
-                                    .children(rows),
-                            ),
-                    )
-                    .with_priority(2)
-                    .into_any_element(),
-                ]
-            }
+            Menu::Tile(..) => self.tile_menu_layer(cx).into_iter().collect(),
             Menu::Camera => self.camera_menu(cx),
             Menu::Share => self.share_menu(cx),
             Menu::Watched => self.watched_menu(cx),
-            Menu::Stream(owner, at) => {
-                let me = self.stores.current_user.as_ref().map(|user| user.id);
-                let info = self.video_stream_of(owner);
-                let watching = info
-                    .as_ref()
-                    .is_some_and(|info| info.role == dc_voice::streams::Role::Watch);
-                let mut rows = Vec::new();
-                if Some(owner) == me {
-                    rows.push(self.vmenu_row(
-                        "vmenu-stop-stream",
-                        None,
-                        "Stop Streaming",
-                        None,
-                        false,
-                        cx,
-                        |this, _, cx| {
-                            this.vv.menu = None;
-                            this.stream_stop(cx);
-                        },
-                    ));
-                } else if watching {
-                    rows.push(self.vmenu_row(
-                        "vmenu-stop-watching",
-                        None,
-                        "Stop Watching",
-                        None,
-                        false,
-                        cx,
-                        move |this, _, cx| {
-                            this.vv.menu = None;
-                            this.unwatch_stream_of(owner, cx);
-                        },
-                    ));
-                } else {
-                    rows.push(self.vmenu_row(
-                        "vmenu-watch-stream",
-                        None,
-                        "Watch Stream",
-                        None,
-                        false,
-                        cx,
-                        move |this, _, cx| {
-                            this.vv.menu = None;
-                            this.watch_stream_of(owner, cx);
-                        },
-                    ));
-                }
-                let mut rows_height = 36. * rows.len() as f32 + 16.;
-                if watching && Some(owner) != me {
-                    // `stream-context`: Mute, then Stream Volume, then Stream Attenuation with its strength.
-                    rows.push(self.vmenu_row(
-                        "vmenu-stream-mute",
-                        None,
-                        "Mute",
-                        Some(super::stream_volume::muted(owner)),
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            super::stream_volume::set_muted(
-                                owner,
-                                !super::stream_volume::muted(owner),
-                            );
-                            this.apply_stream_volume(owner);
-                        },
-                    ));
-                    rows.push(Self::menu_separator(false));
-                    rows.push(self.stream_volume_row(owner, cx));
-                    rows.push(Self::menu_separator(false));
-                    rows.push(self.stream_attenuation_rows(cx));
-                    rows.push(Self::menu_separator(false));
-                    let attenuation = self.stream_attenuation_on();
-                    // The mute row and a separator, the volume row, a separator, and the attenuation rows.
-                    rows_height +=
-                        36. + 18. + 58. + 18. + 36. + if attenuation { 58. } else { 0. } + 18.;
-                }
-                if Some(owner) == me {
-                    // `self-stream-pause-preview-when-unfocused` (module 16001), a checkbox of the own stream's menu.
-                    let on = super::voice_video::pause_own_preview_unfocused();
-                    rows.push(self.vmenu_row(
-                        "vmenu-stream-pause-preview",
-                        None,
-                        "Pause Preview When Discord Isn\u{2019}t Focused",
-                        Some(on),
-                        false,
-                        cx,
-                        move |_, _, cx| {
-                            super::voice_video::set_pause_own_preview_unfocused(!on);
-                            cx.notify();
-                        },
-                    ));
-                    rows_height += 36.;
-                }
-                rows.push(self.vmenu_row(
-                    "vmenu-stream-settings",
-                    Some("voice_view_gear"),
-                    "Voice & Video Settings",
-                    None,
-                    false,
-                    cx,
-                    |this, _, cx| {
-                        this.vv.menu = None;
-                        this.open_settings_section("Voice & Video", cx);
-                    },
-                ));
-                // A `flexible` menu grows with its longest label, up to 320px: the own stream's checkbox row needs it.
-                let menu_width = if Some(owner) == me {
-                    320.
-                } else {
-                    TILE_MENU_WIDTH
-                };
-                let (ox, oy) = self.call_origin();
-                let window_w = width + ox;
-                let window_h = height + oy;
-                let left = f32::from(at.x).min(window_w - 16. - menu_width);
-                let top = f32::from(at.y).min(window_h - 16. - rows_height);
-                vec![
-                    deferred(
-                        div()
-                            .absolute()
-                            .left(px(left - ox))
-                            .top(px(top - oy))
-                            .child(
-                                self.menu_panel(menu_width, false)
-                                    .id("voice-stream-menu")
-                                    .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                        close(this, cx);
-                                    }))
-                                    .children(rows),
-                            ),
-                    )
-                    .with_priority(2)
-                    .into_any_element(),
-                ]
-            }
+            Menu::Stream(..) => self.tile_menu_layer(cx).into_iter().collect(),
         }
     }
 
@@ -3323,7 +3329,6 @@ impl Root {
                 .overflow_hidden()
                 .children(picture.map(|picture| img(picture).size(px(48.)).rounded_full()))
         });
-        let shown = self.controls_shown();
         div()
             .absolute()
             .inset_0()
@@ -3333,7 +3338,7 @@ impl Root {
                     .inset_0()
                     .size_full(),
             )
-            .child(self.call_header(channel, shown, None, cx))
+            .child(self.call_header(channel, true, None, cx))
             .child(
                 div()
                     .absolute()

@@ -3418,6 +3418,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dc-auth",
+ "dc-callsim",
  "dc-clips",
  "dc-detect",
  "dc-gateway",

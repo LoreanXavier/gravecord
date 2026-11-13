@@ -5,11 +5,10 @@
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon, status_dot_large};
 use crate::net::Request;
-use crate::palette::avatar_palette;
 use dc_state::{Id, User};
 use gpui::{
     AnyElement, BoxShadow, Context, Focusable, FontWeight, IntoElement, Pixels, Point, Rgba,
-    SharedString, anchored, canvas, deferred, div, hsla, img, point, prelude::*, px, rgba,
+    SharedString, anchored, canvas, deferred, div, hsla, img, point, prelude::*, px,
 };
 
 pub(crate) struct Popout {
@@ -158,25 +157,9 @@ impl Root {
             .unwrap_or_default()
     }
 
-    /// `banner_color` or `accent_color` from the profile, else the first avatar palette color.
+    /// The banner's fill (module 915614), as `dm_profile::profile_banner_fill` reads it.
     pub(super) fn banner_color(&self, user: &User) -> Rgba {
-        let body = self.fetched.get(&profile_key(user.id));
-        let explicit = body.and_then(|body| {
-            body["user_profile"]["accent_color"]
-                .as_u64()
-                .or(body["user"]["accent_color"].as_u64())
-        });
-        if let Some(value) = explicit {
-            return rgba(((value as u32) << 8) | 0xff);
-        }
-        let picture = self.images.get(&avatar_source(user).0);
-        let rgb = picture
-            .and_then(|picture| image::load_from_memory(picture.bytes()).ok())
-            .map(|decoded| avatar_palette(decoded.to_rgba8().as_raw())[0])
-            .unwrap_or([0, 0, 0]);
-        rgba(
-            (u32::from(rgb[0]) << 24) | (u32::from(rgb[1]) << 16) | (u32::from(rgb[2]) << 8) | 0xff,
-        )
+        self.profile_banner_fill(user, self.guild)
     }
 
     pub(super) fn badges(&self, user: Id) -> Vec<AnyElement> {
@@ -278,6 +261,7 @@ impl Root {
         if has_badges {
             self.request_badge_catalog(user);
         }
+        self.request_profile_cards(user);
     }
 
     pub(super) fn profile_layer(

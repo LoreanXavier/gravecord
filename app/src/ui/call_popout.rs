@@ -163,6 +163,15 @@ impl Root {
                 .id("call-popout-body")
                 .absolute()
                 .inset_0()
+                // Module 156652: a press wakes the controls as a move does; the pointer leaving the area makes it idle at once.
+                .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                    this.voice_view_moved(cx);
+                }))
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    if !*inside {
+                        this.voice_view_left(cx);
+                    }
+                }))
                 .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                     if event.pressed_button.is_none() {
                         this.call_drags_end();

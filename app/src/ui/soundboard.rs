@@ -1633,6 +1633,9 @@ impl Root {
                             && (top..top + MENU_HEIGHT).contains(&y)
                     });
                     if !on_menu {
+                        if this.vv.bar_press.get() != Some(event.position) {
+                            cx.stop_propagation();
+                        }
                         this.close_panel_popout(cx);
                     }
                 }))

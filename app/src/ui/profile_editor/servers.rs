@@ -99,8 +99,12 @@ impl Root {
             (_, _, Some(_)) => nick.unwrap_or_else(|| me.display_name().to_owned()),
             _ => me.display_name().to_owned(),
         };
-        let name = open.name.clone();
+        let bio_text = open.pending.bio.as_deref().unwrap_or("").to_owned();
+        let pronouns_text = open.pending.pronouns.as_deref().unwrap_or("").to_owned();
+        let (name, bio, pronouns) = (open.name.clone(), open.bio.clone(), open.pronouns.clone());
         name.update(cx, |editor, _| editor.set_text(&shown));
+        bio.update(cx, |editor, _| editor.set_text(&bio_text));
+        pronouns.update(cx, |editor, _| editor.set_text(&pronouns_text));
         let route = super::profile_route(me.id, guild);
         let _ = self.requests.send(Request::Fetch {
             key: format!("{}profile", super::FETCH_PREFIX),
@@ -214,14 +218,21 @@ impl Root {
                     }))
             })
             .collect();
+        let open = self.profile_editor.as_ref()?;
+        let left = if open.geometry.panel_over {
+            open.geometry.width - open.geometry.panel_width + 9.
+        } else {
+            9.
+        };
+        let top = open.geometry.system_bar + 44.;
         Some(
             deferred(
                 div()
                     .id("profile-editor-server-list")
                     .occlude()
                     .absolute()
-                    .left(px(9.))
-                    .top(px(76.))
+                    .left(px(left))
+                    .top(px(top))
                     .w(px(264.))
                     .max_h(px(5. * 40. + 10.))
                     .overflow_y_scroll()

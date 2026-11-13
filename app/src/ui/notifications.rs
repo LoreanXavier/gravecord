@@ -133,19 +133,16 @@ impl Root {
         let user = self.stores.current_user.as_ref().map(|user| user.id);
         let disabled = !crate::notifications::switch_value("enable_unread_message_badge", user)
             .unwrap_or(true);
-        let count = dc_state::unread::badge_count(
+        let requests = dc_state::unread::desktop_requests(&self.stores);
+        let count =
+            dc_state::unread::badge_count(counts.high_mentions, requests, counts.unread, disabled);
+        self.notification_runtime.badge(count);
+        self.refresh_tray(dc_state::unread::tray_unread(
             counts.high_mentions,
-            dc_state::unread::incoming_requests(&self.stores),
+            requests,
             counts.unread,
             disabled,
-        );
-        self.notification_runtime.badge(count);
-        self.refresh_tray(
-            !disabled
-                && (counts.unread
-                    || counts.mentions > 0
-                    || dc_state::unread::incoming_requests(&self.stores) > 0),
-        );
+        ));
     }
     #[cfg(feature = "capture")]
     pub(crate) fn script_notification(&mut self, action: &str, cx: &mut Context<Self>) {

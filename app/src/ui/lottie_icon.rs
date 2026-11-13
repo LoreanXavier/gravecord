@@ -108,6 +108,7 @@ const ACTIVITY: [Marker; 2] = [Marker::new("hover", 0, 59), Marker::new("click",
 const DISCONNECT: [Marker; 1] = [Marker::new("all", 0, 90)];
 
 impl Anim {
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) const ALL: [Anim; 7] = [
         Anim::ScreenShare,
         Anim::Camera,
@@ -119,6 +120,7 @@ impl Anim {
     ];
 
     /// The file stem under `app/assets/lottie/call`.
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Anim::ScreenShare => "screenshare",

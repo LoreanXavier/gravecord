@@ -18,6 +18,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 mod home;
+mod perk_card;
+mod tenure;
+mod trinkets;
 
 pub(super) const NITRO_PREFIX: &str = "nitro:";
 const PLANS_KEY: &str = "nitro:plans:";
@@ -144,6 +147,19 @@ pub(crate) struct NitroState {
     pub(super) favorites_tab: usize,
     /// The perk card under the pointer on the subscriber home.
     pub(super) hovered_perk: Option<&'static str>,
+    /// The favorites' horizontal scroller.
+    pub(super) favorites_scroll: ScrollHandle,
+    /// The subscriber home's container width as last laid out (0 before the first layout).
+    pub(super) home_width: Rc<Cell<f32>>,
+    /// `GET /users/@me/program-rewards` was sent, and its body once answered (`{}` after a failure).
+    pub(super) rewards_requested: bool,
+    pub(super) rewards: Option<Value>,
+    /// When the subscriber home was opened (wall clock, motion clock), and the pictures already logged as drawn.
+    pub(super) home_opened: Option<(std::time::Instant, f64)>,
+    pub(super) art_logged: std::collections::HashSet<String>,
+    /// The hero's Wumpus clip, decoded once.
+    pub(super) wumpus: Option<Rc<trinkets::Clip>>,
+    pub(super) wumpus_decoding: bool,
 }
 
 impl Default for NitroState {
@@ -166,6 +182,14 @@ impl Default for NitroState {
             subscriptions_injected: false,
             favorites_tab: 0,
             hovered_perk: None,
+            favorites_scroll: ScrollHandle::new(),
+            home_width: Rc::new(Cell::new(0.)),
+            rewards_requested: false,
+            rewards: None,
+            home_opened: None,
+            art_logged: std::collections::HashSet::new(),
+            wumpus: None,
+            wumpus_decoding: false,
         }
     }
 }
@@ -395,6 +419,10 @@ const COMPARE: [(&str, &[(&str, Cell3, Cell3)]); 3] = [
 impl Root {
     /// Starts the reads the page needs: the plans of each SKU, the saved payment sources and the subscriptions.
     pub(super) fn request_nitro(&mut self) {
+        // A Nitro subscriber sees the subscriber home: its pictures go first, in parallel.
+        if self.premium() == PremiumType::Nitro {
+            self.request_subscriber_art();
+        }
         for (name, file) in ART {
             self.request_image(art_key(name), format!("{CDN}{file}"));
         }
@@ -455,7 +483,14 @@ impl Root {
             self.checkout_handoff_ready(cx);
             return;
         }
-        if key.starts_with(PLANS_KEY) {
+        if key == home::REWARDS_KEY {
+            // A failed read leaves the store ready with nothing in it (`isError`).
+            self.nitro.rewards = Some(if report["ok"] == true {
+                report["body"].clone()
+            } else {
+                Value::Object(Default::default())
+            });
+        } else if key.starts_with(PLANS_KEY) {
             if report["ok"] == true {
                 let incoming = premium::parse_plans(&report["body"]);
                 self.nitro
@@ -519,6 +554,10 @@ impl Root {
         self.nitro_open = true;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
+        // Each visit mounts the page again: its art animations start over and its pictures are timed again.
+        self.nitro.home_opened = None;
+        self.nitro.art_logged.clear();
+        self.nitro.hovered_perk = None;
         self.request_nitro();
         cx.notify();
     }
@@ -1349,15 +1388,11 @@ impl Root {
     }
 
     /// The page, filling the content column.
-    pub(super) fn nitro_page(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn nitro_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.request_nitro();
         // `L.YE` of module 886268: exactly Nitro gets the subscriber home (`sQ`), every other account the marketing one.
         if self.premium() == PremiumType::Nitro {
-            return self.nitro_subscriber_home(cx);
+            return self.nitro_subscriber_home(window, cx);
         }
         let scroll = self.nitro.scroll.clone();
         let offset = -f32::from(scroll.offset().y);

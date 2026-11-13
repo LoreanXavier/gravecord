@@ -91,6 +91,7 @@ pub enum Update {
     },
     /// An event of a Go Live stream's own voice connection.
     Stream {
+        generation: u64,
         key: dc_voice::streams::StreamKey,
         event: dc_voice::StreamEvent,
     },
@@ -145,6 +146,7 @@ pub enum Request {
         source: Option<dc_voice::StreamSource>,
         hub: dc_voice::VideoHub,
         controls: dc_voice::StreamControls,
+        generation: u64,
     },
     /// Opens the voice connection once the gateway named the server.
     VoiceConnect {
@@ -389,6 +391,20 @@ fn injected_image_failure(key: &str) -> bool {
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+/// The box a Shop picture is drawn in (logical width, height, and the window's scale), for its name on disk.
+fn shop_art_box(key: &str) -> Option<(f32, f32, f32)> {
+    let scale = SHOP_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.;
+    let boxes = SHOP_FIT.lock().ok()?;
+    let (width, height) = *boxes.as_ref()?.get(key)?;
+    Some((width, height, scale))
+}
+
+/// Shop pictures cut down at once: half the cores (2 to 6). Behind the 3 slots of `IMAGE_DRAWS` a Shop page's fifty
+/// pictures queued for seconds.
+static SHOP_DRAWS: std::sync::LazyLock<tokio::sync::Semaphore> = std::sync::LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    tokio::sync::Semaphore::new((cores / 2).clamp(2, 6))
+});
 /// The longest side, in pixels, a Shop picture is kept at; the main view sets it from the window and its scale.
 /// The logical boxes the Shop draws pictures in, by image key, and the window's scale factor times one hundred.
 pub(crate) static SHOP_FIT: std::sync::Mutex<
@@ -1300,6 +1316,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             updates: updates.clone(),
             answer: None,
         });
+        // A simulated call answers its own voice requests (`ui/callsim.rs`); nothing of them goes further.
+        #[cfg(feature = "capture")]
+        let Some(request) = crate::ui::callsim::intercept(request, &updates) else {
+            continue;
+        };
         if inert_refuses(&request, &updates) {
             continue;
         }
@@ -1879,6 +1900,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 source,
                 hub,
                 controls,
+                generation,
             } => {
                 let key = join.key;
                 let (task, mut events) = dc_voice::connect_stream(join, source, &hub, &controls);
@@ -1896,7 +1918,14 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             });
                             continue;
                         }
-                        if updates.send(Update::Stream { key, event }).is_err() {
+                        if updates
+                            .send(Update::Stream {
+                                generation,
+                                key,
+                                event,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -2036,6 +2065,26 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::Image { key, url } => {
                 tokio::spawn(async move {
+                    // A Shop picture kept on disk is drawn at once; a stale one is fetched again behind it.
+                    let shop_box = shop_art_box(&key);
+                    if key.starts_with("shop:img:") {
+                        let (at, drawn_in) = (url.clone(), shop_box);
+                        let cached = tokio::task::spawn_blocking(move || {
+                            crate::ui::shop::art_cache::read(&at, drawn_in)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        if let Some(cached) = cached {
+                            let _ = updates.send(Update::Image {
+                                key: key.clone(),
+                                bytes: cached.bytes,
+                            });
+                            if !cached.stale {
+                                return;
+                            }
+                        }
+                    }
                     let fetched = {
                         let _slot = IMAGE_FETCHES.acquire().await;
                         // The client has no timeout of its own: a request that stalls would hold its slot for ever
@@ -2138,7 +2187,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 .lock()
                                 .ok()
                                 .and_then(|mut boxes| boxes.as_mut()?.remove(&key));
-                            let _slot = IMAGE_DRAWS.acquire().await;
+                            let _slot = SHOP_DRAWS.acquire().await;
                             let fitted = tokio::task::spawn_blocking(move || {
                                 match drawn_in {
                                     Some((width, height)) => crate::ui::image_fit::fit_box(
@@ -2154,6 +2203,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             .await;
                             match fitted {
                                 Ok(bytes) => {
+                                    let (at, written) = (url.clone(), bytes.clone());
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::ui::shop::art_cache::write(&at, shop_box, &written)
+                                    });
                                     let _ = updates.send(Update::Image { key, bytes });
                                 }
                                 Err(_) => {

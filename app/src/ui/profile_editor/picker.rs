@@ -421,22 +421,34 @@ impl Root {
 
         let preview = self.picker_preview(kind, choice, window, cx);
         let changed = choice != initial;
-        let locked_choice = choice.is_some_and(|sku| {
+        let locked_entry = choice.and_then(|sku| {
             [&nitro, &shop]
                 .into_iter()
                 .flatten()
-                .any(|entry| entry.sku == sku && entry.locked)
+                .find(|entry| entry.sku == sku && entry.locked)
+                .cloned()
         });
+        let locked_choice = locked_entry.is_some();
+        let locked_nitro = locked_entry.is_some_and(|entry| entry.nitro);
+        let apply_label = if locked_nitro {
+            "Get Nitro"
+        } else if locked_choice {
+            "Go to Shop"
+        } else {
+            "Apply"
+        };
         let apply = modal::button(
             "picker-apply",
-            "Apply",
-            if changed {
+            apply_label,
+            if changed || locked_choice {
                 Tone::Primary
             } else {
                 Tone::PrimaryDisabled
             },
             move |this, _, cx| {
-                if locked_choice {
+                if locked_nitro {
+                    this.open_purchase(false, cx);
+                } else if locked_choice {
                     // Not owned and not included in the account's Nitro: the Shop sells it.
                     this.profile_editor = None;
                     this.close_settings(cx);
@@ -461,6 +473,7 @@ impl Root {
             .parity("profile-editor-picker")
             .id("profile-editor-picker")
             .occlude()
+            .on_click(|_, _, cx| cx.stop_propagation())
             .w(px(width))
             .h(px(height))
             .rounded(px(12.))
@@ -546,6 +559,12 @@ impl Root {
                     .absolute()
                     .inset_0()
                     .bg(pose.dim(rgba(0x000000b8)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.profile_editor.as_mut() {
+                            open.picker = None;
+                        }
+                        cx.notify();
+                    }))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -595,7 +614,7 @@ impl Root {
                                 .when(index == 99, |this| this),
                         )
                 };
-                let mine = self.nameplate_preview(&user, 276., choice);
+                let mine = self.nameplate_preview(&user, 276., false);
                 div()
                     .ml(px(-2.))
                     .mt(px(2.))
@@ -712,6 +731,7 @@ impl Root {
                 let name = user.display_name().to_owned();
                 let handle = user.username.clone();
                 let effect = (kind == Kind::Effect).then_some(choice).flatten();
+                let frame = (kind == Kind::Frame).then_some(choice).flatten();
                 let layer = effect.and_then(|sku| {
                     self.profile_effect_layer(
                         "profile-editor-picker",
@@ -721,6 +741,7 @@ impl Root {
                         cx,
                     )
                 });
+                let frame_layer = self.profile_editor_art(frame, Kind::Frame, 300., 274.);
                 div()
                     .relative()
                     .ml(px(15.))
@@ -783,6 +804,7 @@ impl Root {
                                 "--control-primary-text-default",
                             )),
                     )
+                    .children(frame_layer)
                     .children(layer)
                     .into_any_element()
             }
@@ -790,14 +812,17 @@ impl Root {
     }
 
     /// A nameplate row (`nameplatePreview_PaSpLC`): the plate's art behind the avatar and the name (or the
-    /// placeholder bar of the panel tile).
+    /// placeholder bar of the panel tile). `placeholder` draws the placeholder user of module 887988
+    /// (`showPlaceholderUser` while the tile is not hovered): the gray default avatar instead of the account's.
     pub(super) fn nameplate_preview(
         &mut self,
         user: &User,
         width: f32,
-        _choice: Option<u64>,
+        placeholder: bool,
     ) -> AnyElement {
-        let avatar = self.profile_editor_avatar_image(user);
+        let avatar = (!placeholder)
+            .then(|| self.profile_editor_avatar_image(user))
+            .flatten();
         let art = user
             .nameplate
             .as_ref()
@@ -826,6 +851,19 @@ impl Root {
                     .size(px(32.))
                     .rounded_full()
                     .overflow_hidden()
+                    .when(placeholder, |this| {
+                        // Measured in the capture's golden: the gray avatar and its lighter mark.
+                        this.bg(rgba(0x717177ff))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                gpui::svg()
+                                    .path("icons/sb_discord.svg")
+                                    .size(px(20.))
+                                    .text_color(rgba(0xb1b1b4ff)),
+                            )
+                    })
                     .children(avatar.map(|image| img(image).size(px(32.)).rounded_full())),
             )
             .child(if named {

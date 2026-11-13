@@ -22,15 +22,51 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tab {
+    /// `WIDGETS` ("Board"): the profile's widgets, first when it has any.
+    Board,
     Activity,
+    /// `WISHLIST`: the profile's wishlist, when it has one.
+    Wishlist,
     Friends,
     Servers,
+}
+
+/// The tabs of module 927071 (`e3`), in order: Board when the profile has widgets, Activity, Wishlist when it has a
+/// wishlist, then the mutual friends and servers of someone else.
+pub(super) fn profile_tabs(body: Option<&Value>, other: bool) -> Vec<Tab> {
+    let mut tabs = Vec::new();
+    if body.is_some_and(|body| !super::dm_profile::widget_games(body).is_empty()) {
+        tabs.push(Tab::Board);
+    }
+    tabs.push(Tab::Activity);
+    if body.is_some_and(|body| !super::shop::data::wishlist_ids(body).is_empty()) {
+        tabs.push(Tab::Wishlist);
+    }
+    if other {
+        tabs.push(Tab::Friends);
+        tabs.push(Tab::Servers);
+    }
+    tabs
+}
+
+/// The Board's title of a widget type (`Ok` of module 229231).
+fn widget_title(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "favorite_games" => dc_intl::t!("Rpf6Ak"),
+        "current_games" => dc_intl::t!("zs6NsE"),
+        "want_to_play_games" => dc_intl::t!("I509Dl"),
+        "played_games" => dc_intl::t!("QTq6Pf"),
+        "personal" => dc_intl::t!("AVkYMx"),
+        _ => return None,
+    })
 }
 
 pub(super) struct FullProfile {
     pub user: Id,
     guild: Option<Id>,
     pub tab: Tab,
+    /// A tab was asked for (`initialSection`) or pressed; otherwise the first tab shows.
+    pub explicit: bool,
     pub(super) note: Entity<Editor>,
     /// The note as last saved, so a blur only writes a change.
     saved_note: String,
@@ -101,6 +137,7 @@ impl Root {
         self.open_full_profile(user, window, cx);
         if let Some(open) = self.full_profile.as_mut() {
             open.tab = tab;
+            open.explicit = true;
         }
         cx.notify();
     }
@@ -111,15 +148,16 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let note_palette = self.profile_palette(user, self.guild, false);
         let note = cx.new(|cx| {
             // `input_CJLDJI`: body-sm on the profile's text colour, the placeholder in italics.
             let style = crate::editor::EditorStyle {
                 size: 14.,
                 line_height: 18.,
-                text: hsla(0., 0., 1., 0.96),
-                placeholder: hsla(0., 0., 1., 0.96),
+                text: note_palette.text,
+                placeholder: note_palette.text,
                 placeholder_italic: true,
-                caret: hsla(0., 0., 1., 0.96),
+                caret: note_palette.text,
                 ..super::editor_style()
             };
             let mut editor = Editor::new(style, cx);
@@ -143,6 +181,7 @@ impl Root {
             user,
             guild: self.guild,
             tab: Tab::Activity,
+            explicit: false,
             note,
             saved_note: String::new(),
             _events: events,
@@ -181,6 +220,16 @@ impl Root {
                 self.stores
                     .members
                     .apply_member(guild, &body["guild_member"], Some(&body["user"]));
+            }
+            let friends: Vec<dc_state::User> = self.fetched[key]["mutual_friends"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(super::dm_profile::mutual_user)
+                .collect();
+            for friend in friends {
+                let (image, url) = avatar_source(&friend);
+                self.request_image(image, url);
             }
         } else if key == format!("outbox:{user}") {
             let entries: Vec<Value> = self.fetched[key]["entries"]
@@ -221,17 +270,6 @@ impl Root {
             let note = self.fetched[key]["note"].as_str().map(str::to_owned);
             self.stores.notes.set(user, note);
             self.full_profile_note_changed(user, cx);
-        } else if key == format!("profile:{user}") {
-            let friends: Vec<dc_state::User> = self.fetched[key]["mutual_friends"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(super::dm_profile::mutual_user)
-                .collect();
-            for friend in friends {
-                let (image, url) = avatar_source(&friend);
-                self.request_image(image, url);
-            }
         }
         cx.notify();
     }
@@ -469,6 +507,121 @@ impl Root {
         )
     }
 
+    /// The Board (`a5` of module 927071): each game widget under its title (`Ok` of module 229231), its games with
+    /// their icon and name. The widget cards' own layout was not captured; the rows follow the mutual rows' sizes.
+    fn full_profile_board(&self, user: Id, strong: Hsla, subtle: Hsla) -> AnyElement {
+        let body = self.fetched.get(&format!("profile:{user}"));
+        let answer = self.fetched.get(&format!("profile-games:{user}"));
+        let game = |id: &str| {
+            answer
+                .and_then(Value::as_array)
+                .and_then(|games| games.iter().find(|game| game["id"].as_str() == Some(id)))
+        };
+        let widgets: Vec<AnyElement> = body
+            .and_then(|body| body["widgets"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|widget| {
+                let data = &widget["data"];
+                let title = widget_title(data["type"].as_str()?)?;
+                let rows: Vec<AnyElement> = data["games"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let id = entry["game_id"].as_str()?;
+                        let name = game(id)
+                            .and_then(|game| game["name"].as_str())
+                            .unwrap_or_default()
+                            .to_owned();
+                        let picture = self.images.get(&format!("profile-game:{id}")).cloned();
+                        Some(
+                            div()
+                                .h(px(48.))
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .size(px(48.))
+                                        .flex_none()
+                                        .rounded(px(8.))
+                                        .bg(color("--background-mod-strong"))
+                                        .children(picture.map(|picture| {
+                                            img(picture).size(px(48.)).rounded(px(8.))
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(strong)
+                                        .child(name),
+                                )
+                                .into_any_element(),
+                        )
+                    })
+                    .collect();
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(Self::section_heading(title, subtle))
+                        .children(rows)
+                        .into_any_element(),
+                )
+            })
+            .collect();
+        div()
+            .pt(px(20.))
+            .flex()
+            .flex_col()
+            .gap(px(24.))
+            .children(widgets)
+            .into_any_element()
+    }
+
+    /// The Wishlist tab (`o9` of module 927071): the items of the first wishlist; pressing one opens its product.
+    fn full_profile_wishlist(
+        &mut self,
+        user: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let list = self.fetched.get(&format!("profile-wishlist:{user}"))?;
+        let skus = super::dm_profile::unowned_wishlist(list);
+        self.editor_wishlist_need(&skus);
+        let mut cards = Vec::new();
+        for sku in skus {
+            let preview = self.editor_wishlist_preview(&sku, 160., window, cx);
+            cards.push(
+                div()
+                    .id(SharedString::from(format!("full-profile-wishlist-{sku}")))
+                    .size(px(160.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(color("--background-mod-subtle"))
+                    .cursor_pointer()
+                    .children(preview)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.shop_open_product(&sku, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        Some(
+            div()
+                .pt(px(20.))
+                .flex()
+                .flex_wrap()
+                .gap(px(16.))
+                .children(cards)
+                .into_any_element(),
+        )
+    }
+
     fn mutual_row(
         &self,
         id: SharedString,
@@ -498,18 +651,33 @@ impl Root {
     }
 
     pub(super) fn full_profile_modal(
-        &self,
-        window: &Window,
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let (open_user, open_tab, explicit) = {
+            let open = self.full_profile.as_ref()?;
+            (open.user, open.tab, open.explicit)
+        };
+        let me_id = self.stores.current_user.as_ref().map(|known| known.id);
+        let tab_list = profile_tabs(
+            self.fetched.get(&format!("profile:{open_user}")),
+            me_id != Some(open_user),
+        );
+        let tab = if explicit && tab_list.contains(&open_tab) {
+            open_tab
+        } else {
+            tab_list.first().copied().unwrap_or(Tab::Activity)
+        };
+        let wishlist_panel =
+            (tab == Tab::Wishlist).then(|| self.full_profile_wishlist(open_user, window, cx));
         let open = self.full_profile.as_ref()?;
         let user = self.stores.users.get(&open.user)?.clone();
         let id = user.id;
-        let tab = open.tab;
         let body = self.fetched.get(&format!("profile:{id}"));
-        let palette = self.dm_palette(id);
+        let palette = self.profile_palette(id, open.guild, false);
         let strong: Hsla = palette.text;
-        let subtle: Hsla = hsla(0., 0., 1., 0.88);
+        let subtle: Hsla = palette.subtle;
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let presence = self.stores.status(id).to_owned();
         let friends: Vec<dc_state::User> = body
@@ -635,13 +803,18 @@ impl Root {
                 .size(px(32.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(rgba(0x97979f0a))
-                .bg(rgba(0xffffff14))
+                .border_color(palette.token("--border-subtle"))
+                .bg(palette.token("--background-mod-subtle"))
                 .cursor_pointer()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(glyph, 16., "--white"))
+                .child(
+                    gpui::svg()
+                        .path(format!("icons/{glyph}.svg"))
+                        .size(px(16.))
+                        .text_color(palette.token("--icon-strong")),
+                )
         };
         let primary = match relationship {
             None | Some(0) if !me => Some(
@@ -900,6 +1073,7 @@ impl Root {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(open) = this.full_profile.as_mut() {
                         open.tab = which;
+                        open.explicit = true;
                     }
                     cx.notify();
                 }))
@@ -907,10 +1081,16 @@ impl Root {
         let tabs = div()
             .h(px(30.))
             .border_b_1()
-            .border_color(hsla(0., 0., 1., 0.12))
+            .border_color(palette.token("--border-subtle"))
             .flex()
             .gap(px(24.))
+            .when(tab_list.contains(&Tab::Board), |this| {
+                this.child(tab_item(Tab::Board, dc_intl::t!("laViwx").to_owned()))
+            })
             .child(tab_item(Tab::Activity, dc_intl::t!("chq59f").to_owned()))
+            .when(tab_list.contains(&Tab::Wishlist), |this| {
+                this.child(tab_item(Tab::Wishlist, dc_intl::t!("7lZ31J").to_owned()))
+            })
             .when(!friends.is_empty(), |this| {
                 this.child(tab_item(
                     Tab::Friends,
@@ -925,6 +1105,10 @@ impl Root {
             });
         let now_ms = chrono::Utc::now().timestamp_millis();
         let panel: AnyElement = match tab {
+            Tab::Board => self.full_profile_board(id, strong, subtle),
+            Tab::Wishlist => wishlist_panel
+                .flatten()
+                .unwrap_or_else(|| div().into_any_element()),
             Tab::Activity => {
                 let current = self.live_activity_cards(id, true, strong, subtle, cx);
                 let cards: Vec<AnyElement> = self
@@ -1071,7 +1255,10 @@ impl Root {
                 div()
                     .size_full()
                     .rounded(px(12.))
-                    .bg(rgba(0x000000b8))
+                    .bg(palette.theme.map_or_else(
+                        || color("--background-surface-high"),
+                        |t| t.modal_background,
+                    ))
                     .pt(px(80.))
                     .pl(px(48.))
                     .pr(px(32.))
@@ -1085,12 +1272,17 @@ impl Root {
                     .right(px(7.))
                     .size(px(32.))
                     .rounded(px(8.))
-                    .bg(rgba(0xffffff14))
+                    .bg(palette.token("--background-mod-subtle"))
                     .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("modal_close", 16., "--white"))
+                    .child(
+                        gpui::svg()
+                            .path("icons/modal_close.svg")
+                            .size(px(16.))
+                            .text_color(palette.token("--icon-strong")),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
             );
         // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).

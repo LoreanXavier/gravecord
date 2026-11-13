@@ -1426,7 +1426,7 @@ fn level_label(level: u64) -> &'static str {
 }
 
 impl Root {
-    fn developer_mode(&self) -> bool {
+    pub(super) fn developer_mode(&self) -> bool {
         self.pref_on("developer_mode", false)
     }
 
@@ -2240,7 +2240,7 @@ impl Root {
     }
 
     /// Runs a row against its target.
-    fn run_context(
+    pub(super) fn run_context(
         &mut self,
         act: Act,
         target: Target,
@@ -2913,7 +2913,7 @@ impl Root {
     }
 
     /// The rows of a submenu: mute durations, notification levels, roles, voice channels or servers.
-    fn context_sub_rows(&self, act: Act, target: Target) -> Vec<SubRow> {
+    pub(super) fn context_sub_rows(&self, act: Act, target: Target) -> Vec<SubRow> {
         let plain = |label: &str, on: bool| SubRow {
             label: label.to_owned(),
             on,
@@ -3197,7 +3197,13 @@ impl Root {
         self.send_channel_move(id, Some(parent), false);
     }
 
-    fn run_context_sub(&mut self, act: Act, target: Target, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn run_context_sub(
+        &mut self,
+        act: Act,
+        target: Target,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let row = self.context_sub_rows(act, target).into_iter().nth(index);
         match act {
             Act::Roles => {

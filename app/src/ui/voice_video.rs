@@ -48,6 +48,21 @@ const HARNESS_STREAM_LIMIT: Duration = Duration::from_secs(10);
 #[cfg(feature = "capture")]
 const HARNESS_SOURCE: (u32, u32, u32, u32) = (320, 180, 5, 150_000);
 
+/// `<width>x<height>@<fps>:<seconds>`, each within what a share may be.
+#[cfg(feature = "capture")]
+fn synthetic_spec(text: &str) -> Option<(u32, u32, u32, u64)> {
+    let (size, rest) = text.split_once('@')?;
+    let (width, height) = size.split_once('x')?;
+    let (fps, seconds) = rest.split_once(':')?;
+    let (width, height) = (width.parse::<u32>().ok()?, height.parse::<u32>().ok()?);
+    let (fps, seconds) = (fps.parse::<u32>().ok()?, seconds.parse::<u64>().ok()?);
+    ((160..=3840).contains(&width)
+        && (90..=2160).contains(&height)
+        && (1..=60).contains(&fps)
+        && (1..=120).contains(&seconds))
+    .then_some((width, height, fps, seconds))
+}
+
 /// The latest picture of every source, written by decoder threads, with a sequence number per picture.
 #[derive(Default)]
 pub(super) struct Frames {
@@ -141,6 +156,7 @@ fn allows_multiple(forced: bool, others_watched: usize) -> bool {
 
 /// One stream this client sends or watches.
 struct Live {
+    generation: u64,
     tracker: Tracker,
     controls: StreamControls,
     /// What a sender captures; taken when the connection starts.
@@ -151,6 +167,8 @@ struct Live {
     /// What a watched stream says it sends at most (`StreamEvent::Quality`).
     remote_quality: Option<(Option<u32>, u32)>,
 }
+
+static STREAM_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// What a stream we send was started with.
 #[derive(Clone, Debug)]
@@ -173,6 +191,13 @@ pub(super) struct StreamInfo {
     pub viewer_ids: Vec<u64>,
 }
 
+struct PendingRestart {
+    key: StreamKey,
+    source: StreamSource,
+    started: Started,
+    focus: Option<(u64, super::video_tiles::TileKind)>,
+}
+
 #[derive(Default)]
 pub(super) struct Video {
     frames: Arc<Frames>,
@@ -183,6 +208,9 @@ pub(super) struct Video {
     /// A stream asked to be watched before this account's voice state of the call arrived (Watch Stream from
     /// outside the call): the owner and whether several were asked for. Sent once the state is there.
     pending_watch: Option<(u64, bool)>,
+    /// Own stream queued to restart after Change Stream / Stream Quality / Share Stream Audio once `STREAM_DELETE`
+    /// completes (or the short fallback timer fires).
+    pending_restart: Option<PendingRestart>,
 }
 
 impl Video {
@@ -522,6 +550,7 @@ impl Root {
         if self.video.streams.contains_key(&key) {
             return;
         }
+        let generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let controls = StreamControls::new();
         controls.set_previews(self.stream_previews_on());
         let tracker = Tracker::new(key, Role::Send, me, session, Instant::now());
@@ -529,6 +558,7 @@ impl Root {
         self.video.streams.insert(
             key,
             Live {
+                generation,
                 tracker,
                 controls,
                 source: Some(source),
@@ -542,8 +572,60 @@ impl Root {
             op: Op::StreamCreate,
             data: streams::create(guild, channel, None),
         });
-        self.stream_watchdog(key, cx);
+        self.stream_watchdog(key, generation, cx);
         cx.notify();
+    }
+
+    /// Stops our running stream and queues the replacement to start once `STREAM_DELETE` lands (so op 18 and local
+    /// events never collide under the same `StreamKey`).
+    pub(super) fn stream_restart(
+        &mut self,
+        source: StreamSource,
+        started: Started,
+        focus: Option<(u64, super::video_tiles::TileKind)>,
+        cx: &mut Context<Self>,
+    ) {
+        let own = self
+            .video
+            .streams
+            .iter()
+            .find(|(_, live)| live.last.role == Role::Send)
+            .map(|(key, _)| *key);
+        let Some(key) = own else {
+            self.stream_start(source, started, cx);
+            self.vv.focus.tile = focus;
+            return;
+        };
+        self.stream_stop_key(key, cx);
+        self.video.pending_restart = Some(PendingRestart {
+            key,
+            source,
+            started,
+            focus,
+        });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                if root
+                    .video
+                    .pending_restart
+                    .as_ref()
+                    .is_some_and(|pending| pending.key == key)
+                    && let Some(PendingRestart {
+                        source,
+                        started,
+                        focus,
+                        ..
+                    }) = root.video.pending_restart.take()
+                {
+                    root.stream_start(source, started, cx);
+                    root.vv.focus.tile = focus;
+                }
+            });
+        })
+        .detach();
     }
 
     /// The harness's `voice` steps. They only ever name the fixture guild's General voice channel, so a script cannot
@@ -560,6 +642,13 @@ impl Root {
             ["leave"] => {
                 self.leave_voice(cx);
                 "left".to_owned()
+            }
+            // Before a live join: the microphone stays closed.
+            ["mute"] => {
+                if !self.self_mute {
+                    self.toggle_self_mute(cx);
+                }
+                format!("self mute {}", self.self_mute)
             }
             ["state"] => match &self.call {
                 Some(call) => format!(
@@ -604,11 +693,13 @@ impl Root {
             }
         };
         let role = if watch { Role::Watch } else { Role::Send };
+        let generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let tracker = Tracker::new(key, role, me, session, Instant::now());
         let last = tracker.current();
         self.video.streams.insert(
             key,
             Live {
+                generation,
                 tracker,
                 controls: StreamControls::new(),
                 source: None,
@@ -658,7 +749,16 @@ impl Root {
         if self.others_present() && !with_others {
             return "refused: someone else is in the channel";
         }
-        let (width, height, fps, bitrate) = HARNESS_SOURCE;
+        // `GRAVECORD_SYNTH_STREAM=<width>x<height>@<fps>:<seconds>` (a live measurement in the fixture channel): the same
+        // pattern at a real share's size and rate, for that long.
+        let asked = std::env::var("GRAVECORD_SYNTH_STREAM")
+            .ok()
+            .and_then(|text| synthetic_spec(&text));
+        let (width, height, fps, bitrate) = match asked {
+            Some((width, height, fps, _)) => (width, height, fps, 9_000_000),
+            None => HARNESS_SOURCE,
+        };
+        let seconds = asked.map_or(HARNESS_STREAM_LIMIT, |spec| Duration::from_secs(spec.3));
         self.stream_start(
             StreamSource::Synthetic {
                 width,
@@ -671,12 +771,16 @@ impl Root {
                 info: dc_media::screen::Source {
                     id: dc_media::screen::SourceId::Display(1),
                     name: "Synthetic".to_owned(),
-                    width: 320,
-                    height: 180,
-                    refresh_hz: 5,
+                    width,
+                    height,
+                    refresh_hz: fps,
                     icon: None,
                 },
-                quality: (dc_media::screen::Resolution::P480, 5),
+                quality: if asked.is_some() {
+                    (dc_media::screen::Resolution::Source, fps)
+                } else {
+                    (dc_media::screen::Resolution::P480, 5)
+                },
                 icon: None,
             },
             cx,
@@ -692,7 +796,7 @@ impl Root {
                 let limit = if with_others {
                     Duration::from_secs(120)
                 } else {
-                    HARNESS_STREAM_LIMIT
+                    seconds
                 };
                 cx.background_executor().timer(limit).await;
                 let _ = this.update(cx, |root, cx| root.stream_stop_key(key, cx));
@@ -705,6 +809,7 @@ impl Root {
     /// The call is left: every stream watched or sent in it ends, and no watch waits for it any more.
     pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
         self.video.pending_watch = None;
+        self.video.pending_restart = None;
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
             self.stream_stop_key(key, cx);
@@ -713,6 +818,7 @@ impl Root {
 
     /// Ends the stream we send, if any (op 19 and the connection).
     pub(crate) fn stream_stop(&mut self, cx: &mut Context<Self>) {
+        self.video.pending_restart = None;
         let own: Vec<StreamKey> = self
             .video
             .streams
@@ -747,11 +853,13 @@ impl Root {
         if self.video.streams.contains_key(&key) {
             return;
         }
+        let generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let tracker = Tracker::new(key, Role::Watch, me, session, Instant::now());
         let last = tracker.current();
         self.video.streams.insert(
             key,
             Live {
+                generation,
                 tracker,
                 controls: StreamControls::new(),
                 source: None,
@@ -766,7 +874,7 @@ impl Root {
             op: Op::StreamWatch,
             data: streams::watch(&key),
         });
-        self.stream_watchdog(key, cx);
+        self.stream_watchdog(key, generation, cx);
         cx.notify();
     }
 
@@ -960,7 +1068,7 @@ impl Root {
     }
 
     /// The 30 second rendezvous bound: fails the stream when the gateway never names its server.
-    fn stream_watchdog(&mut self, key: StreamKey, cx: &mut Context<Self>) {
+    fn stream_watchdog(&mut self, key: StreamKey, generation: u64, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(streams::RENDEZVOUS_TIMEOUT + Duration::from_secs(1))
@@ -970,6 +1078,7 @@ impl Root {
                     .video
                     .streams
                     .get_mut(&key)
+                    .filter(|live| live.generation == generation)
                     .and_then(|live| live.tracker.tick(Instant::now()));
                 if let Some(update) = update {
                     root.stream_changed(update, true, cx);
@@ -988,40 +1097,63 @@ impl Root {
             return;
         };
         let key = dispatch.key();
-        let Some(live) = self.video.streams.get_mut(&key) else {
-            return;
-        };
-        let step = live.tracker.dispatch(&dispatch, Instant::now());
         let ended_by_server = matches!(dispatch, Dispatch::Delete { .. });
-        if let Some(join) = step.join {
-            let source = live.source.take();
-            let controls = live.controls.clone();
-            let hub = match &self.call {
-                Some(call) => call.controls.hub(),
-                None => return,
-            };
-            info!("stream: both dispatches in, connecting");
-            let _ = self.requests.send(Request::StreamConnect {
-                join,
-                source,
-                hub,
-                controls,
-            });
+        if let Some(live) = self.video.streams.get_mut(&key) {
+            let step = live.tracker.dispatch(&dispatch, Instant::now());
+            if let Some(join) = step.join {
+                let source = live.source.take();
+                let controls = live.controls.clone();
+                let generation = live.generation;
+                let hub = match &self.call {
+                    Some(call) => call.controls.hub(),
+                    None => return,
+                };
+                info!("stream: both dispatches in, connecting");
+                let _ = self.requests.send(Request::StreamConnect {
+                    join,
+                    source,
+                    hub,
+                    controls,
+                    generation,
+                });
+            }
+            if let Some(update) = step.update {
+                self.stream_changed(update, !ended_by_server, cx);
+            }
         }
-        if let Some(update) = step.update {
-            self.stream_changed(update, !ended_by_server, cx);
+        if ended_by_server
+            && self
+                .video
+                .pending_restart
+                .as_ref()
+                .is_some_and(|pending| pending.key == key)
+            && let Some(PendingRestart {
+                source,
+                started,
+                focus,
+                ..
+            }) = self.video.pending_restart.take()
+        {
+            self.stream_start(source, started, cx);
+            self.vv.focus.tile = focus;
         }
     }
 
     /// An event of a stream's own voice connection.
     pub(super) fn on_stream_event(
         &mut self,
+        generation: u64,
         key: StreamKey,
         event: StreamEvent,
         cx: &mut Context<Self>,
     ) {
         info!(?event, "stream connection event");
-        let Some(live) = self.video.streams.get_mut(&key) else {
+        let Some(live) = self
+            .video
+            .streams
+            .get_mut(&key)
+            .filter(|live| live.generation == generation)
+        else {
             return;
         };
         if let StreamEvent::Quality { height, fps } = event {

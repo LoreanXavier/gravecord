@@ -4,7 +4,6 @@
 //! `design/dom/modals/lightbox-darker-cozy.json` and `lightbox-zoomed-darker-cozy.json`; the viewer carries
 //! `theme-midnight` whatever the app's theme is.
 
-use super::embed::image_key;
 use super::{Root, avatar_source, icon};
 use crate::net::Request;
 use dc_state::{Attachment, Message};
@@ -61,11 +60,8 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
         .map(attachment_item)
         .collect();
     for (index, embed) in message.embeds.iter().enumerate() {
-        if let Some(image) = &embed.image {
-            let (key, base) = (
-                image_key(message.id, index, "image"),
-                image.proxy_url.clone().unwrap_or_else(|| image.url.clone()),
-            );
+        for (key, image) in super::embed::viewer_pictures(message.id, index, embed) {
+            let base = image.proxy_url.clone().unwrap_or_else(|| image.url.clone());
             items.push(Item {
                 key,
                 url: image.url.clone(),
@@ -439,11 +435,34 @@ impl Root {
                     .left(offset_x)
                     .top(offset_y)
                     .cursor_pointer()
+                    // An animation plays in its own decoded tile (`gif_tiles`): the media viewer always plays it.
                     .children(picture.map(|picture| {
-                        img(picture)
-                            .id(SharedString::from(format!("lightbox-image-{}", item.key)))
-                            .w(px(width as f32 * scale))
-                            .h(px(height as f32 * scale))
+                        if super::gif_tiles::animated(picture.bytes()) {
+                            let ratio = self.ui_scale.get().max(1.);
+                            self.media_tile(
+                                &format!("lightbox-{}", item.key),
+                                picture,
+                                super::gif_tiles::TileLook {
+                                    // At its unzoomed size: a zoom that moves would decode it again
+                                    // every frame.
+                                    pixels: (
+                                        (width as f32 * ratio).round().max(1.) as u32,
+                                        (height as f32 * ratio).round().max(1.) as u32,
+                                    ),
+                                    radius: 0.,
+                                    cover: false,
+                                    post: None,
+                                    wanted: true,
+                                },
+                                cx,
+                            )
+                        } else {
+                            img(picture)
+                                .id(SharedString::from(format!("lightbox-image-{}", item.key)))
+                                .w(px(width as f32 * scale))
+                                .h(px(height as f32 * scale))
+                                .into_any_element()
+                        }
                     }))
                     .on_mouse_down(
                         MouseButton::Left,

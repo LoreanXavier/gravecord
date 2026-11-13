@@ -195,26 +195,62 @@ fn label_block_capped(
     description: Runs,
     cap: Option<Pixels>,
 ) -> gpui::Div {
+    label_block_with(label, badge, description, cap, None)
+}
+
+/// A switch's title line is the `<label for>` of its checkbox (`label_VhFsFg`, `cursor: pointer` in
+/// voice-video-darker-cozy): a press on the line, as wide as the label column, flips the switch. The description
+/// under it is not part of the label.
+fn label_block_toggling(
+    label: &'static str,
+    badge: bool,
+    description: Runs,
+    cap: Option<Pixels>,
+    toggle: (&'static str, bool),
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let (key, on) = toggle;
+    let title = div()
+        .id(SharedString::from(format!("switch-label-{key}")))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.setting_choices.insert(key, Choice::On(!on));
+            this.voice_setting_changed(key);
+            cx.notify();
+        }));
+    label_block_with(label, badge, description, cap, Some(title))
+}
+
+fn label_block_with(
+    label: &'static str,
+    badge: bool,
+    description: Runs,
+    cap: Option<Pixels>,
+    title: Option<gpui::Stateful<gpui::Div>>,
+) -> gpui::Div {
+    let line = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .child(dc_intl::tr(label)),
+        )
+        .when(badge, |this| this.child(super::badge(badge_text(label))));
+    let line = match title {
+        Some(title) => title.child(line).into_any_element(),
+        None => line.into_any_element(),
+    };
     div()
         .flex()
         .flex_col()
         .gap(px(4.))
         .min_w(px(0.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .text_size(px(16.))
-                        .line_height(px(20.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--text-strong"))
-                        .child(dc_intl::tr(label)),
-                )
-                .when(badge, |this| this.child(super::badge(badge_text(label)))),
-        )
+        .child(line)
         .when(!description.is_empty(), |this| {
             this.child(
                 div()
@@ -1403,16 +1439,21 @@ impl Root {
                 }
                 if *clickable {
                     row = row.link((!value.is_empty()).then(|| (*value).to_owned()));
-                    // A navigator opens the page of its `destinationKey`.
+                    // A navigator opens the page of its `destinationKey`. The press is the row's own, so its whole
+                    // hover box answers, the 12px it reaches past the panel's column included (a wrapper sized by
+                    // the column left those edges dead).
                     let key: &'static str = key;
                     return div()
-                        .id(SharedString::from(format!("navigator-{key}")))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.settings_navigate(key, cx);
-                            cx.notify();
-                        }))
-                        .child(row.render())
+                        .child(
+                            row.press(
+                                SharedString::from(format!("navigator-{key}")),
+                                cx.listener(move |this, _, _, cx| {
+                                    this.settings_navigate(key, cx);
+                                    cx.notify();
+                                }),
+                            )
+                            .render(),
+                        )
                         .into_any_element();
                 } else if !buttons.is_empty() || !value.is_empty() {
                     row = row.trailing(
@@ -1646,8 +1687,15 @@ impl Root {
         let preview = crate::sounds::row_sound(key)
             .filter(|_| matches!(description, [("Preview Sound", true)]));
         let cap = description_max_width(window);
+        let block = |description: Runs, cx: &mut Context<Self>| {
+            if disabled {
+                label_block_capped(label, badge, description, Some(cap))
+            } else {
+                label_block_toggling(label, badge, description, Some(cap), (key, on), cx)
+            }
+        };
         let label_side = match preview {
-            Some(sound) => label_block_capped(label, badge, &[], Some(cap)).child(
+            Some(sound) => block(&[], cx).child(
                 div()
                     .max_w(cap)
                     .text_size(px(14.))
@@ -1659,7 +1707,7 @@ impl Root {
                         }),
                     ),
             ),
-            None => label_block_capped(label, badge, description, Some(cap)),
+            None => block(description, cx),
         };
         div()
             .flex()

@@ -253,11 +253,16 @@ impl Stored {
     }
 
     fn load() -> Self {
+        Self::read(storage::get)
+    }
+
+    /// The stored choices from `get` (storage.json's keys); a key not there keeps its default, so a first start has
+    /// Reduce Room Echo off.
+    fn read(get: impl Fn(&str) -> Option<serde_json::Value>) -> Self {
         let mut stored = Stored::default();
-        let bool_of = |key: &str| storage::get(key).and_then(|value| value.as_bool());
-        let float_of = |key: &str| storage::get(key).and_then(|value| value.as_f64());
-        if let Some(label) =
-            storage::get(PROFILE_STORED).and_then(|value| value.as_str().map(str::to_owned))
+        let bool_of = |key: &str| get(key).and_then(|value| value.as_bool());
+        let float_of = |key: &str| get(key).and_then(|value| value.as_f64());
+        if let Some(label) = get(PROFILE_STORED).and_then(|value| value.as_str().map(str::to_owned))
         {
             stored.profile = Profile::from_label(&label);
         }
@@ -276,9 +281,7 @@ impl Stored {
         if let Some(ms) = float_of(DELAY_STORED) {
             stored.delay = (ms as f32).clamp(0., 2000.);
         }
-        if let Some(list) =
-            storage::get(SHORTCUT_STORED).and_then(|value| value.as_array().cloned())
-        {
+        if let Some(list) = get(SHORTCUT_STORED).and_then(|value| value.as_array().cloned()) {
             stored.shortcut = list
                 .iter()
                 .filter_map(|entry| {
@@ -291,7 +294,7 @@ impl Stored {
         if let Some(on) = bool_of(ECHO_STORED) {
             stored.echo = on;
         }
-        if let Some(index) = storage::get(NOISE_STORED).and_then(|value| value.as_u64()) {
+        if let Some(index) = get(NOISE_STORED).and_then(|value| value.as_u64()) {
             stored.suppression = (index as usize).min(2);
         }
         if let Some(on) = bool_of(ROOM_ECHO_STORED) {
@@ -304,17 +307,26 @@ impl Stored {
     }
 
     fn save(&self) {
-        storage::set(PROFILE_STORED, json!(self.profile.label()));
-        storage::set(PUSH_TO_TALK_STORED, json!(self.push_to_talk));
-        storage::set(THRESHOLD_STORED, json!(self.threshold));
-        storage::set(AUTO_THRESHOLD_STORED, json!(self.auto_threshold));
-        storage::set(ADVANCED_STORED, json!(self.advanced_voice_activity));
-        storage::set(DELAY_STORED, json!(self.delay));
-        storage::set(SHORTCUT_STORED, json!(self.shortcut));
-        storage::set(ECHO_STORED, json!(self.echo));
-        storage::set(NOISE_STORED, json!(self.suppression));
-        storage::set(ROOM_ECHO_STORED, json!(self.room_echo));
-        storage::set(AGC_STORED, json!(self.agc));
+        for (key, value) in self.values() {
+            storage::set(key, value);
+        }
+    }
+
+    /// What `save` writes: every choice under its storage.json key.
+    fn values(&self) -> [(&'static str, serde_json::Value); 11] {
+        [
+            (PROFILE_STORED, json!(self.profile.label())),
+            (PUSH_TO_TALK_STORED, json!(self.push_to_talk)),
+            (THRESHOLD_STORED, json!(self.threshold)),
+            (AUTO_THRESHOLD_STORED, json!(self.auto_threshold)),
+            (ADVANCED_STORED, json!(self.advanced_voice_activity)),
+            (DELAY_STORED, json!(self.delay)),
+            (SHORTCUT_STORED, json!(self.shortcut)),
+            (ECHO_STORED, json!(self.echo)),
+            (NOISE_STORED, json!(self.suppression)),
+            (ROOM_ECHO_STORED, json!(self.room_echo)),
+            (AGC_STORED, json!(self.agc)),
+        ]
     }
 }
 
@@ -958,6 +970,8 @@ impl Root {
             on,
             self.stores.current_user.as_ref().map(|user| user.id),
         ) {
+            // NotificationSettingsStore feeds the badge and tray at once (596339 `Ni`, `NV`).
+            self.refresh_notification_badge();
             return;
         }
         if key == "streaming_show_stream_previews" {
@@ -2853,5 +2867,26 @@ mod tests {
             assert_eq!(Profile::from_label(profile.label()), profile);
         }
         assert_eq!(Profile::from_label("something else"), Profile::Custom);
+    }
+
+    /// Reduce Room Echo is off on a first start (nothing stored), and a choice survives a save and a load; the
+    /// processors get the stored value under Custom and never under the presets.
+    #[test]
+    fn reduce_room_echo_is_off_until_switched_on_and_kept() {
+        let first = Stored::read(|_| None);
+        assert!(!first.room_echo);
+        assert!(!first.effective().room_echo);
+        let mut switched = first.clone();
+        switched.room_echo = true;
+        let saved: std::collections::HashMap<&str, serde_json::Value> =
+            switched.values().into_iter().collect();
+        assert_eq!(saved.get(ROOM_ECHO_STORED), Some(&serde_json::json!(true)));
+        let reloaded = Stored::read(|key| saved.get(key).cloned());
+        assert!(reloaded.room_echo && reloaded.effective().room_echo);
+        let mut off = reloaded.clone();
+        off.room_echo = false;
+        let saved: std::collections::HashMap<&str, serde_json::Value> =
+            off.values().into_iter().collect();
+        assert!(!Stored::read(|key| saved.get(key).cloned()).room_echo);
     }
 }

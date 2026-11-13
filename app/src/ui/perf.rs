@@ -151,6 +151,10 @@ impl Root {
                 self.open_quests(cx);
                 "quests".to_owned()
             }
+            ["nitro"] => {
+                self.open_nitro(cx);
+                "nitro".to_owned()
+            }
             ["discover"] => {
                 self.open_discover(discover::Place::Servers, cx);
                 "discover".to_owned()

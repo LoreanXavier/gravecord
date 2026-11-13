@@ -47,8 +47,11 @@ mod badge_paths;
 mod blocked;
 mod boost_apply;
 mod call_background;
+mod call_menus;
 mod call_popout;
 mod call_volume;
+#[cfg(feature = "capture")]
+pub(crate) mod callsim;
 #[cfg(feature = "capture")]
 mod ch_fixture;
 mod channel_drag;
@@ -72,6 +75,9 @@ mod destructive;
 mod dm;
 mod dm_profile;
 mod embed;
+#[cfg(feature = "capture")]
+mod embed_demo;
+mod embed_layout;
 mod emoji_popout;
 mod emoticons;
 mod file_actions;
@@ -125,6 +131,7 @@ mod stream_previews;
 mod stream_zoom;
 mod timestamps;
 mod tray;
+mod typing_avatar;
 mod unread_badges;
 mod unread_dms;
 mod update_button;
@@ -164,6 +171,7 @@ mod nameplate_animation;
 mod nameplates;
 mod nitro;
 mod nitro_purchase;
+mod notice_bar;
 mod notifications;
 mod notify;
 mod oauth;
@@ -188,6 +196,7 @@ mod profile_editor;
 mod profile_effects;
 mod profile_menu;
 mod profile_other;
+mod profile_theme;
 mod profile_voice;
 mod quests;
 mod quickswitcher;
@@ -211,7 +220,7 @@ mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_discovery;
-mod shop;
+pub(crate) mod shop;
 mod slash;
 mod slowmode;
 mod splash;
@@ -1345,7 +1354,11 @@ impl Root {
                 cx.notify();
             }
             Update::Voice(generation, event) => self.on_voice_event(generation, event, cx),
-            Update::Stream { key, event } => self.on_stream_event(key, event, cx),
+            Update::Stream {
+                generation,
+                key,
+                event,
+            } => self.on_stream_event(generation, key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::ClipSaveKey => self.clips_save_key(cx),
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
@@ -2074,7 +2087,10 @@ impl Root {
                 }
             }
             for message in messages.iter().chain(&starters) {
-                media.extend(embed::wanted(message));
+                media.extend(embed::wanted(
+                    message,
+                    self.pref_on("animate_gifs", true) && !motion::reduced(),
+                ));
                 media.extend(files::wanted(message));
                 media.extend(stickers::wanted(message));
                 media.extend(poll::wanted(message));
@@ -2995,18 +3011,9 @@ impl Root {
             ),
             _ => dc_intl::format_runs("Q8lUnE", &[]),
         };
-        // `.dot_U9Tvvz`: 7px, `typing-dot-pulse` stepped, 2px apart.
-        let active = motion::window_active();
-        let dot = |index: usize| {
-            let (opacity, scale) = motion::typing_dot(index, active);
-            div()
-                .id(("typing-dot", index))
-                .size(px(7.))
-                .rounded_full()
-                .bg(color("--text-default"))
-                .opacity(opacity)
-                .paint_scale(scale, gpui::point(0.5, 0.5))
-        };
+        // `.inTextChannel_U9Tvvz.base_U9Tvvz`: `--space-md` (16) in, `--text-subtle`; `typingDots_U9Tvvz` 8px in; the
+        // dots are module 128539's CSS dots under the experiment, else module 863610's (`typing_avatar`); the text
+        // `--space-md + --space-8` after them (the capture `pt-activities` computes it to 24px).
         Some(
             div()
                 .absolute()
@@ -3018,19 +3025,17 @@ impl Root {
                 .text_size(px(12.))
                 .line_height(px(16.))
                 .font_weight(FontWeight(500.))
-                .text_color(color("--interactive-text-default"))
+                .text_color(color("--text-subtle"))
                 .child(
                     div()
                         .ml(px(8.))
-                        .flex()
-                        .gap(px(2.))
-                        .child(dot(0))
-                        .child(dot(1))
-                        .child(dot(2)),
+                        .child(typing_avatar::chat_dots(typing_avatar::css_dots(
+                            &self.stores.experiments,
+                        ))),
                 )
                 .child(
                     div()
-                        .ml(px(6.))
+                        .ml(px(24.))
                         .flex()
                         .whitespace_nowrap()
                         .children(runs.into_iter().map(|(text, tag)| {
@@ -3220,6 +3225,7 @@ impl Root {
     pub fn open_editors(&self) -> Vec<Entity<Editor>> {
         let mut list: Vec<Entity<Editor>> = Vec::new();
         list.extend(self.inventory_reply_editor());
+        list.extend(settings::client_theme::editor_fields());
         if self.channel_browser_open {
             list.extend(
                 self.channel_browser
@@ -4429,16 +4435,16 @@ impl Root {
                     .h(self.user_panel_height.unwrap_or(px(58.)) - px(8.)),
             )
             // `sidebar_pog62O::after`: 8px of `--background-base-lowest` along the bottom, from the left edge to 1px
-            // short of the right, above the list's border.
-            .child(
+            // short of the right, above the list's border; `.custom-theme-background .sidebar_pog62O:after{display:none}`.
+            .children(settings::client_theme::active().is_none().then(|| {
                 div()
                     .absolute()
                     .left_0()
                     .right(px(1.))
                     .bottom_0()
                     .h(px(8.))
-                    .bg(color("--background-base-lowest")),
-            )
+                    .bg(color("--background-base-lowest"))
+            }))
     }
 
     fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4796,9 +4802,10 @@ impl Root {
             .rounded(px(8.))
             .bg(color("--background-base-low"))
             .border_1()
-            .border_color(color("--border-muted"))
+            .border_color(color(settings::client_theme::panels_border()))
             .flex()
             .flex_col()
+            .children(settings::client_theme::panels_cover())
             .child(measure)
             .children(self.activity_panel(cx))
             .children(self.clips_panels(cx))
@@ -6065,58 +6072,59 @@ impl Root {
     fn attachments(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         // "When uploaded directly to Discord" off: pictures come as file cards instead (see `files`).
         let inline = self.pref_on("chat_inline_media_uploads", true);
-        let images: Vec<AnyElement> = message
-            .attachments
-            .iter()
-            .filter(|attachment| inline && attachment.is_image())
-            .map(|attachment| {
-                let (width, height) = fit_media(
-                    attachment.width.unwrap_or(1),
-                    attachment.height.unwrap_or(1),
-                );
-                let (width, height) = (width as f32, height as f32);
-                let shown = width.min(self.content_width.max(1.));
-                let (width, height) = (px(shown), px(height * shown / width));
-                let image = self
-                    .images
-                    .get(&format!("attachment:{}", attachment.id))
-                    .cloned();
-                let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
-                let hovered = key.clone();
-                let (url, media_key) = (attachment.url.clone(), key.clone());
-                div()
-                    .id(SharedString::from(format!("attachment-{}", attachment.id)))
-                    .relative()
-                    .w(width)
-                    .h(height)
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .bg(color("--background-base-low"))
-                    .children(image.map(|image| {
-                        self.media_image(img(image).w(width).h(height).rounded(px(8.)), &key)
-                    }))
-                    .children(self.alt_text_overlay(attachment, cx))
-                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                        this.media_hover(&hovered, *inside, cx)
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_lightbox(&clicked, &key, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            this.menu_hit = Some((
-                                event.position,
-                                menu::Hit::Media {
-                                    url: url.clone(),
-                                    key: media_key.clone(),
-                                },
-                            ));
-                        }),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+        let images: Vec<AnyElement> =
+            message
+                .attachments
+                .iter()
+                .filter(|attachment| inline && attachment.is_image())
+                .map(|attachment| {
+                    let (width, height) = fit_media(
+                        attachment.width.unwrap_or(1),
+                        attachment.height.unwrap_or(1),
+                    );
+                    let (width, height) = (width as f32, height as f32);
+                    let shown = width.min(self.content_width.max(1.));
+                    let (width, height) = (px(shown), px(height * shown / width));
+                    let image = self
+                        .images
+                        .get(&format!("attachment:{}", attachment.id))
+                        .cloned();
+                    let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
+                    let hovered = key.clone();
+                    let (url, media_key) = (attachment.url.clone(), key.clone());
+                    div()
+                        .id(SharedString::from(format!("attachment-{}", attachment.id)))
+                        .relative()
+                        .w(width)
+                        .h(height)
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .bg(color("--background-base-low"))
+                        .children(image.map(|image| {
+                            self.media_image(image, &key, (width, height), 8., false, cx)
+                        }))
+                        .children(self.alt_text_overlay(attachment, cx))
+                        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                            this.media_hover(&hovered, *inside, cx)
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_lightbox(&clicked, &key, cx);
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                                this.menu_hit = Some((
+                                    event.position,
+                                    menu::Hit::Media {
+                                        url: url.clone(),
+                                        key: media_key.clone(),
+                                    },
+                                ));
+                            }),
+                        )
+                        .into_any_element()
+                })
+                .collect();
         let pictures: Vec<&dc_state::Attachment> = message
             .attachments
             .iter()
@@ -6168,15 +6176,13 @@ impl Root {
                 .bg(color("--background-base-low"))
                 .child(
                     div()
+                        .relative()
                         .size_full()
                         .rounded(px(8.))
                         .overflow_hidden()
-                        .children(image.map(|image| {
-                            self.media_image(
-                                img(image).w(w).h(h).object_fit(gpui::ObjectFit::Cover),
-                                &key,
-                            )
-                        })),
+                        .children(
+                            image.map(|image| self.media_image(image, &key, (w, h), 8., true, cx)),
+                        ),
                 )
                 .children(self.alt_text_overlay(attachment, cx))
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
@@ -6329,9 +6335,10 @@ impl Root {
                                         .child(dc_intl::tr("Forwarded")),
                                 ),
                         )
-                        .when(!copy.content.is_empty(), |this| {
-                            this.child(self.content(&copy))
-                        })
+                        .when(
+                            !copy.content.is_empty() && !self.hides_inline_media_content(&copy),
+                            |this| this.child(self.content(&copy)),
+                        )
                         .children(self.accessories(&copy, cx))
                         .children(footer.map(|footer| {
                             div()
@@ -6760,7 +6767,7 @@ impl Root {
                     None if missing_starter => self.starter_missing_line(message),
                     None => div()
                         .when(
-                            !message.content_is_inline_media()
+                            !self.hides_inline_media_content(message)
                                 && !self.command_replaces_content(message),
                             |this| {
                                 // `isFailed` colours the text, the links and the inline code; `isSending` fades the
@@ -8325,8 +8332,8 @@ impl Render for Root {
         } else if self.new_thread.is_some() {
             // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
             480.
-        } else if self.current_dm().is_some() && self.show_dm_profile && !self.dm_call_shown() {
-            320.
+        } else if self.current_dm().is_some() {
+            self.dm_profile_width(f32::from(window.viewport_size().width))
         } else if self.show_members && self.guild.is_some() {
             self.member_list_width()
         } else if self.group_members_shown() {
@@ -9102,6 +9109,7 @@ impl Render for Root {
             .children(self.purchase_modal(window, cx))
             .children(self.tip_layer())
             .children(self.lottie_icon_probe())
+            .children(self.system_bar())
             .child(motion::driver())
             .child(motion::layers::faded(
                 self.regions.place(
@@ -9110,6 +9118,7 @@ impl Render for Root {
                 ),
                 base_opacity,
             ))
+            .children(self.notice_bar(cx))
             .child({
                 let rail = self
                     .regions
@@ -9512,6 +9521,7 @@ fn status_dot_sized(status: &str, ring: &str, dot: f32, out: f32) -> impl IntoEl
         .flex()
         .items_center()
         .justify_center()
+        .children(settings::client_theme::token_cover(ring, hole / 2.))
         .child(status_dot_inner(status, ring, dot))
 }
 
@@ -9537,12 +9547,19 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
                     .w(px(dot * 0.6))
                     .h(px(dot * 0.2))
                     .rounded(px(dot * 0.1))
-                    .bg(color(ring)),
+                    .bg(color(ring))
+                    .children(settings::client_theme::token_cover(ring, dot * 0.1)),
             )
         })
         // `svg-mask-status-offline`: a hole of half the dot's size.
         .when(matches!(status, "offline" | "invisible"), |this| {
-            this.child(div().size(px(dot * 0.5)).rounded_full().bg(color(ring)))
+            this.child(
+                div()
+                    .size(px(dot * 0.5))
+                    .rounded_full()
+                    .bg(color(ring))
+                    .children(settings::client_theme::token_cover(ring, dot * 0.25)),
+            )
         })
         // `svg-mask-status-idle`: the dot less a circle of radius 0.375 centred at a quarter.
         .when(status == "idle", |this| {
@@ -9553,7 +9570,8 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
                     .top(px(-dot * 0.125))
                     .size(px(dot * 0.75))
                     .rounded_full()
-                    .bg(color(ring)),
+                    .bg(color(ring))
+                    .children(settings::client_theme::token_cover(ring, dot * 0.375)),
             )
         })
 }

@@ -339,7 +339,8 @@ impl Root {
             .into_any_element()
     }
 
-    /// Three columns of cards, 24px apart (two while the filter panel covers the right).
+    /// The cards (`cardsContainer_Mqg79R`): as many columns of 246px or more as the page holds, 24px apart (three
+    /// columns of 272.33 in the 865px page of the 1280 capture: `repeat(auto-fill, minmax(246px, 1fr))`).
     fn shop_grid(
         &mut self,
         skus: &[String],
@@ -347,10 +348,22 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut grid = div().w_full().grid().grid_cols(3).gap(px(COLUMN_GAP));
         let _ = filters_open;
-        for sku in skus {
-            grid = grid.child(self.shop_card(sku, None, window, cx));
+        // The page's 20px left and 12px right padding.
+        let width = (self.shop_content_width(window) - 32.).max(0.);
+        let (columns, column) = data::feed_columns(width);
+        let mut grid = div()
+            .w_full()
+            .grid()
+            .grid_cols(columns as u16)
+            .gap(px(COLUMN_GAP));
+        let shown: Vec<String> = skus
+            .iter()
+            .filter(|sku| !self.shop.absent.contains(*sku))
+            .cloned()
+            .collect();
+        for sku in &shown {
+            grid = grid.child(self.shop_card(sku, Some(column), window, cx));
         }
         grid.into_any_element()
     }

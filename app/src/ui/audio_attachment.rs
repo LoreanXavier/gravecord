@@ -446,7 +446,9 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .rounded(px(8.))
-            .bg(color("--background-base-lower"))
+            .bg(super::settings::client_theme::solid(
+                "--background-base-lower",
+            ))
             .on_hover(move |hovered, window, _| {
                 let mut hub = over_hub.borrow_mut();
                 if *hovered {

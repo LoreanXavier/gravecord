@@ -38,7 +38,7 @@ pub(crate) enum ClaimStage {
 }
 
 impl Root {
-    pub(super) fn shop_open_product(&mut self, sku: &str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn shop_open_product(&mut self, sku: &str, cx: &mut Context<Self>) {
         self.shop.modal = Some(sku.to_owned());
         self.shop.bundle_slide = 0;
         self.shop.checkout = None;

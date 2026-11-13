@@ -489,8 +489,9 @@ impl Root {
     ) -> gpui::Div {
         let live = self.live_image(user, size.geometry().base, hovered, cx);
         let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
-        let decoration = self
-            .equipped_decoration(user)
+        let equipped = self.equipped_decoration(user);
+        let deco_sku = equipped.as_ref().map_or(0, |d| d.sku_id);
+        let decoration = equipped
             .and_then(|decoration| {
                 self.images
                     .get(&format!("avatar-decoration:{}", decoration.sku_id))
@@ -512,11 +513,11 @@ impl Root {
                 status,
                 tint,
             };
-            let decoration = decoration.clone();
+            let post_decoration = decoration.clone();
             let decoded: Arc<std::sync::OnceLock<Option<RgbaImage>>> = Arc::default();
             let post: super::gif_tiles::Post = Arc::new(move |frame| {
                 let art = decoded.get_or_init(|| {
-                    decoration
+                    post_decoration
                         .as_ref()
                         .and_then(|art| image::load_from_memory(art.bytes()).ok())
                         .map(|art| art.to_rgba8())
@@ -524,6 +525,12 @@ impl Root {
                 compose(&frame, art.as_ref(), spec)
             });
             let side = (geometry.base * scale).round() as u32;
+            let key = format!(
+                "{key}:{}:{}:{deco_sku}:{}",
+                status.token(),
+                decoration.is_some(),
+                u32::from_be_bytes(tint)
+            );
             self.gif_art_pixels(&key, image, (side, side), 0., Some(post), cx)
         });
         div().relative().size(px(geometry.base)).flex_none().child(

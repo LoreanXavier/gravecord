@@ -130,9 +130,15 @@ pub(super) fn check(
 /// `.container_pmhtZL.nitro-pink`'s `::before`: `linear-gradient(270deg in oklab, end 0, start 100%)` at 40%,
 /// masked by `radial-gradient(100% 100% at 50% 100%, transparent 60%, #000 100%)`, as pixels. The ends are the
 /// capture's `oklab(0.395045 -0.0154365 -0.253271)` and `oklab(0.449387 0.167872 -0.086863)`.
-fn header_glow(width: u32, height: u32) -> Arc<RenderImage> {
-    static GLOW: OnceLock<Arc<RenderImage>> = OnceLock::new();
-    GLOW.get_or_init(|| {
+pub(super) fn header_glow(width: u32, height: u32) -> Arc<RenderImage> {
+    type GlowCache = std::sync::Mutex<std::collections::HashMap<(u32, u32), Arc<RenderImage>>>;
+    static GLOW: OnceLock<GlowCache> = OnceLock::new();
+    let cache = GLOW.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = map.get(&(width, height)) {
+        return cached.clone();
+    }
+    let image = {
         let end = [0.395_045_f32, -0.015_436_5, -0.253_271];
         let start = [0.449_387_f32, 0.167_872, -0.086_863];
         let mut pixels = image::RgbaImage::new(width, height);
@@ -155,8 +161,9 @@ fn header_glow(width: u32, height: u32) -> Arc<RenderImage> {
             ]);
         }
         Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
-    })
-    .clone()
+    };
+    map.insert((width, height), image.clone());
+    image
 }
 
 impl Root {

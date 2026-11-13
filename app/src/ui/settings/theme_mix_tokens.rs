@@ -4,7 +4,7 @@
 //! (`952007`), sorted for a binary search. The ANSI, chart, mobile, redesign button, creator revenue and Steam review
 //! tokens are left out: the app draws none of them.
 
-pub(super) const BASE_DARK: &[&str] = &[
+pub(in crate::ui) const BASE_DARK: &[&str] = &[
     "--app-frame-background",
     "--background-accent",
     "--background-base-low",
@@ -60,7 +60,7 @@ pub(super) const BASE_DARK: &[&str] = &[
     "--user-profile-toolbar-background",
 ];
 
-pub(super) const TEXT_DARK: &[&str] = &[
+pub(in crate::ui) const TEXT_DARK: &[&str] = &[
     "--channel-icon",
     "--channel-text-area-placeholder",
     "--channels-default",
@@ -167,7 +167,7 @@ pub(super) const TEXT_DARK: &[&str] = &[
     "--user-profile-toolbar-border",
 ];
 
-pub(super) const BASE_LIGHT: &[&str] = &[
+pub(in crate::ui) const BASE_LIGHT: &[&str] = &[
     "--app-frame-background",
     "--background-accent",
     "--background-base-low",
@@ -224,7 +224,7 @@ pub(super) const BASE_LIGHT: &[&str] = &[
     "--user-profile-toolbar-background",
 ];
 
-pub(super) const TEXT_LIGHT: &[&str] = &[
+pub(in crate::ui) const TEXT_LIGHT: &[&str] = &[
     "--channel-icon",
     "--channel-text-area-placeholder",
     "--channels-default",

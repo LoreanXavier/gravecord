@@ -819,6 +819,12 @@ impl Root {
         )
     }
 
+    pub(super) fn webhook_confirm_open(&self) -> bool {
+        self.server_settings
+            .as_ref()
+            .is_some_and(|open| open.webhooks.confirm_delete.is_some())
+    }
+
     /// "Delete {name}": the name in bold, then `DELETE /webhooks/{id}`.
     pub(super) fn webhook_delete_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.server_settings.as_ref()?;

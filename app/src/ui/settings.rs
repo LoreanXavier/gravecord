@@ -35,6 +35,7 @@ pub(super) mod prefs;
 mod preview;
 mod privacy;
 mod render;
+mod scroll_spring;
 mod search;
 mod search_terms;
 mod server_boost_page;
@@ -44,7 +45,7 @@ pub(crate) use render::radio_dot;
 mod high_contrast_tokens;
 mod swatches;
 mod system;
-mod theme_mix_tokens;
+pub(in crate::ui) mod theme_mix_tokens;
 mod theme_state;
 mod voice;
 mod voice_camera;
@@ -53,18 +54,20 @@ pub(super) use clips::ClipsState;
 pub(super) use voice::{Profile, VoiceState, set_soundboard_volume, soundboard_volume};
 
 use super::motion::Transitions as _;
-use super::{Root, SANS, avatar_source, color, kerning, motion, window_controls};
+use super::{Root, SANS, avatar_source, color, kerning, motion};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_proto::pin;
 use gpui::{
     AnyElement, Bounds, BoxShadow, Context, ElementId, FontWeight, HighlightStyle, IntoElement,
-    ScrollHandle, SharedString, StyledText, Window, canvas, deferred, div, fill, hsla, img, point,
-    prelude::*, px, size, svg,
+    Pixels, ScrollHandle, SharedString, StyledText, Window, canvas, deferred, div, fill, hsla, img,
+    point, prelude::*, px, size, svg,
 };
 pub(super) use model::Choice;
 use model::{ButtonKind, Runs};
-use std::cell::Cell;
+use scroll_spring::ScrollSpring;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -222,11 +225,30 @@ pub(super) struct Open {
     /// The subnav entry lit now: the content's scroll position moves it (`currentCategoryKey`).
     anchor: Rc<Cell<usize>>,
     content: ScrollHandle,
+    /// The sidebar's scroller: one for as long as settings stays open, so a page change keeps its place.
     nav: ScrollHandle,
+    /// The sidebar's animated scroll (module 354730), shared by every page of this opening.
+    nav_spring: Rc<RefCell<ScrollSpring>>,
     /// The sidebar still has to bring the subnav into view; it does once, when the page opens.
-    nav_pending: Rc<Cell<bool>>,
+    nav_pending: Rc<Cell<Reveal>>,
+    /// The content's animated scroll: a subnav click on the open page glides there.
+    content_spring: Rc<RefCell<ScrollSpring>>,
     /// The content's scroll offset the scroll-spy last saw, and whether the next change is a click's own scroll.
     spy: Rc<Cell<(f32, bool)>>,
+    /// Opened by a link or by opening settings: the open page's subnav is drawn at its height at once (it mounts
+    /// with `height: auto`, module 276530) and the sidebar is put at it without gliding.
+    linked: bool,
+}
+
+/// How the sidebar brings the open page's subnav into view once it has its height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reveal {
+    Done,
+    /// The page was opened by a link: `navigate(..., {animateSidebarScroll: false})`.
+    Instant,
+    /// A sidebar click: the subnav's `onMount` waits for its height transition, then
+    /// `scrollSidebarNodeIntoView(container, {animate: true, block: "nearest"})`.
+    AfterExpand,
 }
 
 impl Open {
@@ -236,8 +258,28 @@ impl Open {
             anchor: Rc::default(),
             content: ScrollHandle::new(),
             nav: ScrollHandle::new(),
-            nav_pending: Rc::new(Cell::new(true)),
+            nav_spring: Rc::default(),
+            nav_pending: Rc::new(Cell::new(Reveal::Instant)),
+            content_spring: Rc::default(),
             spy: Rc::default(),
+            linked: true,
+        }
+    }
+
+    /// The page a sidebar click opens: a new content pane at its top (`animatePanelScroll` is false for another
+    /// panel), the sidebar where it was.
+    fn switched(page: Page, from: &Open) -> Self {
+        from.nav_spring.borrow_mut().abort();
+        Self {
+            page,
+            anchor: Rc::default(),
+            content: ScrollHandle::new(),
+            nav: from.nav.clone(),
+            nav_spring: from.nav_spring.clone(),
+            nav_pending: Rc::new(Cell::new(Reveal::AfterExpand)),
+            content_spring: Rc::default(),
+            spy: Rc::default(),
+            linked: false,
         }
     }
 }
@@ -257,6 +299,8 @@ const SUBNAV_THUMB_SPRING: motion::SpringConfig = motion::SpringConfig::new(300.
 thread_local! {
     /// The category the content scrolls to once its marker has a place on screen (a click on the subnav, or a deep link).
     static PENDING_SCROLL: Cell<Option<&'static str>> = const { Cell::new(None) };
+    /// The pending scroll glides (a subnav click on the open page: `animatePanelScroll` is true for the same panel).
+    static PENDING_GLIDE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The Account page's categories, in the subnav's order: the keys their markers carry.
@@ -635,7 +679,7 @@ struct Row {
     trailing: Option<AnyElement>,
     clickable: bool,
     /// What a press on the row does (a nested panel opens).
-    press: Option<(&'static str, RowPress)>,
+    press: Option<(gpui::ElementId, RowPress)>,
 }
 
 /// What a row's press runs.
@@ -656,10 +700,10 @@ impl Row {
 
     fn press(
         mut self,
-        id: &'static str,
+        id: impl Into<gpui::ElementId>,
         handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> Self {
-        self.press = Some((id, Box::new(handler)));
+        self.press = Some((id.into(), Box::new(handler)));
         self
     }
 
@@ -1051,6 +1095,89 @@ impl Root {
         cx.notify();
     }
 
+    /// A sidebar item clicked (`navigate(panel, {animateSidebarScroll: true})`, modules 276530 and 272053): another
+    /// page opens at its top while the sidebar keeps its place and glides the item into view (`block: "nearest"`,
+    /// 12px of padding; its subnav has no height yet). The open page's item goes to its first category, gliding.
+    fn settings_nav_clicked(&mut self, page: Page, icon: &'static str) {
+        self.settings_extra.panel = None;
+        let Some(open) = self.settings.as_mut() else {
+            return;
+        };
+        if open.page == page {
+            let entry = SECTIONS
+                .iter()
+                .flat_map(|(_, entries)| entries.iter())
+                .find(|entry| entry.page == page);
+            let first = entry.and_then(|entry| anchors_of(entry).into_iter().next());
+            match first {
+                Some(anchor) => self.settings_category_clicked(0, anchor.target, anchor.key),
+                None => {
+                    let scroll = -f64::from(f32::from(open.content.offset().y));
+                    open.content_spring.borrow_mut().start(scroll, 0.);
+                }
+            }
+            return;
+        }
+        *open = Open::switched(page, open);
+        let item = self
+            .tip_anchors
+            .borrow()
+            .get(&SharedString::from(format!("nav-item-{icon}")))
+            .copied();
+        let view = open.nav.bounds();
+        if let Some(item) = item
+            && view.size.height > px(0.)
+        {
+            let scroll = -f32::from(open.nav.offset().y);
+            let target = nearest_scroll(
+                scroll,
+                (f32::from(view.top()), f32::from(view.bottom())),
+                (f32::from(item.top()), f32::from(item.bottom())),
+                12.,
+                f32::from(open.nav.max_offset().y),
+            );
+            if (target - scroll).abs() >= 0.5 {
+                if motion::reduced() {
+                    open.nav.set_offset(point(open.nav.offset().x, px(-target)));
+                } else {
+                    open.nav_spring
+                        .borrow_mut()
+                        .start(f64::from(scroll), f64::from(target));
+                }
+            }
+        }
+    }
+
+    /// A subnav entry clicked on the open page: the entry lights at once and the content glides to the category
+    /// (`animatePanelScroll` is true on the same panel; module 397274 scrolls with `padding: 16 + sticky`).
+    fn settings_category_clicked(
+        &mut self,
+        index: usize,
+        target: usize,
+        key: Option<&'static str>,
+    ) {
+        let exited_panel = self.settings_extra.panel.take().is_some();
+        let Some(open) = self.settings.as_mut() else {
+            return;
+        };
+        open.anchor.set(index);
+        // The click's own scroll does not move the lit entry (`isSidebarCategoryAutoSelectEnabled`).
+        open.spy.set((open.spy.get().0, true));
+        let placed = !exited_panel
+            && key.is_some_and(|key| {
+                self.tip_anchors
+                    .borrow()
+                    .contains_key(&SharedString::from(format!("settings-marker:{key}")))
+            });
+        PENDING_SCROLL.set(key);
+        PENDING_GLIDE.set(placed);
+        if !placed {
+            // A marker not drawn yet: the panel child first, the marker's place once it has one.
+            open.content_spring.borrow_mut().abort();
+            open.content.scroll_to_top_of_item(target);
+        }
+    }
+
     fn settings_nav_item(
         &self,
         entry: &'static Entry,
@@ -1070,6 +1197,7 @@ impl Root {
         // closes.
         let anchors = anchors_of(entry);
         let page = entry.page;
+        let icon = entry.icon;
         // The sidebar is a list: one tab stop on the open page, the arrows, Home and End move between items.
         let handle = self.stop(&format!("settings-nav-{}", entry.icon), cx);
         self.join("settings-nav", super::keyboard::Nav::List, &handle);
@@ -1142,8 +1270,8 @@ impl Root {
         .on_click(cx.listener(move |this, _, _, cx| {
             if page == Page::LogOut {
                 this.logout_confirm = true;
-            } else if let Some(open) = this.settings.as_mut() {
-                *open = Open::new(page);
+            } else {
+                this.settings_nav_clicked(page, icon);
             }
             cx.notify();
         }))
@@ -1194,33 +1322,46 @@ impl Root {
         );
         // `.subnavContainer_8qMUr2`: `overflow-y: clip; transition: height .2s ease-out, opacity .15s ease-out 80ms`.
         // The list of the page that opens grows to its height while the one of the page left shrinks to nothing.
+        // A page opened by a link mounts its list at full height (`useState(active ? "auto" : "0")`); so does every
+        // list when motion is reduced (`.full-motion` carries the transition).
+        let instant = open.is_some_and(|open| open.linked) || motion::reduced();
         let subnav = (!anchors.is_empty()).then(|| {
             let full = self.settings_subnav_height(&anchors, window);
             let height = motion::value(
                 motion::key(&("settings-subnav-height", entry.icon)),
                 if active { full } else { 0. },
-                motion::css(200., motion::Ease::EaseOut),
+                if instant {
+                    motion::css(0., motion::Ease::Linear)
+                } else {
+                    motion::css(200., motion::Ease::EaseOut)
+                },
             );
             let opacity = motion::value(
                 motion::key(&("settings-subnav-opacity", entry.icon)),
                 if active { 1. } else { 0. },
-                motion::css(150., motion::Ease::EaseOut).delay(80.),
+                if instant {
+                    motion::css(0., motion::Ease::Linear)
+                } else {
+                    motion::css(150., motion::Ease::EaseOut).delay(80.)
+                },
             );
-            (height, opacity)
+            (height, opacity, (height - full).abs() < 0.01)
         });
         div()
             .flex()
             .flex_col()
             .child(item)
             .when_some(
-                subnav.filter(|(height, _)| active || *height > 0.5),
-                |this, (height, opacity)| {
+                subnav.filter(|(height, _, _)| active || *height > 0.5),
+                |this, (height, opacity, expanded)| {
                     this.child(
                         div()
                             .h(px(height))
                             .overflow_hidden()
                             .opacity(opacity)
-                            .child(self.settings_subnav(&anchors, active, window, cx)),
+                            .child(self.settings_subnav(
+                                &anchors, entry.icon, active, expanded, window, cx,
+                            )),
                     )
                 },
             )
@@ -1244,7 +1385,9 @@ impl Root {
     fn settings_subnav(
         &self,
         anchors: &[Anchor],
+        icon: &'static str,
         open_page: bool,
+        expanded: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1338,13 +1481,7 @@ impl Root {
                         this.hover(|style| style.text_color(color("--interactive-text-hover")))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(open) = this.settings.as_mut() {
-                            open.anchor.set(index);
-                            // The click's own scroll does not move the lit entry (`isSidebarCategoryAutoSelectEnabled`).
-                            open.spy.set((open.spy.get().0, true));
-                            open.content.scroll_to_top_of_item(target);
-                            PENDING_SCROLL.set(key);
-                        }
+                        this.settings_category_clicked(index, target, key);
                         cx.notify();
                     }))
                     .child(div().min_w(px(0.)).child(dc_intl::tr(anchor.label)))
@@ -1352,16 +1489,21 @@ impl Root {
                     .into_any_element()
             })
             .collect();
-        let (nav, pending) = self
-            .settings
-            .as_ref()
-            .map(|open| (open.nav.clone(), open.nav_pending.clone()))
-            .unwrap_or_default();
+        let anchors_map = self.tip_anchors.clone();
+        let reveal = self.settings.as_ref().filter(|_| open_page).map(|open| {
+            (
+                open.nav.clone(),
+                open.nav_spring.clone(),
+                open.nav_pending.clone(),
+            )
+        });
         div()
             .relative()
             .ml(px(17.))
             .py(px(8.))
-            .child(nav_into_view(nav, pending))
+            .children(reveal.map(|(nav, spring, pending)| {
+                nav_into_view(nav, spring, pending, expanded, anchors_map, icon)
+            }))
             .child(
                 div()
                     .relative()
@@ -1378,53 +1520,75 @@ impl Root {
     fn settings_profile(&self, cx: &mut Context<Self>) -> AnyElement {
         let user = self.stores.current_user.clone().unwrap_or_default();
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
-        div()
-            .h(px(64.))
-            .p(px(8.))
-            .rounded(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .cursor_pointer()
-            .hover(|style| style.bg(color("--background-mod-muted")))
-            .child(
-                div()
-                    .size(px(48.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .children(avatar.map(|image| img(image).size(px(48.)).rounded_full())),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(user.display_name().to_owned()),
-                    )
-                    .child(
-                        div()
-                            .id("settings-edit-profiles")
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-muted"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_profile_editor(cx);
-                            }))
-                            .child(dc_intl::tr("Edit Profiles"))
-                            .child(mask_icon("settings_edit_pencil", 12., "--text-muted")),
-                    ),
-            )
-            .into_any_element()
+        // The whole card is the sidebar item (`item_xyJHva`, `role="link"`, 220x64 in account-darker-cozy) that holds
+        // `profileCustomizationTab_iVwosX` (module 158935, `_k`): a press anywhere on it, the avatar included, opens
+        // the profile editor. It is hoisted above the list, so it is a tab stop of its own, not one of the list's.
+        // Hover: `--background-mod-muted` and `--text-strong`, which the "Edit Profiles" line and its pencil take
+        // (`currentColor`).
+        let handle = self.stop("settings-nav-profile", cx);
+        let focused = self.keyboard_mode() && self.keys.stops.has_focus(&handle);
+        super::keyboard::focusable(
+            div().id("settings-edit-profiles"),
+            &handle,
+            self.modal_open() <= 1,
+            false,
+        )
+        .group("settings-edit-profiles")
+        .relative()
+        .h(px(64.))
+        .p(px(8.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .cursor_pointer()
+        .text_color(color("--text-muted"))
+        .hover(|style| {
+            style
+                .bg(color("--background-mod-muted"))
+                .text_color(color("--text-strong"))
+        })
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open_profile_editor(cx);
+        }))
+        .when(focused, |this| this.child(super::keyboard::hollow_ring(8.)))
+        .child(
+            div()
+                .size(px(48.))
+                .rounded_full()
+                .overflow_hidden()
+                .children(avatar.map(|image| img(image).size(px(48.)).rounded_full())),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(user.display_name().to_owned()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .child(dc_intl::tr("Edit Profiles"))
+                        .child(
+                            mask_icon("settings_edit_pencil", 12., "--text-muted")
+                                .group_hover("settings-edit-profiles", |style| {
+                                    style.text_color(color("--text-strong"))
+                                }),
+                        ),
+                ),
+        )
+        .into_any_element()
     }
 
     fn settings_search(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1584,10 +1748,10 @@ impl Root {
     }
 
     fn settings_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let nav_scroll = self
+        let (nav_scroll, nav_spring) = self
             .settings
             .as_ref()
-            .map(|open| open.nav.clone())
+            .map(|open| (open.nav.clone(), open.nav_spring.clone()))
             .unwrap_or_default();
         let shadow = nav_scroll.offset().y < px(-12.);
         let base: gpui::Hsla = color("--background-base-lower").into();
@@ -1684,6 +1848,7 @@ impl Root {
                     .relative()
                     .flex_1()
                     .min_h(px(0.))
+                    .child(scroll_driver(nav_scroll.clone(), nav_spring))
                     .child(
                         div()
                             .id("settings-nav")
@@ -2113,7 +2278,7 @@ impl Root {
             .h_full()
             .flex()
             .flex_col()
-            .bg(color("--background-base-low"))
+            .bg(client_theme::solid("--background-base-low"))
             .child(
                 div()
                     .parity_below("settings-header", 1.)
@@ -2159,6 +2324,10 @@ impl Root {
                     .relative()
                     .flex_1()
                     .min_h(px(0.))
+                    .child(scroll_driver(
+                        open.content.clone(),
+                        open.content_spring.clone(),
+                    ))
                     .child(
                         div()
                             .id("settings-content")
@@ -2193,6 +2362,7 @@ impl Root {
                     .child(auto_scrollbar(open.content.clone()))
                     .child(scroll_spy(
                         open.content.clone(),
+                        open.content_spring.clone(),
                         open.anchor.clone(),
                         open.spy.clone(),
                         self.tip_anchors.clone(),
@@ -2258,7 +2428,7 @@ impl Root {
                     }])
             })
             .when(full, |this| this.pt(px(32.)))
-            .bg(color("--background-base-lower"))
+            .bg(client_theme::solid("--background-base-lower"))
             .overflow_hidden()
             .flex()
             .font_family(SANS)
@@ -2297,15 +2467,9 @@ impl Root {
                 .child(modal),
         )
         .with_priority(1);
-        let controls = deferred(
-            div()
-                .id("settings-window-controls")
-                .absolute()
-                .top_0()
-                .right_0()
-                .child(window_controls()),
-        )
-        .with_priority(2);
+        // The window's own buttons and the drag area above the scrim are the app's fixed system bar
+        // (`Root::system_bar`), drawn over every dialog, so the copy of the dialog that plays its exit does not
+        // carry them.
         Some(
             div()
                 .absolute()
@@ -2313,7 +2477,6 @@ impl Root {
                 .left_0()
                 .size_full()
                 .child(layer)
-                .child(controls)
                 .into_any_element(),
         )
     }
@@ -2341,28 +2504,66 @@ fn nearest_scroll(
     (scroll + delta).clamp(0., max.max(0.))
 }
 
-/// Once, when a page opens: scrolls the sidebar so the page's subnav is in view. Fills its parent, the subnav.
-fn nav_into_view(nav: ScrollHandle, pending: Rc<Cell<bool>>) -> impl IntoElement {
+/// Once, when a page opens and its subnav has its full height: scrolls the sidebar so the subnav is in view, at
+/// once for a page opened by a link, gliding after a click (the subnav's `onMount`, module 276530). Fills its
+/// parent, the subnav.
+fn nav_into_view(
+    nav: ScrollHandle,
+    spring: Rc<RefCell<ScrollSpring>>,
+    pending: Rc<Cell<Reveal>>,
+    expanded: bool,
+    anchors_map: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
+    icon: &'static str,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            if !pending.get() {
+            let mode = pending.get();
+            if mode == Reveal::Done || !expanded {
                 return;
             }
             let view = nav.bounds();
-            let max = f32::from(nav.max_offset().y);
-            if view.size.height <= px(0.) || max <= 0. || bounds.size.height <= px(0.) {
+            if view.size.height <= px(0.) || bounds.size.height <= px(0.) {
                 return;
             }
-            pending.set(false);
-            let scroll = nearest_scroll(
-                -f32::from(nav.offset().y),
+            pending.set(Reveal::Done);
+            let max = f32::from(nav.max_offset().y);
+            // While the click's own glide runs, the subnav's is measured from where that one is going.
+            let scroll = -f32::from(nav.offset().y);
+            let (base, delta) = {
+                let spring_ref = spring.borrow();
+                if spring_ref.is_animating() && mode != Reveal::Instant && !motion::reduced() {
+                    let target = (spring_ref.target() as f32).clamp(0., max);
+                    (target, scroll - target)
+                } else {
+                    (scroll, 0.)
+                }
+            };
+            let item_top = anchors_map
+                .borrow()
+                .get(&SharedString::from(format!("nav-item-{icon}")))
+                .map(|b| f32::from(b.top()) + delta);
+            let subnav_top = f32::from(bounds.top()) + delta;
+            let top = item_top.map_or(subnav_top, |t| t.min(subnav_top));
+            let bottom = f32::from(bounds.bottom()) + delta;
+            let target = nearest_scroll(
+                base,
                 (f32::from(view.top()), f32::from(view.bottom())),
-                (f32::from(bounds.top()), f32::from(bounds.bottom())),
+                (top, bottom),
                 12.,
                 max,
             );
-            nav.set_offset(point(nav.offset().x, px(-scroll)));
+            if (target - base).abs() < 0.5 {
+                return;
+            }
+            if mode == Reveal::Instant || motion::reduced() {
+                spring.borrow_mut().abort();
+                nav.set_offset(point(nav.offset().x, px(-target)));
+            } else {
+                spring
+                    .borrow_mut()
+                    .start(f64::from(scroll), f64::from(target));
+            }
             window.refresh();
         },
     )
@@ -2370,6 +2571,37 @@ fn nav_into_view(nav: ScrollHandle, pending: Rc<Cell<bool>>) -> impl IntoElement
     .top_0()
     .left_0()
     .size_full()
+}
+
+/// Paints nothing: moves a scroller along its animated scroll each frame, before the scroller is laid out. A wheel
+/// scroll that moved it meanwhile takes over (the spring lets go).
+fn scroll_driver(handle: ScrollHandle, spring: Rc<RefCell<ScrollSpring>>) -> impl IntoElement {
+    canvas(
+        move |_, window, _| {
+            let mut spring = spring.borrow_mut();
+            if !spring.is_animating() {
+                return;
+            }
+            let max = f32::from(handle.max_offset().y).max(0.);
+            let at = -f32::from(handle.offset().y);
+            if (at - (spring.shown() as f32).clamp(0., max)).abs() > 1. {
+                spring.abort();
+                return;
+            }
+            if let Some(position) = spring.frame(motion::now()) {
+                let position = (position as f32).clamp(0., max);
+                handle.set_offset(point(handle.offset().x, px(-position)));
+                spring.set_shown(f64::from(position));
+            }
+            if spring.is_animating() {
+                motion::keep_animating();
+                window.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
 }
 
 /// The scroll-spy (`IntersectionObserver` over the category markers, threshold 1): the first marker fully in view
@@ -2391,6 +2623,7 @@ fn spy_choice(markers: &[Option<(f32, f32)>], view: (f32, f32), at_end: bool) ->
 /// Paints nothing; every frame it reads where the markers are and moves the lit subnav entry. Fills its parent.
 fn scroll_spy(
     content: ScrollHandle,
+    glide: Rc<RefCell<ScrollSpring>>,
     anchor: Rc<Cell<usize>>,
     spy: Rc<Cell<(f32, bool)>>,
     markers: Rc<std::cell::RefCell<std::collections::HashMap<SharedString, Bounds<gpui::Pixels>>>>,
@@ -2411,13 +2644,27 @@ fn scroll_spy(
                     let offset = content.offset();
                     let wanted = (offset.y - (top - content.bounds().top() - px(margin)))
                         .clamp(-content.max_offset().y, px(0.));
-                    content.set_offset(point(offset.x, wanted));
+                    if PENDING_GLIDE.replace(false) && !motion::reduced() {
+                        glide.borrow_mut().start(
+                            -f64::from(f32::from(offset.y)),
+                            -f64::from(f32::from(wanted)),
+                        );
+                    } else {
+                        glide.borrow_mut().abort();
+                        content.set_offset(point(offset.x, wanted));
+                    }
                     window.refresh();
                 }
             }
             let offset = f32::from(content.offset().y);
             let (seen, skip) = spy.get();
             if (offset - seen).abs() < 0.01 {
+                return;
+            }
+            // The click's glide is its own scroll from start to end; the first scroll after it lets the spy
+            // choose again (`setPanelInitialScrollListener`, module 397274).
+            if glide.borrow().is_animating() {
+                spy.set((offset, true));
                 return;
             }
             // The first change after a click is the click's own scroll.

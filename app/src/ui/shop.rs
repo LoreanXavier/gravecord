@@ -3,6 +3,7 @@
 //! are in `cards`, the Featured and Orbs Shop pages in `featured`, the Browse page in `browse` and the product modal in
 //! `modal`. Official modules followed: 971458 (the header and its menus), 685491 (the search field), 253782 (the tab
 //! page), 821816 (Browse), 987421 (the card), 110676 (the blocks).
+pub(crate) mod art_cache;
 mod browse;
 mod cards;
 pub(super) mod data;
@@ -29,6 +30,10 @@ pub(super) const FETCH_PREFIX: &str = "shop:";
 /// The width of the scroller's gutter and the page's left edge in the 1280 window.
 const GUTTER: f32 = 8.;
 const HEADER: f32 = 49.;
+/// The feed's first count and its step (`useState(12)` and `e => e + 12` of module 253782) and the count at which it
+/// stops growing and the end-of-feed block shows.
+pub(super) const FEED_FIRST: usize = 12;
+pub(super) const FEED_MAX: usize = 36;
 
 /// The tabs of the header (`G2` of module 758836) the page can show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,6 +117,22 @@ pub(super) struct State {
     pub modal_scroll: ScrollHandle,
     pub catalog_pages: u32,
     pub results_key: String,
+    /// When the Shop was last opened, and when each of its pictures was asked for and first drawn (milliseconds
+    /// after asking, milliseconds after opening): the loading times the harness reports.
+    pub opened_at: Option<std::time::Instant>,
+    pub img_asked: HashMap<String, std::time::Instant>,
+    pub img_seen: HashMap<String, (u64, u64)>,
+    /// How many cards the "Find your style" feed shows (`numVisibleItems` of module 253782: 12, then 12 more each
+    /// time the page is scrolled to within 200px of its end, up to 36).
+    pub feed_visible: usize,
+    /// Width over height of the pictures drawn with a cover fit, by url.
+    pub img_aspect: HashMap<String, f32>,
+    /// The skus each product batch asked for, by request key: a sku the answer leaves out is absent, and its card is
+    /// not drawn (`state: "error"` of module 682301 makes the card return nothing).
+    pub sku_batches: HashMap<String, Vec<String>>,
+    pub absent: HashSet<String>,
+    /// A sideways shelf scroll in progress: from, to, and when it started on the motion clock.
+    pub shelf_glide: HashMap<String, (f32, f32, f64, Option<f32>)>,
 }
 
 impl Root {
@@ -163,6 +184,12 @@ impl Root {
     pub(super) fn shop_enter(&mut self, cx: &mut Context<Self>) {
         self.shop_search_editor(cx);
         self.shop.scroll.set_offset(point(px(0.), px(0.)));
+        self.shop.opened_at = Some(std::time::Instant::now());
+        self.shop.feed_visible = FEED_FIRST;
+        tracing::debug!(
+            cached = self.fetched.contains_key("shop:home"),
+            "shop opened"
+        );
         self.shop_request("shop:home", data::shop_home_route("home"));
         self.shop_request("shop:orbs", data::shop_home_route("orbs"));
         self.shop_request("shop:balance", data::BALANCE_ROUTE.to_owned());
@@ -199,14 +226,84 @@ impl Root {
     /// The bytes behind a shop image, asking for them on the first draw.
     pub(super) fn shop_img(&mut self, url: &str) -> Option<std::sync::Arc<gpui::Image>> {
         let key = format!("shop:img:{url}");
+        // Through `request_image`, so a download that failed is asked for again (`image_retry`). Sent straight to the
+        // network before, a failed or timed-out picture stayed blank for the rest of the session.
         if !self.requested.contains(&key) {
-            self.requested.insert(key.clone());
-            let _ = self.requests.send(crate::net::Request::Image {
-                key: key.clone(),
-                url: url.to_owned(),
-            });
+            self.shop
+                .img_asked
+                .insert(key.clone(), std::time::Instant::now());
         }
-        self.images.get(&key).cloned()
+        self.request_image(key.clone(), url.to_owned());
+        let image = self.images.get(&key).cloned();
+        if image.is_some() && !self.shop.img_seen.contains_key(&key) {
+            let after = self
+                .shop
+                .img_asked
+                .get(&key)
+                .map_or(0, |asked| asked.elapsed().as_millis() as u64);
+            let since_open = self
+                .shop
+                .opened_at
+                .map_or(0, |at| at.elapsed().as_millis() as u64);
+            tracing::debug!(after, since_open, "shop picture drawn");
+            self.shop.img_seen.insert(key, (after, since_open));
+        }
+        image
+    }
+
+    /// The pictures the Shop asked for, drawn and still missing, with the times from asking to the first draw.
+    #[cfg(feature = "capture")]
+    pub(super) fn shop_image_report(&self) -> String {
+        let asked = self.shop.img_asked.len();
+        let mut waits: Vec<u64> = self
+            .shop
+            .img_seen
+            .values()
+            .map(|(after, _)| *after)
+            .collect();
+        waits.sort_unstable();
+        let last = self
+            .shop
+            .img_seen
+            .values()
+            .map(|(_, since_open)| *since_open)
+            .max()
+            .unwrap_or(0);
+        let missing: Vec<&String> = self
+            .shop
+            .img_asked
+            .keys()
+            .filter(|key| !self.shop.img_seen.contains_key(*key))
+            .collect();
+        let median = waits.get(waits.len() / 2).copied().unwrap_or(0);
+        let max = waits.last().copied().unwrap_or(0);
+        let opened = self
+            .shop
+            .opened_at
+            .map_or(0, |at| at.elapsed().as_millis() as u64);
+        let mut out = format!(
+            "shop pictures: asked {asked}, drawn {}, missing {}, ask-to-draw median {median} ms max {max} ms, last drawn {last} ms after opening, open for {opened} ms",
+            waits.len(),
+            missing.len()
+        );
+        for key in missing.iter().take(12) {
+            out.push_str(&format!(
+                "\n  missing {}",
+                key.trim_start_matches("shop:img:")
+            ));
+        }
+        // Every drawn picture with its wait, in the order they arrived.
+        let mut drawn: Vec<(&String, &(u64, u64))> = self.shop.img_seen.iter().collect();
+        drawn.sort_by_key(|(_, (_, since_open))| *since_open);
+        for (key, (after, since_open)) in drawn {
+            let url = key.trim_start_matches("shop:img:");
+            let tail = url.rsplit('/').take(2).collect::<Vec<_>>().join("<");
+            let bytes = self.images.get(key).map_or(0, |image| image.bytes().len());
+            out.push_str(&format!(
+                "\n  drawn {after} ms after asking, {since_open} ms after opening, {bytes} bytes: {tail}"
+            ));
+        }
+        out
     }
 
     /// `shop_img` for a picture drawn in a box of `width` x `height` logical pixels: it is decoded at that size times the
@@ -228,31 +325,24 @@ impl Root {
         self.shop_img(url)
     }
 
-    /// `shop_cover` for a box of `width` x `height` logical pixels (see `shop_img_box`).
-    pub(super) fn shop_cover_box(
-        &mut self,
-        url: Option<&str>,
-        width: f32,
-        height: f32,
-    ) -> Option<AnyElement> {
-        let image = self.shop_img_box(url?, width, height)?;
-        Some(
-            img(image)
-                .size_full()
-                .object_fit(gpui::ObjectFit::Cover)
-                .into_any_element(),
-        )
-    }
-
     /// Asks for the products that no answer has delivered yet (`requestProducts` of module 295586: batches of 100).
     pub(super) fn shop_need_products(&mut self, skus: &[String]) {
+        // Skus a batch already asked for (answered or still out) are not asked for again.
+        let asked: HashSet<&String> = self.shop.sku_batches.values().flatten().collect();
+        let mut seen = HashSet::new();
         let missing: Vec<String> = skus
             .iter()
-            .filter(|sku| !self.shop.products.contains_key(*sku))
+            .filter(|sku| {
+                !self.shop.products.contains_key(*sku)
+                    && !self.shop.absent.contains(*sku)
+                    && !asked.contains(sku)
+                    && seen.insert(*sku)
+            })
             .cloned()
             .collect();
         for chunk in missing.chunks(100) {
             let key = format!("shop:skus:{}:{}", chunk[0], chunk.len());
+            self.shop.sku_batches.insert(key.clone(), chunk.to_vec());
             self.shop_request(&key, data::products_route(chunk));
         }
     }
@@ -270,6 +360,8 @@ impl Root {
             return;
         }
         if body["fetch_failed"] == true {
+            // A failed batch may be asked for again.
+            self.shop.sku_batches.remove(key);
             self.shop_forget(key);
             cx.notify();
             return;
@@ -309,8 +401,11 @@ impl Root {
                         data::Block::Feed { popular, .. } => {
                             wanted.extend(popular.iter().take(12).cloned());
                         }
-                        data::Block::Shelf { skus, .. } | data::Block::Hero { skus, .. } => {
+                        data::Block::Shelf { skus, .. } => {
                             wanted.extend(skus.iter().cloned());
+                        }
+                        data::Block::Hero(hero) => {
+                            wanted.extend(hero.skus.iter().cloned());
                         }
                         _ => {}
                     }
@@ -362,7 +457,20 @@ impl Root {
                 }
             }
             _ if key.starts_with("shop:skus:") => {
-                remember(self, &data::parse_products(&body));
+                let products = data::parse_products(&body);
+                remember(self, &products);
+                if let Some(asked) = self.shop.sku_batches.get(key) {
+                    let absent = data::absent_skus(asked, &products);
+                    self.shop.absent.extend(absent);
+                }
+                tracing::debug!(
+                    products = products.len(),
+                    since_open = self
+                        .shop
+                        .opened_at
+                        .map_or(0, |at| at.elapsed().as_millis() as u64),
+                    "shop products answered"
+                );
             }
             _ if key.starts_with("shop:feed:") => {
                 let (skus, _) = data::parse_search(&body);
@@ -417,7 +525,11 @@ impl Root {
             }
         }
         written.sort();
-        format!("shop dump: {}", written.join(", "))
+        format!(
+            "shop dump: {}\n{}",
+            written.join(", "),
+            self.shop_image_report()
+        )
     }
 
     /// A harness step: opens the product modal and the Orbs checkout for a sku in memory, in a chosen state. Nothing is
@@ -1204,6 +1316,53 @@ impl Root {
                     .into_any_element(),
             ),
         }
+    }
+
+    /// The width over height of a picture, read from its header once.
+    pub(super) fn shop_img_aspect(
+        &mut self,
+        url: &str,
+    ) -> Option<(f32, std::sync::Arc<gpui::Image>)> {
+        let image = self.shop_img(url)?;
+        if let Some(aspect) = self.shop.img_aspect.get(url) {
+            return Some((*aspect, image));
+        }
+        let aspect = image::ImageReader::new(std::io::Cursor::new(image.bytes()))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok())
+            .filter(|(width, height)| *width > 0 && *height > 0)
+            .map(|(width, height)| width as f32 / height as f32)?;
+        self.shop.img_aspect.insert(url.to_owned(), aspect);
+        Some((aspect, image))
+    }
+
+    /// CSS `background-size: cover` (or `object-fit: cover`) with a `background-position` of `anchor` (0 left/top, 0.5
+    /// centre, 1 right/bottom), in a box of `width` x `height`: gpui's cover fit always centres, which cut the left
+    /// of art the official anchors left (the Dead by Daylight tile lost its logo).
+    pub(super) fn shop_cover_at(
+        &mut self,
+        url: Option<&str>,
+        width: f32,
+        height: f32,
+        anchor: (f32, f32),
+    ) -> Option<AnyElement> {
+        let url = url?;
+        // The decode box: the picture is kept at the size it is drawn at (see `shop_img_box`).
+        self.shop_img_box(url, width, height);
+        let (aspect, image) = self.shop_img_aspect(url)?;
+        let (left, top, drawn_width, drawn_height) =
+            data::cover_rect(width, height, aspect, anchor);
+        Some(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(drawn_width))
+                .h(px(drawn_height))
+                .child(img(image).size_full().object_fit(gpui::ObjectFit::Fill))
+                .into_any_element(),
+        )
     }
 
     /// A remote image filling its box, or the box alone while it loads.

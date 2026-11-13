@@ -195,6 +195,16 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
             }
+            // Capture-only: the picture the tray or the taskbar overlay would get, written to a PNG; no shell call.
+            ["tray", "render", rest @ ..] => {
+                let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray_render(rest)));
+                let _ = writeln!(output, "{note}");
+            }
+            ["badge", "render", count, png] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, _| root.script_badge_render(count, png)));
+                let _ = writeln!(output, "{note}");
+            }
             ["accounts", rest @ ..] => {
                 let note =
                     cx.update(|cx| root.update(cx, |root, cx| root.script_accounts(rest, cx)));
@@ -350,6 +360,15 @@ pub async fn run(
                     })
                 });
                 let _ = writeln!(output, "{note:?}");
+            }
+            // Capture only: a call tile's menu (`tilemenu open stream|user|options me|<id> [x y]`, `rows`, `run <label>`).
+            ["tilemenu", rest @ ..] => {
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_tile_menu(rest, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "tilemenu: {note:?}");
             }
             ["context-sub-state"] => {
                 let note = root.update(cx, |root, _| root.script_context_sub_state());
@@ -687,6 +706,12 @@ pub async fn run(
                 }
             }
             // Registered Games with a running game, two seen ones and a hand-added one, in memory only.
+            // Capture only: the call simulator (`ui/callsim.rs`).
+            #[cfg(feature = "capture")]
+            ["callsim", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_callsim(rest, cx));
+                let _ = writeln!(output, "callsim: {line}");
+            }
             ["games", "demo"] => {
                 root.update(cx, |root, cx| root.script_games_demo(cx));
             }
@@ -794,9 +819,17 @@ pub async fn run(
             }
             // The fixture guild's General voice channel, the only one a script can name.
             // Calls in the test DM: starts, and official-shaped call dispatches fed to the stores (nothing is sent).
+            ["golive", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_go_live(rest, cx));
+                let _ = writeln!(output, "golive: {line}");
+            }
             ["dmcall", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_dmcall(rest, cx));
                 let _ = writeln!(output, "dmcall: {line}");
+            }
+            ["pinggraph", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_ping_history(rest, cx));
+                let _ = writeln!(output, "pinggraph: {line}");
             }
             // Capture only: the dialogs of the two-factor flow with injected answers (see `script_mfa`).
             // Capture only: the Gift Inventory code box (`gift type <text>`, `gift submit`, `gift accept`, `gift state`).
@@ -906,6 +939,17 @@ pub async fn run(
             ["speech", "log"] => {
                 let _ = writeln!(output, "speech: {:?}", crate::speech::spoken_log());
             }
+            // Capture only: the account's variation of a user experiment, as a bucket override; and a made-up Nitro
+            // profile for the DM's other person (`themed`, `light` or `plain`, then wishlist sku ids).
+            ["experiment", name, variant] => {
+                let variant = variant.parse::<i64>().unwrap_or(0);
+                let name = (*name).to_owned();
+                root.update(cx, |root, cx| root.script_experiment(&name, variant, cx));
+            }
+            ["profile", "demo", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_profile_demo(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["premium", tier] => {
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
@@ -947,6 +991,15 @@ pub async fn run(
             // Capture only: `sticker clock <ms>|off` freezes every playing sticker at that time, `sticker state` prints
             // what the sticker player holds.
             // Capture only: `messages demo <set>` puts message kinds the fixture server lacks into the open channel (memory only).
+            // Capture only: animated attachments, DM messages and typing notices in memory (`Root::script_media`).
+            ["media", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_media(rest, cx);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "media: {line}");
+            }
             ["messages", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
                 let _ = writeln!(output, "{line}");
@@ -1054,6 +1107,11 @@ pub async fn run(
             }
             ["vm", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_vm(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: `embeds demo <set>` (see `ui/embed_demo.rs`).
+            ["embeds", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_embeds(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
             ["content", rest @ ..] => {

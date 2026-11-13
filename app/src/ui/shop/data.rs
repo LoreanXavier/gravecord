@@ -134,6 +134,8 @@ pub struct Product {
     /// Price lists by purchase type (`prices[type].country_prices.prices`).
     pub prices: Vec<(String, Vec<Price>)>,
     pub fg_static: Option<String>,
+    /// `preview_assets.fg_animated`: the bundle art a hovered card shows instead of `fg_static` (module 842385).
+    pub fg_animated: Option<String>,
     pub bg_static: Option<String>,
     pub items: Vec<Item>,
     pub bundled: Vec<Product>,
@@ -191,10 +193,14 @@ pub fn parse_product(value: &serde_json::Value) -> Option<Product> {
         name: text("name"),
         summary: text("summary"),
         kind: value["type"].as_i64().unwrap_or(-1),
-        premium_type: value["premium_type"].as_i64(),
+        // `premiumType: 0 === n ? null : n` (module 696444): 0 is no Nitro tier.
+        premium_type: value["premium_type"].as_i64().filter(|tier| *tier != 0),
         category_sku_id: text("category_sku_id"),
         prices,
         fg_static: value["preview_assets"]["fg_static"]
+            .as_str()
+            .map(str::to_owned),
+        fg_animated: value["preview_assets"]["fg_animated"]
             .as_str()
             .map(str::to_owned),
         bg_static: value["preview_assets"]["bg_static"]
@@ -460,21 +466,17 @@ fn civil_days(year: i64, month: i64, day: i64) -> i64 {
 /// The blocks of a shop tab (`type` values of module 110676: 0 hero, 1 featured, 2 feed, 3 wide banner, 4 shelf).
 #[derive(Clone, Debug)]
 pub enum Block {
-    Hero {
-        category: String,
-        name: String,
-        title: Option<String>,
-        summary: String,
-        skus: Vec<String>,
-        banner: Option<String>,
-        background_style: Option<String>,
-    },
+    Hero(Box<Hero>),
     Featured(Vec<SubBlock>),
     Shelf {
         name: String,
         category: String,
         skus: Vec<String>,
         button: Option<String>,
+        /// `desktop_background_image` and `title_color` (the shelf record's `desktopBackgroundImage` and
+        /// `titleColor`): a shelf drawn on a picture, in the rounded box of `withBackground_dg2ugo`.
+        background: Option<String>,
+        title_color: Option<String>,
     },
     Feed {
         popular: Vec<String>,
@@ -488,10 +490,35 @@ pub enum Block {
     },
 }
 
+/// The hero block (`type` 0): the record `tl`/`eB.A` of module 253782 and 353448 draw.
+#[derive(Clone, Debug, Default)]
+pub struct Hero {
+    pub category: String,
+    pub title: Option<String>,
+    pub summary: String,
+    pub skus: Vec<String>,
+    pub banner: Option<String>,
+    pub logo: Option<String>,
+    pub background_style: Option<String>,
+    /// `banner_display_config.responsive`: the banner is 24vw tall (at least 200px) and the header 18vw (at least
+    /// 130px) instead of 350 and 255 (`responsive_XBXDcd`).
+    pub responsive: bool,
+    /// `logo_display_config.desktop_max_height` (`toDesktopStyles` of module 719986): replaces the logo's 90px cap.
+    pub logo_max_height: Option<f32>,
+    pub unpublished_at: Option<String>,
+    pub banner_text_color: Option<String>,
+}
+
+/// A tile of the featured block (`subblocks[]`). Only `type` 0 (`CATEGORY`, module 424918) is drawn; module 253782
+/// renders nothing for any other type.
 #[derive(Clone, Debug)]
 pub struct SubBlock {
+    pub kind: i64,
     pub category: String,
     pub asset: Option<String>,
+    pub body_text: Option<String>,
+    pub text_color: Option<String>,
+    pub unpublished_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -514,26 +541,36 @@ fn ids(value: &serde_json::Value) -> Vec<String> {
 fn parse_block(block: &serde_json::Value) -> Option<Block> {
     let text = |key: &str| block[key].as_str().unwrap_or_default().to_owned();
     match block["type"].as_i64()? {
-        0 => Some(Block::Hero {
+        0 => Some(Block::Hero(Box::new(Hero {
             category: block["category_sku_id"].as_str()?.to_owned(),
-            name: text("name"),
             title: string(block, "title"),
             summary: text("summary").trim().to_owned(),
             skus: ids(&block["ranked_sku_ids"]),
             banner: string(block, "hero_banner_url"),
+            logo: string(block, "hero_logo_url"),
             background_style: string(&block["banner_display_config"], "background_style"),
-        }),
+            responsive: block["banner_display_config"]["responsive"] == true,
+            logo_max_height: block["logo_display_config"]["desktop_max_height"]
+                .as_f64()
+                .map(|height| height as f32),
+            unpublished_at: string(block, "unpublished_at"),
+            banner_text_color: string(block, "banner_text_color"),
+        }))),
         1 => Some(Block::Featured(
             block["subblocks"]
                 .as_array()
                 .map(|list| {
                     list.iter()
                         .map(|sub| SubBlock {
+                            kind: sub["type"].as_i64().unwrap_or(-1),
                             category: sub["category_sku_id"]
                                 .as_str()
                                 .unwrap_or_default()
                                 .to_owned(),
                             asset: string(sub, "asset_url"),
+                            body_text: string(sub, "body_text"),
+                            text_color: string(sub, "banner_text_color"),
+                            unpublished_at: string(sub, "unpublished_at"),
                         })
                         .collect()
                 })
@@ -554,6 +591,8 @@ fn parse_block(block: &serde_json::Value) -> Option<Block> {
             category: text("category_sku_id"),
             skus: ids(&block["ranked_sku_ids"]),
             button: string(block, "button_text").filter(|_| block["show_button"] == true),
+            background: string(block, "desktop_background_image"),
+            title_color: string(block, "title_color"),
         }),
         _ => None,
     }
@@ -1268,6 +1307,138 @@ pub fn claim_premium(sku: &str) -> Write {
     }
 }
 
+/// How far the skeleton pulse is from base-lower (0) to base-low (1) at `now` ms for a card whose animation starts
+/// `delay` ms late: `pulse_kIZjPZ` keyframes 0% / 30% / 70% / 100% over 2 s, `ease-in-out` in each step,
+/// `alternate`, and the first frame held during the delay (`animation-fill-mode: backwards`).
+pub fn pulse_phase(now: f64, delay: f64) -> f32 {
+    const PERIOD: f64 = 2000.;
+    let run = now - delay;
+    if run <= 0. {
+        return 0.;
+    }
+    let cycle = (run / PERIOD).floor() as u64;
+    let mut local = ((run % PERIOD) / PERIOD) as f32;
+    if cycle % 2 == 1 {
+        local = 1. - local;
+    }
+    // `ease-in-out` is cubic-bezier(.42, 0, .58, 1); the smoothstep curve stands in for it.
+    let ease = |x: f32| x * x * (3. - 2. * x);
+    if local < 0.3 {
+        ease(local / 0.3)
+    } else if local < 0.7 {
+        1.
+    } else {
+        1. - ease((local - 0.7) / 0.3)
+    }
+}
+
+/// The skus a product batch asked for that its answer did not return.
+pub fn absent_skus(asked: &[String], answered: &[Product]) -> Vec<String> {
+    asked
+        .iter()
+        .filter(|sku| !answered.iter().any(|product| &product.sku_id == *sku))
+        .cloned()
+        .collect()
+}
+
+/// The card width and the gap of the shop's rows and grids (`min-width: 246px` of `productCardContainer_UGbKo5`,
+/// `--space-xl` measured 24px in the capture).
+pub const CARD: f32 = 246.;
+pub const GAP: f32 = 24.;
+/// `centeredSection_XBXDcd`: `max-width: 1080px; margin: 0 auto` inside the block's 32px side padding.
+pub const SECTION_MAX: f32 = 1080.;
+pub const BLOCK_SIDE: f32 = 32.;
+
+/// The width of a block's centred section when the shop's scroller is `content` wide (its 8px gutter left out).
+pub fn section_width(content: f32) -> f32 {
+    (content - 2. * BLOCK_SIDE).clamp(0., SECTION_MAX)
+}
+
+/// The columns of `feed_XBXDcd` (`repeat(auto-fill, minmax(246px, 1fr))` with a 24px gap) in a section `width`
+/// wide, and the width of each.
+pub fn feed_columns(width: f32) -> (usize, f32) {
+    let count = (((width + GAP) / (CARD + GAP)).floor() as usize).max(1);
+    let column = ((width - GAP * (count - 1) as f32) / count as f32).max(0.);
+    (count, column)
+}
+
+/// Where the picture goes for CSS `cover` in a `width` x `height` box: scaled to cover the box, placed by `anchor`
+/// (the `background-position` / `object-position` as fractions). Left, top, width, height.
+pub fn cover_rect(
+    width: f32,
+    height: f32,
+    aspect: f32,
+    anchor: (f32, f32),
+) -> (f32, f32, f32, f32) {
+    if width <= 0. || height <= 0. || aspect <= 0. {
+        return (0., 0., width.max(0.), height.max(0.));
+    }
+    let (drawn_width, drawn_height) = if width / height > aspect {
+        (width, width / aspect)
+    } else {
+        (height * aspect, height)
+    };
+    (
+        (width - drawn_width) * anchor.0,
+        (height - drawn_height) * anchor.1,
+        drawn_width,
+        drawn_height,
+    )
+}
+
+/// The scroll a shelf arrow goes to (`scrollStep: "page"` of module 151869): the first card that is cut, or else the
+/// next one, is brought to the start (right arrow) or the end (left arrow) of the row with 16px to spare. `count`
+/// cards of `CARD` with `GAP` between them; their `offsetLeft` counts the scroller box's 4px padding.
+pub fn shelf_page_target(
+    right: bool,
+    scroll: f32,
+    client: f32,
+    count: usize,
+    max: f32,
+) -> Option<f32> {
+    if count == 0 {
+        return None;
+    }
+    const PAD: f32 = 4.;
+    const SPARE: f32 = 16.;
+    let left_of = |index: usize| PAD + index as f32 * (CARD + GAP);
+    let right_of = |index: usize| left_of(index) + CARD;
+    let (low, high) = (scroll + SPARE, scroll + client - SPARE);
+    let visible = |index: &usize| right_of(*index) > low && left_of(*index) < high;
+    let (index, cut) = if right {
+        match (0..count).rev().find(visible) {
+            Some(index) => (index, right_of(index) > high + 1.),
+            None => (count - 1, false),
+        }
+    } else {
+        match (0..count).find(visible) {
+            Some(index) => (index, left_of(index) < low - 1.),
+            None => (0, false),
+        }
+    };
+    let step: isize = if right { 1 } else { -1 };
+    let clamp_index = |index: isize| index.clamp(0, count as isize - 1) as usize;
+    let index = if cut {
+        index
+    } else {
+        clamp_index(index as isize + step)
+    };
+    let target = |index: usize| {
+        let at = if right {
+            left_of(index) - SPARE
+        } else {
+            right_of(index) - client + SPARE
+        };
+        at.clamp(0., max.max(0.))
+    };
+    let at = target(index);
+    if (at - scroll).abs() > 0.5 {
+        return Some(at);
+    }
+    let next = clamp_index(index as isize + step);
+    (next != index).then(|| target(next))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1413,6 +1584,36 @@ mod tests {
         );
         assert!(matches!(&home.blocks[3], Block::WideBanner { .. }));
         assert_eq!(home.categories[0].products[0].sku_id, "1");
+    }
+
+    #[test]
+    fn the_hero_keeps_its_display_configs_and_tiles_keep_their_type() {
+        // The shapes of the live tab (design/parity/shop-dump-home.json).
+        let home = parse_home(&json!({
+            "shop_blocks":[
+                {"type":0,"category_sku_id":"9","name":"N","summary":" ","ranked_sku_ids":["1"],
+                 "hero_banner_url":"b","hero_banner_animated_url":"a","hero_logo_url":"l",
+                 "banner_display_config":{"desktop_max_height":null,"responsive":true,
+                    "background_style":"linear-gradient(180deg, #110101 0%, #BA2025 100%)"},
+                 "logo_display_config":{"desktop_max_height":120,"responsive":true,"background_style":null}},
+                {"type":1,"subblocks":[
+                    {"type":0,"category_sku_id":"7","name":"Dead by Daylight","asset_url":"t","body_text":null},
+                    {"type":5,"category_sku_id":"6","name":"Other"}
+                ]}
+            ]
+        }));
+        let Block::Hero(hero) = &home.blocks[0] else {
+            panic!("no hero");
+        };
+        assert!(hero.responsive);
+        assert_eq!(hero.logo_max_height, Some(120.));
+        assert_eq!(hero.logo.as_deref(), Some("l"));
+        assert_eq!(hero.summary, "");
+        let Block::Featured(subs) = &home.blocks[1] else {
+            panic!("no featured block");
+        };
+        assert_eq!((subs[0].kind, subs[0].asset.as_deref()), (0, Some("t")));
+        assert_eq!(subs[1].kind, 5);
     }
 
     #[test]
@@ -1869,5 +2070,70 @@ mod tests {
         // Without Game Shops the rest fits.
         let without = [62.17, 72.95, 71.97, 148.70];
         assert_eq!(last_visible(&without, 58.09, 32., 513.5), 3);
+    }
+
+    #[test]
+    fn sections_are_centred_at_1080_and_feeds_fill_their_columns() {
+        // 1280 window: a 897px scroller content (905 less the gutter), an 833px section, three 261.66px columns.
+        assert_eq!(section_width(897.), 833.);
+        let (count, column) = feed_columns(833.);
+        assert_eq!(count, 3);
+        assert!((column - 261.66).abs() < 0.01);
+        // Wider windows stop at 1080 with four columns of 252.
+        assert_eq!(section_width(1617.), 1080.);
+        assert_eq!(feed_columns(1080.), (4, 252.));
+        assert_eq!(feed_columns(100.).0, 1);
+    }
+
+    #[test]
+    fn cover_keeps_the_anchored_edge() {
+        // A 2:1 picture in a 404.5 x 236 tile anchored left: the full height, overflowing to the right only.
+        let (left, top, width, height) = cover_rect(404.5, 236., 2., (0., 0.5));
+        assert_eq!((left, top, height), (0., 0., 236.));
+        assert_eq!(width, 472.);
+        // Centred, the same picture loses as much on the left as on the right.
+        let (left, ..) = cover_rect(404.5, 236., 2., (0.5, 0.5));
+        assert!((left + 33.75).abs() < 0.01);
+        // A tall picture anchored to the top keeps its top edge.
+        let (_, top, _, height) = cover_rect(100., 100., 0.5, (0.5, 0.));
+        assert_eq!((top, height), (0., 200.));
+    }
+
+    #[test]
+    fn shelf_arrows_page_like_the_official_row() {
+        // 14 cards in an 833px row (1280 window): the fourth card is cut, so the right arrow brings it to the start.
+        let max = 14. * 246. + 13. * 24. + 8. - 833.;
+        assert_eq!(shelf_page_target(true, 0., 833., 14, max), Some(798.));
+        // From there the left arrow brings the card cut at the left to the end: back to the start.
+        assert_eq!(shelf_page_target(false, 798., 833., 14, max), Some(0.));
+        // At the end the right arrow has nothing further to show.
+        assert_eq!(shelf_page_target(true, max, 833., 14, max), None);
+        assert_eq!(shelf_page_target(true, 0., 833., 0, 0.), None);
+    }
+
+    #[test]
+    fn premium_type_zero_is_no_nitro_tier() {
+        let product = parse_product(&json!({"sku_id":"1","type":0,"premium_type":0})).unwrap();
+        assert_eq!(product.premium_type, None);
+        let product = parse_product(&json!({"sku_id":"1","type":0,"premium_type":2})).unwrap();
+        assert_eq!(product.premium_type, Some(2));
+    }
+
+    #[test]
+    fn absent_skus_are_the_ones_left_out_of_the_answer() {
+        let asked = vec!["1".to_owned(), "2".to_owned()];
+        let answered = vec![sample("2", "B", KIND_AVATAR_DECORATION)];
+        assert_eq!(absent_skus(&asked, &answered), vec!["1".to_owned()]);
+    }
+
+    #[test]
+    fn the_skeleton_pulse_holds_low_in_the_middle_and_alternates() {
+        assert_eq!(pulse_phase(100., 400.), 0.);
+        assert_eq!(pulse_phase(1000., 0.), 1.);
+        assert_eq!(pulse_phase(0., 0.), 0.);
+        assert_eq!(pulse_phase(2000., 0.), 0.);
+        assert!(pulse_phase(0.0001, 0.) < 1e-10);
+        // The second run plays backwards: 0.2 s into it is 0.2 s before the end of the first.
+        assert!((pulse_phase(2200., 0.) - pulse_phase(1800., 0.)).abs() < 1e-4);
     }
 }

@@ -311,6 +311,15 @@ impl Root {
                 .parity("dm-call")
                 .id("dm-call-area")
                 .relative()
+                // Module 156652: a press wakes the controls as a move does; the pointer leaving the area makes it idle at once.
+                .capture_any_mouse_down(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                    this.voice_view_moved(cx);
+                }))
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    if !*inside {
+                        this.voice_view_left(cx);
+                    }
+                }))
                 .flex_none()
                 .w_full()
                 .h(px(height))
@@ -324,7 +333,18 @@ impl Root {
                     this.voice_view_moved(cx);
                 }))
                 .child(body)
-                .child(div().absolute().top_0().left_0().right_0().child(header))
+                // The DM's header is the call's `topControls` (`renderExternalHeader`, module 540462): with video in the
+                // call it fades out and 8px up when idle (`idle: !forceShowControls && inCall && layout != MINIMUM`).
+                .child({
+                    let t = self.call_idle_t(!(video && in_call) || self.controls_shown());
+                    div()
+                        .absolute()
+                        .top(px(-8. * (1. - t)))
+                        .left_0()
+                        .right_0()
+                        .opacity(t)
+                        .child(header)
+                })
                 // `renderBottomCenter`: outside the call the tray of module 105225 is the join buttons, in the voice
                 // and the video mode alike.
                 .when(!in_call, |this| {

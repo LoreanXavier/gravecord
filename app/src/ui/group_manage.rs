@@ -216,11 +216,27 @@ impl Root {
         let id = channel.id;
         let selected = self.channel == Some(id);
         let hovered = self.hovered_dm == Some(id);
-        let tint = if selected || hovered {
-            "--text-strong"
-        } else {
-            "--text-muted"
-        };
+        let look = super::home::row_look(
+            selected,
+            hovered,
+            self.stores.read_states.mentions(id) > 0,
+            self.stores
+                .guild_settings
+                .channel_muted(0, id, chrono::Utc::now()),
+        );
+        let tint = look.row;
+        // Module 181254 `eX`: a group is typing when anyone but this account is, and online when any member is; the
+        // typing pill is drawn in the online colour.
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let typing = self
+            .stores
+            .typing_users(id, std::time::Instant::now())
+            .iter()
+            .any(|user| Some(*user) != me);
+        let online = channel
+            .recipients
+            .iter()
+            .any(|user| self.stores.status(*user) == "online");
         let group = SharedString::from(format!("dm-row-{id}"));
         div()
             .id(SharedString::from(format!("dm-{id}")))
@@ -241,6 +257,7 @@ impl Root {
                 cx.notify();
             }))
             .flex_none()
+            .relative()
             .h(px(44.))
             .pt(px(1.))
             .pl(px(9.))
@@ -249,6 +266,7 @@ impl Root {
                 this.select_home(Some(id));
                 cx.notify();
             }))
+            .children(look.pill.then(|| super::home::unread_pill(look.dimmed)))
             .child(
                 div()
                     .id(SharedString::from(format!("dm-inner-{id}")))
@@ -267,17 +285,32 @@ impl Root {
                         this.hover(|style| style.bg(color("--interactive-background-hover")))
                             .active(|style| style.bg(color("--interactive-background-selected")))
                     })
-                    .child(div().flex_none().size(px(32.)).child(self.group_art(
-                        channel,
-                        32.,
-                        "--background-base-lowest",
-                    )))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .size(px(32.))
+                            .when(look.dimmed, |avatar| avatar.opacity(0.3))
+                            .child(self.group_art(channel, 32., "--background-base-lowest"))
+                            .when(typing || online, |avatar| {
+                                avatar.child(super::typing_avatar::status_corner(
+                                    "online",
+                                    typing,
+                                    "--background-base-lowest",
+                                    32.,
+                                    super::motion::key(&("dm-row-avatar", id)),
+                                    super::typing_avatar::css_dots(&self.stores.experiments),
+                                ))
+                            }),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.))
                             .flex()
                             .flex_col()
+                            // `subtext_zln_tS` takes the row's (or the highlighted layout's) colour.
+                            .text_color(color(look.text))
                             .child(
                                 div()
                                     .min_w(px(0.))
@@ -285,7 +318,7 @@ impl Root {
                                     .overflow_hidden()
                                     .text_size(px(16.))
                                     .line_height(px(20.))
-                                    .font_weight(FontWeight(500.))
+                                    .font_weight(look.weight())
                                     .child(self.private_channel_name(channel)),
                             )
                             .child(
@@ -294,11 +327,6 @@ impl Root {
                                     .text_size(px(12.))
                                     .line_height(px(16.))
                                     .font_weight(FontWeight(500.))
-                                    .text_color(color(if selected || hovered {
-                                        "--text-strong"
-                                    } else {
-                                        "--channels-default"
-                                    }))
                                     .child(member_count_text(channel)),
                             ),
                     )
@@ -320,7 +348,7 @@ impl Root {
                                 // `closePrivateChannel(id, _, shift)`: holding shift leaves without telling the group.
                                 this.close_dm_with(id, event.modifiers().shift, cx);
                             }))
-                            .child(icon("friend_ignore", 16., "--text-strong")),
+                            .child(icon("friend_ignore", 16., tint)),
                     ),
             )
             .into_any_element()
