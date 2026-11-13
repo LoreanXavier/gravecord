@@ -231,6 +231,34 @@ pub fn visible(inputs: &Inputs) -> Option<OverlayMethod> {
         .then_some(method)
 }
 
+/// What the Game Overlay page's Current Game switch changes (module 158935 `pC`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchScope {
+    /// The game's own switches (`RUNNING_GAME_TOGGLE_OVERLAY`, both methods).
+    Game,
+    /// The global switches (`OVERLAY_SET_ENABLED`, both methods).
+    Global,
+    Both,
+}
+
+/// The scope of the Current Game switch going to `on` from `checked`: turning it on where the game is on but its
+/// method is off for all games turns the global switches on, and the game's too when some method is off for it.
+pub fn current_game_scope(
+    on: bool,
+    checked: bool,
+    global: Global,
+    game: GameEnablement,
+) -> SwitchScope {
+    let turning_on = on && !checked;
+    let game_on_global_off = (!global.oop && game.oop) || (!global.legacy && game.legacy);
+    let game_off_global_on = (!game.oop && global.oop) || (!game.legacy && global.legacy);
+    match (turning_on, game_on_global_off, game_off_global_on) {
+        (true, true, true) => SwitchScope::Both,
+        (true, true, false) => SwitchScope::Global,
+        _ => SwitchScope::Game,
+    }
+}
+
 /// The focus moved to the overlay window itself (while unlocked): the game it covers stays the focused one, as the
 /// native module excludes its own window. Any other window replaces it.
 pub fn next_focus(current: Option<u32>, new_pid: Option<u32>, own_pid: u32) -> Option<u32> {
@@ -426,6 +454,41 @@ mod tests {
         let mut global_off = inputs(oop, FullscreenType::Windowed);
         global_off.global.oop = false;
         assert_eq!(visible(&global_off), None);
+    }
+
+    #[test]
+    fn the_current_game_switch_reaches_the_global_switches_when_needed() {
+        let on_off = GameEnablement {
+            oop: true,
+            legacy: false,
+        };
+        let global_off = Global {
+            oop: false,
+            legacy: false,
+        };
+        // Game on, OOP off for all games, legacy off for the game and for all: only the global switches.
+        assert_eq!(
+            current_game_scope(true, false, global_off, on_off),
+            SwitchScope::Global
+        );
+        // Legacy on for all but off for the game: both.
+        let legacy_on = Global {
+            oop: false,
+            legacy: true,
+        };
+        assert_eq!(
+            current_game_scope(true, false, legacy_on, on_off),
+            SwitchScope::Both
+        );
+        // Turning off, or the game alone off: the game.
+        assert_eq!(
+            current_game_scope(false, true, ON, on_off),
+            SwitchScope::Game
+        );
+        assert_eq!(
+            current_game_scope(true, false, ON, GameEnablement::default()),
+            SwitchScope::Game
+        );
     }
 
     #[test]

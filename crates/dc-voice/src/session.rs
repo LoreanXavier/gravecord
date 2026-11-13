@@ -21,12 +21,12 @@ use crate::{
     video::{
         RemoteFrame, VideoHub, VideoSource,
         receive::{self, Decoders, Receivers},
-        sender::VideoSender,
+        sender::{CALL_START_BITRATE, VideoSender},
     },
 };
 use dc_media::{
     EncodedFrame,
-    camera::{self, Camera, CameraFrame},
+    camera::{Camera, CameraFrame},
 };
 use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::{SinkExt, StreamExt};
@@ -112,6 +112,10 @@ pub(crate) struct Shared {
 const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
 /// The lowest rate the camera is steered to (`videoBitrate.min` and `videoBitrateFloor` of module 731854, 150 kb/s).
 const CAMERA_MIN_BITRATE: u32 = 150_000;
+/// The camera's top rate (`videoBitrate.max` of module 731854, 2.5 Mb/s, at the full budget portion of the ladder):
+/// `getVideoQuality` hands it as both `encodingVideoMaxBitRate` and `encodingVideoBitRate`, as a camera has no target.
+/// The estimation still starts at the call's start rate. This client's camera encoder keeps `camera::BITRATE`.
+const CAMERA_MAX_BITRATE: u32 = 2_500_000;
 
 pub(crate) async fn send(ws: &mut Socket, message: Message) -> Result<(), &'static str> {
     timeout(Duration::from_secs(5), ws.send(message))
@@ -388,7 +392,7 @@ pub(crate) async fn run(
                     sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Voice UDP send failed"))?;
                 }
             },
-            frame = camera_frames.recv(), if video_sender.as_ref().is_some_and(VideoSender::ready) => {
+            frame = camera_frames.recv(), if video_sender.as_ref().is_some_and(|sender| sender.accepts(Instant::now())) => {
                 let Some(frame) = frame else { continue };
                 if !secure || (!camera_sent_keyframe && !frame.keyframe) {
                     // Nothing can leave yet: ask for a keyframe to start from once it can.
@@ -683,7 +687,7 @@ pub(crate) async fn run(
                     emit(&events, Event::VideoState { camera: false });
                 }
                 if camera.is_some() && !video_announced && transport.is_some() && !discovering && !resuming {
-                    let mut sender = VideoSender::new(video_ssrc, rtx_ssrc, CAMERA_MIN_BITRATE, camera::BITRATE);
+                    let mut sender = VideoSender::new(video_ssrc, rtx_ssrc, CAMERA_MIN_BITRATE, CALL_START_BITRATE, CAMERA_MAX_BITRATE);
                     sender.set_keyframe_interval(keyframe_interval);
                     video_sender = Some(sender);
                     text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Call, None)))).await?;
@@ -695,9 +699,12 @@ pub(crate) async fn run(
                         sender.clear();
                         camera_sent_keyframe = false;
                     }
-                    // The camera encoder keeps its own rate; the target only paces what leaves.
+                    // The encoder follows the target, within what its picture size is given.
                     if let Some(bitrate) = sender.tick_rate(now) {
                         debug!(bitrate, "camera send rate steered");
+                        if let Some(started) = &camera {
+                            started.set_bitrate(bitrate);
+                        }
                     }
                     if secure && sender.periodic_keyframe_due(now) && let Some(started) = &camera {
                         started.force_keyframe();
@@ -729,6 +736,13 @@ pub(crate) async fn run(
                             packets_acked = estimation.packets_acked,
                             packets_lost = estimation.packets_lost,
                             packets_unknown = estimation.packets_unknown,
+                            probe_clusters_sent = estimation.probe_clusters_sent,
+                            probe_clusters_dropped = estimation.probe_clusters_dropped,
+                            probe_results = estimation.probe_results,
+                            probe_refused = estimation.probe_refused,
+                            last_probe = estimation.last_probe,
+                            application_limited = estimation.application_limited,
+                            padding_packets = estimation.padding_packets,
                             "camera send-side estimation"
                         );
                     }

@@ -292,11 +292,14 @@ impl Root {
         } else {
             name
         };
+        let body = self.notification_body(message);
+        // The game overlay's text toast (module 348639 `MESSAGE_CREATE`), when the overlay is up.
+        self.overlay_text_notice(channel, &author, title.clone(), body.clone(), cx);
         self.notification_runtime.show(Notice {
             channel,
             message: id,
             title,
-            body: self.notification_body(message),
+            body,
         });
     }
 

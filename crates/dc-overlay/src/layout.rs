@@ -138,14 +138,124 @@ pub fn default_of(kind: &str) -> Option<&'static WidgetDefault> {
     DEFAULTS.iter().find(|widget| widget.kind == kind)
 }
 
+/// How a registered widget may be handled while unlocked (module 83880 `m`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetConfig {
+    pub kind: &'static str,
+    pub resize_x: bool,
+    pub resize_y: bool,
+    /// A press anywhere on the widget starts a move (else only its own drag handle does).
+    pub drag_anywhere: bool,
+}
+
+const fn config(
+    kind: &'static str,
+    resize_x: bool,
+    resize_y: bool,
+    drag_anywhere: bool,
+) -> WidgetConfig {
+    WidgetConfig {
+        kind,
+        resize_x,
+        resize_y,
+        drag_anywhere,
+    }
+}
+
+pub const CONFIGS: &[WidgetConfig] = &[
+    config(VOICE, false, false, true),
+    config(VIDEO, true, true, true),
+    config(GO_LIVE, true, true, true),
+    config(QUICK_ACTIONS, false, false, true),
+    config(NOTIFICATIONS, false, false, true),
+    config(ACTIVITY, false, false, true),
+    config(TEXT_CHAT, true, true, false),
+    config(FRIENDS, false, true, true),
+];
+
+pub fn config_of(kind: &str) -> Option<&'static WidgetConfig> {
+    CONFIGS.iter().find(|config| config.kind == kind)
+}
+
+/// One side of a stored size: `"auto"` or a number (a fraction of the window, or pixels when the size is fixed).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Extent {
+    Auto,
+    Value(f32),
+}
+
+/// A widget's stored size (`size` of class `E`, module 83880).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Size {
+    pub width: Extent,
+    pub height: Extent,
+    pub fixed: bool,
+}
+
+impl Size {
+    fn from_json(value: &Value) -> Self {
+        let extent = |value: &Value| match value {
+            Value::String(text) if text == "auto" => Extent::Auto,
+            other => Extent::Value(other.as_f64().unwrap_or(0.) as f32),
+        };
+        Self {
+            width: extent(&value["width"]),
+            height: extent(&value["height"]),
+            fixed: value["fixed"].as_bool().unwrap_or(false),
+        }
+    }
+
+    fn to_json(self) -> Value {
+        let extent = |extent: Extent| match extent {
+            Extent::Auto => json!("auto"),
+            Extent::Value(value) => json!(value),
+        };
+        let mut map = Map::new();
+        map.insert("width".into(), extent(self.width));
+        map.insert("height".into(), extent(self.height));
+        if self.fixed {
+            map.insert("fixed".into(), json!(true));
+        }
+        Value::Object(map)
+    }
+
+    /// `fd` (module 5463): the size in pixels of a window, `None` for auto.
+    pub fn pixels(self, width: f32, height: f32) -> (Option<f32>, Option<f32>) {
+        let at = |extent: Extent, size: f32| match extent {
+            Extent::Auto => None,
+            Extent::Value(value) if self.fixed => Some(value),
+            Extent::Value(value) => Some((value.clamp(0., 1.) * size).floor()),
+        };
+        (at(self.width, width), at(self.height, height))
+    }
+
+    /// `R9` (module 5463): a size in pixels as it is stored (fractions unless fixed); auto sides stay auto.
+    pub fn stored(self, pixels: (f32, f32), width: f32, height: f32) -> Self {
+        let at = |extent: Extent, value: f32, size: f32| match extent {
+            Extent::Auto => Extent::Auto,
+            Extent::Value(_) if self.fixed => Extent::Value(value),
+            Extent::Value(_) => Extent::Value(value / size),
+        };
+        Self {
+            width: at(self.width, pixels.0, width),
+            height: at(self.height, pixels.1, height),
+            fixed: self.fixed,
+        }
+    }
+}
+
 /// A widget of the overlay's layout as it is stored.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
     pub id: String,
     pub kind: String,
     pub anchor: Anchor,
+    pub size: Size,
+    /// `minSize`; a missing side is 0 to the container (`R ?? {width: 0, height: 0}`).
+    pub min_size: (f32, f32),
     pub pinned: bool,
     pub hidden: bool,
+    pub z_index: i64,
     pub opacity: f32,
     raw: Map<String, Value>,
 }
@@ -154,9 +264,63 @@ fn side(value: &Value, name: &str) -> Option<f32> {
     value.get(name).and_then(Value::as_f64).map(|v| v as f32)
 }
 
+/// Class `E`'s constructor: a pair with both sides set keeps both only for an auto size; otherwise the bottom (or
+/// right) wins. A pair with neither side starts at 0 from the top (or left).
+fn normalized(anchor: Anchor, size: Size) -> Anchor {
+    let Anchor {
+        mut top,
+        mut left,
+        mut bottom,
+        mut right,
+    } = anchor;
+    if !(top.is_some() && bottom.is_some() && size.height == Extent::Auto) {
+        if bottom.is_some() {
+            top = None;
+        } else {
+            bottom = None;
+        }
+    }
+    if !(left.is_some() && right.is_some() && size.width == Extent::Auto) {
+        if right.is_some() {
+            left = None;
+        } else {
+            right = None;
+        }
+    }
+    if top.is_none() && bottom.is_none() {
+        top = Some(0.);
+    }
+    if left.is_none() && right.is_none() {
+        left = Some(0.);
+    }
+    Anchor {
+        top,
+        left,
+        bottom,
+        right,
+    }
+}
+
+fn anchor_json(anchor: Anchor) -> Value {
+    // `undefined` sides are left out of the stored object, as `JSON.stringify` does.
+    let mut map = Map::new();
+    for (name, value) in [
+        ("top", anchor.top),
+        ("left", anchor.left),
+        ("bottom", anchor.bottom),
+        ("right", anchor.right),
+    ] {
+        if let Some(value) = value {
+            map.insert(name.into(), json!(value));
+        }
+    }
+    Value::Object(map)
+}
+
 impl Widget {
     fn from_json(value: &Value) -> Option<Self> {
         let raw = value.as_object()?.clone();
+        let size = Size::from_json(&value["size"]);
         let anchor = value
             .get("anchor")
             .map_or(Anchor::default(), |anchor| Anchor {
@@ -165,12 +329,19 @@ impl Widget {
                 bottom: side(anchor, "bottom"),
                 right: side(anchor, "right"),
             });
+        let min = &value["minSize"];
         Some(Self {
             id: value["id"].as_str()?.to_owned(),
             kind: value["type"].as_str()?.to_owned(),
-            anchor,
+            anchor: normalized(anchor, size),
+            size,
+            min_size: (
+                side(min, "width").unwrap_or(0.),
+                side(min, "height").unwrap_or(0.),
+            ),
             pinned: value["pinned"].as_bool().unwrap_or(false),
             hidden: value["hidden"].as_bool().unwrap_or(false),
+            z_index: value["zIndex"].as_i64().unwrap_or(0),
             opacity: value["opacity"].as_f64().unwrap_or(1.) as f32,
             raw,
         })
@@ -178,9 +349,19 @@ impl Widget {
 
     fn to_json(&self) -> Value {
         let mut map = self.raw.clone();
+        map.insert("anchor".into(), anchor_json(self.anchor));
+        map.insert("size".into(), self.size.to_json());
         map.insert("pinned".into(), json!(self.pinned));
         map.insert("hidden".into(), json!(self.hidden));
+        map.insert("zIndex".into(), json!(self.z_index));
         Value::Object(map)
+    }
+
+    /// The widget's handling while unlocked; an unknown kind can be neither moved nor resized.
+    pub fn config(&self) -> WidgetConfig {
+        config_of(&self.kind)
+            .copied()
+            .unwrap_or(config("", false, false, false))
     }
 
     fn from_default(default: &WidgetDefault, id: String) -> Self {
@@ -201,12 +382,7 @@ impl Widget {
             "id": id,
             "layoutId": LAYOUT,
             "type": default.kind,
-            "anchor": {
-                "top": default.anchor.top,
-                "left": default.anchor.left,
-                "bottom": default.anchor.bottom,
-                "right": default.anchor.right,
-            },
+            "anchor": anchor_json(default.anchor),
             "size": Value::Object(size),
             "minSize": {"width": default.min_size.0, "height": default.min_size.1},
             "pinned": default.pinned,
@@ -311,12 +487,102 @@ impl Layout {
         self.stored.insert("widgets".into(), Value::Object(all));
     }
 
-    /// `getDefaultLayout(GJ, 4)` with fresh ids from `new_id`.
+    /// `getDefaultLayout(GJ, 4)` with fresh ids from `new_id`, each at its place's z-index (`LAYOUT_CREATE`).
     fn defaults(new_id: &mut dyn FnMut() -> String) -> Vec<Widget> {
         DEFAULTS
             .iter()
-            .map(|default| Widget::from_default(default, new_id()))
+            .enumerate()
+            .map(|(index, default)| {
+                let mut widget = Widget::from_default(default, new_id());
+                widget.z_index = index as i64;
+                widget
+            })
             .collect()
+    }
+
+    /// Applies `change` to the overlay layout's widget `id` (`T` of module 83880: only a widget of a layout that
+    /// exists). Returns whether it was found.
+    fn change(&mut self, id: &str, change: impl FnOnce(&mut Widget)) -> bool {
+        let mut widgets = self.widgets();
+        let Some(widget) = widgets.iter_mut().find(|widget| widget.id == id) else {
+            return false;
+        };
+        change(widget);
+        self.put(widgets, false);
+        true
+    }
+
+    /// `LAYOUT_SET_PINNED`: the given state, or the other one.
+    pub fn set_pinned(&mut self, id: &str, pinned: Option<bool>) -> bool {
+        self.change(id, |widget| {
+            widget.pinned = pinned.unwrap_or(!widget.pinned)
+        })
+    }
+
+    /// `LAYOUT_SET_WIDGETS_HIDDEN`.
+    pub fn set_hidden(&mut self, ids: &[String], hidden: bool) -> bool {
+        let mut widgets = self.widgets();
+        let mut changed = false;
+        for widget in widgets.iter_mut().filter(|widget| ids.contains(&widget.id)) {
+            if widget.hidden != hidden {
+                widget.hidden = hidden;
+                changed = true;
+            }
+        }
+        if changed {
+            self.put(widgets, false);
+        }
+        changed
+    }
+
+    /// `ff` (module 667419), the toolbar's Hide All: every widget of the layout hidden.
+    pub fn hide_all(&mut self) -> bool {
+        let ids: Vec<String> = self.widgets().into_iter().map(|widget| widget.id).collect();
+        self.set_hidden(&ids, true)
+    }
+
+    /// `LAYOUT_UPDATE_WIDGET` with what a finished move or resize gives: the anchor and size as stored (fractions
+    /// unless fixed).
+    pub fn update_widget(&mut self, id: &str, anchor: Option<Anchor>, size: Option<Size>) -> bool {
+        self.change(id, |widget| {
+            if let Some(anchor) = anchor {
+                widget.anchor = anchor;
+            }
+            if let Some(size) = size {
+                widget.size = size;
+            }
+        })
+    }
+
+    /// `LAYOUT_SET_TOP_WIDGET`: the widget goes over the others, every z-index renumbered from 0 in drawing order.
+    pub fn set_top(&mut self, id: &str) -> bool {
+        let mut widgets = self.widgets();
+        let mut order: Vec<usize> = (0..widgets.len()).collect();
+        order.sort_by_key(|&index| widgets[index].z_index);
+        let Some(at) = order.iter().position(|&index| widgets[index].id == id) else {
+            return false;
+        };
+        if at == order.len() - 1 {
+            return false;
+        }
+        let moved = order.remove(at);
+        order.push(moved);
+        for (z, index) in order.into_iter().enumerate() {
+            widgets[index].z_index = z as i64;
+        }
+        self.put(widgets, false);
+        true
+    }
+
+    /// The widgets drawn, lowest z-index first (the order of the layout breaks ties, as the page's does).
+    pub fn drawn(&self) -> Vec<Widget> {
+        let mut widgets: Vec<Widget> = self
+            .widgets()
+            .into_iter()
+            .filter(|widget| !widget.hidden)
+            .collect();
+        widgets.sort_by_key(|widget| widget.z_index);
+        widgets
     }
 
     /// `j$`: the layout is created with the defaults unless it exists at this version.
@@ -341,9 +607,23 @@ impl Layout {
             && on
             && let Some(default) = default_of(kind)
         {
-            widgets.push(Widget::from_default(default, new_id()));
+            // `LAYOUT_CREATE_WIDGETS`: the new one goes on top.
+            let mut widget = Widget::from_default(default, new_id());
+            widget.z_index = widgets.len() as i64;
+            widgets.push(widget);
         }
+        let first = widgets
+            .iter()
+            .find(|widget| widget.kind == kind)
+            .map(|widget| widget.id.clone());
         self.put(widgets, true);
+        // `JA`: a widget shown again comes to the top.
+        if found
+            && on
+            && let Some(first) = first
+        {
+            self.set_top(&first);
+        }
     }
 
     /// `eL`: `resetDefaultLayout(GJ, 4)`.
@@ -466,6 +746,94 @@ mod tests {
         assert_eq!(layout.voice_max_shown(), -1);
         let read = Layout::from_json(&layout.to_json());
         assert_eq!(read.voice_max_shown(), -1);
+    }
+
+    #[test]
+    fn a_stored_anchor_keeps_one_side_of_each_pair() {
+        let stored = json!({
+            "layouts": {LAYOUT: {"id": LAYOUT, "widgets": ["a", "b"], "version": 4}},
+            "widgets": {
+                "a": {"id": "a", "layoutId": LAYOUT, "type": VOICE,
+                      "anchor": {"top": 0.1, "bottom": 0.2, "left": 0.3}, "size": {"width": "auto", "height": "auto"}},
+                "b": {"id": "b", "layoutId": LAYOUT, "type": VIDEO,
+                      "anchor": {"top": 0.1, "bottom": 0.2}, "size": {"width": 408, "height": 128, "fixed": true}},
+            },
+        });
+        let layout = Layout::from_json(&stored);
+        let widgets = layout.widgets();
+        // An auto size keeps both; a set size keeps the bottom; a missing left/right starts at the left.
+        assert_eq!(widgets[0].anchor.top, Some(0.1));
+        assert_eq!(widgets[0].anchor.bottom, Some(0.2));
+        assert_eq!(widgets[1].anchor.top, None);
+        assert_eq!(widgets[1].anchor.left, Some(0.));
+        assert_eq!(
+            widgets[1].size.pixels(1280., 720.),
+            (Some(408.), Some(128.))
+        );
+        assert!(widgets[0].config().drag_anywhere);
+        assert!(!widgets[0].config().resize_x);
+        assert!(widgets[1].config().resize_x);
+    }
+
+    #[test]
+    fn a_finished_drag_is_stored_and_read_back() {
+        let mut layout = Layout::default();
+        let mut ids = counter();
+        layout.ensure(&mut ids);
+        let voice = layout.widget(VOICE).unwrap();
+        let moved = Anchor {
+            bottom: Some(0.5),
+            right: Some(0.25),
+            ..Anchor::default()
+        };
+        assert!(layout.update_widget(&voice.id, Some(moved), None));
+        assert!(layout.set_top(&voice.id));
+        let stored = layout.to_json();
+        // `undefined` sides are not written.
+        let anchor = &stored["widgets"][voice.id.as_str()]["anchor"];
+        assert_eq!(anchor, &json!({"bottom": 0.5, "right": 0.25}));
+        let read = Layout::from_json(&stored);
+        let back = read.widget(VOICE).unwrap();
+        assert_eq!(back.anchor, moved);
+        assert_eq!(back.z_index, 7);
+        assert_eq!(read.drawn().last().unwrap().kind, VOICE);
+        // Already on top: nothing to do.
+        let mut again = read.clone();
+        assert!(!again.set_top(&voice.id));
+        // A widget of no layout cannot be changed.
+        assert!(!Layout::default().set_pinned("nobody", None));
+    }
+
+    #[test]
+    fn pin_hide_and_hide_all_follow_the_store() {
+        let mut layout = Layout::default();
+        let mut ids = counter();
+        layout.ensure(&mut ids);
+        let voice = layout.widget(VOICE).unwrap();
+        assert!(voice.pinned);
+        layout.set_pinned(&voice.id, None);
+        assert!(!layout.widget(VOICE).unwrap().pinned);
+        layout.set_pinned(&voice.id, Some(true));
+        assert!(layout.widget(VOICE).unwrap().pinned);
+        // The widget's Hide button.
+        assert!(layout.set_hidden(std::slice::from_ref(&voice.id), true));
+        assert!(!layout.is_enabled(VOICE));
+        assert!(!layout.set_hidden(std::slice::from_ref(&voice.id), true));
+        // Shown again from the page, it comes to the top.
+        layout.set_enabled(VOICE, true, &mut ids);
+        assert!(layout.is_enabled(VOICE));
+        assert_eq!(layout.drawn().last().unwrap().kind, VOICE);
+        assert!(layout.hide_all());
+        assert!(layout.drawn().is_empty());
+        let size = Size {
+            width: Extent::Value(0.5),
+            height: Extent::Auto,
+            fixed: false,
+        };
+        assert_eq!(size.pixels(1280., 720.), (Some(640.), None));
+        let stored = size.stored((320., 99.), 1280., 720.);
+        assert_eq!(stored.width, Extent::Value(0.25));
+        assert_eq!(stored.height, Extent::Auto);
     }
 
     #[test]

@@ -9,6 +9,57 @@
 
 use crate::store::{DisplayNameMode, DisplayUserMode};
 
+/// The channel order of `SortedVoiceStateStore` (module 607567 `R`): whoever streams first, then by the name the
+/// list shows (the server nickname, else the user's name) in lower case, then by id. Compared as JavaScript compares
+/// strings, by UTF-16 code unit.
+pub fn sort_key(self_stream: bool, name: &str, user_id: u64) -> Vec<u16> {
+    let key = format!(
+        "{}{}\0{user_id}",
+        if self_stream { '\0' } else { '\u{1}' },
+        name.to_lowercase()
+    );
+    key.encode_utf16().collect()
+}
+
+/// `eS` (module 502812): someone who joined within the last 10 s plays the "joined voice" animation when their row
+/// appears; it ends 2.6 s later.
+pub const RECENTLY_CONNECTED_MS: f64 = 10_000.;
+pub const CONNECTED_ANIMATION_MS: f64 = 2_600.;
+/// The 16 ms `setTimeout` between the state changes.
+pub const CONNECTED_STEP_MS: f64 = 16.;
+
+/// The "joined voice" pill of a row: whether it is out (`showConnectedAnimation`), still entering
+/// (`recentlyConnected`), at `now` for a row that appeared at `mounted` for someone who connected at `connected`.
+pub fn connected_animation(connected: f64, mounted: f64, now: f64, preview: bool) -> (bool, bool) {
+    let recent = connected > mounted - RECENTLY_CONNECTED_MS;
+    if !recent || preview {
+        return (false, false);
+    }
+    let elapsed = now - mounted;
+    let entering = elapsed < CONNECTED_ANIMATION_MS;
+    let shown = (CONNECTED_STEP_MS..CONNECTED_ANIMATION_MS + CONNECTED_STEP_MS).contains(&elapsed);
+    (shown, entering)
+}
+
+/// The pill's springs (`eA` for the width, `eE` for the opacity; the opacity leaves 300 ms late).
+pub const WIDTH_ENTER: (f64, f64, f64) = (180., 14., 0.2);
+pub const WIDTH_EXIT: (f64, f64, f64) = (80., 10., 1.);
+pub const OPACITY_ENTER: (f64, f64, f64) = (240., 10., 0.5);
+pub const OPACITY_EXIT: (f64, f64, f64) = (300., 30., 1.5);
+pub const OPACITY_EXIT_DELAY_MS: f64 = 300.;
+
+/// The speaking ring (`v` of module 556525 with `INSET_ONLY`, `maxInnerSpreadRadius: 4`, `hideIfVolumeMissing`): the
+/// inner ring's width for a level in dB, and the base-lower ring one wider. Without a level (`-Infinity`, what
+/// `getVoiceVolume` returns unless the `2025-12-proportional-vad-indicator` experiment is on, off by default) no
+/// spread is drawn and the stylesheet's 1px outline 2px out stands in (`avatarSpeakingOutline_ieJ4Sq`).
+pub fn ring_widths(db: f32) -> Option<(f32, f32)> {
+    if db == f32::NEG_INFINITY {
+        return None;
+    }
+    let inner = 0.5 + (4. - 0.5) / (1. + (-0.03 * (db + 45.)).exp());
+    Some((inner, inner + 1.))
+}
+
 /// One person in the call, in the channel's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -206,6 +257,49 @@ mod tests {
         assert_eq!(row_opacity(true, false, false), 0.4);
         assert_eq!(row_opacity(true, true, false), 0.9);
         assert_eq!(row_opacity(true, true, true), 0.6);
+    }
+
+    #[test]
+    fn the_channel_order_puts_streamers_first_then_names() {
+        let mut people = [
+            (false, "zed", 1u64),
+            (false, "Amy", 3),
+            (true, "Mia", 2),
+            (false, "amy", 2),
+        ];
+        people.sort_by_key(|(stream, name, id)| sort_key(*stream, name, *id));
+        let ids: Vec<u64> = people.iter().map(|person| person.2).collect();
+        // The streamer first; the two Amys by id ("2" before "3"); then zed.
+        assert_eq!(ids, vec![2, 2, 3, 1]);
+        assert_eq!(people[0].1, "Mia");
+        // UTF-16 order: a character past the BMP sorts before U+FFxx, unlike UTF-8.
+        assert!(sort_key(false, "\u{1F600}", 1) < sort_key(false, "\u{FF41}", 1));
+    }
+
+    #[test]
+    fn a_recent_join_plays_the_pill_for_2_6_seconds() {
+        assert_eq!(connected_animation(0., 500., 500., false), (false, true));
+        assert_eq!(connected_animation(0., 500., 520., false), (true, true));
+        assert_eq!(connected_animation(0., 500., 3105., false), (true, false));
+        assert_eq!(connected_animation(0., 500., 3200., false), (false, false));
+        // Joined more than ten seconds before the row appeared, or the settings preview: nothing.
+        assert_eq!(
+            connected_animation(0., 10_001., 10_100., false),
+            (false, false)
+        );
+        assert_eq!(connected_animation(0., 500., 520., true), (false, false));
+    }
+
+    #[test]
+    fn the_ring_needs_a_level() {
+        assert_eq!(ring_widths(f32::NEG_INFINITY), None);
+        let (inner, base) = ring_widths(-45.).unwrap();
+        assert_eq!(inner, 2.25);
+        assert_eq!(base, 3.25);
+        assert!(ring_widths(0.).unwrap().0 > 3.);
+        // Silence (-100 dB) is a little over 1 px; the floor is 0.5.
+        assert!(ring_widths(-100.).unwrap().0 < 1.1);
+        assert!(ring_widths(-1000.).unwrap().0 >= 0.5);
     }
 
     #[test]

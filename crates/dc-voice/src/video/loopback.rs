@@ -118,17 +118,14 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
     let frame = generator.next(false).unwrap().unwrap();
     assert!(frame.keyframe);
     let expected = sps::normalize(&frame.data).unwrap().into_owned();
-    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 900_000);
+    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 900_000, 900_000);
     assert!(sender.offer(&frame, &mut alice, Instant::now()).unwrap());
-    assert!(
-        !sender.ready(),
-        "a second picture waits for the first to leave"
-    );
+    assert!(!sender.idle(), "the picture leaves paced");
 
     // The paced packets.
     let mut wire: Vec<Vec<u8>> = Vec::new();
     let started = std::time::Instant::now();
-    while !sender.ready() {
+    while !sender.idle() {
         sender
             .flush(Instant::now(), &mut alice_wire, |data| {
                 wire.push(data.to_vec());
@@ -141,6 +138,8 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
         );
         std::thread::sleep(Duration::from_millis(2));
     }
+    // The start's probe clusters add RTX padding; the network loses media.
+    wire.retain(|datagram| bob_wire.open(datagram).unwrap().payload_type == rtp::H264_PAYLOAD_TYPE);
     assert!(wire.len() >= 4, "{} packets", wire.len());
 
     // The network: the third packet is lost and the next two swap places.
@@ -182,7 +181,12 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
     );
     let mut repairs = Vec::new();
     let started = std::time::Instant::now();
-    while repairs.is_empty() {
+    // The repair of the lost packet, among any probe padding still leaving.
+    let is_repair = |datagram: &Vec<u8>| {
+        let rtp = bob_wire.open(datagram).unwrap();
+        rtp.payload.len() > 2 && rtp.payload[..2] == lost_sequence.to_be_bytes()
+    };
+    while !repairs.iter().any(is_repair) {
         sender
             .flush(Instant::now(), &mut alice_wire, |data| {
                 repairs.push(data.to_vec());
@@ -195,7 +199,9 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
         );
         std::thread::sleep(Duration::from_millis(2));
     }
-    let repair = bob_wire.open(&repairs[0]).unwrap();
+    let repair = bob_wire
+        .open(repairs.iter().find(|datagram| is_repair(datagram)).unwrap())
+        .unwrap();
     assert_eq!(repair.payload_type, rtp::H264_RTX_PAYLOAD_TYPE);
     assert_eq!(repair.ssrc, RTX_SSRC);
     receivers.push(repair, later);
@@ -237,11 +243,11 @@ fn a_third_party_without_the_group_cannot_read_the_picture() {
     let mut stranger = Dave::new(7, 3).unwrap();
     let mut generator = Generator::new(160, 120, 15, 300_000).unwrap();
     let frame = generator.next(false).unwrap().unwrap();
-    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 300_000);
+    let mut sender = VideoSender::new(VIDEO_SSRC, RTX_SSRC, 150_000, 300_000, 300_000);
     assert!(sender.offer(&frame, &mut alice, Instant::now()).unwrap());
     let mut transport = Transport::new(Mode::XChaCha20Poly1305RtpSize, &[1; 32]);
     let mut sealed = Vec::new();
-    while !sender.ready() {
+    while !sender.idle() {
         sender
             .flush(Instant::now(), &mut transport, |data| {
                 sealed.push(data.to_vec());

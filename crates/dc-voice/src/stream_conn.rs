@@ -19,7 +19,7 @@ use crate::{
     video::{
         RemoteFrame, VideoHub, VideoSource,
         receive::{self, Decoders, Receivers},
-        sender::VideoSender,
+        sender::{CALL_START_BITRATE, VideoSender},
     },
 };
 use dc_media::{
@@ -207,7 +207,12 @@ fn start_capture(
     };
     match source {
         StreamSource::Screen(settings) => screen::Worker::start(settings, video, sound)
-            .map(Capture::Screen)
+            .map(|worker| {
+                // The encoder starts where the estimation does (`desktopBitrate.target`, 600 kb/s, is what the
+                // official client hands as `encodingVideoBitRate`); the sender's target raises it as probes find room.
+                worker.set_bitrate(CALL_START_BITRATE);
+                Capture::Screen(worker)
+            })
             .map_err(|_| "Screen capture could not start"),
         StreamSource::Synthetic {
             width,
@@ -448,16 +453,16 @@ pub(crate) async fn run(
             },
             _ = async { match pacing { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
                 if let (Some(sender), Some(crypto), Some(socket)) = (sender.as_mut(), transport.as_mut(), udp.as_ref()) {
-                    let was_empty = sender.ready();
+                    let was_empty = sender.idle();
                     sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Stream UDP send failed"))?;
-                    if !was_empty && sender.ready() && sent_keyframe && !live_announced {
+                    if !was_empty && sender.idle() && sent_keyframe && !live_announced {
                         live_announced = true;
                         awaiting_keyframe = false;
                         let _ = events.send(StreamEvent::Live { privacy_code: dave.session.voice_privacy_code().map(str::to_owned) });
                     }
                 }
             },
-            frame = frames.recv(), if sender.as_ref().is_some_and(VideoSender::ready) => {
+            frame = frames.recv(), if sender.as_ref().is_some_and(|sender| sender.accepts(Instant::now())) => {
                 let Some(frame) = frame else { return Ok(DisconnectReason::Closed(0)) };
                 let secure = announced && dave.ready && dave.session.is_ready() && !dave.transitioning() && transport.is_some() && !discovering && !controls.borrow().paused;
                 if !secure {
@@ -574,8 +579,9 @@ pub(crate) async fn run(
                     // Announce the source once, as soon as both ends are ready for it.
                     if !announced && capture.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {
                         let bitrate = source.limits().bitrate;
-                        let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, bitrate);
+                        let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, CALL_START_BITRATE, bitrate);
                         video.set_keyframe_interval(keyframe_interval);
+                        video.set_screen_share(true);
                         sender = Some(video);
                         text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Stream, Some(source.limits()))))).await?;
                         announced = true;
@@ -728,6 +734,13 @@ pub(crate) async fn run(
                             packets_acked = estimation.packets_acked,
                             packets_lost = estimation.packets_lost,
                             packets_unknown = estimation.packets_unknown,
+                            probe_clusters_sent = estimation.probe_clusters_sent,
+                            probe_clusters_dropped = estimation.probe_clusters_dropped,
+                            probe_results = estimation.probe_results,
+                            probe_refused = estimation.probe_refused,
+                            last_probe = estimation.last_probe,
+                            application_limited = estimation.application_limited,
+                            padding_packets = estimation.padding_packets,
                             "stream send-side estimation"
                         );
                     }

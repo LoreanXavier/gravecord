@@ -704,6 +704,36 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `overlay drag <x1> <y1> <x2> <y2>`: a press, moves in 8 steps with a frame between, and a release, sent
+            // to the overlay window (a widget's move while unlocked).
+            ["overlay", "drag", x1, y1, x2, y2] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x1, y1), at(x2, y2)) {
+                    (Some(overlay), Some(from), Some(to)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, overlay, moved(from, None));
+                            dispatch(cx, overlay, down(from));
+                        });
+                        for step in 1..=8 {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(30))
+                                .await;
+                            let t = step as f32 / 8.;
+                            let point = gpui::point(
+                                from.x + (to.x - from.x) * t,
+                                from.y + (to.y - from.y) * t,
+                            );
+                            cx.update(|cx| {
+                                dispatch(cx, overlay, moved(point, Some(MouseButton::Left)))
+                            });
+                        }
+                        cx.update(|cx| dispatch(cx, overlay, up(to)));
+                        format!("overlay drag: {x1},{y1} -> {x2},{y2}")
+                    }
+                    _ => "overlay drag: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             ["overlay", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_overlay(rest, cx));
                 let _ = writeln!(output, "{line}");

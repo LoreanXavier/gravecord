@@ -18,21 +18,69 @@ pub(crate) struct Packet {
     pub payload: Vec<u8>,
 }
 
-/// libwebrtc's default: the pacer drains at 2.5x the encoder target, so an average frame
-/// leaves in well under its frame interval while keyframes still avoid a line-rate burst.
-const PACING_FACTOR: f64 = 2.5;
+/// How fast the pacer drains against the target, and how long a queue may take to leave, as the pinned engine sets them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Pacing {
+    pub factor: f64,
+    pub queue_limit: Duration,
+}
+
+/// A camera: `kStrictPacingMultiplier` (1.1, the default `factor` of `PacingConfig` in `video_send_stream_impl.cc`,
+/// which `GetConfiguredPacingFactor` hands the transport with send-side estimation) and
+/// `PacingController::kMaxExpectedQueueLength` (2 s, the default `max_delay`).
+pub(crate) const CAMERA_PACING: Pacing = Pacing {
+    factor: 1.1,
+    queue_limit: Duration::from_millis(2000),
+};
+/// A screen share: the default-on `WebRTC-ProbingScreenshareBwe` settings ("1.0,2875,80,40,-60,3",
+/// `kDefaultProbingScreenshareBweSettings` of `alr_experiment.cc`) give the pacing factor (1.0) and the paced queue
+/// time limit (2875 ms).
+pub(crate) const SCREEN_PACING: Pacing = Pacing {
+    factor: 1.0,
+    queue_limit: Duration::from_millis(2875),
+};
+/// `PacingController::kMinSleepTime`: the least time left that the long queue rule divides by.
+const MIN_QUEUE_TIME_LEFT: Duration = Duration::from_millis(1);
 /// Longest sleep the pacer accounts for. A coarse OS timer (Windows' 15.6 ms default tick)
 /// or a delayed task sends proportionally more on its next wake instead of losing frames.
 const MAX_CATCH_UP: Duration = Duration::from_millis(100);
 /// Budget a fresh access unit may send before the first pacing sleep.
 const INITIAL_BURST: f64 = (4 * MTU) as f64;
+/// `kMaxDebtInTime` of `pacing_controller.cc`: the media debt is capped at half a second of the pacing rate.
+const MAX_DEBT: Duration = Duration::from_millis(500);
 /// Retransmissions may use up to the target rate over this window (libwebrtc's retransmission rate limiter,
 /// `kRetransmitWindowSizeMs`).
 const REPAIR_WINDOW: Duration = Duration::from_millis(500);
 
-/// One bounded access unit, paced by elapsed time against the encoder target.
+/// The most packets the pacer holds, a memory bound of ours: two of the largest access units.
+const MAX_QUEUED_PACKETS: usize = 2 * MAX_FRAGMENTS;
+
+/// The encoder's share of a target (`RtpVideoSender::OnBitrateUpdated` with transport-wide feedback): the target less
+/// what every packet adds on the wire, at as many packets a second as the target fills at full size, rounded up
+/// (`CalculateOverheadRate`, `WebRTC-Video-UseFrameRateForOverhead` off). The pacer drains the whole target, so an
+/// encoder at this rate keeps up with a pacing factor of 1. Inferred: no post-encode overhead is subtracted for DAVE,
+/// which the engine may count there.
+pub(crate) fn payload_bitrate(target: u32) -> u32 {
+    let packets_per_second = (f64::from(target) / 8.0 / MTU as f64).ceil();
+    let overhead = packets_per_second * ((RTP_HEADER + TRANSPORT_OVERHEAD) * 8) as f64;
+    target.saturating_sub(overhead as u32)
+}
+
+/// What one packet costs on the wire.
+fn wire_bytes(packet: &Packet) -> usize {
+    RTP_HEADER + packet.payload.len() + TRANSPORT_OVERHEAD
+}
+
+/// The pacer's queue of access units, paced by elapsed time against the target as libwebrtc's `PacingController`
+/// drains its queue: the encoder is not held back while a picture leaves, the queue is, by the long-queue rule.
 pub(crate) struct Pacer {
-    packets: std::vec::IntoIter<Packet>,
+    pacing: Pacing,
+    /// Packets waiting, with when they were queued.
+    packets: VecDeque<(Packet, Instant)>,
+    /// Their bytes on the wire, and the sum of their queue times in microseconds after `base`.
+    bytes: usize,
+    queued_us: u128,
+    base: Instant,
     credit: f64,
     /// Repairs sent within `REPAIR_WINDOW`: when, and their size on the wire.
     repairs: VecDeque<(Instant, usize)>,
@@ -41,32 +89,81 @@ pub(crate) struct Pacer {
     pub deadline: Instant,
 }
 impl Pacer {
-    pub fn new() -> Self {
+    pub fn new(pacing: Pacing) -> Self {
+        let now = Instant::now();
         Self {
-            packets: Vec::new().into_iter(),
+            pacing,
+            packets: VecDeque::new(),
+            bytes: 0,
+            queued_us: 0,
+            base: now,
             credit: INITIAL_BURST,
             repairs: VecDeque::new(),
-            updated: Instant::now(),
-            progress: Instant::now(),
-            deadline: Instant::now(),
+            updated: now,
+            progress: now,
+            deadline: now,
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.packets.len() == 0
+        self.packets.is_empty()
+    }
+    /// Whether another access unit may join the queue: it is empty, or its oldest packet is younger than the queue time
+    /// limit (which the long-queue rule keeps it to) and the memory bound is not reached.
+    pub fn accepts(&self, now: Instant) -> bool {
+        self.packets.front().is_none_or(|(_, queued)| {
+            now.saturating_duration_since(*queued) < self.pacing.queue_limit
+                && self.packets.len() < MAX_QUEUED_PACKETS
+        })
+    }
+    pub fn set_pacing(&mut self, pacing: Pacing) {
+        self.pacing = pacing;
     }
     pub fn clear(&mut self) {
-        self.packets = Vec::new().into_iter();
+        self.packets.clear();
+        self.bytes = 0;
+        self.queued_us = 0;
     }
     pub fn stale(&self, now: Instant) -> bool {
         !self.is_empty() && now.duration_since(self.progress) >= Duration::from_millis(500)
     }
     pub fn queue(&mut self, packets: Vec<Packet>, now: Instant) {
-        // Idle time is not banked into a burst; only the small initial allowance carries over.
-        self.credit = self.credit.min(INITIAL_BURST);
-        self.updated = now;
-        self.packets = packets.into_iter();
-        self.deadline = now;
-        self.progress = now;
+        if self.packets.is_empty() {
+            // Idle time is not banked into a burst; only the small initial allowance carries over.
+            self.credit = self.credit.min(INITIAL_BURST);
+            self.updated = now;
+            self.deadline = now;
+            self.progress = now;
+        }
+        let at = now.saturating_duration_since(self.base).as_micros();
+        for packet in packets {
+            self.bytes += wire_bytes(&packet);
+            self.queued_us += at;
+            self.packets.push_back((packet, now));
+        }
+    }
+    fn pop(&mut self) -> Option<Packet> {
+        let (packet, queued) = self.packets.pop_front()?;
+        self.bytes -= wire_bytes(&packet);
+        self.queued_us -= queued.saturating_duration_since(self.base).as_micros();
+        Some(packet)
+    }
+    /// The drain rate in bytes a second: the target times the pacing factor, or faster when what waits would not leave
+    /// within the queue time limit at the packets' average time in the queue (`MaybeUpdateMediaRateDueToLongQueue`, on
+    /// unless `WebRTC-Pacer-DrainQueue` is disabled).
+    fn rate(&self, now: Instant, bitrate: u32) -> f64 {
+        let pacing = f64::from(bitrate.max(1)) / 8.0 * self.pacing.factor;
+        if self.packets.is_empty() {
+            return pacing;
+        }
+        let average_queued = self.queued_us / self.packets.len() as u128;
+        let now_us = now.saturating_duration_since(self.base).as_micros();
+        let average_age = Duration::from_micros(now_us.saturating_sub(average_queued) as u64);
+        let left = self
+            .pacing
+            .queue_limit
+            .saturating_sub(average_age)
+            .max(MIN_QUEUE_TIME_LEFT);
+        pacing.max(self.bytes as f64 / left.as_secs_f64())
     }
     fn refill(&mut self, now: Instant, bitrate: u32) {
         let elapsed = now
@@ -74,12 +171,10 @@ impl Pacer {
             .min(MAX_CATCH_UP)
             .as_secs_f64();
         self.updated = now;
-        let target = f64::from(bitrate) / 8.0;
-        let added = elapsed * target * PACING_FACTOR;
+        let rate = self.rate(now, bitrate);
+        let added = elapsed * rate;
         // Keep a 5 ms bucket on precise timers; a longer wake may spend what it accrued.
-        let limit = (target * PACING_FACTOR * 0.005)
-            .max(INITIAL_BURST)
-            .max(added);
+        let limit = (rate * 0.005).max(INITIAL_BURST).max(added);
         self.credit = (self.credit + added).min(limit);
         while self
             .repairs
@@ -101,6 +196,27 @@ impl Pacer {
         self.repairs.push_back((now, 0));
         true
     }
+    /// The next media packet of a probe burst. Probes leave whatever the budget says; what they send is charged to it
+    /// as debt (`UpdateBudgetWithSentData`).
+    pub fn pop_probe(&mut self, now: Instant, bitrate: u32) -> Option<Packet> {
+        self.refill(now, bitrate);
+        let packet = self.pop()?;
+        self.progress = now;
+        Some(packet)
+    }
+    /// Charges `bytes` on the wire that a probe sent, as debt of at most `MAX_DEBT` at the drain rate.
+    pub fn charge(&mut self, now: Instant, bytes: usize, bitrate: u32) {
+        let floor = -(self.rate(now, bitrate) * MAX_DEBT.as_secs_f64());
+        self.credit = (self.credit - bytes as f64).max(floor.min(0.0));
+    }
+    /// The largest media packet waiting, header and payload, as `BitrateProber::OnIncomingPacket` sees packets.
+    pub fn largest(&self) -> usize {
+        self.packets
+            .iter()
+            .map(|(packet, _)| RTP_HEADER + packet.payload.len())
+            .max()
+            .unwrap_or(0)
+    }
     /// The size of the repair `allow_repair` just let through.
     pub fn charge_repair(&mut self, payload: usize) {
         let bytes = RTP_HEADER + payload + TRANSPORT_OVERHEAD;
@@ -109,12 +225,12 @@ impl Pacer {
             last.1 = bytes;
         }
     }
-    pub fn next_batch(&mut self, now: Instant, bitrate: u32) -> impl Iterator<Item = Packet> + '_ {
+    pub fn next_batch(&mut self, now: Instant, bitrate: u32) -> Vec<Packet> {
         self.refill(now, bitrate);
         let mut count = 0;
         let mut shortfall = 0.0;
-        for packet in self.packets.as_slice() {
-            let bytes = (RTP_HEADER + packet.payload.len() + TRANSPORT_OVERHEAD) as f64;
+        for (packet, _) in &self.packets {
+            let bytes = wire_bytes(packet) as f64;
             if bytes > self.credit {
                 shortfall = bytes - self.credit;
                 break;
@@ -122,10 +238,12 @@ impl Pacer {
             self.credit -= bytes;
             count += 1;
         }
+        let batch: Vec<Packet> = (0..count).filter_map(|_| self.pop()).collect();
         // Sleep until the next media packet, or else a pending repair, is affordable.
         let target = f64::from(bitrate.max(1)) / 8.0;
-        let wait = if count < self.packets.len() {
-            shortfall / (target * PACING_FACTOR)
+        let rate = self.rate(now, bitrate);
+        let wait = if !self.packets.is_empty() {
+            shortfall / rate
         } else {
             let sent: usize = self.repairs.iter().map(|(_, bytes)| bytes).sum();
             let full = (sent + MTU) as f64 > target * REPAIR_WINDOW.as_secs_f64();
@@ -135,9 +253,7 @@ impl Pacer {
                     .as_secs_f64(),
                 _ => 0.0,
             };
-            ((MTU as f64 - self.credit) / (target * PACING_FACTOR))
-                .max(window)
-                .max(0.0)
+            ((MTU as f64 - self.credit) / rate).max(window).max(0.0)
         };
         self.deadline = now + Duration::from_secs_f64(wait.min(0.1)).max(Duration::from_millis(1));
         // A large IDR at a reduced bitrate needs time to drain. Only a lack of
@@ -145,7 +261,7 @@ impl Pacer {
         if count > 0 {
             self.progress = now;
         }
-        self.packets.by_ref().take(count)
+        batch
     }
 }
 
@@ -183,11 +299,22 @@ impl Rate {
             reported: maximum,
         }
     }
+    /// The rate the estimation starts from (`SetBitrates` with a start rate): the target until feedback moves it. The
+    /// encoder hears it on the next [`Self::tick`].
+    pub fn set_start(&mut self, start: u32) {
+        self.target = start.clamp(self.minimum, self.maximum);
+    }
     /// A new delay-based estimate caps the target at once (`UpdateDelayBasedEstimate`); the target grows back towards it
     /// only as the loss-based control lets it.
     pub fn delay_based(&mut self, estimate: u32) {
         self.delay = Some(estimate);
         self.target = self.target.min(estimate).clamp(self.minimum, self.maximum);
+    }
+    /// A probe's result (`SetSendBitrate`, then `UpdateDelayBasedEstimate` with the same rate): the target is set to it
+    /// at once, up or down, and it caps the target from then on.
+    pub fn set_send_bitrate(&mut self, bitrate: u32) {
+        self.delay = Some(bitrate);
+        self.target = bitrate.clamp(self.minimum, self.maximum);
     }
     /// The delay-based estimate, for the log.
     pub fn delay_limit(&self) -> Option<u32> {
@@ -270,12 +397,74 @@ pub(crate) struct History {
     packets: VecDeque<Sent>,
     bytes: usize,
     pending: VecDeque<u16>,
+    /// The packet padding resends (`PaddingMode::kRecentLargePacket`, which libwebrtc's RTP module uses): the newest one
+    /// about as large as the largest seen, kept after it left the history.
+    large: Option<Packet>,
+    /// The RTP timestamp of the newest media packet, for padding packets.
+    last_timestamp: Option<u32>,
 }
+/// `rtp_packet_history.cc`: a packet replaces the padding packet when it is within `kOldPayloadPaddingSizeHysteresis`
+/// bytes of it, or when the padding packet is `kMaxOldPayloadPaddingSequenceNumber` packets old.
+const PADDING_SIZE_HYSTERESIS: usize = 100;
+const MAX_OLD_PADDING_SEQUENCE: u16 = 1 << 13;
+/// `rtp_sender.cc`: `kMinPayloadPaddingBytes` (padding from the history needs at least this much to send) and
+/// `kMaxPaddingSizeFactor` (a padding packet may be this many times the size asked for); `kRtxHeaderSize`, the original
+/// sequence number RTX adds.
+const MIN_PAYLOAD_PADDING_BYTES: usize = 50;
+const MAX_PADDING_SIZE_FACTOR: f64 = 3.0;
+const RTX_HEADER: usize = 2;
+/// `kMaxPaddingLength` of `rtp_sender.h`: the padding of one padding-only packet (`PaddingBytesInPacket` always uses
+/// all of it for video).
+const MAX_PADDING_LENGTH: usize = 255;
 impl History {
     pub fn clear(&mut self) {
         self.packets.clear();
         self.pending.clear();
         self.bytes = 0;
+        self.large = None;
+    }
+    /// `RTPSender::GeneratePadding` with RTX on, for about `target` bytes on the RTX stream `ssrc`, numbered from
+    /// `sequence`: RTX copies of the padding packet first (`AppendPayloadPadding`), then padding-only packets of
+    /// `MAX_PADDING_LENGTH` (`BuildPaddingPacket`), which carry no payload, only RTP padding. The session negotiates RTX
+    /// (`rtx_payload_type` in ops 1 and 14, `rtx_ssrc` in op 12), so both are RTX packets of this connection.
+    pub fn padding(&self, target: usize, ssrc: u32, sequence: &mut u16) -> Vec<Packet> {
+        let mut out = Vec::new();
+        if ssrc == 0 {
+            return out;
+        }
+        let mut left = target;
+        if let Some(large) = &self.large {
+            let max_overshoot = ((MAX_PADDING_SIZE_FACTOR - 1.0) * target as f64 + 0.5) as usize;
+            while left >= MIN_PAYLOAD_PADDING_BYTES {
+                if large.payload.len() + RTX_HEADER > max_overshoot + left {
+                    break;
+                }
+                let packet = rtx(large, ssrc, sequence);
+                left -= left.min(packet.payload.len());
+                out.push(packet);
+            }
+        }
+        // A padding packet goes with the last media timestamp; none before any media.
+        let Some(timestamp) = self.last_timestamp else {
+            return out;
+        };
+        while left > 0 {
+            let mut header = crate::rtp::video_header(
+                crate::rtp::H264_RTX_PAYLOAD_TYPE,
+                false,
+                *sequence,
+                timestamp,
+                ssrc,
+            );
+            header[0] |= 0x20;
+            *sequence = sequence.wrapping_add(1);
+            // RFC 3550: the last padding byte counts the padding, itself included.
+            let mut payload = vec![0; MAX_PADDING_LENGTH];
+            payload[MAX_PADDING_LENGTH - 1] = MAX_PADDING_LENGTH as u8;
+            out.push(Packet { header, payload });
+            left -= left.min(MAX_PADDING_LENGTH);
+        }
+        out
     }
     pub fn expire(&mut self, now: Instant) {
         while self
@@ -291,6 +480,26 @@ impl History {
     }
     pub fn remember(&mut self, packet: Packet, now: Instant) {
         self.expire(now);
+        self.last_timestamp = Some(u32::from_be_bytes([
+            packet.header[4],
+            packet.header[5],
+            packet.header[6],
+            packet.header[7],
+        ]));
+        let replace = self.large.as_ref().is_none_or(|large| {
+            let newer = u16::from_be_bytes([packet.header[2], packet.header[3]]).wrapping_sub(
+                u16::from_be_bytes([large.header[2], large.header[3]])
+                    .wrapping_add(MAX_OLD_PADDING_SEQUENCE),
+            );
+            packet.payload.len() + PADDING_SIZE_HYSTERESIS > large.payload.len()
+                || (newer != 0 && newer < 0x8000)
+        });
+        if replace {
+            self.large = Some(Packet {
+                header: packet.header,
+                payload: packet.payload.clone(),
+            });
+        }
         let sent = Sent {
             packet,
             at: now,
@@ -358,18 +567,23 @@ impl History {
             }
             sent.retries += 1;
             sent.last_retry = Some(now);
-            let mut header = sent.packet.header;
-            header[1] = (header[1] & 0x80) | crate::rtp::H264_RTX_PAYLOAD_TYPE;
-            header[2..4].copy_from_slice(&sequence.to_be_bytes());
-            header[8..12].copy_from_slice(&ssrc.to_be_bytes());
-            *sequence = sequence.wrapping_add(1);
-            let mut payload = Vec::with_capacity(sent.packet.payload.len() + 2);
-            payload.extend_from_slice(&seq.to_be_bytes());
-            payload.extend_from_slice(&sent.packet.payload);
-            return Some(Packet { header, payload });
+            return Some(rtx(&sent.packet, ssrc, sequence));
         }
         None
     }
+}
+
+/// RFC 4588: `packet` again on the RTX stream, its sequence number leading the payload.
+fn rtx(packet: &Packet, ssrc: u32, sequence: &mut u16) -> Packet {
+    let mut header = packet.header;
+    header[1] = (header[1] & 0x80) | crate::rtp::H264_RTX_PAYLOAD_TYPE;
+    header[2..4].copy_from_slice(&sequence.to_be_bytes());
+    header[8..12].copy_from_slice(&ssrc.to_be_bytes());
+    *sequence = sequence.wrapping_add(1);
+    let mut payload = Vec::with_capacity(packet.payload.len() + RTX_HEADER);
+    payload.extend_from_slice(&packet.header[2..4]);
+    payload.extend_from_slice(&packet.payload);
+    Packet { header, payload }
 }
 
 /// Packetize an already DAVE-encrypted Annex-B H.264 frame as RFC 6184 NAL/FU-A RTP.
@@ -522,7 +736,7 @@ mod tests {
     #[test]
     fn repairs_go_within_the_target_rate_over_half_a_second() {
         let start = Instant::now();
-        let mut pacer = Pacer::new();
+        let mut pacer = Pacer::new(CAMERA_PACING);
         // 1 Mb/s: 62.5 kB of repairs per 500 ms, about 52 packets of 1200 bytes.
         let mut sent = 0;
         for ms in 0..400u64 {
@@ -536,5 +750,84 @@ mod tests {
         // Half a second after the first, the window has room again.
         let later = start + Duration::from_millis(900);
         assert!(pacer.allow_repair(later, 1_000_000));
+    }
+
+    #[test]
+    fn padding_resends_a_recent_large_packet_then_fills_with_padding_only_packets() {
+        let start = Instant::now();
+        let mut history = History::default();
+        let mut sequence = 7u16;
+        assert!(
+            history.padding(2000, 99, &mut sequence).is_empty(),
+            "no media yet"
+        );
+        let header = crate::rtp::video_header(crate::rtp::H264_PAYLOAD_TYPE, false, 500, 9000, 5);
+        history.remember(
+            Packet {
+                header,
+                payload: vec![1; 1100],
+            },
+            start,
+        );
+        // 2250 bytes: two copies of the 1100-byte packet on RTX, then one padding-only packet for the last 46.
+        let padding = history.padding(2250, 99, &mut sequence);
+        assert_eq!(padding.len(), 3);
+        for (n, packet) in padding[..2].iter().enumerate() {
+            assert_eq!(packet.header[1], crate::rtp::H264_RTX_PAYLOAD_TYPE);
+            assert_eq!(&packet.header[8..12], &99u32.to_be_bytes());
+            assert_eq!(
+                u16::from_be_bytes([packet.header[2], packet.header[3]]),
+                7 + n as u16
+            );
+            assert_eq!(&packet.payload[..2], &500u16.to_be_bytes());
+            assert_eq!(packet.payload.len(), 1102);
+        }
+        let pad = &padding[2];
+        assert_eq!(pad.header[0] & 0x20, 0x20, "padding bit");
+        assert_eq!(&pad.header[4..8], &9000u32.to_be_bytes());
+        assert_eq!(pad.payload.len(), 255);
+        assert_eq!(pad.payload[254], 255);
+        assert_eq!(sequence, 10);
+        // A burst smaller than the packet allows no copy (it would overshoot three times): padding only.
+        let small = history.padding(250, 99, &mut sequence);
+        assert_eq!(small.len(), 1);
+        assert_eq!(small[0].payload.len(), 255);
+        // A newer packet much smaller than the padding packet does not replace it; the old one stays after expiry.
+        let header = crate::rtp::video_header(crate::rtp::H264_PAYLOAD_TYPE, false, 501, 9100, 5);
+        history.remember(
+            Packet {
+                header,
+                payload: vec![2; 300],
+            },
+            start + Duration::from_secs(2),
+        );
+        let later = history.padding(1200, 99, &mut sequence);
+        assert_eq!(&later[0].payload[..3], &[1, 244, 1]);
+        // After an encryption transition there is nothing to resend.
+        history.clear();
+        assert!(
+            history
+                .padding(1200, 99, &mut sequence)
+                .iter()
+                .all(|packet| packet.payload.len() == 255)
+        );
+    }
+
+    #[test]
+    fn a_probe_result_sets_the_target_at_once() {
+        let start = Instant::now();
+        let mut rate = Rate::new(500_000, 9_000_000, start);
+        rate.delay_based(1_000_000);
+        assert_eq!(rate.target, 1_000_000);
+        // A delay-based estimate only lowers the target; a probe raises it too, within the bounds.
+        rate.delay_based(4_000_000);
+        assert_eq!(rate.target, 1_000_000);
+        rate.set_send_bitrate(7_600_000);
+        assert_eq!(
+            (rate.target, rate.delay_limit()),
+            (7_600_000, Some(7_600_000))
+        );
+        rate.set_send_bitrate(20_000_000);
+        assert_eq!(rate.target, 9_000_000);
     }
 }

@@ -10,11 +10,17 @@
 //! - [`store`]: the persisted settings under their official keys.
 //! - [`layout`]: the widget layout (`LayoutStore`, module 83880) and its anchor maths (module 5463).
 //! - [`voice`]: the voice widget's ordering and visibility rules (module 502812).
-//! - `platform` (Windows): the window styles, the foreground watcher and the desktop check.
+//! - [`drag`]: moving and resizing a widget while unlocked (modules 5463, 129537).
+//! - [`notify`]: the notifications widget's queue, timers and stacking (modules 348639, 415173, 57019).
+//! - [`zones`]: the clickable regions of a locked overlay (module 302614).
+//! - `platform` (Windows): the window styles, the foreground watcher, the click-through switch and the desktop check.
 
 pub mod decision;
+pub mod drag;
 pub mod layout;
+pub mod notify;
 #[cfg(windows)]
 pub mod platform;
 pub mod store;
 pub mod voice;
+pub mod zones;

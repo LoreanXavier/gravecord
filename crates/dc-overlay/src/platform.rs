@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    ScreenToClient,
 };
 use windows_sys::Win32::System::StationsAndDesktops::{
     GetThreadDesktop, GetUserObjectInformationW, UOI_NAME,
@@ -30,12 +31,12 @@ use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, Unho
 use windows_sys::Win32::UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, GWL_EXSTYLE, GetClientRect, GetForegroundWindow, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsZoomed,
-    LWA_ALPHA, MSG, OBJID_WINDOW, PostThreadMessageW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT, WM_QUIT,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    EVENT_SYSTEM_MINIMIZESTART, GWL_EXSTYLE, GetClientRect, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST,
+    IsIconic, IsZoomed, LWA_ALPHA, MSG, OBJID_WINDOW, PostThreadMessageW, SW_HIDE, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT,
+    WM_QUIT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 /// The name of the desktop this thread draws on (`Default` for the user's own).
@@ -320,17 +321,55 @@ pub fn style(window: isize, locked: bool) {
     }
 }
 
-/// Shows the window over `rect`, above every other, without activating it.
+/// The window rectangle whose client area is `client`, for a window whose frame adds `frame` (left, top, right,
+/// bottom) around its client area.
+pub fn outer_rect(client: Rect, frame: (i32, i32, i32, i32)) -> Rect {
+    Rect {
+        x: client.x - frame.0,
+        y: client.y - frame.1,
+        width: client.width + frame.0 + frame.2,
+        height: client.height + frame.1 + frame.3,
+    }
+}
+
+/// What the window's frame adds around its client area now (a gpui pop-up keeps resize borders).
+fn frame_of(window: HWND) -> (i32, i32, i32, i32) {
+    let mut outer = RECT::default();
+    let mut inner = RECT::default();
+    let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: plain queries with valid out pointers.
+    unsafe {
+        if GetWindowRect(window, &mut outer) == 0
+            || GetClientRect(window, &mut inner) == 0
+            || ClientToScreen(window, &mut origin) == 0
+        {
+            return (0, 0, 0, 0);
+        }
+    }
+    let left = origin.x - outer.left;
+    let top = origin.y - outer.top;
+    (
+        left,
+        top,
+        outer.right - outer.left - left - inner.right,
+        outer.bottom - outer.top - top - inner.bottom,
+    )
+}
+
+/// Shows the window with its client area over `rect` (the game's client area), above every other, without
+/// activating it.
 pub fn place(window: isize, rect: Rect) {
+    let window = hwnd(window);
+    let outer = outer_rect(rect, frame_of(window));
     // SAFETY: placement of a window this process created.
     unsafe {
         SetWindowPos(
-            hwnd(window),
+            window,
             HWND_TOPMOST,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+            outer.x,
+            outer.y,
+            outer.width,
+            outer.height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
     }
@@ -339,6 +378,56 @@ pub fn place(window: isize, rect: Rect) {
 pub fn hide(window: isize) {
     // SAFETY: as above.
     unsafe { ShowWindow(hwnd(window), SW_HIDE) };
+}
+
+/// The clickable regions of a locked overlay. `WS_EX_TRANSPARENT` is all or nothing, and `HTTRANSPARENT` from
+/// `WM_NCHITTEST` only passes a click to windows of the same thread (never to the game), while a window region would
+/// also clip what is drawn outside it. So the cursor is followed instead: over a zone the window takes the click
+/// (still without being activated), anywhere else it is click-through. `cursor` is the cursor in the window's client
+/// area with the area's size, both in device pixels.
+pub fn cursor(window: isize) -> Option<((f32, f32), (f32, f32))> {
+    let window = hwnd(window);
+    let mut point = POINT { x: 0, y: 0 };
+    let mut rect = RECT::default();
+    // SAFETY: plain queries with valid out pointers; a stale handle only makes them fail.
+    unsafe {
+        if GetCursorPos(&mut point) == 0
+            || ScreenToClient(window, &mut point) == 0
+            || GetClientRect(window, &mut rect) == 0
+        {
+            return None;
+        }
+    }
+    Some((
+        (point.x as f32, point.y as f32),
+        (
+            (rect.right - rect.left) as f32,
+            (rect.bottom - rect.top) as f32,
+        ),
+    ))
+}
+
+/// The extended styles for a locked window that takes clicks now (`through` false) or lets them through.
+pub fn click_through_styles(current: isize, through: bool) -> isize {
+    let transparent = WS_EX_TRANSPARENT as isize;
+    if through {
+        current | transparent
+    } else {
+        current & !transparent
+    }
+}
+
+/// Turns click-through on or off for a locked window; it is never activated either way (`WS_EX_NOACTIVATE` stays).
+pub fn set_click_through(window: isize, through: bool) {
+    let window = hwnd(window);
+    // SAFETY: a style change on a window this process created.
+    unsafe {
+        let current = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        let wanted = click_through_styles(current, through);
+        if wanted != current {
+            SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
+        }
+    }
 }
 
 /// Hands the keyboard to a window: the overlay when it unlocks, the game when it locks again.
@@ -369,6 +458,35 @@ mod tests {
         assert_ne!(unlocked & WS_EX_TOOLWINDOW as isize, 0);
         // Other styles of the window stay.
         assert_ne!(overlay_styles(0x0200_0000, true) & 0x0200_0000, 0);
+    }
+
+    #[test]
+    fn a_zone_under_the_cursor_takes_the_click_without_activating() {
+        let locked = overlay_styles(0, true);
+        let taking = click_through_styles(locked, false);
+        assert_eq!(taking & WS_EX_TRANSPARENT as isize, 0);
+        assert_ne!(taking & WS_EX_NOACTIVATE as isize, 0);
+        assert_eq!(click_through_styles(taking, true), locked);
+    }
+
+    #[test]
+    fn the_client_area_covers_the_games() {
+        let game = Rect {
+            x: 100,
+            y: 50,
+            width: 1280,
+            height: 720,
+        };
+        assert_eq!(outer_rect(game, (0, 0, 0, 0)), game);
+        assert_eq!(
+            outer_rect(game, (8, 0, 8, 8)),
+            Rect {
+                x: 92,
+                y: 50,
+                width: 1296,
+                height: 728
+            }
+        );
     }
 
     #[test]

@@ -400,6 +400,7 @@ mod guard {
         "ui/settings/pages.rs",
         "ui/settings/overlay_page.rs",
         "ui/overlay.rs",
+        "ui/overlay_widgets.rs",
     ];
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).

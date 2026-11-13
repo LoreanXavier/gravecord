@@ -170,6 +170,7 @@ mod oauth;
 mod oauth_spec;
 mod official_messages;
 mod overlay;
+mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
 mod perf;

@@ -55,6 +55,40 @@ fn taken_elsewhere(own: &str, theirs: &str, ours: (Id, Id), state: (Id, Option<I
             .is_some_and(|channel| (ours.0 != 0 && state.0 == ours.0) || channel == ours.1)
 }
 
+/// After close code 4014 with our voice state still in the channel (a moderator move), how long the call waits for the
+/// `VOICE_SERVER_UPDATE` that reconnects it. A value of ours: the pinned bundle shows no such wait.
+const MOVE_SERVER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What a call does when [`MOVE_SERVER_WAIT`] ran out after a move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterMoveWait {
+    /// The call reconnected, ended or was replaced meanwhile: nothing to do.
+    Nothing,
+    /// The voice server stored for the call is used again.
+    Restart,
+    /// No voice server for the call is known: it ends.
+    End,
+}
+
+/// `call`: (started, connected, generation) of the call now; `generation` is the one the move closed; `server` whether
+/// a voice server for the call is stored.
+fn after_move_wait(
+    call: Option<(bool, bool, u64)>,
+    generation: u64,
+    server: bool,
+) -> AfterMoveWait {
+    match call {
+        Some((true, false, now)) if now == generation => {
+            if server {
+                AfterMoveWait::Restart
+            } else {
+                AfterMoveWait::End
+            }
+        }
+        _ => AfterMoveWait::Nothing,
+    }
+}
+
 /// The first character of the source's name in capitals (`text-transform: uppercase`), or a question mark.
 fn source_letter(name: &str) -> String {
     name.chars()
@@ -527,6 +561,33 @@ impl Root {
                 });
                 if reason == dc_voice::DisconnectReason::Kicked && !still_in {
                     self.end_voice(false, cx);
+                } else if reason == dc_voice::DisconnectReason::Kicked {
+                    // Moved: the new voice server normally follows; without one the call would wait forever.
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(MOVE_SERVER_WAIT).await;
+                        let _ = this.update(cx, |root, cx| {
+                            let call = root
+                                .call
+                                .as_ref()
+                                .map(|call| (call.started, call.connected, call.generation));
+                            let server = root.call.as_ref().is_some_and(|call| {
+                                root.stores.voice_server.as_ref().is_some_and(|server| {
+                                    server.guild_id == call.guild
+                                        && (call.guild != 0
+                                            || server.channel_id == Some(call.channel))
+                                })
+                            });
+                            match after_move_wait(call, generation, server) {
+                                AfterMoveWait::Restart => {
+                                    root.restart_call(false, cx);
+                                    root.maybe_connect_voice();
+                                }
+                                AfterMoveWait::End => root.end_voice(false, cx),
+                                AfterMoveWait::Nothing => {}
+                            }
+                        });
+                    })
+                    .detach();
                 }
             }
             other => {
@@ -1425,7 +1486,34 @@ fn source_color(name: &str) -> u32 {
 
 #[cfg(test)]
 mod session_tests {
-    use super::taken_elsewhere;
+    use super::{AfterMoveWait, after_move_wait, taken_elsewhere};
+
+    #[test]
+    fn a_moved_call_without_a_new_server_restarts_or_ends_once_the_wait_ran_out() {
+        // Still waiting on the connection the move closed: reuse the stored server, or end without one.
+        assert_eq!(
+            after_move_wait(Some((true, false, 4)), 4, true),
+            AfterMoveWait::Restart
+        );
+        assert_eq!(
+            after_move_wait(Some((true, false, 4)), 4, false),
+            AfterMoveWait::End
+        );
+        // Reconnected, already restarted (a new generation or not started), or no call any more: nothing.
+        assert_eq!(
+            after_move_wait(Some((true, true, 4)), 4, true),
+            AfterMoveWait::Nothing
+        );
+        assert_eq!(
+            after_move_wait(Some((true, false, 5)), 4, true),
+            AfterMoveWait::Nothing
+        );
+        assert_eq!(
+            after_move_wait(Some((false, false, 4)), 4, false),
+            AfterMoveWait::Nothing
+        );
+        assert_eq!(after_move_wait(None, 4, true), AfterMoveWait::Nothing);
+    }
 
     #[test]
     fn another_session_in_the_same_call_takes_it() {

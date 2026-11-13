@@ -14,7 +14,7 @@ use crate::encode::{Backend, Config, Content, Encoder, Profile};
 use crate::{EncodedFrame, Error, Picture, Result, rtp_ticks};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
     mpsc,
 };
 use std::thread::JoinHandle;
@@ -29,6 +29,12 @@ pub const HEIGHT: usize = 480;
 /// The capture and encode rate; a device that cannot do 15 fps gets the nearest rate it supports.
 pub const FPS: u32 = 15;
 pub const BITRATE: u32 = 600_000;
+/// The lowest rate the encoder is steered to (`videoBitrateFloor` of module 731854).
+pub const MIN_BITRATE: u32 = 150_000;
+/// The highest: the official 2.5 Mb/s is for the 1280x720 capture (`videoBitrate.max`, `videoCapture` of module
+/// 731854), and `getVideoQuality` scales it with the share of that budget a smaller picture takes; this capture's
+/// 640x480 is a third of it.
+pub const MAX_BITRATE: u32 = (2_500_000u64 * (WIDTH * HEIGHT) as u64 / (1280 * 720)) as u32;
 /// The largest access unit the sender accepts: about a hundred RTP packets.
 pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
 
@@ -98,6 +104,8 @@ struct State {
     finished: AtomicBool,
     error: Mutex<Option<String>>,
     backend: AtomicU8,
+    /// The rate the sender asks for, or 0 for [`BITRATE`].
+    bitrate: AtomicU32,
 }
 
 pub struct Camera {
@@ -153,6 +161,13 @@ impl Camera {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::failed("camera worker ended")),
         }
+    }
+
+    /// Moves the encoder's target rate, held to [`MIN_BITRATE`] and [`MAX_BITRATE`]. Applied before the next picture.
+    pub fn set_bitrate(&self, bitrate: u32) {
+        self.state
+            .bitrate
+            .store(bitrate.clamp(MIN_BITRATE, MAX_BITRATE), Ordering::Release);
     }
 
     /// Makes the next picture a keyframe: a viewer asked for one, or joined.
@@ -243,6 +258,10 @@ impl Pipeline {
             chroma,
             &mut self.yuv,
         )?;
+        let wanted = state.bitrate.load(Ordering::Acquire);
+        if wanted != 0 {
+            self.encoder.set_bitrate(wanted)?;
+        }
         let force = state.keyframe.swap(false, Ordering::AcqRel);
         let output = self.encoder.encode(&self.yuv, chroma, force)?;
         state.backend.store(

@@ -19,12 +19,13 @@ use super::render::plain_switch;
 use super::voice::shortcut_text;
 use super::{Page, Root, button, color};
 use crate::net::Request;
-use crate::ui::overlay::{Row, new_widget_id, voice_list, widget_header};
+use crate::ui::overlay::{Row, RowLook, new_widget_id, voice_list, widget_header};
+use dc_overlay::decision::OverlayMethod;
 use dc_overlay::layout::{self, Layout};
 use dc_overlay::store::{self, AvatarSize, DisplayNameMode, DisplayUserMode};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div, img, prelude::*, px,
-    rgba,
+    rgba, svg,
 };
 
 /// `DismissibleContent.OVERLAY_OOP_SETTINGS_NUX` (module 554146).
@@ -92,6 +93,14 @@ pub(super) fn max_users_value(layout: &Layout) -> f32 {
 }
 
 impl Root {
+    /// The lock keybind as the overlay writes it (`dI(shortcut, true)`), `???` without one (module 427830 `th`).
+    pub(in crate::ui) fn overlay_lock_text(&self) -> String {
+        super::keybinds::overlay_lock()
+            .filter(|keybind| !keybind.shortcut.is_empty())
+            .map(|keybind| shortcut_text(&keybind.shortcut))
+            .unwrap_or_else(|| "???".to_owned())
+    }
+
     /// A switch of this page: the store's value. None for any other row.
     pub(super) fn overlay_switch_value(&self, key: &str) -> Option<bool> {
         if key == OOP {
@@ -235,14 +244,26 @@ impl Root {
         }
         Some(match key {
             "decoration" => self.overlay_hero(width, cx),
-            OOP => self.overlay_switch_card(
-                OOP,
-                dc_intl::tr("Enable Overlay"),
-                dc_intl::tr(
-                    "Lighter, faster, and more customizable. Requires Borderless display setting.",
-                ),
-                cx,
-            ),
+            // `OVERLAY_CURRENT_GAME` comes first in the Enable category, only while a game runs.
+            OOP => {
+                let card = self.overlay_switch_card(
+                    OOP,
+                    dc_intl::tr("Enable Overlay"),
+                    dc_intl::tr(
+                        "Lighter, faster, and more customizable. Requires Borderless display setting.",
+                    ),
+                    cx,
+                );
+                match self.overlay_current_game_card(cx) {
+                    Some(game) => div()
+                        .flex()
+                        .flex_col()
+                        .child(div().pt(px(8.)).pb(px(16.)).child(game))
+                        .child(card)
+                        .into_any_element(),
+                    None => card,
+                }
+            }
             LEGACY => self.overlay_switch_card(
                 LEGACY,
                 dc_intl::tr("Enable Legacy Overlay"),
@@ -500,6 +521,7 @@ impl Root {
             deaf: false,
             server_deaf: false,
             video: false,
+            current: id == 1,
         };
         let rows = vec![
             person(
@@ -520,7 +542,22 @@ impl Root {
                 ..person(4, dc_intl::tr("Scynder").to_owned(), made_up)
             },
         ];
-        let list = voice_list(&rows, &settings, layout.voice_max_shown(), false, true);
+        // The settings preview (`isSettingsPreview`): the display modes apply as they do while locked.
+        let look = RowLook {
+            size: settings.avatar_size_mode,
+            locked: false,
+            preview: true,
+            names: settings.display_name_mode,
+            flipped: false,
+        };
+        let list = voice_list(
+            &rows,
+            &settings,
+            layout.voice_max_shown(),
+            look,
+            &std::collections::HashMap::new(),
+            &self.overlay.bounds,
+        );
         div()
             .py(px(8.))
             .child(
@@ -554,6 +591,318 @@ impl Root {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// The open state of the Current Game card, kept with the page's other transient choices.
+const CURRENT_GAME_OPEN: &str = "overlay_current_game_open";
+
+/// One switch row of the opened Current Game card (`ps`: `groupContent_DKMuWq` 16/16/12 padding, the text column 2
+/// px apart, the switch and the 20 px spacer).
+fn game_switch_row(
+    title: &'static str,
+    line: &'static str,
+    hint: Option<&'static str>,
+    switch: AnyElement,
+) -> AnyElement {
+    div()
+        .pt(px(16.))
+        .px(px(16.))
+        .pb(px(12.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-subtle"))
+                        .child(line),
+                )
+                .when_some(hint, |this, hint| {
+                    this.child(
+                        div()
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(hint),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.))
+                .child(switch)
+                .child(div().size(px(20.)).flex_none()),
+        )
+        .into_any_element()
+}
+
+impl Root {
+    /// `pC` (`OVERLAY_CURRENT_GAME`, module 158935): the running game in a collapsible card (`collapseable_DKMuWq`):
+    /// the "Currently Playing" header, the game's name and its overlay status, one switch for the game and a chevron;
+    /// opened, the game's own Enable Overlay and Enable Legacy Overlay switches. No capture of this row exists (no
+    /// game ran in the reference captures); its geometry is the page's card classes (`group*_DKMuWq`).
+    fn overlay_current_game_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let game = self.overlay_current_game()?;
+        let global = self.overlay_global();
+        let enabled = self.overlay_game_enablement(&game);
+        let (game_oop, game_legacy) = (enabled.oop, enabled.legacy);
+        let (oop, legacy) = (global.oop, global.legacy);
+        let method = self.overlay_current_method();
+        let rendering = method.is_some_and(OverlayMethod::is_out_of_process);
+        let open = self.setting_choices.get(CURRENT_GAME_OPEN) == Some(&Choice::On(true));
+        // `P`: the status line; while the overlay draws, the method's name is the `overlayMethodHook` run in
+        // `body-sm/medium` and `text-feedback-positive` (`text-feedback-warning` in compatibility mode).
+        let plain = |key: &str| vec![(dc_intl::t(key).to_owned(), None)];
+        let runs: Vec<(String, Option<Box<str>>)> = if rendering {
+            let name = if method == Some(OverlayMethod::OutOfProcessLimitedInteraction) {
+                dc_intl::t("506Aba")
+            } else {
+                dc_intl::t("a3eXSw")
+            };
+            dc_intl::format_runs("hFVBIg", &[("overlayMethod", name.to_owned().into())])
+        } else if !legacy && !oop {
+            plain("9DUS5l")
+        } else if !game_oop && !game_legacy {
+            plain("nQ9EdJ")
+        } else if (!game_oop && !legacy && game_legacy) || (!game_legacy && !oop && game_oop) {
+            plain("VWUn0a")
+        } else {
+            // Not the focused window: the native module has not reported the game.
+            plain("vwHPRi")
+        };
+        let method_color = if method == Some(OverlayMethod::OutOfProcessLimitedInteraction) {
+            "--text-feedback-warning"
+        } else {
+            "--text-feedback-positive"
+        };
+        let header_color = if rendering {
+            method_color
+        } else {
+            "--interactive-text-default"
+        };
+        let status = div()
+            .flex()
+            .flex_wrap()
+            .children(runs.into_iter().map(|(text, tag)| {
+                div()
+                    .whitespace_nowrap()
+                    .text_color(color(if tag.is_some() {
+                        method_color
+                    } else {
+                        "--text-subtle"
+                    }))
+                    .when(tag.is_some(), |this| this.font_weight(FontWeight(500.)))
+                    .child(text)
+            }));
+        let checked = (game_oop && oop) || (game_legacy && legacy);
+        let name = game.name.clone().unwrap_or_default();
+        let toggled = game.clone();
+        let main_switch = plain_switch(
+            SharedString::from("overlay-current-game"),
+            checked,
+            move |this, on| this.overlay_current_game_toggled(&toggled, on, checked),
+            cx,
+        )
+        .into_any_element();
+        let oop_game = game.clone();
+        let legacy_game = game;
+        let opened = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .bg(color("--background-base-lower"))
+            .child(game_switch_row(
+                dc_intl::tr("Enable Overlay"),
+                dc_intl::tr(
+                    "Lighter, faster, and more customizable. Requires Borderless display setting.",
+                ),
+                (!oop).then(|| dc_intl::tr("Overlay is disabled for all games.")),
+                plain_switch(
+                    SharedString::from("overlay-current-game-oop"),
+                    game_oop && oop,
+                    move |this, on| {
+                        if on && !this.overlay_global().oop {
+                            this.overlay_set_global(OOP, true);
+                        } else {
+                            let legacy = this.overlay_game_enablement(&oop_game).legacy;
+                            this.detect
+                                .store
+                                .toggle_overlay(&oop_game, legacy, Some(on));
+                        }
+                    },
+                    cx,
+                )
+                .into_any_element(),
+            ))
+            .child(game_switch_row(
+                dc_intl::tr("Enable Legacy Overlay"),
+                dc_intl::tr("Legacy Overlay available for all supported games."),
+                (!legacy).then(|| dc_intl::tr("Legacy Overlay has been disabled globally")),
+                plain_switch(
+                    SharedString::from("overlay-current-game-legacy"),
+                    game_legacy && legacy,
+                    move |this, on| {
+                        if on && !this.overlay_global().legacy {
+                            this.overlay_set_global(LEGACY, true);
+                        } else {
+                            let oop = this.overlay_game_enablement(&legacy_game).oop;
+                            this.detect
+                                .store
+                                .toggle_overlay(&legacy_game, on, Some(oop));
+                        }
+                    },
+                    cx,
+                )
+                .into_any_element(),
+            ));
+        let indicator = if rendering {
+            svg()
+                .path("icons/overlay_screen.svg")
+                .size(px(12.))
+                .flex_none()
+                .text_color(color(header_color))
+                .into_any_element()
+        } else {
+            div()
+                .m(px(2.))
+                .size(px(8.))
+                .rounded_full()
+                .bg(color("--text-feedback-positive"))
+                .into_any_element()
+        };
+        let header = div()
+            .px(px(16.))
+            .py(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .bg(color("--background-base-lowest"))
+            .child(indicator)
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color(header_color))
+                    .child(dc_intl::tr("Currently Playing")),
+            );
+        let content = div()
+            .pt(px(16.))
+            .px(px(16.))
+            .pb(px(12.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(name),
+                    )
+                    .child(div().text_size(px(14.)).line_height(px(18.)).child(status)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(main_switch)
+                    .child(
+                        svg()
+                            .path(if open {
+                                "icons/overlay_chevron_down.svg"
+                            } else {
+                                "icons/overlay_chevron_right.svg"
+                            })
+                            .size(px(20.))
+                            .flex_none()
+                            .text_color(color("--interactive-text-active")),
+                    ),
+            );
+        let card = div()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--background-mod-muted"))
+            .bg(color("--background-base-lower"))
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("overlay-current-game-card")
+                    .when(open, |this| this.bg(color("--background-base-lowest")))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let open =
+                            this.setting_choices.get(CURRENT_GAME_OPEN) == Some(&Choice::On(true));
+                        this.setting_choices
+                            .insert(CURRENT_GAME_OPEN, Choice::On(!open));
+                        cx.notify();
+                    }))
+                    .child(header)
+                    .child(content),
+            )
+            .when(open, |this| this.child(opened));
+        Some(card.into_any_element())
+    }
+
+    /// The card's own switch, for the game alone, the global switches, or both (`"game"`, `"global"`, `"both"` of
+    /// module 158935): turning it on where the game is on but its method is off for all games turns that on.
+    fn overlay_current_game_toggled(
+        &mut self,
+        game: &dc_state::running_games::Game,
+        on: bool,
+        checked: bool,
+    ) {
+        use dc_overlay::decision::{SwitchScope, current_game_scope};
+        let scope = current_game_scope(
+            on,
+            checked,
+            self.overlay_global(),
+            self.overlay_game_enablement(game),
+        );
+        if scope != SwitchScope::Game {
+            crate::storage::set(
+                store::ENABLED_STORE,
+                store::enabled_json(dc_overlay::decision::Global {
+                    oop: on,
+                    legacy: on,
+                }),
+            );
+        }
+        if scope != SwitchScope::Global {
+            self.detect.store.toggle_overlay(game, on, Some(on));
+        }
     }
 }
 

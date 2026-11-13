@@ -9,8 +9,8 @@
 use super::{
     playout::Playout,
     receive::Receivers,
-    send::{History, Packet, packetize},
-    sender::KEYFRAME_INTERVAL,
+    send::{History, Pacing, Packet, SCREEN_PACING, packetize},
+    sender::{CALL_START_BITRATE, KEYFRAME_INTERVAL},
 };
 use crate::rtp::{self, Rtp};
 use std::{collections::BinaryHeap, time::Duration};
@@ -382,6 +382,54 @@ const QUEUE_BYTES: f64 = 500_000.0;
 const SHARE_TOP: u32 = 9_000_000;
 const SHARE_FLOOR: u32 = dc_media::screen::BITRATE_MIN;
 
+/// A still screen's pictures: an encoder output of about 200 kb/s at 60 fps.
+const STILL_BYTES: usize = 200_000 / 8 / FPS as usize;
+
+/// How [`run_capacity`] sets the sender up.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Setup {
+    /// The send-side delay-based estimator caps the target.
+    pub delay_based: bool,
+    /// Probing and the application-limited region.
+    pub probing: bool,
+    /// From which second until which the shared screen is still: pictures of `STILL_BYTES`, and a keyframe every
+    /// `GOP` pictures, of the size a picture at the target would have as a keyframe.
+    pub still: Option<(u64, u64)>,
+    /// Where the estimation starts.
+    pub start: u32,
+    pub pacing: Pacing,
+}
+
+/// The sender as it was before the official start rate and pacing: estimation from the top rate, and a pacer at 2.5
+/// times the target without a queue time limit.
+const ORIGINAL: Setup = Setup {
+    delay_based: true,
+    probing: false,
+    still: None,
+    start: SHARE_TOP,
+    pacing: Pacing {
+        factor: 2.5,
+        queue_limit: Duration::MAX,
+    },
+};
+/// As it is now: probing, the call's start rate and the screen share's pacing.
+const NOW: Setup = Setup {
+    delay_based: true,
+    probing: true,
+    still: None,
+    start: CALL_START_BITRATE,
+    pacing: SCREEN_PACING,
+};
+
+/// What [`run_capacity`] saw.
+pub(crate) struct LinkRun {
+    pub seconds: Vec<LinkSecond>,
+    /// The target every 20 ms: (millisecond, bits per second).
+    pub samples: Vec<(u64, u32)>,
+    /// The sender's estimation counters at the end.
+    pub estimation: super::sender::Estimation,
+}
+
 /// One second of [`run_capacity`].
 #[derive(Debug)]
 pub(crate) struct LinkSecond {
@@ -403,14 +451,18 @@ pub(crate) struct LinkSecond {
 /// sending transport-wide feedback, receiver reports, NACK and PLI back. The encoder makes pictures of the sender's
 /// current target at 60 fps (keyframes on request, 8.5 times a picture, the ratio of the 1440p60 measurement), and
 /// skips a picture while the previous one is still leaving, as the capture holds.
-pub(crate) fn run_capacity(phases: &[(u64, u32)], delay_based: bool) -> Vec<LinkSecond> {
+pub(crate) fn run_capacity(phases: &[(u64, u32)], setup: Setup) -> LinkRun {
     use super::{receive::Received, sender::VideoSender};
     use crate::rtp::{Mode, Transport};
     let key = [9u8; 32];
     let mut tx = Transport::new(Mode::Aes256GcmRtpSize, &key);
     let mut rx = Transport::new(Mode::Aes256GcmRtpSize, &key);
-    let mut sender = VideoSender::new(SSRC, RTX, SHARE_FLOOR, SHARE_TOP);
-    sender.set_delay_based(delay_based);
+    let mut sender = VideoSender::new(SSRC, RTX, SHARE_FLOOR, setup.start, SHARE_TOP);
+    sender.set_delay_based(setup.delay_based);
+    sender.set_probing(setup.probing);
+    sender.set_screen_share(true);
+    sender.set_pacing(setup.pacing);
+    let mut samples = Vec::new();
     let start = Instant::now();
     let at = |ms: u64| start + Duration::from_millis(ms);
     let mut receivers = Receivers::default();
@@ -439,10 +491,18 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], delay_based: bool) -> Vec<Link
         let capacity = f64::from(capacity_at(now_ms));
         if now_ms * FPS >= frame * 1000 {
             frame += 1;
-            if sender.ready() {
-                let picture = (u64::from(sender.bitrate()) / 8 / FPS) as usize;
+            let still = setup
+                .still
+                .is_some_and(|(from, until)| now_ms >= from * 1000 && now_ms < until * 1000);
+            if still && frame.is_multiple_of(GOP) {
+                force_key = true;
+            }
+            if sender.accepts(now) {
+                let picture = (u64::from(sender.encoder_bitrate()) / 8 / FPS) as usize;
                 let size = if force_key {
                     picture * KEY_BYTES / DELTA_BYTES
+                } else if still {
+                    STILL_BYTES
                 } else {
                     picture
                 }
@@ -505,6 +565,7 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], delay_based: bool) -> Vec<Link
         }
         if now_ms % 20 == 0 {
             sender.tick_rate(now);
+            samples.push((now_ms, sender.bitrate()));
             if sender.stale(now) {
                 sender.clear();
                 force_key = true;
@@ -522,7 +583,29 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], delay_based: bool) -> Vec<Link
             (delivered, queue_us, dropped) = (0, 0.0, 0);
         }
     }
-    seconds
+    let estimation = sender.estimation(Some(&tx));
+    println!("{setup:?}: {estimation:?}");
+    LinkRun {
+        seconds,
+        samples,
+        estimation,
+    }
+}
+
+/// The first time from `from_ms` on at which the target is at least `level` and stays there for `hold_ms`.
+fn reached(samples: &[(u64, u32)], level: u32, from_ms: u64, hold_ms: u64) -> Option<u64> {
+    let mut since = None;
+    for &(ms, target) in samples.iter().filter(|(ms, _)| *ms >= from_ms) {
+        if target < level {
+            since = None;
+            continue;
+        }
+        let start = *since.get_or_insert(ms);
+        if ms - start >= hold_ms {
+            return Some(start - from_ms);
+        }
+    }
+    None
 }
 
 fn print_link(label: &str, seconds: &[LinkSecond]) {
@@ -540,10 +623,44 @@ fn print_link(label: &str, seconds: &[LinkSecond]) {
 fn the_sender_settles_under_a_narrowed_link_and_recovers_when_it_widens() {
     // 8 Mb/s for 15 s, 1.5 Mb/s until 45 s, 8 Mb/s again until 120 s.
     let phases = [(15, 8_000_000), (45, 1_500_000), (120, 8_000_000)];
-    let before = run_capacity(&phases, false);
-    let after = run_capacity(&phases, true);
-    print_link("loss-based control only (before):", &before);
-    print_link("with the delay-based estimator (after):", &after);
+    let loss_only = Setup {
+        delay_based: false,
+        ..ORIGINAL
+    };
+    let before = run_capacity(&phases, loss_only).seconds;
+    let unprobed = run_capacity(
+        &phases,
+        Setup {
+            delay_based: true,
+            ..loss_only
+        },
+    )
+    .seconds;
+    let after = run_capacity(&phases, NOW).seconds;
+    print_link("loss-based control only:", &before);
+    print_link(
+        "with the delay-based estimator, without probing:",
+        &unprobed,
+    );
+    print_link("with the delay-based estimator and probing:", &after);
+    // Nothing is dropped. The queue the drop leaves grows with the rate sent before it: from the call's start rate the
+    // sender found the link and sends about 6.9 Mb/s into the narrowing, without probing it was still at the 4.4 Mb/s
+    // of the start's halving. Both stay under the loss-only sender's full buffer.
+    let worst_queue = |run: &[LinkSecond]| run.iter().map(|s| s.queue_ms).max().unwrap();
+    let drops = |run: &[LinkSecond]| run.iter().map(|s| s.dropped).sum::<u64>();
+    println!(
+        "worst queue {} ms, drops {}, rate into the narrowing {}; without probing {} ms, {}, {}; loss only {} ms, {}",
+        worst_queue(&after),
+        drops(&after),
+        after[14].target,
+        worst_queue(&unprobed),
+        drops(&unprobed),
+        unprobed[14].target,
+        worst_queue(&before),
+        drops(&before)
+    );
+    assert_eq!(drops(&after), 0);
+    assert!(worst_queue(&after) < worst_queue(&before));
     // A second after the drop the target is under the capacity, and stays there.
     let narrow = &after[16..45];
     assert!(narrow.iter().all(|s| s.target < 1_500_000), "{narrow:#?}");
@@ -675,4 +792,81 @@ fn loss_table() {
             outcome.longest_freeze_ms
         );
     }
+}
+
+#[test]
+fn from_the_call_start_rate_probing_reaches_the_link_rate_in_a_second() {
+    let phases = [(60, 8_000_000)];
+    let original = run_capacity(&phases, ORIGINAL);
+    // The previous step: probing, but still from the top rate and with the old pacer.
+    let top_start = run_capacity(
+        &phases,
+        Setup {
+            probing: true,
+            ..ORIGINAL
+        },
+    );
+    let now = run_capacity(&phases, NOW);
+    print_link(
+        "start on 8 Mb/s, from the top rate, without probing:",
+        &original.seconds,
+    );
+    print_link(
+        "start on 8 Mb/s, from the top rate, with probing:",
+        &top_start.seconds,
+    );
+    print_link(
+        "start on 8 Mb/s, from 600 kb/s, probing, pacing 1.0:",
+        &now.seconds,
+    );
+    // 85% of the link, held for five seconds.
+    let level = 8_000_000 * 85 / 100;
+    let held = |run: &LinkRun| reached(&run.samples, level, 0, 5_000);
+    println!(
+        "85% of 8 Mb/s held 5 s from: {:?} ms from the top rate without probing, {:?} ms with probing, {:?} ms from \
+         600 kb/s; probes {:?}",
+        held(&original),
+        held(&top_start),
+        held(&now),
+        now.estimation
+    );
+    let first = reached(&now.samples, level, 0, 0);
+    println!("85% first reached at {first:?} ms from 600 kb/s");
+    // From the top rate the first keyframe overruns the link before any rate is acknowledged and the estimate halves,
+    // whatever a probe found; nothing probes again outside an application-limited region.
+    assert_eq!(held(&original), None);
+    assert_eq!(held(&top_start), None);
+    // From the call's start rate the exponential probes (1.8 and 3.6 Mb/s, then twice each result) find the link
+    // within half a second; the first overuse at the link's rate backs off to 85% of the acknowledged rate less
+    // 5 kb/s, just under the line, and the additive increase crosses it again within a few seconds.
+    assert!(first.is_some_and(|ms| ms <= 500), "{first:?}");
+    let ms = held(&now).expect("85% held");
+    assert!(ms <= 7_000, "{ms} ms");
+    assert_eq!(now.estimation.probe_refused, 0);
+    assert!(now.seconds.iter().all(|s| s.dropped == 0));
+    let worst = now.seconds.iter().map(|s| s.queue_ms).max().unwrap();
+    assert!(worst < 200, "{worst} ms");
+}
+
+#[test]
+fn probing_while_application_limited_keeps_the_rate_for_motion_after_a_still_screen() {
+    // 8 Mb/s throughout: motion for 10 s, a still screen (200 kb/s, a keyframe every 2 s) for 20 s, motion again.
+    let phases = [(80, 8_000_000)];
+    let still = Some((10, 30));
+    let before = run_capacity(&phases, Setup { still, ..ORIGINAL });
+    let after = run_capacity(&phases, Setup { still, ..NOW });
+    print_link(
+        "still screen 10 to 30 s on 8 Mb/s, before:",
+        &before.seconds,
+    );
+    print_link("still screen 10 to 30 s on 8 Mb/s, now:", &after.seconds);
+    let before_ms = reached(&before.samples, 4_000_000, 30_000, 0);
+    let after_ms = reached(&after.samples, 4_000_000, 30_000, 0);
+    println!("4 Mb/s after motion resumed: {before_ms:?} ms before, {after_ms:?} ms now");
+    // Without probing a keyframe's overuse leaves the estimate at the floor and motion climbs back at 8% a second;
+    // with it the periodic probes of the application-limited region keep finding the link.
+    assert!(before_ms.is_some_and(|ms| ms >= 20_000), "{before_ms:?}");
+    assert!(after_ms.is_some_and(|ms| ms <= 3_000), "{after_ms:?}");
+    assert!(after.estimation.probe_clusters_sent > before.estimation.probe_clusters_sent);
+    assert_eq!(after.seconds.iter().map(|s| s.dropped).sum::<u64>(), 0);
 }
