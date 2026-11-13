@@ -18,6 +18,7 @@ pub mod entitlements;
 pub mod experiments;
 pub mod folders;
 pub mod frecency;
+pub mod game_relationships;
 mod gateway_extra;
 pub mod grouping;
 pub mod guild_bans;
@@ -940,6 +941,10 @@ pub struct EmbedMedia {
     pub proxy_url: Option<String>,
     pub width: u32,
     pub height: u32,
+    /// The alt text (`description`), empty treated as none.
+    pub description: Option<String>,
+    /// `flags`; `IS_ANIMATED` (32) is `srcIsAnimated`.
+    pub flags: u64,
 }
 
 impl EmbedMedia {
@@ -952,8 +957,75 @@ impl EmbedMedia {
             proxy_url: text(&value["proxy_url"]),
             width,
             height,
+            description: text(&value["description"]).filter(|text| !text.is_empty()),
+            flags: value["flags"].as_u64().unwrap_or(0),
         })
     }
+
+    /// `E` in module 644447: the proxy address when there is one, else the original.
+    pub fn src(&self) -> &str {
+        self.proxy_url
+            .as_deref()
+            .filter(|proxy| !proxy.is_empty())
+            .unwrap_or(&self.url)
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.flags & 32 != 0
+    }
+}
+
+/// `Uj` in module 515718: scales down to the width first, then to the height, rounding at each step.
+pub fn fit_rounded(
+    width: f64,
+    height: f64,
+    max_width: f64,
+    max_height: f64,
+    min_width: f64,
+    min_height: f64,
+) -> (f64, f64) {
+    let (mut width, mut height) = (width, height);
+    if width != max_width || height != max_height {
+        let first = if width > max_width {
+            max_width / width
+        } else {
+            1.
+        };
+        width = (width * first).round().max(min_width);
+        height = (height * first).round().max(min_height);
+        let second = if height > max_height {
+            max_height / height
+        } else {
+            1.
+        };
+        width = (width * second).round().max(min_width);
+        height = (height * second).round().max(min_height);
+    }
+    (width, height)
+}
+
+/// The snowflake's creation time in milliseconds since the Unix epoch.
+fn snowflake_ms(id: Id) -> u64 {
+    (id >> 22) + 1_420_070_400_000
+}
+
+/// `A` in module 659674: providers whose videos played before 2017-04-23 (`0x15b7e4a5bfb`).
+fn legacy_video_provider(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "youtube",
+        "steam",
+        "imgur",
+        "vimeo",
+        "sketchfab",
+        "soundcloud",
+        "streamable",
+        "twitch",
+        "vid.me",
+        "twitter",
+    ]
+    .iter()
+    .any(|known| name.contains(known))
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -981,10 +1053,24 @@ pub struct Embed {
     pub thumbnail: Option<EmbedMedia>,
     pub video: Option<EmbedMedia>,
     pub fields: Vec<EmbedField>,
+    /// `provider.url`: the provider's name links there.
+    pub provider_url: Option<String>,
+    /// `timestamp`, shown after the footer text.
+    pub timestamp: Option<DateTime<Utc>>,
+    /// `images` of `nh` in module 659674: the pictures of later embeds with the same `url`, merged into this one
+    /// (the first is this embed's own image). Empty when nothing was merged.
+    pub images: Vec<EmbedMedia>,
+    /// The embed's own `flags`.
+    pub flags: u64,
 }
 
 impl Embed {
     pub fn from_value(value: &Value) -> Self {
+        Self::from_value_in(value, None)
+    }
+
+    /// `fK` in module 659674 for an embed of the message `message` (its id decides the pre-2017 video rule).
+    pub fn from_value_in(value: &Value, message: Option<Id>) -> Self {
         let kind = text(&value["type"]).unwrap_or_else(|| "rich".to_owned());
         let mut embed = Self {
             url: text(&value["url"]),
@@ -992,30 +1078,84 @@ impl Embed {
             description: text(&value["description"]),
             color: value["color"].as_u64().map(|color| color as u32),
             provider: text(&value["provider"]["name"]),
+            provider_url: text(&value["provider"]["name"])
+                .and_then(|_| text(&value["provider"]["url"])),
             author: text(&value["author"]["name"]),
-            author_url: text(&value["author"]["url"]),
-            author_icon: text(&value["author"]["proxy_icon_url"])
-                .or_else(|| text(&value["author"]["icon_url"])),
+            author_url: text(&value["author"]["name"]).and_then(|_| text(&value["author"]["url"])),
+            // The icon drawn is `proxy_icon_url` (`iconProxyURL`); without one there is no icon.
+            author_icon: text(&value["author"]["name"])
+                .and_then(|_| text(&value["author"]["proxy_icon_url"])),
             footer: text(&value["footer"]["text"]),
-            footer_icon: text(&value["footer"]["proxy_icon_url"])
-                .or_else(|| text(&value["footer"]["icon_url"])),
-            video: EmbedMedia::from_value(&value["video"]),
+            footer_icon: text(&value["footer"]["proxy_icon_url"]),
+            timestamp: value["timestamp"]
+                .as_str()
+                .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+                .map(|time| time.with_timezone(&Utc)),
+            flags: value["flags"].as_u64().unwrap_or(0),
             ..Self::default()
         };
-        // GIFV keeps its thumbnail as the poster while its separate video is loading.
+        // Articles and images show their thumbnail as the image; every other type keeps it as the thumbnail
+        // (a GIFV's is its poster).
         if let Some(thumbnail) = EmbedMedia::from_value(&value["thumbnail"]) {
             match kind.as_str() {
-                "article" | "image" | "gifv" => embed.image = Some(thumbnail),
+                "article" | "image" => embed.image = Some(thumbnail),
                 _ => embed.thumbnail = Some(thumbnail),
             }
         }
         if let Some(image) = EmbedMedia::from_value(&value["image"]) {
             embed.image = Some(image);
         }
+        let video = &value["video"];
+        if video.is_object() {
+            let sized = video["width"].as_u64().is_some_and(|width| width > 0)
+                && video["height"].as_u64().is_some_and(|height| height > 0);
+            // A video without a thumbnail gets one from its own proxy address as WebP.
+            if embed.thumbnail.is_none()
+                && let Some(proxy) = text(&video["proxy_url"])
+                && sized
+            {
+                embed.thumbnail = Some(EmbedMedia {
+                    url: with_query(&proxy, "format", "webp"),
+                    proxy_url: None,
+                    width: video["width"].as_u64().unwrap_or(0) as u32,
+                    height: video["height"].as_u64().unwrap_or(0) as u32,
+                    description: None,
+                    flags: 0,
+                });
+            }
+            let provider = text(&value["provider"]["name"]);
+            if embed.thumbnail.is_some()
+                && sized
+                && let Some(media) = EmbedMedia::from_value(video)
+            {
+                let sketchfab = provider
+                    .as_deref()
+                    .is_some_and(|name| name.to_ascii_lowercase().contains("sketchfab"))
+                    || media
+                        .url
+                        .to_ascii_lowercase()
+                        .starts_with("https://sketchfab.com");
+                let mut playable = media.proxy_url.is_some()
+                    || media.url.to_ascii_lowercase().starts_with("https:");
+                if message.is_some_and(|id| snowflake_ms(id) < 0x15b_7e4a_5bfb) {
+                    playable &= provider.as_deref().is_some_and(legacy_video_provider);
+                }
+                if !sketchfab && playable {
+                    embed.video = Some(media);
+                }
+            }
+        }
         // Only rich, auto-moderation and poll-result embeds carry fields (`u.pd`; the poll result row reads `poll_question_text` and the victor fields from them, module 117096).
         if matches!(
             kind.as_str(),
-            "rich" | "auto_moderation_message" | "poll_result"
+            "rich"
+                | "auto_moderation_message"
+                | "auto_moderation_notification"
+                | "safety_policy_notice"
+                | "safety_system_notification"
+                | "age_verification_system_notification"
+                | "voice_channel"
+                | "poll_result"
         ) {
             embed.fields = value["fields"]
                 .as_array()
@@ -1036,26 +1176,177 @@ impl Embed {
 
     /// `ds` in module 659674 for embeds that are not TikTok or portrait YouTube.
     pub const MAX_MEDIA: (f64, f64) = (400., 300.);
+    /// `ds` for TikTok and for a portrait YouTube video.
+    pub const TALL_MEDIA: (f64, f64) = (400., 450.);
 
-    /// The image fitted into `MAX_MEDIA`, never enlarged.
+    /// `QY` in module 659674: "YouTube" or "TikTok" by provider name, else by the video's host.
+    pub fn video_provider(&self) -> Option<String> {
+        let name = self.provider.clone();
+        if matches!(name.as_deref(), Some("YouTube" | "TikTok")) {
+            return name;
+        }
+        let host = self
+            .video
+            .as_ref()
+            .and_then(|video| video.url.split("://").nth(1))
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .map(|host| host.to_ascii_lowercase());
+        match host.as_deref() {
+            Some("www.youtube.com") => Some("YouTube".to_owned()),
+            Some("www.tiktok.com") => Some("TikTok".to_owned()),
+            _ => name,
+        }
+    }
+
+    /// `ds` in module 659674: the box media of this embed is fitted into.
+    pub fn max_media(&self) -> (f64, f64) {
+        let tall_youtube = self
+            .video
+            .as_ref()
+            .is_some_and(|video| video.height > video.width)
+            && self.video_provider().as_deref() == Some("YouTube");
+        if self.provider.as_deref() == Some("TikTok") || tall_youtube {
+            Self::TALL_MEDIA
+        } else {
+            Self::MAX_MEDIA
+        }
+    }
+
+    /// `media` fitted into this embed's `max_media` (`Uj`), never enlarged.
+    pub fn fit(&self, media: &EmbedMedia) -> (f64, f64) {
+        let (max_width, max_height) = self.max_media();
+        fit_rounded(
+            f64::from(media.width),
+            f64::from(media.height),
+            max_width,
+            max_height,
+            0.,
+            0.,
+        )
+    }
+
+    /// The image fitted into `MAX_MEDIA`, never enlarged (`Uj`).
     pub fn fitted(media: &EmbedMedia) -> (f64, f64) {
         let (max_width, max_height) = Self::MAX_MEDIA;
-        let (width, height) = (f64::from(media.width), f64::from(media.height));
-        let scale = (max_width / width).min(max_height / height).min(1.);
-        (width * scale, height * scale)
+        fit_rounded(
+            f64::from(media.width),
+            f64::from(media.height),
+            max_width,
+            max_height,
+            0.,
+            0.,
+        )
     }
 
-    /// `gifv` and `image` embeds whose URL is the whole message draw as bare media and hide the link text
-    /// (`inlineMediaEmbed_XyW1ZT` in `design/dom/channel/gifv-darker-cozy.json`).
+    /// `NV` in module 659674 (the component's `isInline` without `hideMedia`): media, and either a GIFV or a type
+    /// other than rich with no author and no title. Such an embed is drawn as the bare media
+    /// (`inlineMediaEmbed_XyW1ZT`).
     pub fn is_inline_media(&self) -> bool {
-        matches!(self.kind.as_str(), "gifv" | "image") && self.image.is_some()
+        (self.image.is_some() || self.video.is_some())
+            && (self.kind == "gifv"
+                || self.kind != "rich" && self.author.is_none() && self.title.is_none())
     }
 
-    /// `getMaxWidth`: an embed whose media is at least 300 wide is that wide plus 32.
+    /// `getMaxWidth(false)` of module 265705: a video embed, or media at least 300 wide, is that wide plus 32; a
+    /// rich embed with a merged gallery is 520; a GIFV is its fitted video (or poster) width.
     pub fn max_width(&self) -> Option<f64> {
-        let (width, _) = Self::fitted(self.image.as_ref()?);
-        (self.kind == "video" || width >= 300.).then_some(width + 32.)
+        self.max_width_for(false)
     }
+
+    /// `getMaxWidth(true)`, for the inline media embed: only the gallery and GIFV rules.
+    pub fn inline_max_width(&self) -> Option<f64> {
+        self.max_width_for(true)
+    }
+
+    fn max_width_for(&self, inline: bool) -> Option<f64> {
+        let media = self.image.as_ref().or(self.video.as_ref())?;
+        let (width, _) = self.fit(media);
+        if !inline && (self.kind == "video" || width >= 300.) {
+            return Some(width + 32.);
+        }
+        if self.kind == "rich" && !self.images.is_empty() {
+            return Some(520.);
+        }
+        if self.kind == "gifv" {
+            let sized = self.video.as_ref().or(self.thumbnail.as_ref());
+            let (max_width, max_height) = self.max_media();
+            let (width, _) = fit_rounded(
+                sized.map_or(0., |media| f64::from(media.width)),
+                sized.map_or(0., |media| f64::from(media.height)),
+                max_width,
+                max_height,
+                0.,
+                0.,
+            );
+            return Some(width);
+        }
+        None
+    }
+
+    /// `nh` in module 659674: embeds with the same `url` become one, the later ones' images joining the first's
+    /// `images` (the first's own image leading).
+    pub fn merge(embeds: Vec<Embed>) -> Vec<Embed> {
+        let mut out: Vec<Embed> = Vec::new();
+        for embed in embeds {
+            let Some(url) = embed.url.clone() else {
+                out.push(embed);
+                continue;
+            };
+            let Some(first) = out
+                .iter_mut()
+                .find(|known| known.url.as_deref() == Some(url.as_str()))
+            else {
+                out.push(embed);
+                continue;
+            };
+            if let Some(image) = embed.image {
+                if first.images.is_empty()
+                    && let Some(own) = first.image.clone()
+                {
+                    first.images.push(own);
+                }
+                first.images.push(image);
+            }
+        }
+        out
+    }
+
+    /// A message's `embeds` array as the record keeps it (`y` in module 432005): `fK` for each, then `nh`.
+    pub fn list(value: &Value, message: Option<Id>) -> Vec<Embed> {
+        Self::merge(
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|embed| Self::from_value_in(embed, message))
+                .collect(),
+        )
+    }
+}
+
+/// `url` with `key=value` set in its query (`URL.searchParams.set`).
+fn with_query(url: &str, key: &str, value: &str) -> String {
+    let (base, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base, Some(fragment)),
+        None => (url, None),
+    };
+    let (path, query) = match base.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (base, ""),
+    };
+    let mut pairs: Vec<String> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter(|pair| pair.split('=').next() != Some(key))
+        .map(str::to_owned)
+        .collect();
+    pairs.push(format!("{key}={value}"));
+    let mut out = format!("{path}?{}", pairs.join("&"));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 fn edited_at(value: &Value) -> Option<DateTime<Utc>> {
@@ -1143,12 +1434,7 @@ impl Forwarded {
                 .flatten()
                 .filter_map(Attachment::from_value)
                 .collect(),
-            embeds: snapshot["embeds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(Embed::from_value)
-                .collect(),
+            embeds: Embed::list(&snapshot["embeds"], None),
             flags: snapshot["flags"].as_u64().unwrap_or(0),
             guild_id: id(&message["message_reference"]["guild_id"]),
             channel_id: id(&message["message_reference"]["channel_id"]),
@@ -1189,15 +1475,25 @@ impl Message {
                 .any(|role| my_roles.contains(role))
     }
 
-    /// The content is only the link its inline media embed shows, so the text is not drawn.
+    /// `hideSimpleEmbedContent` of module 354777 with `k5` and `iz` of module 448767: the text is not drawn when the
+    /// message has exactly one (merged) embed, an image or GIFV that draws as inline media, and the content is one
+    /// link and nothing else.
     pub fn content_is_inline_media(&self) -> bool {
+        let [embed] = self.embeds.as_slice() else {
+            return false;
+        };
+        if !matches!(embed.kind.as_str(), "image" | "gifv") || !embed.is_inline_media() {
+            return false;
+        }
         let content = self.content.trim();
-        !content.is_empty()
-            && !content.contains(char::is_whitespace)
-            && self
-                .embeds
-                .iter()
-                .any(|embed| embed.is_inline_media() && embed.url.as_deref() == Some(content))
+        let link = content
+            .strip_prefix('<')
+            .and_then(|inner| inner.strip_suffix('>'))
+            .unwrap_or(content);
+        !link.is_empty()
+            && !link.contains(char::is_whitespace)
+            && !link.contains(['<', '>'])
+            && (link.starts_with("https://") || link.starts_with("http://"))
     }
 
     pub fn from_value(value: &Value) -> Option<Self> {
@@ -1215,12 +1511,7 @@ impl Message {
                 .flatten()
                 .filter_map(Attachment::from_value)
                 .collect(),
-            embeds: value["embeds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(Embed::from_value)
-                .collect(),
+            embeds: Embed::list(&value["embeds"], id(&value["id"])),
             reactions: value["reactions"]
                 .as_array()
                 .into_iter()
@@ -1514,6 +1805,7 @@ pub struct Stores {
     pub previews: HashMap<Id, Message>,
     /// `NoteStore`.
     pub notes: notes::NoteStore,
+    pub game_relationships: game_relationships::GameRelationshipStore,
     /// The Bans page's list (`GuildSettingsStore`).
     pub guild_bans: guild_bans::GuildBans,
     /// Integrations, webhooks and the reads their events ask for (`WebhooksStore`, `MyGuildApplicationsStore`).
@@ -2114,6 +2406,7 @@ impl Stores {
         self.join_requests_dispatch(name, data);
         self.deleted_entities_dispatch(name, data);
         self.notes_dispatch(name, data);
+        self.game_relationships_dispatch(name, data);
         self.guild_bans_dispatch(name, data);
         self.guild_integrations_dispatch(name, data);
         self.channel_member_counts_dispatch(name, data);
@@ -2941,8 +3234,8 @@ impl Stores {
             return;
         };
         // Link previews arrive later, in an update that may carry only the embeds.
-        if let Some(embeds) = data["embeds"].as_array() {
-            known.embeds = embeds.iter().map(Embed::from_value).collect();
+        if data["embeds"].is_array() {
+            known.embeds = Embed::list(&data["embeds"], Some(message));
         }
     }
 
@@ -3296,7 +3589,12 @@ mod tests {
             "video": {"url":"https://example.com/clip.mp4", "proxy_url":"https://example.com/proxy.mp4", "width":498, "height":498}
         }));
         assert!(embed.is_inline_media());
-        assert_eq!(embed.image.unwrap().url, "https://example.com/poster.png");
+        // `fK`: a GIFV's thumbnail stays its thumbnail (the poster), only articles and images move it to the image.
+        assert!(embed.image.is_none());
+        assert_eq!(
+            embed.thumbnail.unwrap().url,
+            "https://example.com/poster.png"
+        );
         let video = embed.video.unwrap();
         assert_eq!(video.url, "https://example.com/clip.mp4");
         assert_eq!(
@@ -3444,6 +3742,137 @@ mod tests {
         let image = embed.image.as_ref().unwrap();
         assert_eq!(Embed::fitted(image), (400., 200.));
         assert_eq!(embed.max_width(), Some(432.));
+    }
+
+    #[test]
+    fn a_video_tweet_keeps_its_video_author_icon_footer_icon_and_time() {
+        // The shape FxTwitter's unfurl takes for a video post (module 659674 `fK`).
+        let embed = Embed::from_value_in(
+            &json!({
+                "type": "rich", "url": "https://fxtwitter.com/burakalpekn/status/1/video/1",
+                "description": "text\n\n💬 17 🔁 2 ❤️ 273 👁 57.0K",
+                "color": 6_465_461,
+                "author": {"name": "Heisenberg (@burakalpekn)", "url": "https://x.com/burakalpekn",
+                           "icon_url": "https://pbs.twimg.com/a.jpg", "proxy_icon_url": "https://images-ext-1.discordapp.net/a.jpg"},
+                "footer": {"text": "FxTwitter", "icon_url": "https://x/f.png", "proxy_icon_url": "https://images-ext-1.discordapp.net/f.png"},
+                "timestamp": "2026-11-11T08:28:00+00:00",
+                "thumbnail": {"url": "https://pbs.twimg.com/t.jpg", "proxy_url": "https://images-ext-1.discordapp.net/t.jpg", "width": 720, "height": 1280},
+                "video": {"url": "https://video.twimg.com/v.mp4", "proxy_url": "https://images-ext-1.discordapp.net/v.mp4", "width": 720, "height": 1280}
+            }),
+            Some(1_438_000_000_000_000_000),
+        );
+        assert!(embed.video.is_some() && embed.thumbnail.is_some());
+        assert_eq!(
+            embed.author_icon.as_deref(),
+            Some("https://images-ext-1.discordapp.net/a.jpg")
+        );
+        assert_eq!(
+            embed.footer_icon.as_deref(),
+            Some("https://images-ext-1.discordapp.net/f.png")
+        );
+        assert!(embed.timestamp.is_some());
+        assert!(!embed.is_inline_media(), "a rich embed is never inline");
+        // A portrait video fits 169x300: under 300 wide, so the card keeps no fixed width.
+        assert_eq!(embed.fit(embed.video.as_ref().unwrap()), (169., 300.));
+        assert_eq!(embed.max_width(), None);
+    }
+
+    #[test]
+    fn videos_without_a_thumbnail_borrow_their_proxy_and_old_ones_need_a_known_provider() {
+        let raw = json!({
+            "type": "video", "url": "https://example.com/v",
+            "video": {"url": "https://example.com/v.mp4", "proxy_url": "https://proxy/v.mp4?x=1", "width": 1280, "height": 720}
+        });
+        let embed = Embed::from_value_in(&raw, None);
+        assert_eq!(
+            embed.thumbnail.as_ref().unwrap().url,
+            "https://proxy/v.mp4?x=1&format=webp"
+        );
+        assert!(embed.video.is_some());
+        assert!(embed.is_inline_media(), "a video with no author or title");
+        assert_eq!(embed.max_width(), Some(432.));
+        // Before 2017-04-23 only the listed providers keep a video.
+        let old = (1_450_000_000_000u64 - 1_420_070_400_000) << 22;
+        assert!(Embed::from_value_in(&raw, Some(old)).video.is_none());
+        let mut youtube = raw.clone();
+        youtube["provider"] = json!({"name": "YouTube"});
+        assert!(Embed::from_value_in(&youtube, Some(old)).video.is_some());
+        // Sketchfab never plays inline.
+        let mut sketch = raw;
+        sketch["provider"] = json!({"name": "Sketchfab"});
+        assert!(Embed::from_value_in(&sketch, None).video.is_none());
+        // TikTok and a portrait YouTube video fit into 400x450.
+        let tall = Embed::from_value(&json!({
+            "type": "video", "provider": {"name": "YouTube"},
+            "thumbnail": {"url": "https://i.ytimg.com/t.jpg", "width": 720, "height": 1280},
+            "video": {"url": "https://www.youtube.com/embed/x", "width": 720, "height": 1280}
+        }));
+        assert_eq!(tall.max_media(), Embed::TALL_MEDIA);
+        assert_eq!(tall.fit(tall.video.as_ref().unwrap()), (253., 450.));
+    }
+
+    #[test]
+    fn embeds_with_one_url_merge_into_a_gallery() {
+        let picture = |name: &str| {
+            json!({"type": "rich", "url": "https://x.com/p/1",
+                   "image": {"url": format!("https://x/{name}.png"), "width": 600, "height": 400}})
+        };
+        let list = Embed::list(
+            &json!([picture("a"), picture("b"), picture("c"), {"type": "link", "url": "https://other"}]),
+            None,
+        );
+        assert_eq!(list.len(), 2);
+        let urls: Vec<&str> = list[0]
+            .images
+            .iter()
+            .map(|image| image.url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            ["https://x/a.png", "https://x/b.png", "https://x/c.png"]
+        );
+        assert_eq!(
+            list[0].max_width(),
+            Some(432.),
+            "a 400-wide image wins first"
+        );
+        let mut small = list[0].clone();
+        small.image.as_mut().unwrap().width = 200;
+        small.image.as_mut().unwrap().height = 100;
+        assert_eq!(small.max_width(), Some(520.));
+    }
+
+    #[test]
+    fn only_a_lone_link_to_one_inline_image_or_gifv_hides_the_text() {
+        let mut stores = Stores::default();
+        // A 2026 id: before 2017-04-23 a video needs a listed provider.
+        let mut payload = message("1438000000000000000", "https://tenor.com/view/x");
+        payload["embeds"] = json!([{"type": "gifv", "url": "https://tenor.com/view/x",
+            "thumbnail": {"url": "https://t/p.png", "width": 498, "height": 280},
+            "video": {"url": "https://t/v.mp4", "width": 498, "height": 280}}]);
+        stores.dispatch("MESSAGE_CREATE", &payload);
+        let known = &stores.messages[&23][0];
+        assert!(known.content_is_inline_media());
+        let mut with_text = known.clone();
+        with_text.content = "look https://tenor.com/view/x".into();
+        assert!(!with_text.content_is_inline_media());
+        // A video embed keeps its link text.
+        let mut video = known.clone();
+        video.embeds[0].kind = "video".into();
+        assert!(!video.content_is_inline_media());
+        let mut two = known.clone();
+        two.embeds.push(two.embeds[0].clone());
+        assert!(!two.content_is_inline_media());
+        assert_eq!(
+            fit_rounded(720., 1280., 400., 300., 150., 144.),
+            (169., 300.)
+        );
+        assert_eq!(fit_rounded(100., 50., 400., 300., 0., 0.), (100., 50.));
+        assert_eq!(fit_rounded(100., 50., 400., 300., 150., 144.), (150., 144.));
+        assert_eq!(
+            fit_rounded(1000., 100., 400., 300., 150., 144.),
+            (400., 144.)
+        );
     }
 
     #[test]

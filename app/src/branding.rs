@@ -120,6 +120,7 @@ fn decode_icon(path: &Path, size: u32) -> Option<Vec<u8>> {
         .into_rgba8();
     Some(premultiplied(image))
 }
+#[cfg(feature = "capture")]
 pub fn badge_pixels(set: IconSet, index: usize) -> Option<Vec<u8>> {
     badge_at(&crate::find_assets()?, set, index)
 }
@@ -166,6 +167,7 @@ fn tray_at(
 }
 /// The taskbar's count badge. Both icon sets show the official client's badges (`images/badges` of desktop core):
 /// the set chooses the app's own icon, and a count drawn in another weight and size reads as another program's.
+#[cfg(any(test, feature = "capture"))]
 fn badge_at(root: &Path, _set: IconSet, index: usize) -> Option<Vec<u8>> {
     if index >= 11 {
         return None;

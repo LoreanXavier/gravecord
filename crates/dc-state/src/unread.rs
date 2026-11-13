@@ -391,7 +391,22 @@ pub fn incoming_requests(stores: &Stores) -> u64 {
         .saturating_sub(stores.ignored_pending_relationships.len()) as u64
 }
 
-/// 596339: disabling the unread marker leaves explicit mention/request counts on the taskbar.
+/// 912309 `dH`: RelationshipStore `getPendingCount` plus GameRelationshipStore `getPendingIncomingCount`. Both the
+/// desktop badge and the tray's unread state add it to the mention count.
+pub fn desktop_requests(stores: &Stores) -> u64 {
+    incoming_requests(stores).saturating_add(stores.game_relationships.pending_incoming_count())
+}
+
+/// 596339 SystemTrayManager `NV`: the tray shows its unread icon when the badge setting is on and anything is unread
+/// in a server, a high-importance mention is pending (`getTotalMentionCount`, private channels included) or a friend
+/// request waits. Low-importance mentions alone do not count.
+pub fn tray_unread(high_mentions: u64, requests: u64, unread: bool, disable_unread: bool) -> bool {
+    !disable_unread && (unread || high_mentions > 0 || requests > 0)
+}
+
+/// 596339 `Ni`: `getTotalMentionCount()` (high importance) plus the request count; with nothing counted, any unread
+/// server gives -1 (the dot) unless "Enable Unread Message Badge" is off. Disabling the unread marker leaves explicit
+/// mention/request counts on the taskbar. There is no cap here: desktop core 6820 caps the picture at "9+".
 pub fn badge_count(mentions: u64, requests: u64, unread: bool, disable_unread: bool) -> i64 {
     let count = mentions.saturating_add(requests).min(i64::MAX as u64) as i64;
     if count == 0 && unread && !disable_unread {
@@ -579,6 +594,73 @@ mod tests {
         assert_eq!(badge_count(0, 0, true, false), -1);
         assert_eq!(badge_count(0, 0, true, true), 0);
         assert_eq!(badge_count(2, incoming_requests(&stores), true, true), 3);
+    }
+
+    /// The taskbar number and the tray state from live stores, as 596339 `Ni` and `NV` compute them.
+    fn desktop(stores: &Stores, disable_unread: bool) -> (i64, bool) {
+        let counts = total_counts(stores, Utc::now());
+        let requests = desktop_requests(stores);
+        (
+            badge_count(
+                counts.high_mentions,
+                requests,
+                counts.unread,
+                disable_unread,
+            ),
+            tray_unread(
+                counts.high_mentions,
+                requests,
+                counts.unread,
+                disable_unread,
+            ),
+        )
+    }
+
+    #[test]
+    fn desktop_badge_and_tray_follow_the_official_count_rule() {
+        let mut stores = setup();
+        assert_eq!(desktop(&stores, false), (0, false));
+        // Unreads only: the dot (-1) and the unread tray, both gone with "Enable Unread Message Badge" off.
+        message(&mut stores, "20", json!([]));
+        assert_eq!(desktop(&stores, false), (-1, true));
+        assert_eq!(desktop(&stores, true), (0, false));
+        // A direct message is a high-importance mention: a number, kept even with the setting off.
+        message(&mut stores, "40", json!([]));
+        assert_eq!(desktop(&stores, false), (1, true));
+        assert_eq!(desktop(&stores, true), (1, false));
+        // A role mention in the server adds to it.
+        message(&mut stores, "20", json!(["50"]));
+        assert_eq!(desktop(&stores, false), (2, true));
+        // A muted server gives no unread mark but keeps its mentions.
+        stores.dispatch(
+            "USER_GUILD_SETTINGS_UPDATE",
+            &json!({"guild_id":"10","muted":true,"message_notifications":0,"channel_overrides":[]}),
+        );
+        assert_eq!(desktop(&stores, false), (2, true));
+        stores.dispatch(
+            "MESSAGE_ACK",
+            &json!({"channel_id":"40","message_id":"999","mention_count":0}),
+        );
+        stores.dispatch(
+            "MESSAGE_ACK",
+            &json!({"channel_id":"20","message_id":"999","mention_count":0}),
+        );
+        assert_eq!(desktop(&stores, false), (0, false));
+        // Friend requests and game friend requests count like mentions.
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"7","type":3}));
+        stores.dispatch(
+            "GAME_RELATIONSHIP_ADD",
+            &json!({"id":"8","application_id":"100","type":3}),
+        );
+        assert_eq!(desktop_requests(&stores), 2);
+        assert_eq!(desktop(&stores, true), (2, false));
+        assert_eq!(desktop(&stores, false), (2, true));
+        // No cap in the count: the picture caps at "9+".
+        assert_eq!(badge_count(250, 0, false, false), 250);
+        // Low-importance mentions alone do not light the tray (getTotalMentionCount is high importance only).
+        assert!(!tray_unread(0, 0, false, false));
+        assert!(tray_unread(0, 0, true, false));
+        assert!(!tray_unread(5, 5, true, true));
     }
 
     fn thread(stores: &mut Stores, flags: u64, muted: bool) {

@@ -238,6 +238,9 @@ fn record_log() {
         .iter()
         .position(|arg| arg == "--log")
         .and_then(|at| args.get(at + 1))
+        .cloned()
+        // A harness run is started by a tool that passes no such argument: it names the file here.
+        .or_else(|| std::env::var("GRAVECORD_LOG_FILE").ok())
         .and_then(|path| std::fs::File::create(path).ok());
     logging::init(file);
 }

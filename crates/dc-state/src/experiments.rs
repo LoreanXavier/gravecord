@@ -71,6 +71,11 @@ impl Assignments {
             .filter(|(_, flags)| flags & USE_AS_ELIGIBILITY == 0)
             .map(|(variant, _)| *variant)
     }
+
+    /// Puts the account in a variation by hand, as the client's bucket override does (harness only).
+    pub fn force(&mut self, name: &str, variant: i64) {
+        self.0.insert(hash(name), (variant, 0));
+    }
 }
 
 #[cfg(test)]

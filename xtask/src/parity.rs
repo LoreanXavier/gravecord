@@ -189,7 +189,12 @@ fn render(repo: &Path, out: &Path, script: Option<&str>) -> Result<()> {
     headless::spawn(&exe, &args, repo)?;
     let started = Instant::now();
     while !out.exists() {
-        if started.elapsed() > RENDER_TIMEOUT {
+        // `GRAVECORD_RENDER_SECONDS`: a script that waits on a live call needs longer than the default.
+        let limit = std::env::var("GRAVECORD_RENDER_SECONDS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .map_or(RENDER_TIMEOUT, Duration::from_secs);
+        if started.elapsed() > limit {
             bail!("no frame after {RENDER_TIMEOUT:?}");
         }
         sleep(Duration::from_millis(200));

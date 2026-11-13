@@ -52,7 +52,7 @@ mod app_id;
 #[cfg(windows)]
 pub(crate) mod native_icon;
 #[cfg(windows)]
-mod taskbar;
+pub(crate) mod taskbar;
 #[cfg(windows)]
 mod window_hook;
 #[cfg(windows)]
