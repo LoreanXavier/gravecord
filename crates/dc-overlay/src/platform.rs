@@ -30,10 +30,10 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, GWL_EXSTYLE, GetClientRect, GetCursorPos, GetForegroundWindow,
+    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
+    EVENT_SYSTEM_MOVESIZEEND, GWL_EXSTYLE, GetClientRect, GetCursorPos, GetForegroundWindow,
     GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST,
-    IsIconic, IsZoomed, LWA_ALPHA, MSG, OBJID_WINDOW, PostThreadMessageW, SW_HIDE, SWP_NOACTIVATE,
+    IsIconic, IsWindow, IsZoomed, LWA_ALPHA, MSG, PostThreadMessageW, SW_HIDE, SWP_NOACTIVATE,
     SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WINEVENT_OUTOFCONTEXT,
     WM_QUIT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
@@ -184,21 +184,13 @@ thread_local! {
 
 unsafe extern "system" fn event_proc(
     _hook: HWINEVENTHOOK,
-    event: u32,
-    window: HWND,
-    object: i32,
+    _event: u32,
+    _window: HWND,
+    _object: i32,
     _child: i32,
     _thread: u32,
     _time: u32,
 ) {
-    // Location changes come for every window, the cursor and carets too: only the foreground window's own move or
-    // resize counts.
-    if event == EVENT_OBJECT_LOCATIONCHANGE
-        // SAFETY: plain query.
-        && (object != OBJID_WINDOW || window != unsafe { GetForegroundWindow() })
-    {
-        return;
-    }
     let shared = ACTIVE.with(|active| active.borrow().clone());
     if let Some(shared) = shared {
         shared.report();
@@ -212,7 +204,11 @@ pub struct Watcher {
 }
 
 /// Starts watching the foreground window on a thread of its own: `on_change` gets the new foreground (or none) each
-/// time it, its size or its state changes, and once at the start.
+/// time it or its state changes, when a window has been moved or resized, and once at the start.
+///
+/// The hooks are the low-rate system events only (foreground, minimize, the end of a move or resize):
+/// `EVENT_OBJECT_LOCATIONCHANGE` would wake this thread for every cursor move of the whole system. A game that
+/// changes its size by itself (a resolution change) is caught by the overlay's own check of the game's rectangle.
 pub fn watch(
     on_change: impl Fn(Option<Foreground>) + Send + Sync + 'static,
 ) -> Result<Watcher, &'static str> {
@@ -260,7 +256,7 @@ fn run(ready: &std::sync::mpsc::Sender<Result<u32, &'static str>>, shared: &Shar
     let hooks = [
         hook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
         hook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
-        hook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+        hook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND),
     ];
     if hooks[0].is_null() {
         unhook(&hooks);
@@ -375,6 +371,30 @@ pub fn place(window: isize, rect: Rect) {
     }
 }
 
+/// [`place`], then the window's client area read back: Windows may move or resize it on the way (a monitor of
+/// another DPI sends `WM_DPICHANGED`, and gpui then takes the suggested rectangle), so it is placed again, at most
+/// three times. Returns whether the client area covers `rect`.
+pub fn place_checked(window: isize, rect: Rect) -> bool {
+    for _ in 0..3 {
+        place(window, rect);
+        if client_rect(hwnd(window)) == Some(rect) {
+            return true;
+        }
+    }
+    client_rect(hwnd(window)) == Some(rect)
+}
+
+/// The client area of a window on screen, in device pixels.
+pub fn client_rect_of(window: isize) -> Option<Rect> {
+    client_rect(hwnd(window))
+}
+
+/// The window still exists (a game that quit leaves a stale handle).
+pub fn window_alive(window: isize) -> bool {
+    // SAFETY: plain query; any value is a valid argument.
+    window != 0 && unsafe { IsWindow(hwnd(window)) } != 0
+}
+
 pub fn hide(window: isize) {
     // SAFETY: as above.
     unsafe { ShowWindow(hwnd(window), SW_HIDE) };
@@ -487,6 +507,13 @@ mod tests {
                 height: 728
             }
         );
+    }
+
+    #[test]
+    fn a_stale_or_empty_handle_is_not_alive() {
+        assert!(!window_alive(0));
+        assert!(!window_alive(0x7fff_fff0));
+        assert_eq!(client_rect_of(0x7fff_fff0), None);
     }
 
     #[test]

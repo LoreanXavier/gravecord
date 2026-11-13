@@ -330,6 +330,119 @@ impl Drag {
     }
 }
 
+/// The pointer over a resize handle (`resizeNSCursor`, `resizeEWCursor`, `resizeNWSECursor`, `resizeNESWCursor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    NorthSouth,
+    EastWest,
+    NorthWestSouthEast,
+    NorthEastSouthWest,
+}
+
+/// One resize handle (`renderResizeHandles`): its operation, its cursor, and where it sits from the container's
+/// padding box (the containing block of `position: absolute`). `None` sides are not set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Handle {
+    pub operation: Operation,
+    pub cursor: Cursor,
+    pub anchor: Anchor,
+    /// `None`: stretched between the two sides of that axis (`inset-inline: 0` or `top: 0; bottom: 0`).
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+}
+
+/// `--custom-drag-resize-container-handle-offset`: `bleed - size`, -6 px.
+pub const HANDLE_OFFSET: f32 = HANDLE_BLEED - HANDLE_SIZE;
+
+/// The handles a widget gets (`resizeY`: north and south; `resizeX`: east and west; both: the four corners too), in
+/// the order the container draws them. The corners are twice the handle size.
+pub fn handles(resize_x: bool, resize_y: bool) -> Vec<Handle> {
+    let o = Some(HANDLE_OFFSET);
+    let zero = Some(0.);
+    let side = |operation, cursor, anchor, width, height| Handle {
+        operation,
+        cursor,
+        anchor,
+        width,
+        height,
+    };
+    let at = |top, left, bottom, right| Anchor {
+        top,
+        left,
+        bottom,
+        right,
+    };
+    let mut out = Vec::new();
+    if resize_y {
+        out.push(side(
+            Operation::North,
+            Cursor::NorthSouth,
+            at(o, zero, None, zero),
+            None,
+            Some(HANDLE_SIZE),
+        ));
+        out.push(side(
+            Operation::South,
+            Cursor::NorthSouth,
+            at(None, zero, o, zero),
+            None,
+            Some(HANDLE_SIZE),
+        ));
+    }
+    if resize_x {
+        out.push(side(
+            Operation::East,
+            Cursor::EastWest,
+            at(zero, None, zero, o),
+            Some(HANDLE_SIZE),
+            None,
+        ));
+        out.push(side(
+            Operation::West,
+            Cursor::EastWest,
+            at(zero, o, zero, None),
+            Some(HANDLE_SIZE),
+            None,
+        ));
+    }
+    if resize_x && resize_y {
+        let corner = Some(HANDLE_SIZE * 2.);
+        for (operation, cursor, anchor) in [
+            (
+                Operation::NorthWest,
+                Cursor::NorthWestSouthEast,
+                at(o, o, None, None),
+            ),
+            (
+                Operation::NorthEast,
+                Cursor::NorthEastSouthWest,
+                at(o, None, None, o),
+            ),
+            (
+                Operation::SouthWest,
+                Cursor::NorthEastSouthWest,
+                at(None, o, o, None),
+            ),
+            (
+                Operation::SouthEast,
+                Cursor::NorthWestSouthEast,
+                at(None, None, o, o),
+            ),
+        ] {
+            out.push(side(operation, cursor, anchor, corner, corner));
+        }
+    }
+    out
+}
+
+/// `f` of module 129537: a requested size is never under the minimum (auto stays auto).
+pub fn requested_size(
+    size: (Option<f32>, Option<f32>),
+    min: (f32, f32),
+) -> (Option<f32>, Option<f32>) {
+    (size.0.map(|w| w.max(min.0)), size.1.map(|h| h.max(min.1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +633,58 @@ mod tests {
         assert_eq!(west.size.0, 450.);
         assert_eq!(west.anchor.right, Some(780.));
         assert_eq!(west.anchor.left, None);
+    }
+
+    #[test]
+    fn handles_follow_the_widget_config_and_clamp_at_the_minimum() {
+        assert!(handles(false, false).is_empty());
+        let y = handles(false, true);
+        assert_eq!(
+            y.iter().map(|h| h.operation).collect::<Vec<_>>(),
+            [Operation::North, Operation::South]
+        );
+        assert_eq!(y[0].anchor.top, Some(-6.));
+        assert_eq!(y[0].height, Some(8.));
+        assert_eq!(y[0].width, None);
+        let all = handles(true, true);
+        assert_eq!(all.len(), 8);
+        let se = all
+            .iter()
+            .find(|h| h.operation == Operation::SouthEast)
+            .unwrap();
+        assert_eq!(se.cursor, Cursor::NorthWestSouthEast);
+        assert_eq!((se.width, se.height), (Some(16.), Some(16.)));
+        assert_eq!((se.anchor.bottom, se.anchor.right), (Some(-6.), Some(-6.)));
+        let ne = all
+            .iter()
+            .find(|h| h.operation == Operation::NorthEast)
+            .unwrap();
+        assert_eq!(ne.cursor, Cursor::NorthEastSouthWest);
+        // The text chat's 500x372 at its 350x100 minimum stays; a stored 200 wide grows back to 350.
+        assert_eq!(
+            requested_size((Some(500.), Some(372.)), (350., 100.)),
+            (Some(500.), Some(372.))
+        );
+        assert_eq!(
+            requested_size((Some(200.), None), (350., 100.)),
+            (Some(350.), None)
+        );
+        // A resize to under the minimum keeps the minimum, and the box stays in the window.
+        let anchor = Anchor {
+            top: Some(600.),
+            left: Some(1000.),
+            ..Anchor::default()
+        };
+        let mut drag = Drag::start(
+            Operation::SouthEast,
+            (1500., 972.),
+            anchor,
+            (500., 372.),
+            WINDOW,
+        );
+        drag.moved((1280., 720.), WINDOW, (350., 100.));
+        // The pointer is held to the window: 220 px less wide would be 280, the minimum keeps 350.
+        assert_eq!(drag.size, (350., 120.));
+        assert_eq!(drag.anchor.top, Some(600.));
     }
 }

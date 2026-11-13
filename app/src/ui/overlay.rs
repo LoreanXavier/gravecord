@@ -58,19 +58,45 @@ pub(super) fn window_allowed_on(capture: bool, desktop: Option<&str>) -> bool {
     !capture || desktop == Some(HIDDEN_DESKTOP)
 }
 
+/// Whether this run does any overlay work at all: a harness run (which never starts the watcher, the follower or the
+/// keybind), or a normal run with `GRAVECORD_OVERLAY=1`. Until the window has been seen over a real game
+/// (click-through, transparency, staying on top), a normal run without it runs nothing of the overlay: no foreground
+/// watcher thread, no hook, no per-frame decision. BLOCKED.md, "Injected overlay anticheat compatibility".
+pub(super) fn gate_on(capture: bool, env: Option<&str>) -> bool {
+    capture || env == Some("1")
+}
+
+/// [`gate_on`] for this run, read once.
+pub(super) fn gate() -> bool {
+    static GATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *GATE.get_or_init(|| {
+        let env = std::env::var("GRAVECORD_OVERLAY").ok();
+        gate_on(crate::storage::is_capture_run(), env.as_deref())
+    })
+}
+
 fn window_allowed() -> bool {
+    if !gate() {
+        return false;
+    }
     #[cfg(windows)]
     let desktop = dc_overlay::platform::desktop_name();
     #[cfg(not(windows))]
     let desktop: Option<String> = None;
-    // Until the window has been seen over a real game (click-through, transparency, staying on top), a normal run
-    // opens it only when asked to with `GRAVECORD_OVERLAY=1`: a window that failed at any of those would cover the
-    // game of whoever runs this build. BLOCKED.md, "Injected overlay anticheat compatibility".
-    let capture = crate::storage::is_capture_run();
-    if !capture && std::env::var_os("GRAVECORD_OVERLAY").is_none_or(|value| value != "1") {
-        return false;
+    window_allowed_on(crate::storage::is_capture_run(), desktop.as_deref())
+}
+
+/// Runs `build`, giving `None` when it panicked (logged at error level, no content).
+pub(super) fn guarded<T>(build: impl FnOnce() -> T) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::error!(
+                "overlay: drawing the overlay failed; its window is closed for this session"
+            );
+            None
+        }
     }
-    window_allowed_on(capture, desktop.as_deref())
 }
 
 /// The window's root view: the overlay of the app's `Root`, at this window's size.
@@ -82,13 +108,29 @@ impl Render for OverlayView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let area = window.viewport_size();
         let (width, height) = (f32::from(area.width), f32::from(area.height));
-        let body = self.root.upgrade().map(|root| {
+        // A panic while the overlay's elements are built closes the overlay window for the rest of the session; the
+        // app goes on. It is caught inside the update so the app's state is handed back.
+        let mut failed = false;
+        let body = self.root.upgrade().and_then(|root| {
             root.update(cx, |root, cx| {
+                if root.overlay.failed {
+                    failed = true;
+                    return None;
+                }
                 root.overlay.scale = window.scale_factor();
-                let body = root.overlay_body(width, height, cx);
-                (body, root.overlay.animating)
+                match guarded(|| root.overlay_body(width, height, cx)) {
+                    Some(body) => Some((body, root.overlay.animating)),
+                    None => {
+                        root.overlay_failed();
+                        failed = true;
+                        None
+                    }
+                }
             })
         });
+        if failed {
+            window.remove_window();
+        }
         let animating = body.as_ref().is_some_and(|(_, animating)| *animating);
         if animating {
             window.request_animation_frame();
@@ -98,16 +140,37 @@ impl Render for OverlayView {
             .size_full()
             .font_family(super::SANS)
             .font_features(kerning())
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                // Escape locks the unlocked overlay (module 427830).
-                if event.keystroke.key == "escape" {
-                    let _ = this.root.update(cx, |root, cx| {
-                        if !root.overlay.locked {
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let _ = this.root.update(cx, |root, cx| {
+                    // The Chat widget's composer is the app's own: its keys first (Enter sends).
+                    if root.composer_key(&event.keystroke, window, cx) {
+                        cx.notify();
+                        return;
+                    }
+                    // `td` of module 427830: Escape locks (a menu or the dialog closes first).
+                    if event.keystroke.key == "escape" && !root.overlay.locked {
+                        if root.overlay.menu.is_some() || root.overlay.report.is_some() {
+                            root.overlay.menu = None;
+                            root.overlay.report = None;
+                            cx.notify();
+                        } else {
                             root.overlay_toggle_lock(cx);
                         }
-                    });
-                }
+                    }
+                });
             }))
+            // `td`: Alt held hides the widgets' extras while unlocked (`OVERLAY_V3_SHOW_WIDGETS {show: false}`), its
+            // release shows them again. gpui reports a modifier alone as a modifiers change.
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    let alt = event.modifiers.alt;
+                    let _ = this.root.update(cx, |root, cx| {
+                        if !root.overlay.locked || !alt {
+                            root.overlay_show_widgets(!alt, cx);
+                        }
+                    });
+                },
+            ))
             .children(body.map(|(body, _)| body))
     }
 }
@@ -170,7 +233,7 @@ pub(super) struct Overlay {
     /// The foreground window the watcher last reported (none while unknown).
     foreground: Option<Foreground>,
     /// The game the overlay follows: kept while the overlay itself has the focus.
-    focused: Option<Foreground>,
+    pub(super) focused: Option<Foreground>,
     /// `OverlayStore.isLocked(pid)`: locked unless unlocked by the keybind.
     pub(super) locked: bool,
     window: Option<WindowHandle<OverlayView>>,
@@ -201,7 +264,7 @@ pub(super) struct Overlay {
     connected: (Option<Id>, HashMap<Id, f64>),
     /// When each row appeared (the `eS` hook's mount).
     rows_mounted: HashMap<Id, f64>,
-    springs: HashMap<(u64, u8), Spring>,
+    pub(super) springs: HashMap<(u64, u8), Spring>,
     /// The ringing channels toasts were raised for.
     calls: Vec<Id>,
     /// Click-through as last set while locked (the cursor follower).
@@ -210,6 +273,31 @@ pub(super) struct Overlay {
     pub(super) widgets_panel: bool,
     /// Something is still moving: the window asks for another frame.
     pub(super) animating: bool,
+    /// A widget's Settings menu (modules 51444, 320490).
+    pub(super) menu: Option<super::overlay_panel::OverlayMenu>,
+    /// The Report a Problem dialog (module 967055).
+    pub(super) report: Option<super::overlay_panel::ReportDialog>,
+    /// `lockExtras` of every drag container: false while Alt is held (`OVERLAY_V3_SHOW_WIDGETS`).
+    pub(super) show_widgets: bool,
+    /// `Overlay-v3-Text-Chat-Store`.
+    pub(super) text_chat: dc_overlay::text_chat::Store,
+    /// The Chat widget's own list of the open channel's rows (the main window keeps its own), and what it was built
+    /// for.
+    pub(super) chat_list: gpui::ListState,
+    pub(super) chat_rows: (Option<Id>, usize),
+    /// Toasts drawn in the last frame, and the dismissed ones still leaving with when they left.
+    pub(super) toasts_drawn: Vec<super::overlay_widgets::DrawnToast>,
+    pub(super) leaving: Vec<(super::overlay_widgets::DrawnToast, f64)>,
+    /// `disableClickableRegions` as last read: the cursor follower reads no storage.
+    pub(super) clickable_disabled: bool,
+    /// When the follower last looked at the game's window (ms on the clock).
+    last_check: f64,
+    /// Drawing the overlay panicked: the window is closed and not opened again this session.
+    pub(super) failed: bool,
+    /// The chat experiment's variation as the harness sets it (`overlay chat <n>`).
+    pub(super) chat_variant: Option<Option<i64>>,
+    /// The pointer in the window (logical px) at its last move: where a Settings menu opens.
+    pub(super) pointer: (f32, f32),
 }
 
 impl Default for Overlay {
@@ -243,6 +331,19 @@ impl Default for Overlay {
             follower: false,
             widgets_panel: false,
             animating: false,
+            menu: None,
+            report: None,
+            show_widgets: true,
+            text_chat: dc_overlay::text_chat::Store::default(),
+            chat_list: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(1000.)),
+            chat_rows: (None, 0),
+            toasts_drawn: Vec::new(),
+            leaving: Vec::new(),
+            clickable_disabled: false,
+            last_check: 0.,
+            failed: false,
+            chat_variant: None,
+            pointer: (0., 0.),
         }
     }
 }
@@ -361,6 +462,29 @@ impl Root {
     }
 }
 
+/// The 40 px icon of a game's application (module 744700's `getApplicationIconURL` with `size: 40`) from the
+/// `/applications/public` answer.
+pub(super) fn game_icon_url(id: &str, body: &Value) -> Option<String> {
+    let app = body
+        .as_array()?
+        .iter()
+        .find(|app| app["id"].as_str() == Some(id))?;
+    let icon = app["icon"].as_str()?;
+    Some(format!(
+        "https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=40"
+    ))
+}
+
+/// Hiding an unlocked overlay locks its notifications store too (`OVERLAY_SET_INPUT_LOCKED {locked: true}`): the
+/// focused toast gets its timer back and the held ones are let in. Returns whether it was unlocked.
+pub(super) fn relock_on_hide<T: Clone>(notices: &mut Queue<T>, locked: bool, now: f64) -> bool {
+    if locked {
+        return false;
+    }
+    notices.set_locked(true, now);
+    true
+}
+
 /// A fresh widget id (`LayoutStore` uses random UUIDs).
 pub(super) fn new_widget_id() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -404,6 +528,40 @@ impl Root {
             .cloned()
     }
 
+    /// The game's application icon (`getApplicationIconURL`, 40 px), once `/applications/public` and the picture
+    /// have arrived.
+    pub(in crate::ui) fn overlay_game_icon(
+        &self,
+        id: Option<&str>,
+    ) -> Option<std::sync::Arc<gpui::Image>> {
+        let url = game_icon_url(id?, self.fetched.get(&format!("presence-app:{}", id?))?)?;
+        self.images.get(&url).cloned()
+    }
+
+    /// Asks for what [`Self::overlay_game_icon`] reads (the application, then its picture), each once.
+    pub(in crate::ui) fn overlay_request_game_icon(&mut self, id: &str) {
+        if id.parse::<u64>().is_err() {
+            return;
+        }
+        let key = format!("presence-app:{id}");
+        if !self.fetched.contains_key(&key) {
+            self.fetched.insert(key.clone(), Value::Null);
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key,
+                route: format!("/applications/public?application_ids={id}"),
+            });
+            return;
+        }
+        if let Some(url) = self
+            .fetched
+            .get(&key)
+            .and_then(|body| game_icon_url(id, body))
+            && !self.images.contains_key(&url)
+        {
+            self.request_image(url.clone(), url);
+        }
+    }
+
     /// `eY` for a game as the overlay reads it.
     pub(in crate::ui) fn overlay_game_enablement(&self, game: &Game) -> decision::GameEnablement {
         let global = self.overlay_global();
@@ -421,6 +579,50 @@ impl Root {
 
     /// Where the window is shown now and how, or none: `dc_overlay::decision::visible`.
     pub(super) fn overlay_target(&self) -> Option<(OverlayMethod, Rect)> {
+        let (inputs, rect) = self.overlay_inputs();
+        let method = decision::visible(&inputs)?;
+        Some((method, rect?))
+    }
+
+    /// Why the overlay is not shown now, for the log.
+    pub(super) fn overlay_hidden_reason(&self) -> &'static str {
+        decision::hidden_reason(&self.overlay_inputs().0).unwrap_or("shown")
+    }
+
+    /// Drawing panicked: everything of the window is let go and it is not opened again.
+    pub(super) fn overlay_failed(&mut self) {
+        self.overlay.failed = true;
+        self.overlay.window = None;
+        self.overlay.hwnd = None;
+        self.overlay.shown = None;
+        self.overlay.drag = None;
+        self.overlay.menu = None;
+        self.overlay.report = None;
+    }
+
+    /// `OVERLAY_V3_SHOW_WIDGETS` (Alt held and released while unlocked).
+    pub(super) fn overlay_show_widgets(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.overlay.show_widgets != show {
+            self.overlay.show_widgets = show;
+            tracing::debug!(
+                "overlay extras {}",
+                if show { "shown" } else { "hidden (Alt)" }
+            );
+            cx.notify();
+        }
+    }
+
+    /// `WidgetRenderConfig` (`2025-11-overlay-chat`) for this account, or what the harness set.
+    pub(super) fn overlay_chat_config(&self) -> dc_overlay::widgets::ChatConfig {
+        let variant = self.overlay.chat_variant.unwrap_or_else(|| {
+            self.stores
+                .experiments
+                .variant(dc_overlay::widgets::CHAT_EXPERIMENT)
+        });
+        dc_overlay::widgets::ChatConfig::of(variant)
+    }
+
+    fn overlay_inputs(&self) -> (decision::Inputs, Option<Rect>) {
         let global = self.overlay_global();
         let focused = self.overlay_focused_game().map(|(foreground, game)| {
             let enabled = self.overlay_game_enablement(&game);
@@ -443,8 +645,7 @@ impl Root {
             focused: focused.map(|(focused, enabled, _)| (focused, enabled)),
             limited_interaction: false,
         };
-        let method = decision::visible(&inputs)?;
-        Some((method, focused?.2))
+        (inputs, focused.map(|(_, _, rect)| rect))
     }
 
     /// The method the Current Game row reports for the focused game (`getTrackedGameByPid(pid).overlayMethod`).
@@ -459,12 +660,12 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.overlay.foreground = foreground;
-        // The overlay window itself in front (unlocked) keeps the game it covers.
-        let own = std::process::id();
-        let next = decision::next_focus(
+        // The overlay window itself in front (unlocked) keeps the game it covers; any other window replaces it, the
+        // app's own main window included (same process, another window).
+        let next = decision::next_focus_window(
             self.overlay.focused.map(|focused| focused.pid),
-            foreground.map(|foreground| foreground.pid),
-            own,
+            foreground.map(|foreground| (foreground.hwnd, foreground.pid)),
+            self.overlay.hwnd,
         );
         self.overlay.focused = match (next, foreground) {
             (Some(pid), Some(foreground)) if foreground.pid == pid => Some(foreground),
@@ -477,7 +678,8 @@ impl Root {
     /// The watcher runs while signed in, outside harness runs.
     fn overlay_watch(&mut self) {
         #[cfg(windows)]
-        if self.overlay.watcher.is_none()
+        if gate()
+            && self.overlay.watcher.is_none()
             && !crate::storage::is_capture_run()
             && self.stores.current_user.is_some()
         {
@@ -493,6 +695,9 @@ impl Root {
 
     /// Brings the window in line with the decision: opened, placed and styled, or hidden (and locked again).
     pub(super) fn overlay_sync(&mut self, cx: &mut Context<Self>) {
+        if !gate() || self.overlay.failed {
+            return;
+        }
         self.overlay_watch();
         let target = self.overlay_target();
         match target {
@@ -511,10 +716,14 @@ impl Root {
                 #[cfg(windows)]
                 if let Some(hwnd) = self.overlay.hwnd {
                     dc_overlay::platform::style(hwnd, locked);
-                    dc_overlay::platform::place(hwnd, rect);
+                    if !dc_overlay::platform::place_checked(hwnd, rect) {
+                        tracing::warn!(
+                            "overlay: the window does not cover the game after three placements"
+                        );
+                    }
                 }
                 tracing::info!(
-                    "overlay shown {}x{} at {},{} locked={locked}",
+                    "overlay shown {}x{} at {},{} locked={locked} first={first}",
                     rect.width,
                     rect.height,
                     rect.x,
@@ -526,15 +735,24 @@ impl Root {
                 cx.notify();
             }
             None => {
-                // A hidden overlay comes back locked (the window resets to locked when it is made again).
+                // A hidden overlay comes back locked (the window resets to locked when it is made again), and so does
+                // its notifications store: a focused toast gets its timer back and held ones are released.
+                let now = self.overlay_now();
+                if relock_on_hide(&mut self.overlay.notices, self.overlay.locked, now) {
+                    self.overlay.lock_changed = now;
+                }
                 self.overlay.locked = true;
                 self.overlay.drag = None;
+                self.overlay.menu = None;
+                self.overlay.report = None;
+                self.overlay.widgets_panel = false;
                 if self.overlay.shown.take().is_some() {
                     #[cfg(windows)]
                     if let Some(hwnd) = self.overlay.hwnd {
                         dc_overlay::platform::hide(hwnd);
                     }
-                    tracing::info!("overlay hidden");
+                    tracing::info!("overlay hidden: {}", self.overlay_hidden_reason());
+                    self.overlay_schedule_tick(cx);
                     cx.notify();
                 }
             }
@@ -551,6 +769,7 @@ impl Root {
             self.save_overlay_layout(&layout);
         }
         self.overlay_follow_cursor(cx);
+        self.overlay_text_chat_mount();
         let pid = self.overlay.focused.map(|focused| focused.pid);
         if pid.is_none() || pid == self.overlay.mounted {
             return;
@@ -574,6 +793,9 @@ impl Root {
     /// Each frame of the main view while a game has the focus: a setting changed on the page shows at once, and the
     /// calls that ring us are matched with their toasts.
     pub(super) fn overlay_frame(&mut self, cx: &mut Context<Self>) {
+        if !gate() {
+            return;
+        }
         if self.overlay.focused.is_some() || self.overlay.shown.is_some() {
             self.overlay_sync(cx);
         }
@@ -583,7 +805,7 @@ impl Root {
     }
 
     fn overlay_open_window(&mut self, cx: &mut Context<Self>) {
-        if self.overlay.opening || !window_allowed() {
+        if self.overlay.opening || self.overlay.failed || !window_allowed() {
             return;
         }
         self.overlay.opening = true;
@@ -645,12 +867,22 @@ impl Root {
     /// no overlay over a game it does nothing.
     pub(in crate::ui) fn overlay_toggle_lock(&mut self, cx: &mut Context<Self>) {
         if self.overlay_target().is_none() {
+            tracing::debug!("overlay lock ignored: {}", self.overlay_hidden_reason());
             return;
         }
         self.overlay.locked = !self.overlay.locked;
         self.overlay.drag = None;
+        self.overlay.menu = None;
+        self.overlay.show_widgets = true;
         self.overlay.lock_changed = self.overlay_now();
-        tracing::info!("overlay locked={}", self.overlay.locked);
+        tracing::info!(
+            "overlay {} (lock keybind, Escape, a close button or a click)",
+            if self.overlay.locked {
+                "locked"
+            } else {
+                "unlocked"
+            }
+        );
         // `OVERLAY_SET_INPUT_LOCKED` in the notifications store.
         let now = self.overlay_now();
         let locked = self.overlay.locked;
@@ -673,7 +905,7 @@ impl Root {
 
     /// The clickable regions of the last frame, as zones of the window.
     fn overlay_zones(&self) -> Vec<zones::Zone> {
-        if self.overlay_settings().disable_clickable_regions {
+        if self.overlay.clickable_disabled {
             return Vec::new();
         }
         let (width, height) = self.overlay.size;
@@ -696,7 +928,7 @@ impl Root {
 
     /// Who takes a click at a point of the window (logical px).
     pub(super) fn overlay_hit(&self, x: f32, y: f32) -> zones::Hit {
-        let disabled = self.overlay_settings().disable_clickable_regions;
+        let disabled = self.overlay.clickable_disabled;
         zones::hit(
             self.overlay.locked,
             disabled,
@@ -718,7 +950,7 @@ impl Root {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(16))
                     .await;
-                let going = this.update(cx, |this, _| this.overlay_follow_step());
+                let going = this.update(cx, |this, cx| this.overlay_follow_step(cx));
                 if !matches!(going, Ok(true)) {
                     break;
                 }
@@ -727,11 +959,41 @@ impl Root {
         .detach();
     }
 
-    /// One look at the cursor; false once the overlay is hidden.
-    fn overlay_follow_step(&mut self) -> bool {
-        if self.overlay.shown.is_none() {
+    /// One look at the cursor; false once the overlay is hidden. Every 250 ms the game's window is looked at too: gone
+    /// (the game quit), or resized by itself (a resolution change), the decision is taken again; and the overlay's own
+    /// window is placed again when something (a DPI change) moved it off the game.
+    fn overlay_follow_step(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.overlay.shown.is_none() || self.overlay.failed {
             self.overlay.follower = false;
             return false;
+        }
+        let now = self.overlay_now();
+        if now - self.overlay.last_check >= 250. {
+            self.overlay.last_check = now;
+            #[cfg(windows)]
+            if let Some(focused) = self.overlay.focused {
+                if !dc_overlay::platform::window_alive(focused.hwnd) {
+                    tracing::info!("overlay: the game's window is gone");
+                    self.overlay_focus_changed(None, cx);
+                } else if let Some(client) = dc_overlay::platform::client_rect_of(focused.hwnd)
+                    && client != focused.client
+                {
+                    let moved = Foreground { client, ..focused };
+                    self.overlay.focused = Some(moved);
+                    tracing::info!("overlay: the game's window moved or changed size");
+                }
+                if let (Some(hwnd), Some((rect, _))) = (self.overlay.hwnd, self.overlay.shown)
+                    && dc_overlay::platform::client_rect_of(hwnd) != Some(rect)
+                {
+                    tracing::info!("overlay: the window was moved off the game, placed again");
+                    self.overlay.shown = None;
+                }
+            }
+            self.overlay_sync(cx);
+            if self.overlay.shown.is_none() {
+                self.overlay.follower = false;
+                return false;
+            }
         }
         #[cfg(windows)]
         if self.overlay.locked
@@ -1607,6 +1869,7 @@ impl Root {
         widget: &layout::Widget,
         locked: bool,
         flipped: bool,
+        show_empty: bool,
     ) -> AnyElement {
         let settings = self.overlay_settings();
         let rows = self.overlay_call_rows();
@@ -1633,7 +1896,7 @@ impl Root {
             };
             return voice_list(&rows, &settings, max, look, &joined, &self.overlay.bounds);
         }
-        if voice::shows_empty_state(drawn, locked, true) {
+        if voice::shows_empty_state(drawn, locked, show_empty) {
             return div()
                 .w_full()
                 .p(px(16.))
@@ -1690,8 +1953,13 @@ impl Root {
             rise,
         };
         let layout = self.overlay_layout();
+        self.overlay.clickable_disabled = self.overlay_settings().disable_clickable_regions;
+        let config = self.overlay_chat_config();
         let mut widgets = Vec::new();
-        for widget in layout.drawn() {
+        let mut gated_out = 0;
+        let mut drawn_count = 0;
+        for widget in dc_overlay::widgets::drawn(&layout, config) {
+            drawn_count += 1;
             let anchored_left = match self
                 .overlay
                 .drag
@@ -1701,29 +1969,56 @@ impl Root {
                 Some(held) => held.drag.anchor.left.is_some(),
                 None => widget.anchor.left.is_some(),
             };
+            // `showEmpty` is the container's `lockExtras`: Alt held hides the empty states too.
+            let show_empty = self.overlay.show_widgets;
             let (title, content) = match widget.kind.as_str() {
                 layout::VOICE => (
-                    "Voice",
-                    self.overlay_voice_content(&widget, locked, !anchored_left),
+                    dc_intl::tr("Voice"),
+                    self.overlay_voice_content(&widget, locked, !anchored_left, show_empty),
                 ),
                 layout::NOTIFICATIONS => (
                     dc_intl::tr("Notifications"),
-                    self.overlay_notifications(locked, widget.pinned, true, cx),
+                    self.overlay_notifications(locked, widget.pinned, show_empty, cx),
                 ),
-                // The other widgets (quick actions, activity, video, streams, chat, friends) are not built.
+                layout::QUICK_ACTIONS => (
+                    dc_intl::tr("Quick Actions"),
+                    self.overlay_quick_actions(locked, cx),
+                ),
+                layout::TEXT_CHAT => {
+                    // `containerRenderGate`: only unlocked, with a voice channel or a chat to show.
+                    let voice = self.call.as_ref().map(|call| call.channel);
+                    let entries = !self.overlay.text_chat.entries().0.is_empty();
+                    if !dc_overlay::widgets::chat_container_shown(locked, voice.is_some(), entries)
+                    {
+                        gated_out += 1;
+                        continue;
+                    }
+                    (
+                        dc_intl::tr("Chat"),
+                        self.overlay_text_chat(&widget, frame.width, frame.height, cx),
+                    )
+                }
+                // Activity, Video, Streams and Friends are not built (BLOCKED.md). They have no render gate, so the
+                // official empty state does not count them as gone either.
                 _ => continue,
             };
             widgets.push(self.overlay_widget_frame(&widget, title, content, &frame, cx));
         }
         let keybind = self.overlay_keybind_text();
-        let empty = widgets.is_empty() && !locked;
+        // `e9`: the empty state, panel closed, while every drawn widget's render gate says no (none drawn: all gone).
+        let empty = !locked && drawn_count == gated_out && !self.overlay.widgets_panel;
         div()
             .id("overlay-body")
             .relative()
             .w(px(width))
             .h(px(height))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                this.overlay.pointer = (f32::from(event.position.x), f32::from(event.position.y));
                 if this.overlay_drag_move(event.position) {
+                    cx.notify();
+                }
+                if this.overlay.menu.as_ref().is_some_and(|menu| menu.sliding) && event.dragging() {
+                    this.overlay_menu_slide(f32::from(event.position.x));
                     cx.notify();
                 }
             }))
@@ -1733,6 +2028,9 @@ impl Root {
                     if this.overlay.drag.is_some() {
                         this.overlay_drag_end();
                         cx.notify();
+                    }
+                    if let Some(menu) = this.overlay.menu.as_mut() {
+                        menu.sliding = false;
                     }
                 }),
             )
@@ -1771,6 +2069,19 @@ impl Root {
             .when(!locked, |this| {
                 this.child(self.overlay_toolbar(keybind, cx))
             })
+            .when(!locked && self.overlay.widgets_panel, |this| {
+                this.child(self.overlay_widgets_panel(height, config, cx))
+            })
+            .children(
+                (!locked)
+                    .then(|| self.overlay_menu_layer(width, height, cx))
+                    .flatten(),
+            )
+            .children(
+                (!locked)
+                    .then(|| self.overlay_report_layer(width, height, cx))
+                    .flatten(),
+            )
             .into_any_element()
     }
 }
@@ -1793,6 +2104,8 @@ impl Root {
         let kind_of = |word: &str| match word {
             "voice" => Some(layout::VOICE),
             "notifications" => Some(layout::NOTIFICATIONS),
+            "quick" => Some(layout::QUICK_ACTIONS),
+            "chat" => Some(layout::TEXT_CHAT),
             _ => None,
         };
         match words {
@@ -2032,17 +2345,71 @@ impl Root {
                     .iter()
                     .map(|widget| {
                         format!(
-                            "{} anchor={:?} pinned={} hidden={} z={}",
-                            widget.kind, widget.anchor, widget.pinned, widget.hidden, widget.z_index
+                            "{} anchor={:?} size={:?} pinned={} hidden={} z={}",
+                            widget.kind,
+                            widget.anchor,
+                            widget.size,
+                            widget.pinned,
+                            widget.hidden,
+                            widget.z_index
                         )
                     })
                     .collect();
                 format!("overlay layout: {}", lines.join(" | "))
             }
+            // The Widgets panel, as the toolbar's Widgets button toggles it.
+            ["panel"] => {
+                self.overlay.widgets_panel = !self.overlay.widgets_panel;
+                cx.notify();
+                let kinds: Vec<&str> = dc_overlay::widgets::panel(self.overlay_chat_config())
+                    .iter()
+                    .map(|entry| entry.kind)
+                    .collect();
+                format!("overlay panel: open={} rows={kinds:?}", self.overlay.widgets_panel)
+            }
+            // `overlay menu voice|notifications <x> <y>`: the widget's Settings menu at that point.
+            ["menu", kind, x, y] => {
+                self.overlay.pointer = (x.parse().unwrap_or(0.), y.parse().unwrap_or(0.));
+                let menu = match *kind {
+                    "voice" => dc_overlay::menus::Menu::Voice,
+                    _ => dc_overlay::menus::Menu::Notifications,
+                };
+                self.overlay.menu = None;
+                self.overlay_open_menu(menu);
+                cx.notify();
+                format!("overlay menu: {:?}", self.overlay.menu.as_ref().map(|menu| menu.kind))
+            }
+            // The chat experiment's variation: `none` for the default, else 1 to 3.
+            ["chat", variant] => {
+                self.overlay.chat_variant = Some(variant.parse().ok());
+                cx.notify();
+                format!("overlay chat: {:?}", self.overlay_chat_config())
+            }
+            ["chat-select", channel] => {
+                if let Ok(channel) = channel.parse() {
+                    self.overlay_chat_select(channel, cx);
+                }
+                cx.notify();
+                let (entries, _) = self.overlay.text_chat.entries();
+                format!(
+                    "overlay chat-select: selected={:?} entries={}",
+                    self.overlay.text_chat.selected(),
+                    entries.len()
+                )
+            }
+            ["report"] => {
+                self.overlay_open_report(cx);
+                cx.notify();
+                "overlay report: open".to_owned()
+            }
+            ["alt", value] => {
+                self.overlay_show_widgets(*value != "on", cx);
+                format!("overlay alt: show_widgets={}", self.overlay.show_widgets)
+            }
             ["state"] => {
                 let rows = self.overlay_call_rows().len();
                 format!(
-                    "overlay state: target={:?} window={} hwnd={} locked={} shown={:?} allowed={} rows={} notices={} size={:?} scale={}",
+                    "overlay state: target={:?} window={} hwnd={} locked={} shown={:?} allowed={} rows={} notices={} size={:?} scale={} panel={} menu={:?} report={} chat={:?} leaving={} reason={}",
                     self.overlay_target(),
                     self.overlay.window.is_some(),
                     self.overlay.hwnd.is_some(),
@@ -2052,7 +2419,13 @@ impl Root {
                     rows,
                     self.overlay.notices.entries().len(),
                     self.overlay.size,
-                    self.overlay.scale
+                    self.overlay.scale,
+                    self.overlay.widgets_panel,
+                    self.overlay.menu.as_ref().map(|menu| menu.kind),
+                    self.overlay.report.is_some(),
+                    self.overlay.text_chat.selected(),
+                    self.overlay.leaving.len(),
+                    self.overlay_hidden_reason()
                 )
             }
             _ => "usage: overlay demo [w h] | away | toggle | game on|off | speak | notify <kind> | max <n> | pin|hide <kind> | reset | hit <x> <y> | layout | state | shot <png> | drag <x1> <y1> <x2> <y2>".to_owned(),
@@ -2096,6 +2469,70 @@ mod tests {
         if cfg!(feature = "capture") {
             assert!(!window_allowed());
         }
+    }
+
+    #[test]
+    fn without_the_variable_a_normal_run_does_no_overlay_work() {
+        assert!(!gate_on(false, None));
+        assert!(!gate_on(false, Some("0")));
+        assert!(!gate_on(false, Some("true")));
+        assert!(gate_on(false, Some("1")));
+        // A harness run always runs the overlay's logic (never its watcher, follower or keybind).
+        assert!(gate_on(true, None));
+        // The unit tests run without the variable: no watcher may start here.
+        if !crate::storage::is_capture_run() && std::env::var("GRAVECORD_OVERLAY").is_err() {
+            assert!(!gate());
+            let mut overlay = Overlay::default();
+            assert!(overlay.watcher.is_none());
+            overlay.locked = false;
+            assert!(!overlay.locked);
+        }
+    }
+
+    #[test]
+    fn the_game_icon_comes_from_its_application() {
+        let body = serde_json::json!([{"id": "9", "icon": "abc"}, {"id": "7", "icon": null}]);
+        assert_eq!(
+            game_icon_url("9", &body).as_deref(),
+            Some("https://cdn.discordapp.com/app-icons/9/abc.png?size=40")
+        );
+        assert_eq!(game_icon_url("7", &body), None);
+        assert_eq!(game_icon_url("8", &body), None);
+        assert_eq!(game_icon_url("9", &Value::Null), None);
+    }
+
+    #[test]
+    fn hiding_while_unlocked_lets_held_toasts_in() {
+        let text = || Options {
+            kind: Kind::Text,
+            externally_managed: true,
+            ..Options::default()
+        };
+        let mut queue: Queue<&str> = Queue::default();
+        let first = queue.push("first", text(), 0.);
+        queue.set_locked(false, 10.);
+        let held = queue.push("held", Options::default(), 20.);
+        assert!(queue.entries().iter().all(|entry| entry.id != held));
+        // Shown again after an alt-tab while unlocked: nothing stuck.
+        assert!(relock_on_hide(&mut queue, false, 30.));
+        assert!(queue.entries().iter().any(|entry| entry.id == held));
+        assert!(
+            queue
+                .entries()
+                .iter()
+                .all(|entry| entry.status != notify::Status::Focused)
+        );
+        assert!(queue.entries().iter().any(|entry| entry.id == first));
+        assert!(queue.next_deadline().is_some(), "the timers run again");
+        // Already locked: nothing to do.
+        assert!(!relock_on_hide(&mut queue, true, 40.));
+    }
+
+    #[test]
+    fn a_panic_while_drawing_is_caught() {
+        assert_eq!(guarded(|| 4), Some(4));
+        let caught: Option<u8> = guarded(|| panic!("drawing failed"));
+        assert_eq!(caught, None);
     }
 
     #[test]

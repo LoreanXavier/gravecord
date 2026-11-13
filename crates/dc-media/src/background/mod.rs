@@ -14,10 +14,12 @@
 //! worker thread, replacing one not yet taken, and is mixed with the newest mask the worker has finished. Until the
 //! first mask exists the whole frame counts as background, so the room never shows unprocessed.
 
+pub mod animated;
 pub mod composite;
 pub mod tflite;
 
 use crate::Picture;
+use animated::Animation;
 use composite::{BlurBuffers, Mask};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,6 +38,9 @@ pub enum Background {
     Blur,
     /// An RGBA picture, scaled to cover the frame.
     Image(Arc<Picture>),
+    /// A clip playing on its own thread (an MP4 preset, a GIF or MP4 custom background), its frame on show scaled to
+    /// cover the frame.
+    Animated(Arc<Animation>),
 }
 
 impl PartialEq for Background {
@@ -43,6 +48,7 @@ impl PartialEq for Background {
         match (self, other) {
             (Self::None, Self::None) | (Self::Blur, Self::Blur) => true,
             (Self::Image(a), Self::Image(b)) => Arc::ptr_eq(a, b),
+            (Self::Animated(a), Self::Animated(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -294,11 +300,12 @@ pub struct Processor {
     worker: Option<Worker>,
     frame: (usize, usize),
     input: Vec<f32>,
-    mask: Vec<f32>,
     blur: BlurBuffers,
     behind: Vec<u8>,
     /// The cover-fitted picture and what it was made from.
     image: Option<(Arc<Picture>, usize, usize, Vec<u8>)>,
+    /// The clip frame in use, at the frame's size.
+    shown: Option<Arc<Vec<u8>>>,
     /// A stand-in segmenter for tests.
     segment: Option<MakeSegmenter>,
 }
@@ -315,10 +322,10 @@ impl Processor {
             worker: None,
             frame: (0, 0),
             input: Vec::new(),
-            mask: Vec::new(),
             blur: BlurBuffers::default(),
             behind: Vec::new(),
             image: None,
+            shown: None,
             segment: None,
         }
     }
@@ -401,19 +408,20 @@ impl Processor {
         let mask = worker
             .latest()
             .unwrap_or_else(|| Arc::new(Mask::background(1, 1)));
-        composite::upsample(&mask, width, height, &mut self.mask);
-        match background {
+        let frame = &mut rgba[..width * height * 4];
+        let behind: &[u8] = match background {
             Background::None => return false,
             Background::Blur => {
                 composite::blur(
-                    rgba,
+                    frame,
                     width,
                     height,
-                    &self.mask,
+                    &mask,
                     composite::BLUR_ITERATIONS,
                     &mut self.blur,
                     &mut self.behind,
                 );
+                &self.behind
             }
             Background::Image(picture) => {
                 let fresh = self.image.as_ref().is_some_and(|(source, w, h, _)| {
@@ -430,15 +438,47 @@ impl Processor {
                     );
                     self.image = Some((picture.clone(), width, height, fitted));
                 }
-                if let Some((_, _, _, fitted)) = &self.image {
-                    self.behind.clone_from(fitted);
+                match &self.image {
+                    Some((_, _, _, fitted)) => fitted,
+                    None => return false,
                 }
             }
-        }
+            Background::Animated(animation) => {
+                animation.want(width, height);
+                let Some((_, size, pixels)) = animation.current() else {
+                    // Until the first frame is decoded the room is black, never the unprocessed camera.
+                    self.behind.clear();
+                    self.behind.resize(width * height * 4, 0);
+                    composite::light_wrap(
+                        frame,
+                        width,
+                        height,
+                        &self.behind,
+                        &mask,
+                        composite::CONFIDENCE_THRESHOLD,
+                    );
+                    return true;
+                };
+                if size == (width, height) {
+                    self.shown = Some(pixels);
+                } else {
+                    // The first frames, decoded before the player knew this size.
+                    self.shown = Some(Arc::new(composite::cover(
+                        &pixels, size.0, size.1, width, height,
+                    )));
+                }
+                match &self.shown {
+                    Some(pixels) => pixels,
+                    None => return false,
+                }
+            }
+        };
         composite::light_wrap(
-            &mut rgba[..width * height * 4],
-            &self.behind,
-            &self.mask,
+            frame,
+            width,
+            height,
+            behind,
+            &mask,
             composite::CONFIDENCE_THRESHOLD,
         );
         true
@@ -586,13 +626,48 @@ mod tests {
         assert_eq!(pixels, frame([5, 6, 7]));
     }
 
-    #[test]
-    fn bench_ms_per_frame_at_1280x720() {
-        const FW: usize = 1280;
-        const FH: usize = 720;
-        let mut camera = Vec::with_capacity(FW * FH * 4);
-        for i in 0..FW * FH {
-            let (x, y) = (i % FW, i / FW);
+    /// Milliseconds per frame `apply_with` takes on the capture thread at `fw` x `fh`, the mask coming from a stand-in
+    /// at the model size the official graph would pick for that shape.
+    fn ms_per_frame(background: &Background, fw: usize, fh: usize) -> f64 {
+        let camera = test_camera(fw, fh);
+        let (mw, mh) = if fw as f32 >= fh as f32 * 1.5 {
+            (256, 144)
+        } else {
+            (256, 256)
+        };
+        let mut processor = Processor::with_segmenter(move || {
+            let segment: Segment = Box::new(move |_: &[f32]| {
+                (0..mw * mh)
+                    .map(|i| if (i % mw) < mw / 2 { 1.0 } else { 0.0 })
+                    .collect()
+            });
+            (segment, (mw, mh), (mw, mh))
+        });
+        let started = Instant::now();
+        while processor.masks_done() == 0 && started.elapsed() < Duration::from_secs(5) {
+            let mut pixels = camera.clone();
+            processor.apply_with(background, &mut pixels, fw, fh);
+        }
+        // Warm the buffers, then time.
+        for _ in 0..3 {
+            let mut pixels = camera.clone();
+            processor.apply_with(background, &mut pixels, fw, fh);
+        }
+        let frames = 20;
+        let mut total = Duration::ZERO;
+        for _ in 0..frames {
+            let mut pixels = camera.clone();
+            let started = Instant::now();
+            processor.apply_with(background, &mut pixels, fw, fh);
+            total += started.elapsed();
+        }
+        total.as_secs_f64() * 1000.0 / f64::from(frames)
+    }
+
+    fn test_camera(fw: usize, fh: usize) -> Vec<u8> {
+        let mut camera = Vec::with_capacity(fw * fh * 4);
+        for i in 0..fw * fh {
+            let (x, y) = (i % fw, i / fw);
             camera.extend_from_slice(&[
                 (x % 256) as u8,
                 (y % 256) as u8,
@@ -600,41 +675,27 @@ mod tests {
                 255,
             ]);
         }
-        let make = || {
-            Processor::with_segmenter(|| {
-                let segment: Segment = Box::new(|_: &[f32]| {
-                    (0..144 * 256)
-                        .map(|i| if (i % 256) < 128 { 1.0 } else { 0.0 })
-                        .collect()
-                });
-                (segment, (256, 144), (256, 144))
-            })
-        };
-        for (name, background) in [
-            ("blur", Background::Blur),
-            (
-                "image",
-                Background::Image(picture([30, 60, 90], 1920, 1080)),
-            ),
-        ] {
-            let mut processor = make();
-            let started = Instant::now();
-            while processor.masks_done() == 0 && started.elapsed() < Duration::from_secs(5) {
-                let mut pixels = camera.clone();
-                processor.apply_with(&background, &mut pixels, FW, FH);
+        camera
+    }
+
+    #[test]
+    fn bench_ms_per_frame() {
+        for (fw, fh) in [(640, 480), (1280, 720)] {
+            for (name, background) in [
+                ("blur", Background::Blur),
+                (
+                    "image",
+                    Background::Image(picture([30, 60, 90], 1920, 1080)),
+                ),
+            ] {
+                let ms = ms_per_frame(&background, fw, fh);
+                eprintln!("video background {name} at {fw}x{fh}: {ms:.2} ms per frame");
             }
-            let frames = 10;
-            let mut total = Duration::ZERO;
-            for _ in 0..frames {
-                let mut pixels = camera.clone();
-                let started = Instant::now();
-                processor.apply_with(&background, &mut pixels, FW, FH);
-                total += started.elapsed();
-            }
-            let ms = total.as_secs_f64() * 1000.0 / f64::from(frames);
-            eprintln!("video background {name} at {FW}x{FH}: {ms:.2} ms per frame");
         }
         // The model itself, when the local snapshot holds it.
+        const FW: usize = 1280;
+        const FH: usize = 720;
+        let camera = test_camera(FW, FH);
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../design/snapshot/desktop/modules/discord_voice-1/discord_voice")
             .join(MODEL_LANDSCAPE);

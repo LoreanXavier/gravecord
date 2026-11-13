@@ -734,6 +734,38 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `overlay click <x> <y>`: a move there, a press and a release with a frame between, in the overlay window.
+            ["overlay", "click", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(overlay), Some(point)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, overlay, moved(point, None));
+                            dispatch(cx, overlay, down(point));
+                        });
+                        cx.background_executor()
+                            .timer(Duration::from_millis(30))
+                            .await;
+                        cx.update(|cx| dispatch(cx, overlay, up(point)));
+                        format!("overlay click: {x},{y}")
+                    }
+                    _ => "overlay click: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
+            // `overlay key <stroke>`: a key press sent to the overlay window (Enter in the Chat widget's composer).
+            ["overlay", "key", stroke] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let stroke: &'static str = Box::leak(stroke.to_string().into_boxed_str());
+                let line = match (handle, Keystroke::parse(stroke)) {
+                    (Some(overlay), Ok(parsed)) => {
+                        cx.update(|cx| key(cx, overlay, parsed));
+                        format!("overlay key: {stroke}")
+                    }
+                    _ => "overlay key: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             ["overlay", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_overlay(rest, cx));
                 let _ = writeln!(output, "{line}");

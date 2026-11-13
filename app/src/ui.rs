@@ -170,6 +170,8 @@ mod oauth;
 mod oauth_spec;
 mod official_messages;
 mod overlay;
+mod overlay_chat;
+mod overlay_panel;
 mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
@@ -1415,6 +1417,9 @@ impl Root {
                     return;
                 }
                 if self.profile_effect_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.video_background_fetched(&key, &body, cx) {
                     return;
                 }
                 #[cfg(feature = "capture")]

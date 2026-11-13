@@ -2349,6 +2349,25 @@ impl Stores {
         patch
     }
 
+    /// `voiceAndVideo.videoBackgroundFilterDesktop` as the account holds it, `None` when no member is set.
+    pub fn video_background(&self) -> Option<settings::VideoBackgroundFilter> {
+        settings::video_background_in(&self.settings_raw)
+    }
+
+    /// Sets `videoBackgroundFilterDesktop`: the new value shows at once and the PATCH body value (the whole
+    /// `voice_and_video` message) comes back, empty until the account's settings have arrived.
+    pub fn set_video_background(
+        &mut self,
+        filter: Option<&settings::VideoBackgroundFilter>,
+    ) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_video_background(&self.settings_raw, filter);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// The custom theme the account holds (`customUserThemeSettings`), if it has colours.
     pub fn custom_theme(&self) -> Option<settings::CustomTheme> {
         settings::custom_theme_in(&self.settings_raw)

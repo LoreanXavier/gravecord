@@ -2,14 +2,17 @@
 //! retransmission from a history, and rate control from the viewers' RTCP.
 //!
 //! Serein's camera ignores its viewers' RTCP; this sender honours it as its Go Live sender does (PLI forces a keyframe
-//! at most every 500 ms, NACK resends from the history, loss and REMB steer the bitrate). The pieces are adapted from
+//! at most every 300 ms, NACK resends from the history, loss and REMB steer the bitrate). The pieces are adapted from
 //! Serein `video.rs` and `transport.rs` (`run_stream`), MIT OR Apache-2.0.
 use super::{
     send::{CAMERA_PACING, History, Pacer, Rate, SCREEN_PACING, packetize, payload_bitrate},
     sps,
 };
 use crate::{
-    bwe::{AlrDetector, DelayBased, LimitedCause, ProbeCluster, ProbeController, Prober, Usage},
+    bwe::{
+        AlrDetector, DEFAULT_RTT, DelayBased, LimitedCause, ProbeCluster, ProbeController, Prober,
+        Usage,
+    },
     dave::Dave,
     rtp::{Feedback, Transport},
 };
@@ -21,6 +24,37 @@ use tokio::time::Instant;
 /// `kMinKeyframeSendInterval` of 300 ms).
 pub(crate) const KEYFRAME_INTERVAL: Duration = Duration::from_millis(300);
 
+/// How long after the first secure picture the sender waits for transport-wide feedback before it gives up on the
+/// send-side estimator and steers by receiver reports and REMB alone. libwebrtc has no such fallback (its estimator
+/// simply never limits without feedback, while the loss-based target starts low); this is our own, at the delay-based
+/// estimator's `kStreamTimeOut` (2 s), the time after which it, too, treats the feedback stream as gone.
+const FEEDBACK_WAIT: Duration = Duration::from_secs(2);
+
+/// A picture is taken only while what the pacer holds leaves within two frame intervals at the pacing rate, at least
+/// one burst interval (40 ms). Our own rule, standing in for libwebrtc's encoder frame dropper (`FrameDropper`, on for
+/// encoders without a trusted rate controller), which is not ported: it keeps a backlog encoded at a higher target from
+/// standing in the queue after the target falls. With the screen share's pacing at 2.5 times the target it hardly ever
+/// holds a picture back; at 1 it skipped pictures behind every keyframe.
+const QUEUE_ALLOWANCE_MIN: Duration = Duration::from_millis(40);
+
+/// How long after a keyframe left the viewers' keyframe requests are taken to be about the picture before it: a round
+/// trip (`kDefaultRtt`, as none is measured) and the request interval as a margin. Our own rule: a request that
+/// crossed the keyframe in flight must not queue another one behind it.
+const KEYFRAME_SETTLE: Duration = Duration::from_millis(DEFAULT_RTT.as_millis() as u64 + 300);
+
+/// When the sender takes the next picture from the capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// While what the pacer holds leaves within this many frame intervals, at least `QUEUE_ALLOWANCE_MIN`.
+    Intervals(u32),
+    /// Only once everything queued has left (Serein's sender), for the simulations' comparison.
+    #[cfg(test)]
+    Idle,
+}
+
+/// Frame intervals of queue the gate allows.
+const GATE_INTERVALS: u32 = 2;
+
 pub(crate) struct VideoSender {
     video_ssrc: u32,
     rtx_ssrc: u32,
@@ -29,12 +63,21 @@ pub(crate) struct VideoSender {
     pacer: Pacer,
     history: History,
     rate: Rate,
+    minimum: u32,
+    maximum: u32,
+    /// Pictures a second, for the encoder's share of the target.
+    fps: u32,
+    /// When the next picture is taken.
+    gate: Gate,
     next_keyframe: Instant,
     /// The server's `keyframe_interval` (voice op 4 or 14), in milliseconds; 0 leaves keyframes to the encoder and the
     /// viewers' requests.
     keyframe_every: Option<Duration>,
     last_keyframe: Option<Instant>,
-    /// Frames dropped because the previous one had not left yet, for the log.
+    /// The last packet of a keyframe still in the pacer, and when the last keyframe left.
+    keyframe_queued: Option<u16>,
+    keyframe_left: Option<Instant>,
+    /// Frames refused because the pacer's queue was full, for the log.
     pub dropped: u64,
     /// Retransmissions sent, for the log.
     pub repairs: u64,
@@ -47,14 +90,20 @@ pub(crate) struct VideoSender {
     probing: bool,
     alr: AlrDetector,
     previously_in_alr: bool,
+    /// When the first secure picture was queued: the estimation and its probing start there.
+    started: Option<Instant>,
     /// Transport-wide feedback came at least once (`first_transport_feedback_received_`).
     feedback_seen: bool,
+    /// No transport-wide feedback in time: receiver reports and REMB alone steer the target.
+    fallback: bool,
     /// A probe burst found nothing to send; it waits for the next media (`probing_send_failure_`).
     probe_failed: bool,
     /// What the probe controller last heard: the target and the cause.
     reported_network: Option<(u32, LimitedCause)>,
-    /// Probe padding packets sent, for the log.
+    /// Probe padding packets sent, receiver reports and REMB messages taken, for the log.
     pub padding: u64,
+    receiver_reports: u64,
+    rembs: u64,
     /// Packets transport-wide feedback reported, and how many of them lost, since the last loss update.
     expected: u64,
     lost: u64,
@@ -91,13 +140,22 @@ pub(crate) struct Estimation {
     pub last_probe: u32,
     pub application_limited: bool,
     pub padding_packets: u64,
+    pub transport_cc: bool,
+    pub receiver_reports: u64,
+    pub rembs: u64,
+    pub fallback: bool,
+    pub target: u32,
+    pub encoder_rate: u32,
+    pub dropped_pictures: u64,
 }
 
 impl VideoSender {
     /// `minimum` and `bitrate` bound the rate control: the official `encodingVideoMinBitRate` and the top rate
-    /// (`encodingVideoMaxBitRate`); the estimation starts at `start` (`CALL_START_BITRATE` for a real connection).
+    /// (`encodingVideoMaxBitRate`); the estimation starts at `start` (`CALL_START_BITRATE` for a real connection) once
+    /// the first secure picture is queued.
     pub fn new(video_ssrc: u32, rtx_ssrc: u32, minimum: u32, start: u32, bitrate: u32) -> Self {
         let now = Instant::now();
+        let start = start.clamp(minimum.min(bitrate), bitrate);
         let mut sender = Self {
             video_ssrc,
             rtx_ssrc,
@@ -106,43 +164,76 @@ impl VideoSender {
             pacer: Pacer::new(CAMERA_PACING),
             history: History::default(),
             rate: Rate::new(minimum, bitrate, now),
+            minimum,
+            maximum: bitrate,
+            fps: 30,
+            gate: Gate::Intervals(GATE_INTERVALS),
             next_keyframe: now,
             keyframe_every: None,
             last_keyframe: None,
+            keyframe_queued: None,
+            keyframe_left: None,
             dropped: 0,
             repairs: 0,
-            delay: DelayBased::new(start.clamp(minimum, bitrate), minimum, now),
+            delay: DelayBased::new(start, minimum, now),
             delay_enabled: true,
             probes: ProbeController::default(),
             prober: Prober::default(),
             probing: true,
             alr: AlrDetector::default(),
             previously_in_alr: false,
+            started: None,
             feedback_seen: false,
+            fallback: false,
             probe_failed: false,
             reported_network: None,
             padding: 0,
+            receiver_reports: 0,
+            rembs: 0,
             expected: 0,
             lost: 0,
             next_loss_update: now + LOSS_UPDATE,
         };
         sender.rate.set_start(start);
-        // The network is up when a sender exists: `SetBitrates` with the call's start and top rates starts the
-        // exponential probing, then the stream's allocation is known (`OnMaxTotalAllocatedBitrate`), which caps the
-        // probes at twice it.
-        let start = sender.rate.target;
-        let clusters = sender.probes.set_bitrates(
+        sender
+    }
+
+    /// The first secure picture: the network is up for this source. `SetBitrates` with the call's start and top rates
+    /// starts the exponential probing, then the stream's allocation is known (`OnMaxTotalAllocatedBitrate`), which caps
+    /// the probes at twice it. Starting here, not when the source is announced, keeps a slow DAVE handshake from
+    /// running out the probe controller's wait for results before anything was sent.
+    fn start_estimation(&mut self, now: Instant) {
+        self.started = Some(now);
+        let start = self.rate.target;
+        let clusters = self.probes.set_bitrates(
             f64::from(start),
-            f64::from(CALL_MAX_BITRATE.max(bitrate)),
+            f64::from(CALL_MAX_BITRATE.max(self.maximum)),
             now,
         );
-        sender.add_probes(&clusters, now);
-        let allocated = sender
+        self.add_probes(&clusters, now);
+        let allocated = self
             .probes
-            .on_max_total_allocated(f64::from(bitrate), now);
-        sender.add_probes(&allocated, now);
-        sender.alr.set_target(start);
-        sender
+            .on_max_total_allocated(f64::from(self.maximum), now);
+        self.add_probes(&allocated, now);
+        self.alr.set_target(start);
+    }
+
+    /// No transport-wide feedback in time: as before the estimator, the target goes to the top and only the
+    /// loss-based control (receiver reports, REMB) moves it.
+    fn enter_fallback(&mut self) {
+        tracing::debug!("no transport-wide feedback; loss-based control only");
+        self.fallback = true;
+        self.rate.clear_delay_based();
+        self.rate.set_start(self.maximum);
+        self.prober = Prober::default();
+    }
+
+    /// Transport-wide feedback after the fallback: the estimator starts again from the target the loss-based control
+    /// reached, on a fresh clock, so nothing sent before counts.
+    fn leave_fallback(&mut self, now: Instant) {
+        tracing::debug!("transport-wide feedback arrived late; send-side estimation runs");
+        self.fallback = false;
+        self.delay = DelayBased::new(self.rate.target, self.minimum, now);
     }
 
     /// A screen share probes periodically while application limited and paces at its own factor (the default-on
@@ -152,6 +243,11 @@ impl VideoSender {
         self.probes.enable_periodic_alr_probing(screen);
         self.pacer
             .set_pacing(if screen { SCREEN_PACING } else { CAMERA_PACING });
+    }
+
+    /// The source's pictures a second, for the encoder's share of the target.
+    pub fn set_framerate(&mut self, fps: u32) {
+        self.fps = fps.max(1);
     }
 
     /// The simulation's "before" runs: another pacing.
@@ -170,7 +266,7 @@ impl VideoSender {
     }
 
     fn add_probes(&mut self, clusters: &[ProbeCluster], now: Instant) {
-        if !self.probing {
+        if !self.probing || self.fallback {
             return;
         }
         for cluster in clusters {
@@ -181,6 +277,9 @@ impl VideoSender {
     /// `MaybeTriggerOnNetworkChanged`: the target or the detector's verdict moved; the probe controller and the
     /// application-limited budget follow.
     fn network_changed(&mut self, now: Instant) {
+        if self.started.is_none() {
+            return;
+        }
         let cause = LimitedCause::of(self.delay.usage());
         let target = self.rate.target;
         if self.reported_network == Some((target, cause)) {
@@ -198,6 +297,9 @@ impl VideoSender {
     #[cfg(test)]
     pub fn set_delay_based(&mut self, enabled: bool) {
         self.delay_enabled = enabled;
+        if !enabled {
+            self.rate.set_start(self.maximum);
+        }
     }
 
     /// The send-side estimation's counters; the counters of `transport` are the connection's.
@@ -219,6 +321,13 @@ impl VideoSender {
             last_probe: self.delay.probe_counts().2,
             application_limited: self.alr.start().is_some(),
             padding_packets: self.padding,
+            transport_cc: self.feedback_seen,
+            receiver_reports: self.receiver_reports,
+            rembs: self.rembs,
+            fallback: self.fallback,
+            target: self.rate.target,
+            encoder_rate: self.encoder_bitrate(),
+            dropped_pictures: self.dropped,
         }
     }
 
@@ -245,9 +354,29 @@ impl VideoSender {
         self.rate.target
     }
 
-    /// Whether the next encoded frame can be taken: the pacer's queue is within its time limit.
+    /// The encoder's rate: the target less the packets' overhead.
+    pub fn encoder_bitrate(&self) -> u32 {
+        payload_bitrate(self.rate.target, self.fps)
+    }
+
+    /// Whether the next encoded frame can be taken: the pacer's queue is within its time limit. A loop that checked
+    /// this may hand the picture over later: [`Self::offer`] takes it then whatever the queue's age.
     pub fn accepts(&self, now: Instant) -> bool {
-        self.pacer.accepts(now)
+        match self.gate {
+            #[cfg(test)]
+            Gate::Idle => self.pacer.is_empty(),
+            Gate::Intervals(intervals) => {
+                let allowance =
+                    (Duration::from_secs(u64::from(intervals)) / self.fps).max(QUEUE_ALLOWANCE_MIN);
+                self.pacer.accepts(now, self.rate.target, allowance)
+            }
+        }
+    }
+
+    /// The simulations' comparisons: another gate.
+    #[cfg(test)]
+    pub fn set_gate(&mut self, gate: Gate) {
+        self.gate = gate;
     }
 
     /// Everything queued has left.
@@ -255,25 +384,20 @@ impl VideoSender {
         self.pacer.is_empty()
     }
 
-    /// Normalizes, encrypts and queues one access unit. `Ok(false)` when it was dropped because the previous picture
-    /// is still leaving the pacer.
+    /// Normalizes, encrypts and queues one access unit. `Ok(false)` only when the pacer's memory bound refused it;
+    /// the caller must then restart the chain with a keyframe.
     pub fn offer(
         &mut self,
         frame: &EncodedFrame,
         dave: &mut Dave,
         now: Instant,
     ) -> Result<bool, &'static str> {
-        if !self.accepts(now) {
-            self.dropped += 1;
-            return Ok(false);
-        }
         let normalized = sps::normalize(&frame.data)?;
         let encrypted = dave
             .session
             .encrypt(davey::MediaType::VIDEO, davey::Codec::H264, &normalized)
             .map_err(|_| "DAVE H264 encryption failed")?;
-        self.queue(&encrypted, frame.timestamp, frame.keyframe, now)?;
-        Ok(true)
+        self.queue(&encrypted, frame.timestamp, frame.keyframe, now)
     }
 
     /// An access unit without SPS normalization and DAVE, for the simulations.
@@ -285,12 +409,7 @@ impl VideoSender {
         keyframe: bool,
         now: Instant,
     ) -> Result<bool, &'static str> {
-        if !self.accepts(now) {
-            self.dropped += 1;
-            return Ok(false);
-        }
-        self.queue(data, timestamp, keyframe, now)?;
-        Ok(true)
+        self.queue(data, timestamp, keyframe, now)
     }
 
     fn queue(
@@ -299,17 +418,27 @@ impl VideoSender {
         timestamp: u32,
         keyframe: bool,
         now: Instant,
-    ) -> Result<(), &'static str> {
-        let packets = packetize(data, &mut self.sequence, timestamp, self.video_ssrc)?;
-        self.pacer.queue(packets, now);
+    ) -> Result<bool, &'static str> {
+        let mut sequence = self.sequence;
+        let packets = packetize(data, &mut sequence, timestamp, self.video_ssrc)?;
+        if !self.pacer.has_room(packets.len()) {
+            self.dropped += 1;
+            return Ok(false);
+        }
+        self.sequence = sequence;
+        if self.started.is_none() {
+            self.start_estimation(now);
+        }
+        self.pacer.queue(packets, now, self.rate.target);
         self.probe_failed = false;
         if self.probing {
             self.prober.incoming(self.pacer.largest(), now);
         }
         if keyframe {
             self.last_keyframe = Some(now);
+            self.keyframe_queued = Some(self.sequence.wrapping_sub(1));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// When the pacer, a repair or a probe wants the loop to wake, if it does. While probing, the probe's timing is
@@ -324,7 +453,17 @@ impl VideoSender {
     fn probe_due(&self) -> Option<Instant> {
         self.prober
             .next_probe_time()
-            .filter(|_| self.probing && !self.probe_failed)
+            .filter(|_| self.probing && !self.probe_failed && !self.fallback)
+    }
+
+    /// A media packet left: it goes to the history, and the keyframe it may end has left.
+    fn media_sent(&mut self, packet: super::send::Packet, now: Instant) {
+        let sequence = u16::from_be_bytes([packet.header[2], packet.header[3]]);
+        if self.keyframe_queued == Some(sequence) {
+            self.keyframe_queued = None;
+            self.keyframe_left = Some(now);
+        }
+        self.history.remember(packet, now);
     }
 
     /// Sends the repairs the pacer allows now, ahead of media as libwebrtc's pacer orders them, then the media it allows.
@@ -349,7 +488,8 @@ impl VideoSender {
             let wire = transport.seal(&packet.header, &packet.payload, now)?;
             self.alr.sent(wire.len(), now);
             send(&wire)?;
-            self.pacer.charge_repair(packet.payload.len());
+            self.pacer
+                .charge_repair(now, packet.payload.len(), self.rate.target);
             self.repairs += 1;
         }
         if let Some(due) = self.probe_due() {
@@ -369,7 +509,7 @@ impl VideoSender {
             let wire = transport.seal(&packet.header, &packet.payload, now)?;
             self.alr.sent(wire.len(), now);
             send(&wire)?;
-            self.history.remember(packet, now);
+            self.media_sent(packet, now);
         }
         Ok(())
     }
@@ -412,7 +552,7 @@ impl VideoSender {
             send(&wire)?;
             self.pacer.charge(now, wire.len(), target);
             sent += wire.len();
-            self.history.remember(packet, now);
+            self.media_sent(packet, now);
         }
         // `PaddingToAdd`: what the burst still lacks once the queue is empty.
         if sent < recommended && self.pacer.is_empty() {
@@ -444,6 +584,8 @@ impl VideoSender {
         transport: &mut Transport,
         now: Instant,
     ) -> bool {
+        self.receiver_reports += u64::from(feedback.loss.is_some());
+        self.rembs += u64::from(feedback.bitrate.is_some());
         self.rate.observe(feedback.loss, feedback.bitrate);
         for report in &feedback.transport {
             let packets = transport.sent.feedback(report);
@@ -452,7 +594,13 @@ impl VideoSender {
                 .iter()
                 .filter(|packet| packet.received.is_none())
                 .count() as u64;
+            if !self.feedback_seen && !self.fallback {
+                tracing::debug!("transport-wide feedback received; send-side estimation runs");
+            }
             self.feedback_seen = true;
+            if self.fallback {
+                self.leave_fallback(now);
+            }
             // `OnTransportPacketsFeedback`: the region ending first, then the estimators.
             let alr_start = self.alr.start().filter(|_| self.probing);
             if self.previously_in_alr && alr_start.is_none() {
@@ -487,25 +635,36 @@ impl VideoSender {
             self.next_loss_update = now + LOSS_UPDATE;
         }
         let missing = self.history.request(&feedback.nacks, now);
-        if (feedback.keyframe || missing) && now >= self.next_keyframe {
+        // A keyframe still leaving, or one that left too recently for the viewer to have seen it, already answers.
+        let answered = self.keyframe_queued.is_some()
+            || self
+                .keyframe_left
+                .is_some_and(|left| now.saturating_duration_since(left) < KEYFRAME_SETTLE);
+        if (feedback.keyframe || missing) && !answered && now >= self.next_keyframe {
             self.next_keyframe = now + KEYFRAME_INTERVAL;
             return true;
         }
         false
     }
 
-    /// The encoder's rate: the target less the packets' overhead, for the simulations (the loops take it from
-    /// [`Self::tick_rate`]).
-    #[cfg(test)]
-    pub fn encoder_bitrate(&self) -> u32 {
-        payload_bitrate(self.rate.target)
-    }
-
     /// The encoder's new rate ([`Self::encoder_bitrate`]) when rate control moved the target; also the probe
-    /// controller's process interval.
+    /// controller's process interval, and the wait for transport-wide feedback.
     pub fn tick_rate(&mut self, now: Instant) -> Option<u32> {
-        let moved = self.rate.tick(now).map(payload_bitrate);
-        if self.probing {
+        if self.delay_enabled
+            && !self.feedback_seen
+            && !self.fallback
+            && self
+                .started
+                .is_some_and(|started| now.saturating_duration_since(started) >= FEEDBACK_WAIT)
+        {
+            self.enter_fallback();
+        }
+        let fps = self.fps;
+        let moved = self
+            .rate
+            .tick(now)
+            .map(|target| payload_bitrate(target, fps));
+        if self.probing && self.started.is_some() {
             // No periodic probe in the region before feedback shows the far end measures it.
             let alr_start = self.alr.start().filter(|_| self.feedback_seen);
             self.probes.set_alr_start_time(alr_start);
@@ -520,6 +679,7 @@ impl VideoSender {
     pub fn clear(&mut self) {
         self.pacer.clear();
         self.history.clear();
+        self.keyframe_queued = None;
     }
 
     /// The pacer made no progress for half a second.
@@ -543,6 +703,10 @@ mod tests {
         let start = Instant::now();
         let mut sender = VideoSender::new(10, 11, 500_000, CALL_START_BITRATE, 9_000_000);
         sender.set_screen_share(true);
+        sender.set_pacing(super::super::send::Pacing {
+            factor: 1.0,
+            queue_limit: Duration::from_millis(2875),
+        });
         sender.set_probing(false);
         let mut keyframe = vec![0x55u8; 160_000];
         keyframe[..5].copy_from_slice(&[0, 0, 0, 1, 0x65]);
@@ -590,8 +754,87 @@ mod tests {
             }
         }
         let took = repaired.expect("the repair left") - asked;
-        // One 1200-byte packet at 75 kB/s is 16 ms.
-        assert!(took <= Duration::from_millis(20), "{took:?}");
+        // The pacer sends in bursts of up to 40 ms of its rate and then waits for the debt to drain: the repair leaves
+        // with the next burst, within one burst interval and one packet (16 ms at 75 kB/s).
+        assert!(took <= Duration::from_millis(60), "{took:?}");
         assert!(!sender.idle());
+    }
+
+    /// A viewer asks again and again while a large keyframe drains at a low rate; the sender answers once.
+    #[test]
+    fn keyframe_requests_while_a_keyframe_is_leaving_do_not_queue_more_keyframes() {
+        let key = [4u8; 32];
+        let mut wire = Transport::new(Mode::Aes256GcmRtpSize, &key);
+        let mut sender = VideoSender::new(10, 11, 500_000, CALL_START_BITRATE, 9_000_000);
+        let start = Instant::now();
+        sender.set_screen_share(true);
+        sender.set_probing(false);
+        let pli = Feedback {
+            keyframe: true,
+            ..Feedback::default()
+        };
+        // The first request is honoured: nothing is leaving.
+        assert!(sender.feedback(&pli, &mut wire, start));
+        let mut keyframe = vec![0x55u8; 160_000];
+        keyframe[..5].copy_from_slice(&[0, 0, 0, 1, 0x65]);
+        assert!(sender.offer_plain(&keyframe, 0, true, start).unwrap());
+        // 160 kB at 600 kb/s takes about two seconds; a request every 200 ms meanwhile asks for nothing new.
+        let mut now = start;
+        let mut answered = 0;
+        while !sender.idle() {
+            now += Duration::from_millis(1);
+            sender.flush(now, &mut wire, |_| Ok(())).unwrap();
+            if (now - start).as_millis().is_multiple_of(200)
+                && sender.feedback(&pli, &mut wire, now)
+            {
+                answered += 1;
+            }
+            assert!(now - start < Duration::from_secs(5));
+        }
+        assert_eq!(answered, 0);
+        let left = now;
+        // Nor for a round trip and a margin after it left; later, a request is a new loss.
+        assert!(!sender.feedback(&pli, &mut wire, left + Duration::from_millis(300)));
+        assert!(sender.feedback(&pli, &mut wire, left + Duration::from_millis(600)));
+    }
+
+    /// No transport-wide feedback two seconds after the first picture: the target goes to the top, and feedback that
+    /// comes later brings the estimator back.
+    #[test]
+    fn without_transport_wide_feedback_the_loss_based_control_steers_from_the_top() {
+        let mut wire = Transport::new(Mode::Aes256GcmRtpSize, &[5u8; 32]);
+        let start = Instant::now();
+        let mut sender = VideoSender::new(10, 11, 500_000, CALL_START_BITRATE, 9_000_000);
+        sender.set_screen_share(true);
+        // Nothing sent yet: no clock runs, however long the handshake takes.
+        sender.tick_rate(start + Duration::from_secs(5));
+        assert!(!sender.estimation(None).fallback);
+        let first = start + Duration::from_secs(5);
+        assert!(
+            sender
+                .offer_plain(&[0, 0, 0, 1, 0x65, 1, 2, 3], 0, true, first)
+                .unwrap()
+        );
+        sender.tick_rate(first + Duration::from_millis(1900));
+        assert_eq!(sender.bitrate(), CALL_START_BITRATE);
+        sender.tick_rate(first + Duration::from_secs(2));
+        assert!(sender.estimation(None).fallback);
+        assert_eq!(sender.bitrate(), 9_000_000);
+        // A report of 20% loss steers it, as the loss-based control did before the estimator.
+        let report = Feedback {
+            loss: Some(51),
+            ..Feedback::default()
+        };
+        sender.feedback(&report, &mut wire, first + Duration::from_millis(2500));
+        sender.tick_rate(first + Duration::from_secs(4));
+        assert!(sender.bitrate() < 9_000_000);
+        // Transport-wide feedback after all: the estimator runs again.
+        let late = Feedback {
+            transport: vec![crate::bwe::TransportCc::default()],
+            ..Feedback::default()
+        };
+        sender.feedback(&late, &mut wire, first + Duration::from_secs(5));
+        assert!(!sender.estimation(None).fallback);
+        assert!(sender.estimation(None).transport_cc);
     }
 }

@@ -665,6 +665,7 @@ impl Root {
     /// game ran in the reference captures); its geometry is the page's card classes (`group*_DKMuWq`).
     fn overlay_current_game_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let game = self.overlay_current_game()?;
+        let game_id = game.id.clone();
         let global = self.overlay_global();
         let enabled = self.overlay_game_enablement(&game);
         let (game_oop, game_legacy) = (enabled.oop, enabled.legacy);
@@ -808,6 +809,26 @@ impl Root {
                     .text_color(color(header_color))
                     .child(dc_intl::tr("Currently Playing")),
             );
+        // `icon`: the game's 40 px icon (`GameIcon` `MEDIUM`, module 769015), the unknown game icon without one.
+        let game_icon = match self.overlay_game_icon(game_id.as_deref()) {
+            Some(image) => gpui::img(image)
+                .size(px(40.))
+                .flex_none()
+                .rounded(px(8.))
+                .into_any_element(),
+            None => svg()
+                .path("icons/inventory_unknown_game.svg")
+                .size(px(40.))
+                .flex_none()
+                .text_color(color("--interactive-text-default"))
+                .into_any_element(),
+        };
+        if let Some(id) = game_id.clone() {
+            let root = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = root.update(cx, |root, _| root.overlay_request_game_icon(&id));
+            });
+        }
         let content = div()
             .pt(px(16.))
             .px(px(16.))
@@ -816,6 +837,7 @@ impl Root {
             .items_center()
             .justify_between()
             .gap(px(12.))
+            .child(game_icon)
             .child(
                 div()
                     .flex_1()

@@ -259,12 +259,12 @@ impl Root {
                         cx,
                     )),
             )
-            // The Report a Problem dialog (module 967055) is not built: the button is drawn and does nothing.
+            // Report opens the Report a Problem dialog (module 967055).
             .child(self.overlay_round_button(
                 "overlay-report-button",
                 "overlay_flag",
                 None,
-                |_, _| {},
+                |this, cx| this.overlay_open_report(cx),
                 cx,
             ))
             .child(self.overlay_round_button(
@@ -381,13 +381,25 @@ impl Root {
         widget: &Widget,
         title: &'static str,
         frame: &Frame,
+        group: gpui::SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let operating = self
+            .overlay
+            .drag
+            .as_ref()
+            .is_some_and(|drag| drag.id == widget.id && drag.drag.started);
         let below = !(widget.anchor.bottom.is_some() && widget.anchor.top.is_none());
         let right = widget.anchor.right.is_some() && widget.anchor.left.is_none();
         let id = widget.id.clone();
         let pin_id = id.clone();
         let hide_id = id.clone();
+        // `renderButtons`: the voice and notifications widgets have Settings and the pin; quick actions and chat none.
+        let menu = match widget.kind.as_str() {
+            layout::VOICE => Some(dc_overlay::menus::Menu::Voice),
+            layout::NOTIFICATIONS => Some(dc_overlay::menus::Menu::Notifications),
+            _ => None,
+        };
         let row = div()
             .flex()
             .flex_row()
@@ -412,24 +424,26 @@ impl Root {
                     .whitespace_nowrap()
                     .child(title),
             )
-            // Settings opens the widget's menu (modules 51444, 320490), which is not built.
-            .child(self.overlay_extras_button(
-                format!("overlay-settings-{id}"),
-                "overlay_settings",
-                false,
-                |_, _| {},
-                cx,
-            ))
-            .child(self.overlay_extras_button(
-                format!("overlay-pin-{id}"),
-                "overlay_pin",
-                widget.pinned,
-                move |this, _| {
-                    let id = pin_id.clone();
-                    this.overlay_change_layout(|layout| layout.set_pinned(&id, None));
-                },
-                cx,
-            ))
+            // Settings opens the widget's menu at the pointer (modules 51444, 320490).
+            .when_some(menu, |this, menu| {
+                this.child(self.overlay_extras_button(
+                    format!("overlay-settings-{id}"),
+                    "overlay_settings",
+                    false,
+                    move |this, _| this.overlay_open_menu(menu),
+                    cx,
+                ))
+                .child(self.overlay_extras_button(
+                    format!("overlay-pin-{id}"),
+                    "overlay_pin",
+                    widget.pinned,
+                    move |this, _| {
+                        let id = pin_id.clone();
+                        this.overlay_change_layout(|layout| layout.set_pinned(&id, None));
+                    },
+                    cx,
+                ))
+            })
             .child(self.overlay_extras_button(
                 format!("overlay-hide-{id}"),
                 "overlay_eye_slash",
@@ -449,7 +463,15 @@ impl Root {
             .when(right, |this| this.justify_end())
             .when(below, |this| this.top(relative(1.)).pt(px(10.)))
             .when(!below, |this| this.bottom(relative(1.)).pb(px(10.)))
-            .opacity(frame.unlocked)
+            // `.lockExtras .extras` (or the box hovered) at full opacity; while the widget is moved or resized they go.
+            .opacity(if self.overlay.show_widgets && !operating {
+                frame.unlocked
+            } else {
+                0.
+            })
+            .when(!self.overlay.show_widgets && !operating, |this| {
+                this.group_hover(group, |style| style.opacity(1.))
+            })
             .mt(px(if below { -frame.rise } else { frame.rise }))
             .child(row)
             .into_any_element()
@@ -477,19 +499,37 @@ impl Root {
                 frame.height,
             )),
         };
-        let (fixed_w, fixed_h) = widget.size.pixels(frame.width, frame.height);
+        // `f`: the requested size is never under the minimum; a resize in progress draws its own size.
+        let (fixed_w, fixed_h) =
+            match dragging.filter(|drag| drag.drag.operation != Operation::Move) {
+                Some(drag) => (Some(drag.drag.size.0), Some(drag.drag.size.1)),
+                None => drag::requested_size(
+                    widget.size.pixels(frame.width, frame.height),
+                    widget.min_size,
+                ),
+            };
         // `hidden: !H`: shown while unlocked, or pinned (`isShownInGame` is the pin) while locked.
         let shown = widget.pinned || !frame.locked;
         let unlocked = !frame.locked;
         let id = widget.id.clone();
         let config = widget.config();
         let min_size = widget.min_size;
+        let group = gpui::SharedString::from(format!("overlay-widget-group-{}", widget.id));
+        // `.unlocked.lockExtras`, `.unlocked.operation` and `.unlocked:hover`: the box shows.
+        let boxed = self.overlay.show_widgets || dragging.is_some();
+        let handles = if unlocked {
+            drag::handles(config.resize_x, config.resize_y)
+        } else {
+            Vec::new()
+        };
         let element = div()
             .id(gpui::SharedString::from(format!(
                 "overlay-widget-{}",
                 widget.id
             )))
+            .group(group.clone())
             .absolute()
+            .when(dragging.is_some(), |this| this.occlude())
             .min_w(px(widget.min_size.0))
             .min_h(px(widget.min_size.1))
             .when_some(fixed_w, |this, width| {
@@ -508,7 +548,11 @@ impl Root {
                 background.a *= frame.unlocked;
                 let mut border = rgba(BOX_BORDER);
                 border.a *= frame.unlocked;
-                this.bg(background).border_color(border)
+                if boxed {
+                    this.bg(background).border_color(border)
+                } else {
+                    this.hover(move |style| style.bg(background).border_color(border))
+                }
             })
             .when(!shown, |this| this.invisible())
             .on_mouse_down(
@@ -518,27 +562,70 @@ impl Root {
                     if this.overlay.locked || !config.drag_anywhere {
                         return;
                     }
-                    this.overlay_drag_start(&id, min_size, event.position);
+                    this.overlay_drag_start(&id, min_size, event.position, Operation::Move);
                 }),
             )
             .child(probe(&self.overlay.bounds, format!("widget-{}", widget.id)))
             .child(content)
+            .children(
+                handles
+                    .into_iter()
+                    .map(|handle| self.overlay_resize_handle(&widget.id, min_size, handle, cx)),
+            )
             .when(unlocked, |this| {
-                this.child(self.overlay_extras(widget, title, frame, cx))
+                this.child(self.overlay_extras(widget, title, frame, group, cx))
             });
         placed(element, anchor).into_any_element()
+    }
+
+    /// One resize handle (`renderResizeHandles`): a press starts that resize, its cursor while hovered.
+    fn overlay_resize_handle(
+        &self,
+        id: &str,
+        min_size: (f32, f32),
+        handle: drag::Handle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let cursor = match handle.cursor {
+            drag::Cursor::NorthSouth => gpui::CursorStyle::ResizeUpDown,
+            drag::Cursor::EastWest => gpui::CursorStyle::ResizeLeftRight,
+            drag::Cursor::NorthWestSouthEast => gpui::CursorStyle::ResizeUpLeftDownRight,
+            drag::Cursor::NorthEastSouthWest => gpui::CursorStyle::ResizeUpRightDownLeft,
+        };
+        let widget = id.to_owned();
+        let operation = handle.operation;
+        let element = div()
+            .id(gpui::SharedString::from(format!(
+                "overlay-resize-{id}-{operation:?}"
+            )))
+            .absolute()
+            .when_some(handle.width, |this, width| this.w(px(width)))
+            .when_some(handle.height, |this, height| this.h(px(height)))
+            .cursor(cursor)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if !this.overlay.locked {
+                        this.overlay_drag_start(&widget, min_size, event.position, operation);
+                    }
+                }),
+            );
+        placed(element, handle.anchor).into_any_element()
     }
 }
 
 // ----- the drag -----
 
 impl Root {
-    /// The press on a widget (`handleMouseDown` with `dragAnywhere`): a move starts once the pointer has gone 2 px.
-    fn overlay_drag_start(
+    /// The press on a widget (`handleMouseDown` with `dragAnywhere`, or a drag handle such as the Chat widget's
+    /// header) or on a resize handle (`handleResizeMouseDown`): the operation starts once the pointer has gone 2 px.
+    pub(super) fn overlay_drag_start(
         &mut self,
         id: &str,
         min_size: (f32, f32),
         position: gpui::Point<Pixels>,
+        operation: Operation,
     ) {
         let Some(bounds) = self
             .overlay
@@ -564,7 +651,7 @@ impl Root {
         let pointer = (f32::from(position.x), f32::from(position.y));
         self.overlay.drag = Some(super::overlay::WidgetDrag {
             id: id.to_owned(),
-            drag: Drag::start(Operation::Move, pointer, anchor, size, container),
+            drag: Drag::start(operation, pointer, anchor, size, container),
             min_size,
         });
     }
@@ -595,14 +682,52 @@ impl Root {
             .end(Container::window(width, height), held.drag.size)
             .map(|anchor| drag::to_fractions(anchor, width, height));
         let id = held.id;
+        let resized = held.drag.started && held.drag.operation != Operation::Move;
+        let pixels = held.drag.size;
         self.overlay_change_layout(|layout| {
-            let moved = anchor.is_some_and(|anchor| layout.update_widget(&id, Some(anchor), None));
+            // `onUpdate`: the anchor as fractions (`NO`) and a resized size as it is stored (`R9`: fractions unless
+            // fixed, auto sides stay auto).
+            let size = resized
+                .then(|| layout.widgets().into_iter().find(|widget| widget.id == id))
+                .flatten()
+                .map(|widget| widget.size.stored(pixels, width, height));
+            let moved = anchor.is_some_and(|anchor| layout.update_widget(&id, Some(anchor), size));
             layout.set_top(&id) || moved
         });
+        if resized {
+            tracing::debug!("overlay widget resized to {}x{}", pixels.0, pixels.1);
+        }
     }
 }
 
 // ----- notifications -----
+
+/// A toast as it was last drawn: kept for its leave animation once it is gone from the list.
+#[derive(Clone, Debug)]
+pub(super) struct DrawnToast {
+    pub id: u64,
+    pub toast: Toast,
+    pub index: usize,
+    pub top: f32,
+    pub height: f32,
+    pub locked: bool,
+}
+
+/// The toasts of the last frame that are not listed now start leaving (`leave` of `Ru`, module 57019); leaving ones
+/// are kept for `LEAVE_MS`.
+pub(super) fn update_leaving(
+    drawn: &[DrawnToast],
+    listed: &[u64],
+    leaving: &mut Vec<(DrawnToast, f64)>,
+    now: f64,
+) {
+    for gone in drawn.iter().filter(|toast| !listed.contains(&toast.id)) {
+        if !leaving.iter().any(|(toast, _)| toast.id == gone.id) {
+            leaving.push((gone.clone(), now));
+        }
+    }
+    leaving.retain(|(toast, since)| now - since < notify::LEAVE_MS && !listed.contains(&toast.id));
+}
 
 /// What a toast's parts are drawn with.
 fn text_block(
@@ -825,7 +950,56 @@ impl Root {
             .collect();
         let tops = notify::tops(&heights);
         let first = heights.first().copied().unwrap_or(0.);
+        let ids: Vec<u64> = listed.iter().map(|(_, id, _)| *id).collect();
+        let previous = std::mem::take(&mut self.overlay.toasts_drawn);
+        update_leaving(&previous, &ids, &mut self.overlay.leaving, now);
+        self.overlay.toasts_drawn = listed
+            .iter()
+            .enumerate()
+            .map(|(slot, (index, id, toast))| DrawnToast {
+                id: *id,
+                toast: toast.clone(),
+                index: *index,
+                top: tops[slot],
+                height: heights[slot],
+                locked,
+            })
+            .collect();
         let mut children = Vec::new();
+        // The dismissed ones go: transparent, 80% and pushed down (drawn over the listed ones once reversed).
+        let leaving = self.overlay.leaving.clone();
+        for (gone, _) in &leaving {
+            let rest = notify::leave_pose(gone.index, gone.locked, gone.top, gone.height);
+            let pose = self.overlay_toast_pose(gone.id, rest, rest, now);
+            self.overlay.animating = true;
+            let scale = notify::drawn_scale(pose.scale);
+            let width = 300.;
+            let shrink_x = width * (1. - scale) / 2.;
+            children.push(
+                div()
+                    .absolute()
+                    .left(px(shrink_x))
+                    .w(px(width - 2. * shrink_x))
+                    .top(px(pose.offset + gone.height * (1. - scale)))
+                    .opacity(pose.opacity)
+                    .child(self.overlay_toast(gone.id, &gone.toast, cx))
+                    .into_any_element(),
+            );
+        }
+        for id in self
+            .overlay
+            .springs
+            .keys()
+            .filter(|(id, part)| {
+                *part <= 4
+                    && !ids.contains(id)
+                    && !self.overlay.leaving.iter().any(|(gone, _)| gone.id == *id)
+            })
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            self.overlay.springs.remove(&id);
+        }
         for (slot, (index, id, toast)) in listed.iter().enumerate() {
             let rest = notify::stack_pose(*index, locked, tops[slot], heights[slot], first);
             let start = notify::enter_pose(locked, heights[slot], first);
@@ -910,5 +1084,42 @@ mod tests {
         assert_eq!(BOX & 0xff, (0.16f32 * 255.).round() as u32);
         assert_eq!(BOX_BORDER & 0xff, (0.16f32 * 255.).round() as u32);
         assert_eq!(drag::RADIUS, 22.);
+    }
+
+    #[test]
+    fn a_toast_gone_from_the_list_leaves_for_300_ms() {
+        let toast = |id| DrawnToast {
+            id,
+            toast: Toast {
+                kind: super::super::overlay::ToastKind::Text,
+                icon: None,
+                title: None,
+                body: None,
+                hint: None,
+                max_lines: None,
+                confirm: None,
+                cancel: None,
+                click: None,
+                channel: None,
+                no_zone: false,
+            },
+            index: 0,
+            top: 0.,
+            height: 60.,
+            locked: true,
+        };
+        let mut leaving = Vec::new();
+        update_leaving(&[toast(1), toast(2)], &[2], &mut leaving, 1000.);
+        assert_eq!(leaving.iter().map(|(t, _)| t.id).collect::<Vec<_>>(), [1]);
+        // Still leaving a little later, not twice.
+        update_leaving(&[toast(2)], &[2], &mut leaving, 1200.);
+        assert_eq!(leaving.len(), 1);
+        // Gone after 300 ms.
+        update_leaving(&[toast(2)], &[2], &mut leaving, 1300.);
+        assert!(leaving.is_empty());
+        // A toast listed again stops leaving.
+        update_leaving(&[toast(3)], &[], &mut leaving, 2000.);
+        update_leaving(&[], &[3], &mut leaving, 2010.);
+        assert!(leaving.is_empty());
     }
 }

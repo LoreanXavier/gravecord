@@ -68,12 +68,23 @@ impl Worker {
         video: impl FnMut(EncodedFrame) + Send + 'static,
         audio: impl FnMut(AudioChunk) + Send + 'static,
     ) -> Result<Self> {
+        Self::start_at(settings, settings.bitrate, video, audio)
+    }
+
+    /// [`Self::start`] with the encoder opened at `bitrate` (held to the share's bounds) rather than the top rate: a
+    /// hardware encoder sizes its buffers when it opens, so the first keyframe comes at the rate the sender starts at.
+    pub fn start_at(
+        settings: Settings,
+        bitrate: u32,
+        video: impl FnMut(EncodedFrame) + Send + 'static,
+        audio: impl FnMut(AudioChunk) + Send + 'static,
+    ) -> Result<Self> {
         settings.validate()?;
         let state = Arc::new(State {
             stop: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             keyframe: AtomicBool::new(true),
-            bitrate: AtomicU32::new(settings.bitrate),
+            bitrate: AtomicU32::new(settings.clamp_bitrate(bitrate)),
             backend: AtomicU8::new(0),
             fell_back: AtomicBool::new(false),
             captured: AtomicU64::new(0),
@@ -375,7 +386,9 @@ fn run(
         }
 
         if encoder.is_none() {
-            encoder = Some(Encoder::new(config)?);
+            // Opened at the rate asked for now, not the top: the first keyframe is sized for it.
+            let bitrate = settings.clamp_bitrate(state.bitrate.load(Ordering::Acquire));
+            encoder = Some(Encoder::new(Config { bitrate, ..config })?);
         }
         let Some(encoder) = encoder.as_mut() else {
             continue;

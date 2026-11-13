@@ -13,14 +13,21 @@
 //! - [`drag`]: moving and resizing a widget while unlocked (modules 5463, 129537).
 //! - [`notify`]: the notifications widget's queue, timers and stacking (modules 348639, 415173, 57019).
 //! - [`zones`]: the clickable regions of a locked overlay (module 302614).
+//! - [`widgets`]: the widget registry, the Widgets panel's list and the chat experiment (modules 776162, 415173,
+//!   589051).
+//! - [`menus`]: the voice and notifications widgets' Settings menus (modules 51444, 320490).
+//! - [`text_chat`]: `Overlay-v3-Text-Chat-Store` (module 288641), the Chat widget's chats.
 //! - `platform` (Windows): the window styles, the foreground watcher, the click-through switch and the desktop check.
 
 pub mod decision;
 pub mod drag;
 pub mod layout;
+pub mod menus;
 pub mod notify;
 #[cfg(windows)]
 pub mod platform;
 pub mod store;
+pub mod text_chat;
 pub mod voice;
+pub mod widgets;
 pub mod zones;

@@ -26,7 +26,7 @@ use crate::{
 };
 use dc_media::{
     EncodedFrame,
-    camera::{Camera, CameraFrame},
+    camera::{self, Camera, CameraFrame},
 };
 use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::{SinkExt, StreamExt};
@@ -34,7 +34,11 @@ use opus2::{Application, Bitrate, Channels, Encoder, SoftClip};
 use std::{
     collections::BTreeSet,
     net::SocketAddr,
-    sync::{Arc, Mutex, mpsc as std_mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
     time::Duration,
 };
 use tokio::{
@@ -114,7 +118,7 @@ const SINK_WANTS_INTERVAL: Duration = Duration::from_secs(5);
 const CAMERA_MIN_BITRATE: u32 = 150_000;
 /// The camera's top rate (`videoBitrate.max` of module 731854, 2.5 Mb/s, at the full budget portion of the ladder):
 /// `getVideoQuality` hands it as both `encodingVideoMaxBitRate` and `encodingVideoBitRate`, as a camera has no target.
-/// The estimation still starts at the call's start rate. This client's camera encoder keeps `camera::BITRATE`.
+/// The estimation still starts at the call's start rate; the camera encoder holds its own bounds.
 const CAMERA_MAX_BITRATE: u32 = 2_500_000;
 
 pub(crate) async fn send(ws: &mut Socket, message: Message) -> Result<(), &'static str> {
@@ -315,6 +319,10 @@ pub(crate) async fn run(
     let mut stereo = [0.0f32; 1920];
     let mut soft_clip = SoftClip::new(Channels::Stereo);
     let mut ticks = clock::ticks()?;
+    // The pacer wakes on a high-resolution clock: tokio's timer would round each wait up to the system tick.
+    let (pacer_clock, mut pacer_wakes) = clock::PacerClock::start()?;
+    // The camera's encoded pictures that found the channel full: the chain needs a keyframe.
+    let camera_overflow = Arc::new(AtomicBool::new(false));
     let mut signal_window = Instant::now();
     let mut signal_count = 0u16;
 
@@ -375,6 +383,12 @@ pub(crate) async fn run(
                 .map_err(|_| "Voice resume failed; rejoin the call")?;
             text(&mut ws, signal::resume(&credentials.ids(), seq_ack)).await?;
         }
+        pacer_clock.set(
+            video_sender
+                .as_ref()
+                .and_then(VideoSender::deadline)
+                .map(Instant::into_std),
+        );
         tokio::select! {
             changed = controls.changed() => {
                 if changed.is_err() || controls.borrow().disconnect {
@@ -387,7 +401,10 @@ pub(crate) async fn run(
                     camera_wish = shared.camera.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 }
             },
-            _ = async { match video_sender.as_ref().and_then(VideoSender::deadline) { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+            wake = pacer_wakes.recv() => {
+                if wake.is_none() {
+                    return Err("Pacer clock stopped");
+                }
                 if let (Some(sender), Some(crypto), Some(socket)) = (video_sender.as_mut(), transport.as_mut(), udp.as_ref()) {
                     sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Voice UDP send failed"))?;
                 }
@@ -405,7 +422,14 @@ pub(crate) async fn run(
                 if let Some(sender) = video_sender.as_mut() {
                     match sender.offer(&frame, &mut dave, Instant::now()) {
                         Ok(true) => camera_sent_keyframe |= frame.keyframe,
-                        Ok(false) => {}
+                        Ok(false) => {
+                            // The pacer's memory bound refused it: the chain is broken until a keyframe.
+                            debug!("camera picture refused by the pacer; asking for a keyframe");
+                            camera_sent_keyframe = false;
+                            if let Some(camera) = &camera {
+                                camera.force_keyframe();
+                            }
+                        }
                         Err(error) => {
                             // A bad picture costs that picture, never the call.
                             debug!(error, "camera picture dropped");
@@ -637,13 +661,15 @@ pub(crate) async fn run(
                 // Our camera: start, announce, stop.
                 if let Some(device) = camera_wish.clone() {
                     if camera.is_none() && camera_task.is_none() && transport.is_some() && !discovering && !resuming {
-                        let (frames, hub, own) = (camera_send.clone(), hub.clone(), own);
+                        let (frames, hub, own, overflow) = (camera_send.clone(), hub.clone(), own, camera_overflow.clone());
                         camera_task = Some(tokio::task::spawn_blocking(move || {
                             let device = (!device.is_empty()).then_some(device);
                             Camera::start(device.as_deref(), move |frame: CameraFrame| {
                                 hub.deliver(RemoteFrame { user: own, source: VideoSource::Camera, picture: frame.preview });
-                                if let Some(encoded) = frame.encoded {
-                                    let _ = frames.try_send(encoded);
+                                if let Some(encoded) = frame.encoded
+                                    && frames.try_send(encoded).is_err()
+                                {
+                                    overflow.store(true, Ordering::Release);
                                 }
                             })
                             .map_err(|error| error.to_string())
@@ -688,6 +714,7 @@ pub(crate) async fn run(
                 }
                 if camera.is_some() && !video_announced && transport.is_some() && !discovering && !resuming {
                     let mut sender = VideoSender::new(video_ssrc, rtx_ssrc, CAMERA_MIN_BITRATE, CALL_START_BITRATE, CAMERA_MAX_BITRATE);
+                    sender.set_framerate(camera::FPS);
                     sender.set_keyframe_interval(keyframe_interval);
                     video_sender = Some(sender);
                     text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Call, None)))).await?;
@@ -698,6 +725,14 @@ pub(crate) async fn run(
                     if sender.stale(now) {
                         sender.clear();
                         camera_sent_keyframe = false;
+                    }
+                    if camera_overflow.swap(false, Ordering::AcqRel) {
+                        // An encoded picture found the channel full and is gone: restart from a keyframe.
+                        debug!("camera picture queue full; asking for a keyframe");
+                        camera_sent_keyframe = false;
+                        if let Some(camera) = &camera {
+                            camera.force_keyframe();
+                        }
                     }
                     // The encoder follows the target, within what its picture size is given.
                     if let Some(bitrate) = sender.tick_rate(now) {
@@ -743,6 +778,13 @@ pub(crate) async fn run(
                             last_probe = estimation.last_probe,
                             application_limited = estimation.application_limited,
                             padding_packets = estimation.padding_packets,
+                            transport_cc = estimation.transport_cc,
+                            receiver_reports = estimation.receiver_reports,
+                            rembs = estimation.rembs,
+                            fallback = estimation.fallback,
+                            target = estimation.target,
+                            encoder_rate = estimation.encoder_rate,
+                            dropped_pictures = estimation.dropped_pictures,
                             "camera send-side estimation"
                         );
                     }

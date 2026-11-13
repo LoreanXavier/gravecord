@@ -231,6 +231,48 @@ pub fn visible(inputs: &Inputs) -> Option<OverlayMethod> {
         .then_some(method)
 }
 
+/// Why [`visible`] gives nothing, for the log (no ids, no names): `None` when the overlay is shown.
+pub fn hidden_reason(inputs: &Inputs) -> Option<&'static str> {
+    if !inputs.authenticated {
+        return Some("signed out");
+    }
+    let Some((focused, game)) = inputs.focused else {
+        return Some("no tracked game in the foreground");
+    };
+    if focused.fullscreen == FullscreenType::Minimized {
+        return Some("the game is minimized");
+    }
+    let method = method(
+        inputs.global,
+        Some(game),
+        inputs.oop_supported,
+        focused.fullscreen,
+        inputs.limited_interaction,
+    );
+    match method {
+        OverlayMethod::Disabled => Some("the overlay is off for this game or globally"),
+        OverlayMethod::Hook => Some("exclusive fullscreen or the legacy overlay only (not drawn)"),
+        _ if focused.width < MIN_WIDTH || focused.height < MIN_HEIGHT => {
+            Some("the game window is under 640x360")
+        }
+        _ => None,
+    }
+}
+
+/// [`next_focus`] by window: the overlay's own window keeps the game it covers, any other window (the app's main
+/// window included, though it is the same process) replaces it.
+pub fn next_focus_window(
+    current: Option<u32>,
+    new: Option<(isize, u32)>,
+    overlay_window: Option<isize>,
+) -> Option<u32> {
+    match new {
+        Some((window, _)) if Some(window) == overlay_window => current,
+        Some((_, pid)) => Some(pid),
+        None => None,
+    }
+}
+
 /// What the Game Overlay page's Current Game switch changes (module 158935 `pC`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwitchScope {
@@ -496,5 +538,55 @@ mod tests {
         assert_eq!(next_focus(Some(42), Some(7), 7), Some(42));
         assert_eq!(next_focus(Some(42), Some(9), 7), Some(9));
         assert_eq!(next_focus(Some(42), None, 7), None);
+    }
+
+    #[test]
+    fn the_app_window_of_the_same_process_hides_the_overlay() {
+        // The overlay window (handle 5) keeps the game; the app's own main window (handle 6, our pid 7) does not.
+        assert_eq!(next_focus_window(Some(42), Some((5, 7)), Some(5)), Some(42));
+        assert_eq!(next_focus_window(Some(42), Some((6, 7)), Some(5)), Some(7));
+        assert_eq!(next_focus_window(Some(42), Some((6, 9)), None), Some(9));
+        assert_eq!(next_focus_window(Some(42), None, Some(5)), None);
+    }
+
+    #[test]
+    fn a_hidden_overlay_says_why() {
+        let shown = inputs(
+            GameEnablement {
+                oop: true,
+                legacy: false,
+            },
+            FullscreenType::BorderlessFullscreen,
+        );
+        assert_eq!(hidden_reason(&shown), None);
+        assert!(visible(&shown).is_some());
+        let mut out = shown;
+        out.authenticated = false;
+        assert_eq!(hidden_reason(&out), Some("signed out"));
+        let mut none = shown;
+        none.focused = None;
+        assert_eq!(
+            hidden_reason(&none),
+            Some("no tracked game in the foreground")
+        );
+        let exclusive = inputs(
+            GameEnablement {
+                oop: true,
+                legacy: true,
+            },
+            FullscreenType::Fullscreen,
+        );
+        assert!(hidden_reason(&exclusive).is_some_and(|why| why.starts_with("exclusive")));
+        let mut small = shown;
+        if let Some((focused, _)) = small.focused.as_mut() {
+            focused.width = 600;
+        }
+        assert_eq!(
+            hidden_reason(&small),
+            Some("the game window is under 640x360")
+        );
+        let off = inputs(GameEnablement::default(), FullscreenType::Windowed);
+        assert!(hidden_reason(&off).is_some());
+        assert!(visible(&off).is_none());
     }
 }

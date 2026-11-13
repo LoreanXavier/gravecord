@@ -895,11 +895,15 @@ impl Root {
 
     /// Whether a dialog of this module is up.
     pub(in crate::ui) fn voice_dialog_open(&self) -> bool {
-        self.voice.extra.dialog.is_some()
+        self.voice.extra.dialog.is_some() || self.voice.camera.background.upsell
     }
 
     /// Escape closes a dialog of this module. True when there was one.
     pub(in crate::ui) fn voice_dialog_close(&mut self, cx: &mut Context<Self>) -> bool {
+        // The Video Background upsell (module 647098) sits over the preview modal or the settings page.
+        if self.video_background_close_upsell(cx) {
+            return true;
+        }
         if self.voice.extra.dialog.is_none() {
             return false;
         }
@@ -926,8 +930,7 @@ impl Root {
     pub(in crate::ui) fn open_camera_preview(&mut self, cx: &mut Context<Self>) {
         self.voice.extra.dialog = Some(Dialog::PreviewCamera);
         self.video_background_restore(cx);
-        self.voice.camera.background.pending = None;
-        self.voice.camera.background.error = None;
+        self.video_background_modal_opened();
         self.camera_test_start(cx);
         cx.notify();
     }
@@ -968,7 +971,7 @@ impl Root {
             .child(self.camera_preview_box())
             .when(!on, |this| this.child(self.camera_select_row(true, cx)))
             .when(self.video_background_shown(), |this| {
-                this.child(self.video_background_grid(BODY_WIDTH, true, cx))
+                this.child(self.video_background_modal_section(BODY_WIDTH, cx))
             })
             .into_any_element();
         modal::render_with_input(
@@ -1017,6 +1020,22 @@ impl Root {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let upsell = self.video_background_upsell_layer(cx);
+        let dialog = self.voice_dialog_main(cx);
+        match (dialog, upsell) {
+            (Some(dialog), Some(upsell)) => Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(dialog)
+                    .child(upsell)
+                    .into_any_element(),
+            ),
+            (dialog, upsell) => dialog.or(upsell),
+        }
+    }
+
+    fn voice_dialog_main(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let dialog = self.voice.extra.dialog.clone()?;
         let close = || -> modal::Handler { handler(|this, _, cx| this.close_voice_dialog(cx)) };
         let cancel = || {

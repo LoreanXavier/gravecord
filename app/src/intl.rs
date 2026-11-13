@@ -386,6 +386,7 @@ mod guard {
         "ui/settings/system.rs",
         "ui/settings/voice.rs",
         "ui/settings/voice_camera.rs",
+        "ui/settings/voice_camera/background.rs",
         "ui/settings/voice/extra.rs",
         "ui/profile_editor.rs",
         "ui/profile_editor/panel.rs",
@@ -401,6 +402,8 @@ mod guard {
         "ui/settings/overlay_page.rs",
         "ui/overlay.rs",
         "ui/overlay_widgets.rs",
+        "ui/overlay_panel.rs",
+        "ui/overlay_chat.rs",
     ];
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).

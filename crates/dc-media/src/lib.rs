@@ -14,6 +14,7 @@ pub mod decode;
 pub mod h264;
 pub mod screen;
 pub mod synthetic;
+pub mod throttle;
 
 #[cfg(all(test, windows))]
 mod bench;

@@ -1308,6 +1308,120 @@ pub fn set_favorites(current: &[u8], favorites: &Favorites) -> (String, Vec<u8>)
     whole_message_patch(updated, FIELD_FAVORITES)
 }
 
+/// `voice_and_video` is message 5 of `PreloadedUserSettings`; its oneof `video_background_filter_desktop` is `blur` 1
+/// (`VideoFilterBackgroundBlur`: `use_blur` 1), `preset_option` 2 (uint32) and `custom_asset` 3 (`VideoFilterAsset`:
+/// `id` 1 fixed64, `asset_hash` 2), `dumps/PROTOS/discord_protos.discord_users.v1.VoiceAndVideoSettings.json`.
+pub const FIELD_VOICE_AND_VIDEO: u64 = 5;
+const VIDEO_FILTER_FIELDS: [u64; 3] = [1, 2, 3];
+
+/// The value of `video_background_filter_desktop`, as module 965162 `R4` writes it (`oneofKind` and its member).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VideoBackgroundFilter {
+    Blur {
+        use_blur: bool,
+    },
+    /// A preset number. A oneof member is on the wire whenever it is set, so 0 (Cybercity) is told from no choice.
+    Preset(u32),
+    Custom {
+        id: u64,
+        asset_hash: String,
+    },
+}
+
+/// The oneof as the account holds it, `None` when no member is on the wire. When several are (a proto reader takes
+/// the last one), the last wins.
+pub fn video_background_in(settings: &[u8]) -> Option<VideoBackgroundFilter> {
+    let message = fields(settings)
+        .find(|(number, _)| *number == FIELD_VOICE_AND_VIDEO)?
+        .1;
+    let mut reader = Reader { bytes: message };
+    let mut found = None;
+    while !reader.bytes.is_empty() {
+        let tag = reader.varint()?;
+        let (field, wire) = (tag >> 3, tag & 7);
+        match wire {
+            WIRE_VARINT => {
+                let value = reader.varint()?;
+                if field == 2 {
+                    found = Some(VideoBackgroundFilter::Preset(value as u32));
+                }
+            }
+            WIRE_FIXED64 => {
+                reader.take(8)?;
+            }
+            WIRE_BYTES => {
+                let length = usize::try_from(reader.varint()?).ok()?;
+                let payload = reader.take(length)?;
+                match field {
+                    1 => {
+                        found = Some(VideoBackgroundFilter::Blur {
+                            use_blur: varint_of(payload, 1).is_some_and(|value| value != 0),
+                        });
+                    }
+                    3 => {
+                        found = Some(VideoBackgroundFilter::Custom {
+                            id: fixed64_of(payload, 1).unwrap_or(0),
+                            asset_hash: string_of(payload, 2).unwrap_or_default(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            WIRE_FIXED32 => {
+                reader.take(4)?;
+            }
+            _ => return None,
+        }
+    }
+    found
+}
+
+/// Sets the oneof (`t.videoBackgroundFilterDesktop = R4(e)` in module 352430 `_C`): the other members go, the rest of
+/// `voice_and_video` stays byte for byte. Returns the PATCH body value (the whole `voice_and_video` message, as the
+/// server replaces a top-level message it is sent) and the settings from now on.
+pub fn set_video_background(
+    current: &[u8],
+    filter: Option<&VideoBackgroundFilter>,
+) -> (String, Vec<u8>) {
+    let existing = fields(current)
+        .find(|(number, _)| *number == FIELD_VOICE_AND_VIDEO)
+        .map_or(&[][..], |(_, message)| message);
+    let mut message: Vec<u8> = raw_fields(existing)
+        .into_iter()
+        .filter(|(number, _)| !VIDEO_FILTER_FIELDS.contains(number))
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    match filter {
+        None => {}
+        Some(VideoBackgroundFilter::Blur { use_blur }) => {
+            let mut blur = Vec::new();
+            if *use_blur {
+                push_varint(&mut blur, 1 << 3 | WIRE_VARINT);
+                push_varint(&mut blur, 1);
+            }
+            push_bytes_field(&mut message, 1, &blur);
+        }
+        Some(VideoBackgroundFilter::Preset(id)) => {
+            push_varint(&mut message, 2 << 3 | WIRE_VARINT);
+            push_varint(&mut message, u64::from(*id));
+        }
+        Some(VideoBackgroundFilter::Custom { id, asset_hash }) => {
+            let mut asset = Vec::new();
+            if *id != 0 {
+                push_fixed64_field(&mut asset, 1, *id);
+            }
+            if !asset_hash.is_empty() {
+                push_bytes_field(&mut asset, 2, asset_hash.as_bytes());
+            }
+            push_bytes_field(&mut message, 3, &asset);
+        }
+    }
+    let mut encoded = Vec::new();
+    push_bytes_field(&mut encoded, FIELD_VOICE_AND_VIDEO, &message);
+    let updated = with_encoded(current, &[], FIELD_VOICE_AND_VIDEO, &encoded);
+    whole_message_patch(updated, FIELD_VOICE_AND_VIDEO)
+}
+
 #[cfg(test)]
 mod favorites_tests {
     use super::*;
@@ -1997,5 +2111,85 @@ mod folder_rewrite_tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].guild_ids, vec![3]);
         assert_eq!(entries[1].guild_ids, vec![4]);
+    }
+}
+
+#[cfg(test)]
+mod video_background_tests {
+    use super::*;
+
+    /// A `voice_and_video` with `afk_timeout` (6, a `UInt32Value` of 600) and the given oneof bytes.
+    fn settings_with(oneof: &[u8]) -> Vec<u8> {
+        let mut message = Vec::new();
+        let mut afk = Vec::new();
+        push_varint(&mut afk, 1 << 3 | WIRE_VARINT);
+        push_varint(&mut afk, 600);
+        push_bytes_field(&mut message, 6, &afk);
+        message.extend_from_slice(oneof);
+        let mut settings = Vec::new();
+        // An unrelated top-level message that must survive.
+        push_bytes_field(&mut settings, FIELD_APPEARANCE, &[0x08, 0x02]);
+        push_bytes_field(&mut settings, FIELD_VOICE_AND_VIDEO, &message);
+        settings
+    }
+
+    #[test]
+    fn every_choice_round_trips_and_preset_zero_is_not_nothing() {
+        let choices = [
+            None,
+            Some(VideoBackgroundFilter::Blur { use_blur: true }),
+            Some(VideoBackgroundFilter::Preset(0)),
+            Some(VideoBackgroundFilter::Preset(3)),
+            Some(VideoBackgroundFilter::Preset(10)),
+            Some(VideoBackgroundFilter::Custom {
+                id: 1_234_567_890_123_456_789,
+                asset_hash: "v_0123abcd".to_owned(),
+            }),
+        ];
+        for choice in &choices {
+            let (patch, updated) = set_video_background(&settings_with(&[]), choice.as_ref());
+            assert_eq!(&video_background_in(&updated), choice, "{choice:?}");
+            // The patch is the whole voice_and_video message and carries the same choice and afk_timeout.
+            let part = STANDARD.decode(&patch).unwrap();
+            assert_eq!(&video_background_in(&part), choice);
+            assert_eq!(varint_in(&part, &[5, 6], 1), Some(600));
+            assert!(fields(&part).all(|(number, _)| number == FIELD_VOICE_AND_VIDEO));
+            // The rest of the settings stays.
+            assert_eq!(varint_in(&updated, &[FIELD_APPEARANCE], 1), Some(2));
+        }
+        // Preset 0 is on the wire as tag 0x10 with value 0.
+        let (patch, _) = set_video_background(&[], Some(&VideoBackgroundFilter::Preset(0)));
+        assert_eq!(
+            STANDARD.decode(patch).unwrap(),
+            vec![0x2a, 0x02, 0x10, 0x00]
+        );
+        // Blur is `{useBlur: true}`.
+        let (patch, _) =
+            set_video_background(&[], Some(&VideoBackgroundFilter::Blur { use_blur: true }));
+        assert_eq!(
+            STANDARD.decode(patch).unwrap(),
+            vec![0x2a, 0x04, 0x0a, 0x02, 0x08, 0x01]
+        );
+    }
+
+    #[test]
+    fn a_new_choice_replaces_the_other_members_and_the_last_member_wins() {
+        let (_, blurred) = set_video_background(
+            &settings_with(&[0x10, 0x07]),
+            Some(&VideoBackgroundFilter::Blur { use_blur: true }),
+        );
+        let message = fields(&blurred)
+            .find(|(number, _)| *number == FIELD_VOICE_AND_VIDEO)
+            .unwrap()
+            .1;
+        assert!(raw_fields(message).iter().all(|(number, _)| *number != 2));
+        // Written by another client with two members: a proto reader keeps the last.
+        let both = settings_with(&[0x0a, 0x02, 0x08, 0x01, 0x10, 0x00]);
+        assert_eq!(
+            video_background_in(&both),
+            Some(VideoBackgroundFilter::Preset(0))
+        );
+        assert_eq!(video_background_in(&settings_with(&[])), None);
+        assert_eq!(video_background_in(&[]), None);
     }
 }

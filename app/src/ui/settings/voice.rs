@@ -1088,6 +1088,11 @@ impl Root {
         let visible = self.voice_page_visible();
         if visible && !self.voice.page_shown {
             self.voice.devices = Devices::read();
+            self.video_background_page_shown();
+        }
+        if !visible && self.voice.page_shown {
+            // `camera_background_setting` unmounts: what it picked is saved (`_C`, module 352430).
+            self.video_background_page_left(cx);
         }
         self.voice.page_shown = visible;
         if !visible {

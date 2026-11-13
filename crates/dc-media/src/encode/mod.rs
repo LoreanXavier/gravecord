@@ -92,6 +92,20 @@ pub(crate) struct Encoder {
     software: Option<SoftwareEncoder>,
     empty_run: u32,
     fell_back: bool,
+    /// The hardware encoder refused a live rate change once: from then on it is reopened only for large moves.
+    live_refused: bool,
+}
+
+/// A live rate change smaller than this share of the current rate (one twentieth) waits for a larger one when the rate
+/// goes up. libwebrtc hands every change to the encoder (`VideoStreamEncoder::SetEncoderRates` skips only equal ones);
+/// this is our own rule, to keep a hardware encoder from being reconfigured on every small step of the estimator. A
+/// lower rate is always taken: at a pacing factor of 1 an encoder above the target only builds queue.
+const LIVE_RATE_STEP: u32 = 20;
+
+/// Whether a live change from `current` to `target` is worth making.
+pub(crate) fn live_rate_change(current: u32, target: u32) -> bool {
+    target < current
+        || u64::from(target - current) * u64::from(LIVE_RATE_STEP) >= u64::from(current)
 }
 
 impl Encoder {
@@ -109,6 +123,7 @@ impl Encoder {
                         software: None,
                         empty_run: 0,
                         fell_back: false,
+                        live_refused: false,
                     });
                 }
                 Err(error) => tracing::debug!("hardware H.264 encoder unavailable: {error}"),
@@ -128,6 +143,7 @@ impl Encoder {
             software: Some(software_encoder(config, config.bitrate)?),
             empty_run: 0,
             fell_back: false,
+            live_refused: false,
         })
     }
 
@@ -159,9 +175,20 @@ impl Encoder {
         }
         #[cfg(windows)]
         if let Some(hardware) = self.hardware.as_mut() {
-            if hardware.set_bitrate(bitrate).is_ok() {
-                self.bitrate = bitrate;
-                return Ok(false);
+            if self.live_refused {
+                // Each reopen costs a session and a keyframe: follow only the large moves, as for openh264.
+                if !crate::screen::software_rate_change(self.bitrate, bitrate) {
+                    return Ok(false);
+                }
+            } else {
+                if !live_rate_change(self.bitrate, bitrate) {
+                    return Ok(false);
+                }
+                if hardware.set_bitrate(bitrate).is_ok() {
+                    self.bitrate = bitrate;
+                    return Ok(false);
+                }
+                self.live_refused = true;
             }
             // Reopen a native encoder that refuses a live change at the new rate; release the scarce session first.
             self.hardware = None;
@@ -402,5 +429,13 @@ pub(crate) mod tests {
         assert!(!encoder.set_bitrate(2_100_000).unwrap());
         assert!(encoder.set_bitrate(1_000_000).unwrap());
         assert!(!encoder.set_bitrate(1_000_000).unwrap());
+    }
+
+    #[test]
+    fn live_rate_changes_wait_for_a_twentieth_upwards_and_always_go_down() {
+        assert!(!live_rate_change(1_000_000, 1_049_999));
+        assert!(live_rate_change(1_000_000, 1_050_000));
+        assert!(live_rate_change(1_000_000, 999_000));
+        assert!(live_rate_change(600_000, 1_800_000));
     }
 }

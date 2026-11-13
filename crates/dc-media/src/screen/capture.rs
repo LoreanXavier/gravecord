@@ -79,6 +79,9 @@ pub(crate) struct Capture {
     item: GraphicsCaptureItem,
     arrived: i64,
     closed: i64,
+    /// A shared game covers every window of the application: the capture, conversion and encode threads keep their
+    /// speed and a 1 ms timer for as long as the capture runs.
+    _unthrottled: crate::throttle::Guard,
 }
 
 impl Capture {
@@ -136,6 +139,9 @@ impl Capture {
         {
             let _ = session.SetIsCursorCaptureEnabled(cursor);
         }
+        // The system hands frames over as they are composed, not at its default pace; the worker's own cadence picks
+        // the ones it wants (as Serein's capture does; 100 ns units). Builds without the property keep the default.
+        let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 });
         // Hide the yellow border where the system allows it; older builds keep the default.
         let _ = session.SetIsBorderRequired(false);
         let reader = Arc::new(Mutex::new(Locked((
@@ -187,6 +193,7 @@ impl Capture {
             item,
             arrived,
             closed,
+            _unthrottled: crate::throttle::Guard::acquire(),
         })
     }
 }

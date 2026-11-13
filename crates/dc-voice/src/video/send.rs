@@ -32,20 +32,18 @@ pub(crate) const CAMERA_PACING: Pacing = Pacing {
     factor: 1.1,
     queue_limit: Duration::from_millis(2000),
 };
-/// A screen share: the default-on `WebRTC-ProbingScreenshareBwe` settings ("1.0,2875,80,40,-60,3",
-/// `kDefaultProbingScreenshareBweSettings` of `alr_experiment.cc`) give the pacing factor (1.0) and the paced queue
-/// time limit (2875 ms).
+/// A screen share: the paced queue time limit (2875 ms) of the default-on `WebRTC-ProbingScreenshareBwe` settings
+/// ("1.0,2875,80,40,-60,3", `kDefaultProbingScreenshareBweSettings` of `alr_experiment.cc`), but a pacing factor of 2.5
+/// (`kDefaultPaceMultiplier` of `goog_cc_network_control.cc`, and Serein's sender), not the settings' 1.0. A deviation
+/// (DECISIONS.md): libwebrtc pairs 1.0 with an encoder frame dropper and tight encoder buffers, which this client does
+/// not have; at 1.0 every keyframe of the hardware encoder (8.5 pictures at 1440p60) held the next pictures back and
+/// the capture skipped some two a second, at 2.5 none (`video::lossy::smoothness_table`).
 pub(crate) const SCREEN_PACING: Pacing = Pacing {
-    factor: 1.0,
+    factor: 2.5,
     queue_limit: Duration::from_millis(2875),
 };
 /// `PacingController::kMinSleepTime`: the least time left that the long queue rule divides by.
 const MIN_QUEUE_TIME_LEFT: Duration = Duration::from_millis(1);
-/// Longest sleep the pacer accounts for. A coarse OS timer (Windows' 15.6 ms default tick)
-/// or a delayed task sends proportionally more on its next wake instead of losing frames.
-const MAX_CATCH_UP: Duration = Duration::from_millis(100);
-/// Budget a fresh access unit may send before the first pacing sleep.
-const INITIAL_BURST: f64 = (4 * MTU) as f64;
 /// `kMaxDebtInTime` of `pacing_controller.cc`: the media debt is capped at half a second of the pacing rate.
 const MAX_DEBT: Duration = Duration::from_millis(500);
 /// Retransmissions may use up to the target rate over this window (libwebrtc's retransmission rate limiter,
@@ -54,15 +52,31 @@ const REPAIR_WINDOW: Duration = Duration::from_millis(500);
 
 /// The most packets the pacer holds, a memory bound of ours: two of the largest access units.
 const MAX_QUEUED_PACKETS: usize = 2 * MAX_FRAGMENTS;
+/// The pacer may run up a debt of this much time at its rate before it waits for the debt to drain
+/// (`send_burst_interval_`, from the pacer config's `PacerConfig::kDefaultTimeInterval`, 40 ms), but never more than
+/// `kMaxBurstSize` (63 000 bytes) in one burst.
+const BURST_INTERVAL: Duration = Duration::from_millis(40);
+const MAX_BURST_BYTES: f64 = 63_000.0;
+/// `kMaxElapsedTime` of `pacing_controller.cc`: the longest gap one update accounts for.
+const MAX_ELAPSED: Duration = Duration::from_secs(2);
+
+/// What every packet adds to the encoder's bytes: the RTP header and the transport's overhead, as
+/// `ExpectedPerPacketOverhead` and the transport overhead count it, and the two bytes of the FU-A indicator and header
+/// our packetizer puts in each fragment's payload (libwebrtc's packetizer counts its own headers inside the payload
+/// limit; ours does too, so the encoder must leave room for them).
+const PACKET_OVERHEAD: usize = RTP_HEADER + TRANSPORT_OVERHEAD + 2;
 
 /// The encoder's share of a target (`RtpVideoSender::OnBitrateUpdated` with transport-wide feedback): the target less
-/// what every packet adds on the wire, at as many packets a second as the target fills at full size, rounded up
-/// (`CalculateOverheadRate`, `WebRTC-Video-UseFrameRateForOverhead` off). The pacer drains the whole target, so an
-/// encoder at this rate keeps up with a pacing factor of 1. Inferred: no post-encode overhead is subtracted for DAVE,
-/// which the engine may count there.
-pub(crate) fn payload_bitrate(target: u32) -> u32 {
-    let packets_per_second = (f64::from(target) / 8.0 / MTU as f64).ceil();
-    let overhead = packets_per_second * ((RTP_HEADER + TRANSPORT_OVERHEAD) * 8) as f64;
+/// what every packet adds, at as many packets a second as `fps` pictures of the target fill at full size
+/// (`CalculateOverheadRate` as `WebRTC-Video-UseFrameRateForOverhead` computes it; that field trial is in the pinned
+/// engine but off by default, where the packet rate is the target over the packet size). The frame-based count is
+/// used because the pacer drains exactly the target at a pacing factor of 1: the per-second count misses each
+/// picture's last, partly filled packet, and the queue would grow by that much for as long as the share runs.
+pub(crate) fn payload_bitrate(target: u32, fps: u32) -> u32 {
+    let fps = f64::from(fps.max(1));
+    let frame = f64::from(target) / 8.0 / fps;
+    let packets_per_second = ((frame / MTU as f64).ceil() * fps).ceil();
+    let overhead = packets_per_second * (PACKET_OVERHEAD * 8) as f64;
     target.saturating_sub(overhead as u32)
 }
 
@@ -71,8 +85,11 @@ fn wire_bytes(packet: &Packet) -> usize {
     RTP_HEADER + packet.payload.len() + TRANSPORT_OVERHEAD
 }
 
-/// The pacer's queue of access units, paced by elapsed time against the target as libwebrtc's `PacingController`
-/// drains its queue: the encoder is not held back while a picture leaves, the queue is, by the long-queue rule.
+/// The pacer's queue of access units, drained as libwebrtc's `PacingController` drains its queue: every packet sent
+/// adds to a media debt that decays at the pacing rate (`UpdateBudgetWithSentData`, `UpdateBudgetWithElapsedTime`),
+/// packets leave while the debt is under one burst interval, and then the pacer waits until it is paid. A late wake
+/// sends what the time since the last one paid for, so the rate holds whatever the timer's granularity. The encoder is
+/// not held back while a picture leaves; the queue is, by the long-queue rule.
 pub(crate) struct Pacer {
     pacing: Pacing,
     /// Packets waiting, with when they were queued.
@@ -81,10 +98,12 @@ pub(crate) struct Pacer {
     bytes: usize,
     queued_us: u128,
     base: Instant,
-    credit: f64,
+    /// `media_debt_`, in bytes.
+    debt: f64,
+    /// `last_process_time_`.
+    last_process: Instant,
     /// Repairs sent within `REPAIR_WINDOW`: when, and their size on the wire.
     repairs: VecDeque<(Instant, usize)>,
-    updated: Instant,
     progress: Instant,
     pub deadline: Instant,
 }
@@ -97,9 +116,9 @@ impl Pacer {
             bytes: 0,
             queued_us: 0,
             base: now,
-            credit: INITIAL_BURST,
+            debt: 0.0,
+            last_process: now,
             repairs: VecDeque::new(),
-            updated: now,
             progress: now,
             deadline: now,
         }
@@ -107,13 +126,20 @@ impl Pacer {
     pub fn is_empty(&self) -> bool {
         self.packets.is_empty()
     }
-    /// Whether another access unit may join the queue: it is empty, or its oldest packet is younger than the queue time
-    /// limit (which the long-queue rule keeps it to) and the memory bound is not reached.
-    pub fn accepts(&self, now: Instant) -> bool {
+    /// Whether another access unit may join the queue: it is empty, or what waits leaves at the pacing rate within
+    /// `allowance`, its oldest packet is younger than the queue time limit (which the long-queue rule keeps it to) and
+    /// the memory bound is not reached. A refused picture is not encoded: the capture holds.
+    pub fn accepts(&self, now: Instant, bitrate: u32, allowance: Duration) -> bool {
         self.packets.front().is_none_or(|(_, queued)| {
-            now.saturating_duration_since(*queued) < self.pacing.queue_limit
+            let pacing = f64::from(bitrate.max(1)) / 8.0 * self.pacing.factor;
+            self.bytes as f64 / pacing < allowance.as_secs_f64()
+                && now.saturating_duration_since(*queued) < self.pacing.queue_limit
                 && self.packets.len() < MAX_QUEUED_PACKETS
         })
+    }
+    /// Whether the memory bound leaves room for `packets` more.
+    pub fn has_room(&self, packets: usize) -> bool {
+        self.packets.len() + packets <= MAX_QUEUED_PACKETS
     }
     pub fn set_pacing(&mut self, pacing: Pacing) {
         self.pacing = pacing;
@@ -126,11 +152,11 @@ impl Pacer {
     pub fn stale(&self, now: Instant) -> bool {
         !self.is_empty() && now.duration_since(self.progress) >= Duration::from_millis(500)
     }
-    pub fn queue(&mut self, packets: Vec<Packet>, now: Instant) {
+    pub fn queue(&mut self, packets: Vec<Packet>, now: Instant, bitrate: u32) {
         if self.packets.is_empty() {
-            // Idle time is not banked into a burst; only the small initial allowance carries over.
-            self.credit = self.credit.min(INITIAL_BURST);
-            self.updated = now;
+            // The pacer processed while idle (`kPausedProcessInterval`): its clock is now, and idle time paid the debt
+            // but banked nothing.
+            self.step_to(now, bitrate);
             self.deadline = now;
             self.progress = now;
         }
@@ -147,9 +173,9 @@ impl Pacer {
         self.queued_us -= queued.saturating_duration_since(self.base).as_micros();
         Some(packet)
     }
-    /// The drain rate in bytes a second: the target times the pacing factor, or faster when what waits would not leave
-    /// within the queue time limit at the packets' average time in the queue (`MaybeUpdateMediaRateDueToLongQueue`, on
-    /// unless `WebRTC-Pacer-DrainQueue` is disabled).
+    /// The drain rate in bytes a second (`adjusted_media_rate_`): the target times the pacing factor, or faster when
+    /// what waits would not leave within the queue time limit at the packets' average time in the queue
+    /// (`MaybeUpdateMediaRateDueToLongQueue`, on unless `WebRTC-Pacer-DrainQueue` is disabled).
     fn rate(&self, now: Instant, bitrate: u32) -> f64 {
         let pacing = f64::from(bitrate.max(1)) / 8.0 * self.pacing.factor;
         if self.packets.is_empty() {
@@ -165,17 +191,30 @@ impl Pacer {
             .max(MIN_QUEUE_TIME_LEFT);
         pacing.max(self.bytes as f64 / left.as_secs_f64())
     }
-    fn refill(&mut self, now: Instant, bitrate: u32) {
-        let elapsed = now
-            .saturating_duration_since(self.updated)
-            .min(MAX_CATCH_UP)
-            .as_secs_f64();
-        self.updated = now;
+    /// `UpdateTimeAndGetElapsed` and `UpdateBudgetWithElapsedTime`: the pacer's own clock moves to `to` (never back),
+    /// and the debt decays for the time it moved, at most `MAX_ELAPSED`.
+    fn step_to(&mut self, to: Instant, bitrate: u32) {
+        let elapsed = to
+            .saturating_duration_since(self.last_process)
+            .min(MAX_ELAPSED);
+        if to > self.last_process {
+            self.last_process = to;
+        }
+        let rate = self.rate(to, bitrate);
+        self.debt -= self.debt.min(rate * elapsed.as_secs_f64());
+    }
+    /// `NextSendTime` with packets waiting: at once while the debt is under one burst interval, else when it is paid.
+    fn next_send_time(&self, now: Instant, bitrate: u32) -> Instant {
         let rate = self.rate(now, bitrate);
-        let added = elapsed * rate;
-        // Keep a 5 ms bucket on precise timers; a longer wake may spend what it accrued.
-        let limit = (rate * 0.005).max(INITIAL_BURST).max(added);
-        self.credit = (self.credit + added).min(limit);
+        let burst = BURST_INTERVAL.as_secs_f64().min(MAX_BURST_BYTES / rate);
+        let drain = self.debt / rate;
+        if drain < burst {
+            self.last_process
+        } else {
+            self.last_process + Duration::from_secs_f64(drain)
+        }
+    }
+    fn expire_repairs(&mut self, now: Instant) {
         while self
             .repairs
             .front()
@@ -184,30 +223,39 @@ impl Pacer {
             self.repairs.pop_front();
         }
     }
-    /// Whether one more repair may leave now: the pacer has a packet's budget, and repairs in the last half second stay
-    /// within the target rate. Repairs go before media, so they wait for nothing but these two limits.
+    /// `UpdateBudgetWithSentData`: `bytes` left; the debt is capped at `MAX_DEBT` at the drain rate.
+    pub fn charge(&mut self, now: Instant, bytes: usize, bitrate: u32) {
+        let cap = self.rate(now, bitrate) * MAX_DEBT.as_secs_f64();
+        self.debt = (self.debt + bytes as f64).min(cap);
+    }
+    /// Whether one more repair may leave now: its send time has come, and repairs in the last half second stay within
+    /// the target rate. Repairs go before media, so they wait for nothing but these two limits.
     pub fn allow_repair(&mut self, now: Instant, bitrate: u32) -> bool {
-        self.refill(now, bitrate);
+        self.expire_repairs(now);
+        let due = self.next_send_time(now, bitrate);
         let window = f64::from(bitrate) / 8.0 * REPAIR_WINDOW.as_secs_f64();
         let sent: usize = self.repairs.iter().map(|(_, bytes)| bytes).sum();
-        if self.credit < MTU as f64 || (sent + MTU) as f64 > window {
+        if due > now || (sent + MTU) as f64 > window {
             return false;
         }
+        self.step_to(due, bitrate);
         self.repairs.push_back((now, 0));
         true
     }
-    /// The next media packet of a probe burst. Probes leave whatever the budget says; what they send is charged to it
-    /// as debt (`UpdateBudgetWithSentData`).
+    /// The size of the repair `allow_repair` just let through.
+    pub fn charge_repair(&mut self, now: Instant, payload: usize, bitrate: u32) {
+        let bytes = RTP_HEADER + payload + TRANSPORT_OVERHEAD;
+        self.charge(now, bytes, bitrate);
+        if let Some(last) = self.repairs.back_mut() {
+            last.1 = bytes;
+        }
+    }
+    /// The next media packet of a probe burst. Probes leave whatever the debt says; what they send is charged to it.
     pub fn pop_probe(&mut self, now: Instant, bitrate: u32) -> Option<Packet> {
-        self.refill(now, bitrate);
+        self.step_to(now, bitrate);
         let packet = self.pop()?;
         self.progress = now;
         Some(packet)
-    }
-    /// Charges `bytes` on the wire that a probe sent, as debt of at most `MAX_DEBT` at the drain rate.
-    pub fn charge(&mut self, now: Instant, bytes: usize, bitrate: u32) {
-        let floor = -(self.rate(now, bitrate) * MAX_DEBT.as_secs_f64());
-        self.credit = (self.credit - bytes as f64).max(floor.min(0.0));
     }
     /// The largest media packet waiting, header and payload, as `BitrateProber::OnIncomingPacket` sees packets.
     pub fn largest(&self) -> usize {
@@ -217,48 +265,40 @@ impl Pacer {
             .max()
             .unwrap_or(0)
     }
-    /// The size of the repair `allow_repair` just let through.
-    pub fn charge_repair(&mut self, payload: usize) {
-        let bytes = RTP_HEADER + payload + TRANSPORT_OVERHEAD;
-        self.credit -= bytes as f64;
-        if let Some(last) = self.repairs.back_mut() {
-            last.1 = bytes;
-        }
-    }
+    /// The packets whose send time has come by `now`, each charged at its own send time as `ProcessPackets` replays a
+    /// late wake (the pacer's clock moves from send time to send time, so a wake 15 ms late sends what those 15 ms paid
+    /// for); then the deadline of the next one, or of a pending repair.
     pub fn next_batch(&mut self, now: Instant, bitrate: u32) -> Vec<Packet> {
-        self.refill(now, bitrate);
-        let mut count = 0;
-        let mut shortfall = 0.0;
-        for (packet, _) in &self.packets {
-            let bytes = wire_bytes(packet) as f64;
-            if bytes > self.credit {
-                shortfall = bytes - self.credit;
+        self.expire_repairs(now);
+        let mut batch = Vec::new();
+        while !self.packets.is_empty() {
+            let due = self.next_send_time(now, bitrate);
+            if due > now {
                 break;
             }
-            self.credit -= bytes;
-            count += 1;
+            self.step_to(due, bitrate);
+            let Some(packet) = self.pop() else { break };
+            self.charge(due, wire_bytes(&packet), bitrate);
+            batch.push(packet);
         }
-        let batch: Vec<Packet> = (0..count).filter_map(|_| self.pop()).collect();
-        // Sleep until the next media packet, or else a pending repair, is affordable.
-        let target = f64::from(bitrate.max(1)) / 8.0;
-        let rate = self.rate(now, bitrate);
-        let wait = if !self.packets.is_empty() {
-            shortfall / rate
+        let next = if !self.packets.is_empty() || self.repairs.is_empty() {
+            self.next_send_time(now, bitrate)
         } else {
+            let target = f64::from(bitrate.max(1)) / 8.0;
             let sent: usize = self.repairs.iter().map(|(_, bytes)| bytes).sum();
             let full = (sent + MTU) as f64 > target * REPAIR_WINDOW.as_secs_f64();
             let window = match self.repairs.front() {
-                Some((at, _)) if full => (*at + REPAIR_WINDOW)
-                    .saturating_duration_since(now)
-                    .as_secs_f64(),
-                _ => 0.0,
+                Some((at, _)) if full => *at + REPAIR_WINDOW,
+                _ => now,
             };
-            ((MTU as f64 - self.credit) / rate).max(window).max(0.0)
+            self.next_send_time(now, bitrate).max(window)
         };
-        self.deadline = now + Duration::from_secs_f64(wait.min(0.1)).max(Duration::from_millis(1));
+        self.deadline = next
+            .max(now + MIN_QUEUE_TIME_LEFT)
+            .min(now + Duration::from_millis(100));
         // A large IDR at a reduced bitrate needs time to drain. Only a lack of
         // progress expires it, otherwise every replacement IDR could be cut off too.
-        if count > 0 {
+        if !batch.is_empty() {
             self.progress = now;
         }
         batch
@@ -298,6 +338,10 @@ impl Rate {
             delay: None,
             reported: maximum,
         }
+    }
+    /// No delay-based estimate any more: only the loss-based control and REMB bound the target.
+    pub fn clear_delay_based(&mut self) {
+        self.delay = None;
     }
     /// The rate the estimation starts from (`SetBitrates` with a start rate): the target until feedback moves it. The
     /// encoder hears it on the next [`Self::tick`].
@@ -742,7 +786,7 @@ mod tests {
         for ms in 0..400u64 {
             let now = start + Duration::from_millis(ms);
             while pacer.allow_repair(now, 1_000_000) {
-                pacer.charge_repair(MTU - RTP_HEADER - TRANSPORT_OVERHEAD);
+                pacer.charge_repair(now, MTU - RTP_HEADER - TRANSPORT_OVERHEAD, 1_000_000);
                 sent += 1;
             }
         }

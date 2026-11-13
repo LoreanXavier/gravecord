@@ -206,14 +206,21 @@ fn start_capture(
         let _ = audio.try_send(chunk);
     };
     match source {
-        StreamSource::Screen(settings) => screen::Worker::start(settings, video, sound)
-            .map(|worker| {
-                // The encoder starts where the estimation does (`desktopBitrate.target`, 600 kb/s, is what the
-                // official client hands as `encodingVideoBitRate`); the sender's target raises it as probes find room.
-                worker.set_bitrate(CALL_START_BITRATE);
-                Capture::Screen(worker)
-            })
-            .map_err(|_| "Screen capture could not start"),
+        StreamSource::Screen(settings) => {
+            // The encoder opens where the estimation starts (`desktopBitrate.target`, 600 kb/s, is what the official
+            // client hands as `encodingVideoBitRate`), so its first keyframe is sized for that; the sender's target
+            // raises it as probes find room.
+            #[cfg(windows)]
+            let worker = screen::Worker::start_at(settings, CALL_START_BITRATE, video, sound);
+            #[cfg(not(windows))]
+            let worker = screen::Worker::start(settings, video, sound);
+            worker
+                .map(|worker| {
+                    worker.set_bitrate(CALL_START_BITRATE);
+                    Capture::Screen(worker)
+                })
+                .map_err(|_| "Screen capture could not start")
+        }
         StreamSource::Synthetic {
             width,
             height,
@@ -365,6 +372,8 @@ pub(crate) async fn run(
     let mut signal_count = 0u16;
     let mut packet = [0u8; rtp::MAX_PACKET + 1];
     let mut ticks = clock::ticks()?;
+    // The pacer wakes on a high-resolution clock: tokio's timer would round each wait up to the system tick.
+    let (pacer_clock, mut pacer_wakes) = clock::PacerClock::start()?;
     let mut clients = std::collections::BTreeSet::new();
 
     // Sender state.
@@ -440,7 +449,12 @@ pub(crate) async fn run(
             ws = open(&url).await.map_err(|_| "Stream resume failed")?;
             text(&mut ws, signal::resume(&ids(), seq_ack)).await?;
         }
-        let pacing = sender.as_ref().and_then(VideoSender::deadline);
+        pacer_clock.set(
+            sender
+                .as_ref()
+                .and_then(VideoSender::deadline)
+                .map(Instant::into_std),
+        );
         tokio::select! {
             changed = controls.changed() => {
                 if changed.is_err() || controls.borrow().stop {
@@ -451,7 +465,10 @@ pub(crate) async fn run(
                     return Ok(DisconnectReason::Requested);
                 }
             },
-            _ = async { match pacing { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+            wake = pacer_wakes.recv() => {
+                if wake.is_none() {
+                    return Err("Pacer clock stopped");
+                }
                 if let (Some(sender), Some(crypto), Some(socket)) = (sender.as_mut(), transport.as_mut(), udp.as_ref()) {
                     let was_empty = sender.idle();
                     sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Stream UDP send failed"))?;
@@ -482,7 +499,15 @@ pub(crate) async fn run(
                 if let Some(sender) = sender.as_mut() {
                     match sender.offer(&frame, &mut dave, Instant::now()) {
                         Ok(true) => sent_keyframe |= frame.keyframe,
-                        Ok(false) => {}
+                        Ok(false) => {
+                            // The pacer's memory bound refused it: the chain is broken until a keyframe.
+                            debug!("stream picture refused by the pacer; asking for a keyframe");
+                            awaiting_keyframe = true;
+                            sent_keyframe = false;
+                            if let Some(capture) = &capture {
+                                capture.force_keyframe();
+                            }
+                        }
                         Err(error) => {
                             // A bad picture costs that picture, not the stream.
                             debug!(error, "stream picture dropped");
@@ -582,6 +607,7 @@ pub(crate) async fn run(
                         let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, CALL_START_BITRATE, bitrate);
                         video.set_keyframe_interval(keyframe_interval);
                         video.set_screen_share(true);
+                        video.set_framerate(source.limits().framerate);
                         sender = Some(video);
                         text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Stream, Some(source.limits()))))).await?;
                         announced = true;
@@ -741,6 +767,13 @@ pub(crate) async fn run(
                             last_probe = estimation.last_probe,
                             application_limited = estimation.application_limited,
                             padding_packets = estimation.padding_packets,
+                            transport_cc = estimation.transport_cc,
+                            receiver_reports = estimation.receiver_reports,
+                            rembs = estimation.rembs,
+                            fallback = estimation.fallback,
+                            target = estimation.target,
+                            encoder_rate = estimation.encoder_rate,
+                            dropped_pictures = estimation.dropped_pictures,
                             "stream send-side estimation"
                         );
                     }

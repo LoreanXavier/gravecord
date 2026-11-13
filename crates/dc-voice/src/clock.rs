@@ -39,6 +39,89 @@ pub(crate) fn ticks() -> Result<mpsc::Receiver<()>, &'static str> {
     Ok(receive)
 }
 
+/// The longest a waiting pacer thread sleeps before it looks at its deadline again, so a deadline moved earlier is met
+/// within this much (`PacingController::kMinSleepTime`, 1 ms).
+const PACER_POLL: Duration = Duration::from_millis(1);
+
+struct PacerShared {
+    /// The next deadline, and whether the owner is gone.
+    state: std::sync::Mutex<(Option<Instant>, bool)>,
+    changed: std::sync::Condvar,
+}
+
+/// Wakes a media loop at its pacer's deadlines with the high-resolution sleep of [`ticks`], not tokio's timer, which
+/// rounds up to the 15.6 ms system tick on Windows: libwebrtc's pacer posts its process task as a high-precision delayed
+/// task for the same reason (`PostDelayedHighPrecisionTask` in `task_queue_paced_sender.cc`). The thread waits on a
+/// condition variable while there is no deadline and sleeps in steps of at most `PACER_POLL` while there is one.
+pub(crate) struct PacerClock {
+    shared: std::sync::Arc<PacerShared>,
+}
+
+impl PacerClock {
+    /// The clock, and the wakes it sends: one per deadline reached. The thread ends with the clock.
+    pub(crate) fn start() -> Result<(Self, mpsc::Receiver<()>), &'static str> {
+        let shared = std::sync::Arc::new(PacerShared {
+            state: std::sync::Mutex::new((None, false)),
+            changed: std::sync::Condvar::new(),
+        });
+        let (send, receive) = mpsc::channel(1);
+        let thread = shared.clone();
+        std::thread::Builder::new()
+            .name("dc-voice-pacer".into())
+            .spawn(move || {
+                loop {
+                    let deadline = {
+                        let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
+                        while state.0.is_none() && !state.1 {
+                            state = thread
+                                .changed
+                                .wait(state)
+                                .unwrap_or_else(|e| e.into_inner());
+                        }
+                        if state.1 {
+                            return;
+                        }
+                        state.0
+                    };
+                    let Some(deadline) = deadline else { continue };
+                    let now = Instant::now();
+                    if deadline > now {
+                        std::thread::sleep((deadline - now).min(PACER_POLL));
+                        continue;
+                    }
+                    {
+                        let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.0 == Some(deadline) {
+                            state.0 = None;
+                        }
+                    }
+                    if let Err(mpsc::error::TrySendError::Closed(())) = send.try_send(()) {
+                        return;
+                    }
+                }
+            })
+            .map_err(|_| "Pacer clock thread could not start")?;
+        Ok((Self { shared }, receive))
+    }
+
+    /// The pacer's next deadline; `None` when it has nothing to send.
+    pub(crate) fn set(&self, deadline: Option<Instant>) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 != deadline {
+            state.0 = deadline;
+            self.shared.changed.notify_one();
+        }
+    }
+}
+
+impl Drop for PacerClock {
+    fn drop(&mut self) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.1 = true;
+        self.shared.changed.notify_one();
+    }
+}
+
 /// Counts 20 ms frames owed since a start, for a loop that must move one frame per 20 ms of real time even when its
 /// tick came late and the clock skipped one (`ticks` skips rather than bursts).
 #[derive(Default)]

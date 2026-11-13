@@ -97,6 +97,9 @@ fn source_letter(name: &str) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
+/// The connection the wait after a move started over ([`MOVE_SERVER_WAIT`]); 0 for none.
+static MOVE_RETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Numbers the voice connections this process opens.
 static VOICE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -559,7 +562,10 @@ impl Root {
                                 && own.is_none_or(|own| own == state.session_id)
                         })
                 });
-                if reason == dc_voice::DisconnectReason::Kicked && !still_in {
+                // A connection that the wait below started over and that was closed the same way again is not tried a
+                // third time: the stored server does not take this session.
+                let retried = MOVE_RETRY.load(std::sync::atomic::Ordering::Relaxed) == generation;
+                if reason == dc_voice::DisconnectReason::Kicked && (!still_in || retried) {
                     self.end_voice(false, cx);
                 } else if reason == dc_voice::DisconnectReason::Kicked {
                     // Moved: the new voice server normally follows; without one the call would wait forever.
@@ -581,6 +587,12 @@ impl Root {
                                 AfterMoveWait::Restart => {
                                     root.restart_call(false, cx);
                                     root.maybe_connect_voice();
+                                    if let Some(call) = &root.call {
+                                        MOVE_RETRY.store(
+                                            call.generation,
+                                            std::sync::atomic::Ordering::Relaxed,
+                                        );
+                                    }
                                 }
                                 AfterMoveWait::End => root.end_voice(false, cx),
                                 AfterMoveWait::Nothing => {}

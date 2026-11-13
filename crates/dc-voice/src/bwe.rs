@@ -668,7 +668,7 @@ impl LinkCapacity {
 /// the increase limit of 1.5 times the acknowledged rate plus 10 kb/s, the 8% a second multiplicative increase with its
 /// 1 kb/s minimum, and `GetNearMaxIncreaseRateBpsPerSecond` (`kFrameInterval` 1/30 s, `kPacketSize` 1200 bytes, a 100 ms
 /// detector delay, twice the response time, `kMinIncreaseRateBpsPerSecond` 4000).
-const DEFAULT_RTT: Duration = Duration::from_millis(200);
+pub(crate) const DEFAULT_RTT: Duration = Duration::from_millis(200);
 const BACKOFF: f64 = 0.85;
 const BACKOFF_TERM_BPS: f64 = 5_000.0;
 const INCREASE_LIMIT_FACTOR: f64 = 1.5;
@@ -927,7 +927,11 @@ impl DelayBased {
         }
         let acked = self.acked.bitrate();
         for (at, packet) in &received {
-            if let Some(tag) = packet.probe {
+            // Cluster ids start again with each estimator; a probe of an earlier one on this transport (a camera
+            // turned off and on) is not this one's.
+            if let Some(tag) = packet.probe
+                && packet.sent >= self.epoch
+            {
                 self.probes.packet(packet, tag, *at);
             }
         }
