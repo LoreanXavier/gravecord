@@ -66,6 +66,9 @@ pub struct VideoHub {
     sidechain: Arc<AtomicU32>,
     /// Numbers the stream connections that take a queue.
     stream_connections: Arc<std::sync::atomic::AtomicU64>,
+    /// The call simulator's observer of delivered pictures (`sim` feature); it never changes what the sink gets.
+    #[cfg(feature = "sim")]
+    tap: Arc<Mutex<Option<crate::sim::Tap>>>,
 }
 
 impl Default for VideoHub {
@@ -82,7 +85,16 @@ impl VideoHub {
             stream_audio: Arc::default(),
             sidechain: Arc::default(),
             stream_connections: Arc::default(),
+            #[cfg(feature = "sim")]
+            tap: Arc::default(),
         }
+    }
+
+    /// The call simulator watches what this hub delivers (`sim` feature): who, which source and the size of every
+    /// picture, as it goes to the sink.
+    #[cfg(feature = "sim")]
+    pub fn set_tap(&self, tap: Option<crate::sim::Tap>) {
+        *self.tap.lock().unwrap_or_else(|e| e.into_inner()) = tap;
     }
 
     /// Registers the sink for every connection that shares this hub; `None` removes it.
@@ -98,6 +110,15 @@ impl VideoHub {
     }
 
     pub(crate) fn deliver(&self, frame: RemoteFrame) {
+        #[cfg(feature = "sim")]
+        if let Some(tap) = self.tap.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            tap(
+                frame.user,
+                frame.source,
+                frame.picture.width,
+                frame.picture.height,
+            );
+        }
         let sink = self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(sink) = sink {
             sink(frame);

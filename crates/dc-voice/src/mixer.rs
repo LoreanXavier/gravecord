@@ -1,22 +1,30 @@
-//! One bounded decoder and reorder window per authenticated remote speaker, mixed onto one
-//! 20 ms clock.
+//! One receive stream per authenticated remote speaker, mixed onto one 20 ms clock. Each speaker's packets go through
+//! its own [`NetEq`] (libwebrtc's jitter buffer, as the official engine plays every voice), which decodes, conceals and
+//! stretches; the mixer sums what they give, at each user's volume.
 //!
-//! Adapted from Serein `crates/discord-voice/src/mixer.rs`, MIT OR Apache-2.0. Changes: no
-//! per-user volume table at first (unity gain); a table now sets each user's gain and local mute, see `set_user`.
-use crate::{Frame, dave::MAX_PARTICIPANTS, jitter::Jitter};
-use opus2::{Channels, Decoder};
+//! Adapted from Serein `crates/discord-voice/src/mixer.rs`, MIT OR Apache-2.0. Changes: a table sets each user's gain
+//! and local mute, see `set_table`; Serein's fixed 40 ms window (`jitter.rs`) is replaced by the NetEq port.
+use crate::neteq::{NetEq, OUTPUT_SIZE, Stats};
+use crate::{Frame, dave::MAX_PARTICIPANTS};
 
 struct Speaker {
     user: u64,
     ssrc: u32,
-    decoder: Decoder,
-    jitter: Jitter,
-    /// Decoded samples, interleaved when the mixer is stereo: up to 120 ms.
-    pcm: Box<[f32; 5760 * 2]>,
-    offset: usize,
-    length: usize,
+    neteq: NetEq,
     activity: u8,
 }
+
+/// What the receive streams did since the last report, for the call's debug log every five seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Report {
+    pub speakers: usize,
+    /// The largest target delay and buffer level among the speakers now.
+    pub target_delay_ms: i32,
+    pub buffer_level_ms: usize,
+    /// Counters over the interval, all speakers together.
+    pub since: Stats,
+}
+
 #[derive(Default)]
 pub(crate) struct Mixer {
     speakers: Vec<Speaker>,
@@ -24,7 +32,45 @@ pub(crate) struct Mixer {
     mix: std::collections::HashMap<u64, (f32, bool)>,
     /// Decodes and mixes in stereo (a watched stream's soundshare), else mono (the call's voices).
     stereo: bool,
+    /// Counters of speakers that left, and the totals at the last report.
+    retired: Stats,
+    reported: Stats,
 }
+
+fn add(a: Stats, b: Stats) -> Stats {
+    Stats {
+        packets_received: a.packets_received + b.packets_received,
+        packets_lost: a.packets_lost + b.packets_lost,
+        packets_late: a.packets_late + b.packets_late,
+        fec_recovered: a.fec_recovered + b.fec_recovered,
+        concealed_samples: a.concealed_samples + b.concealed_samples,
+        concealment_events: a.concealment_events + b.concealment_events,
+        accelerated_samples: a.accelerated_samples + b.accelerated_samples,
+        expanded_samples: a.expanded_samples + b.expanded_samples,
+        flushes: a.flushes + b.flushes,
+        underrun_samples: a.underrun_samples + b.underrun_samples,
+    }
+}
+
+fn since(now: Stats, then: Stats) -> Stats {
+    Stats {
+        packets_received: now.packets_received.saturating_sub(then.packets_received),
+        packets_lost: now.packets_lost.saturating_sub(then.packets_lost),
+        packets_late: now.packets_late.saturating_sub(then.packets_late),
+        fec_recovered: now.fec_recovered.saturating_sub(then.fec_recovered),
+        concealed_samples: now.concealed_samples.saturating_sub(then.concealed_samples),
+        concealment_events: now
+            .concealment_events
+            .saturating_sub(then.concealment_events),
+        accelerated_samples: now
+            .accelerated_samples
+            .saturating_sub(then.accelerated_samples),
+        expanded_samples: now.expanded_samples.saturating_sub(then.expanded_samples),
+        flushes: now.flushes.saturating_sub(then.flushes),
+        underrun_samples: now.underrun_samples.saturating_sub(then.underrun_samples),
+    }
+}
+
 impl Mixer {
     /// A mixer whose frames are interleaved stereo, for stream audio: the sender encodes its system audio in stereo
     /// and a mono decoder folded it down.
@@ -72,25 +118,22 @@ impl Mixer {
         self.speakers.push(Speaker {
             user,
             ssrc,
-            decoder: Decoder::new(
-                48_000,
-                if self.stereo {
-                    Channels::Stereo
-                } else {
-                    Channels::Mono
-                },
-            )
-            .map_err(|_| "Opus decoder initialization failed")?,
-            jitter: Jitter::default(),
-            pcm: Box::new([0.0; 5760 * 2]),
-            offset: 0,
-            length: 0,
+            neteq: NetEq::new(self.stereo)?,
             activity: 0,
         });
         Ok(())
     }
     pub fn remove(&mut self, user: u64) {
-        self.speakers.retain(|s| s.user != user);
+        let mut retired = self.retired;
+        self.speakers.retain(|s| {
+            if s.user == user {
+                retired = add(retired, s.neteq.stats());
+                false
+            } else {
+                true
+            }
+        });
+        self.retired = retired;
     }
     pub fn user(&self, ssrc: u32) -> Option<u64> {
         self.speakers
@@ -98,17 +141,15 @@ impl Mixer {
             .find(|s| s.ssrc == ssrc)
             .map(|s| s.user)
     }
-    pub fn push(&mut self, ssrc: u32, sequence: u16, opus: Vec<u8>) {
+    /// One received Opus packet of `ssrc`, by its RTP sequence number and timestamp.
+    pub fn push(&mut self, ssrc: u32, sequence: u16, timestamp: u32, opus: &[u8]) {
         if let Some(speaker) = self.speakers.iter_mut().find(|s| s.ssrc == ssrc) {
-            speaker.jitter.push(sequence, opus);
+            speaker.neteq.insert_packet(sequence, timestamp, opus);
         }
     }
     pub fn clear(&mut self) {
         for speaker in &mut self.speakers {
-            speaker.jitter.clear();
-            speaker.pcm.fill(0.0);
-            speaker.offset = 0;
-            speaker.length = 0;
+            speaker.neteq.flush();
             speaker.activity = 0;
         }
     }
@@ -119,7 +160,32 @@ impl Mixer {
             .filter(|s| s.activity > 0)
             .map(|s| s.user)
     }
-    /// Mix one 20 ms mono frame, preserving up to 120 ms packets without bursting playback queues.
+    /// The receive streams since the last call of this (no user ids: counts and levels only).
+    pub fn report(&mut self) -> Report {
+        let total = self
+            .speakers
+            .iter()
+            .fold(self.retired, |sum, s| add(sum, s.neteq.stats()));
+        let report = Report {
+            speakers: self.speakers.len(),
+            target_delay_ms: self
+                .speakers
+                .iter()
+                .map(|s| s.neteq.target_delay_ms())
+                .max()
+                .unwrap_or(0),
+            buffer_level_ms: self
+                .speakers
+                .iter()
+                .map(|s| s.neteq.buffer_level_ms())
+                .max()
+                .unwrap_or(0),
+            since: since(total, self.reported),
+        };
+        self.reported = total;
+        report
+    }
+    /// Mix one 20 ms mono frame.
     pub fn pop(&mut self) -> Option<Frame> {
         debug_assert!(!self.stereo);
         let mut output = [0.0; 960];
@@ -131,60 +197,28 @@ impl Mixer {
         let mut output = [0.0; 1920];
         self.mix_into(&mut output).then_some(output)
     }
-    /// Mixes 20 ms into `output` (960 samples per channel). False when nobody had anything.
+    /// Mixes 20 ms into `output` (960 samples per channel): two 10 ms blocks of every speaker's NetEq. False when
+    /// nobody had anything but muted output.
     fn mix_into(&mut self, output: &mut [f32]) -> bool {
         let channels = self.channels();
         let mut active = false;
         let gains: Vec<f32> = self.speakers.iter().map(|s| self.gain(s.user)).collect();
+        let mut block = vec![0.0f32; OUTPUT_SIZE * channels];
         for (speaker, gain) in self.speakers.iter_mut().zip(gains) {
             let mut energy = 0.0;
-            let mut filled = 0;
-            let mut decoded = 0;
-            while filled < output.len() {
-                if speaker.offset == speaker.length {
-                    // The shortest supported packet is 2.5 ms: at most eight decodes per tick.
-                    if decoded == 8 {
-                        break;
-                    }
-                    let Some(opus) = speaker.jitter.pop() else {
-                        break;
-                    };
-                    decoded += 1;
-                    let limit = if opus.is_empty() {
-                        // Preserve the lost packet duration; long concealment drains over ticks.
-                        speaker
-                            .decoder
-                            .get_last_packet_duration()
-                            .unwrap_or(960)
-                            .clamp(120, 5760) as usize
-                            * channels
-                    } else {
-                        speaker.pcm.len() / 2 * channels
-                    };
-                    let Ok(length) =
-                        speaker
-                            .decoder
-                            .decode_float(&opus, &mut speaker.pcm[..limit], false)
-                    else {
-                        continue;
-                    };
-                    speaker.offset = 0;
-                    speaker.length = length * channels;
+            for half in output.chunks_exact_mut(OUTPUT_SIZE * channels) {
+                speaker.neteq.get_audio(&mut block);
+                if speaker.neteq.is_muted() {
+                    continue;
                 }
-                let count = (output.len() - filled).min(speaker.length - speaker.offset);
-                for (mixed, sample) in output[filled..filled + count]
-                    .iter_mut()
-                    .zip(&speaker.pcm[speaker.offset..speaker.offset + count])
-                {
+                active = true;
+                for (mixed, sample) in half.iter_mut().zip(&block) {
                     if sample.is_finite() {
                         *mixed += sample * gain;
                         // Speaking indicators follow the voice itself, not the local volume.
                         energy += sample * sample;
                     }
                 }
-                speaker.offset += count;
-                filled += count;
-                active |= count != 0;
             }
             speaker.activity = crate::activity::hold(energy, speaker.activity);
         }
@@ -199,7 +233,7 @@ impl Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opus2::{Application, Encoder};
+    use opus2::{Application, Channels, Decoder, Encoder};
 
     fn opus(frequency: f32) -> Vec<u8> {
         let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Voip).unwrap();
@@ -216,18 +250,16 @@ mod tests {
         let mut muted = Mixer::default();
         for mixer in [&mut full, &mut half, &mut muted] {
             mixer.announce(1, 11).unwrap();
-            mixer.push(11, 7, opus(0.05));
+            mixer.push(11, 7, 7 * 960, &opus(0.05));
         }
         half.set_table(&[(1, (0.5, false))].into());
         muted.set_table(&[(1, (1.0, true))].into());
-        for _ in 0..2 {
-            assert!(full.pop().is_none() && half.pop().is_none() && muted.pop().is_none());
-        }
         let (a, b, c) = (
             full.pop().unwrap(),
             half.pop().unwrap(),
             muted.pop().unwrap(),
         );
+        assert!(a.iter().any(|s| s.abs() > 0.01));
         for i in 0..960 {
             assert!((b[i] - a[i] * 0.5).abs() < 0.0001);
             assert_eq!(c[i], 0.0);
@@ -247,15 +279,10 @@ mod tests {
             single.announce(user, ssrc).unwrap();
             // Same sequence from separate SSRCs must never collide or share decoder state.
             let packet = opus(frequency);
-            together.push(ssrc, 7, packet.clone());
-            single.push(ssrc, 7, packet);
+            together.push(ssrc, 7, 6720, &packet);
+            single.push(ssrc, 7, 6720, &packet);
         }
         assert!(together.announce(3, 11).is_err(), "SSRC owned by user 1");
-        for _ in 0..2 {
-            assert!(together.pop().is_none(), "40 ms startup");
-            assert!(alice.pop().is_none());
-            assert!(bob.pop().is_none());
-        }
         let mixed = together.pop().unwrap();
         let a = alice.pop().unwrap();
         let b = bob.pop().unwrap();
@@ -265,8 +292,12 @@ mod tests {
             assert!((mixed[i] - (a[i] + b[i]).clamp(-1.0, 1.0)).abs() < 0.0001);
         }
         assert_eq!(together.speaking().count(), 2);
+        let report = together.report();
+        assert_eq!(report.speakers, 2);
+        assert_eq!(report.since.packets_received, 2);
         together.remove(1);
         assert_eq!(together.user(11), None);
+        assert_eq!(together.report().since.packets_received, 0, "counted once");
         together.clear();
         assert!(together.pop().is_none());
         for user in 3..65 {
@@ -276,40 +307,51 @@ mod tests {
     }
 
     #[test]
-    fn short_and_lost_packets_keep_realtime_ticks() {
+    fn short_and_long_packets_and_a_lost_one_keep_realtime_ticks() {
         for samples in [240usize, 2880] {
             let mut mixer = Mixer::default();
             mixer.announce(1, 11).unwrap();
             let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
             let mut reference = Decoder::new(48_000, Channels::Mono).unwrap();
-            let mut expected = Vec::new();
-            for sequence in 0..4u16 {
+            let packets = 2 * 48_000 / samples;
+            let mut frames = 0;
+            let mut time = 0;
+            for sequence in 0..packets {
                 let input: Vec<f32> = (0..samples)
-                    .map(|i| (i as f32 * 0.037).sin() * 0.2)
+                    .map(|i| ((sequence * samples + i) as f32 * 0.037).sin() * 0.2)
                     .collect();
                 let mut encoded = [0; 1275];
                 let len = encoder.encode_float(&input, &mut encoded).unwrap();
-                let packet = if sequence == 1 {
-                    &[][..]
-                } else {
-                    &encoded[..len]
-                };
                 let mut decoded = vec![0.0; samples];
-                let length = reference.decode_float(packet, &mut decoded, false).unwrap();
-                assert_eq!(length, samples);
-                expected.extend(decoded);
-                if sequence != 1 {
-                    mixer.push(11, sequence, packet.to_vec());
+                assert_eq!(
+                    reference
+                        .decode_float(&encoded[..len], &mut decoded, false)
+                        .unwrap(),
+                    samples
+                );
+                if sequence != 3 {
+                    mixer.push(
+                        11,
+                        sequence as u16,
+                        (sequence * samples) as u32,
+                        &encoded[..len],
+                    );
+                }
+                // The receiver's clock: one 20 ms frame per 20 ms of sent audio.
+                time += samples;
+                while time >= 960 {
+                    time -= 960;
+                    let frame = mixer.pop().expect("one 20 ms frame per playout tick");
+                    frames += 1;
+                    if frames > 10 {
+                        assert!(
+                            frame.iter().any(|s| s.abs() > 0.01),
+                            "duration {samples}: frame {frames} silent"
+                        );
+                    }
                 }
             }
-            assert!(mixer.pop().is_none());
-            assert!(mixer.pop().is_none());
-            for expected in expected.as_chunks::<960>().0 {
-                let frame = mixer.pop().expect("one 20 ms frame per playout tick");
-                for (actual, expected) in frame.iter().zip(expected) {
-                    assert!((actual - expected).abs() < 0.0001, "duration {samples}");
-                }
-            }
+            assert_eq!(frames, packets * samples / 960);
         }
     }
 }

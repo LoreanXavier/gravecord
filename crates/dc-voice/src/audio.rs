@@ -299,6 +299,25 @@ impl Audio {
             thread: thread.thread().clone(),
         })
     }
+    /// The call simulator's devices (`sim` feature): no device opens. The "microphone" sends the tone of the session's
+    /// plan (or nothing) through the same gate a real one passes, the "speaker" measures what it is handed and drops it.
+    #[cfg(feature = "sim")]
+    pub(crate) fn start_simulated(
+        capture: mpsc::SyncSender<Frame>,
+        playback: mpsc::Receiver<Stereo>,
+        session: String,
+    ) -> Result<Self, &'static str> {
+        let gate = Arc::new(Gate::default());
+        let worker = gate.clone();
+        let thread = std::thread::Builder::new()
+            .name("dc-voice-sim-audio".into())
+            .spawn(move || run_simulated(&worker, &capture, &playback, &session))
+            .map_err(|_| "Could not start the simulated audio worker")?;
+        Ok(Self {
+            gate,
+            thread: thread.thread().clone(),
+        })
+    }
     pub fn set_ready(&self, ready: bool) {
         if self.gate.ready.swap(ready, Ordering::AcqRel) != ready {
             self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
@@ -481,6 +500,42 @@ fn run(
         debug!(files = files.len(), "diagnostic audio recording written");
     }
     prefs().recorder_alive.store(false, Ordering::Release);
+}
+
+/// The simulated devices' worker: one frame each way every 20 ms of real time, while the gate is open.
+#[cfg(feature = "sim")]
+fn run_simulated(
+    gate: &Arc<Gate>,
+    capture: &mpsc::SyncSender<Frame>,
+    playback: &mpsc::Receiver<Stereo>,
+    session: &str,
+) {
+    let _live = crate::sim::Live::audio();
+    let plan = crate::sim::plan(session);
+    let mut phase = 0.0f32;
+    let mut next = Instant::now();
+    while !gate.stopped.load(Ordering::Acquire) {
+        if gate.capture()
+            && let Some(hz) = plan.tone_hz
+        {
+            let frame = crate::sim::tone(hz, plan.level, &mut phase);
+            if capture.try_send(frame).is_ok() {
+                crate::sim::sent(session);
+            }
+        }
+        while let Ok(frame) = playback.try_recv() {
+            if gate.playback() {
+                crate::sim::played(session, &frame);
+            }
+        }
+        next += Duration::from_millis(20);
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        } else {
+            next = now;
+        }
+    }
 }
 
 /// One microphone frame through the processors and the voice gate; the meter follows. True when it goes out.
@@ -769,6 +824,12 @@ impl Capture {
 
 /// Resample 48 kHz stereo frames linearly to the device rate. A mono device gets the mean of both channels; on more
 /// than two the front pair carries left and right and every other channel their mean.
+///
+/// The frames come on the voice loop's 20 ms clock, the device takes them on its own: the two drift apart by the
+/// crystals' error. Playback starts (and starts again after running dry) only once [`PLAYBACK_PRIME`] frames wait, so a
+/// late frame is a single gap rather than one per frame, and the resampling ratio leans by at most
+/// [`PLAYBACK_MAX_LEAN`] to hold the waiting frames near the prime level, so drift never piles frames up to the ring's
+/// end (where they were dropped) nor runs it dry.
 struct Playback {
     generation: u64,
     input: rtrb::Consumer<Stereo>,
@@ -779,7 +840,18 @@ struct Playback {
     next: [f32; 2],
     phase: f64,
     step: f64,
+    /// `step` at the nominal rates.
+    base_step: f64,
+    /// Waiting frames, smoothed over about two seconds of frames.
+    level: f64,
+    /// Enough frames waited to start; false after an underrun.
+    primed: bool,
 }
+
+/// Frames that wait before playback starts, and the level the drift correction holds.
+const PLAYBACK_PRIME: usize = 2;
+/// The largest lean of the playback rate: 0.2 %, far below a pitch anyone hears.
+const PLAYBACK_MAX_LEAN: f64 = 0.002;
 impl Playback {
     fn new(rate: u32, input: rtrb::Consumer<Stereo>) -> Self {
         Self {
@@ -791,6 +863,9 @@ impl Playback {
             next: [0.0; 2],
             phase: 1.0,
             step: 48_000.0 / f64::from(rate),
+            base_step: 48_000.0 / f64::from(rate),
+            level: PLAYBACK_PRIME as f64,
+            primed: false,
         }
     }
     fn render<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -836,11 +911,30 @@ impl Playback {
         self.previous = [0.0; 2];
         self.next = [0.0; 2];
         self.phase = 1.0;
+        self.primed = false;
+        self.level = PLAYBACK_PRIME as f64;
+        self.step = self.base_step;
     }
     fn pull(&mut self) -> [f32; 2] {
         if self.index == 960 {
-            // An underrun plays one frame of silence.
-            self.frame = self.input.pop().unwrap_or([0.0; 1920]);
+            let waiting = self.input.slots();
+            if !self.primed && waiting >= PLAYBACK_PRIME {
+                self.primed = true;
+            }
+            self.frame = match self.primed.then(|| self.input.pop().ok()).flatten() {
+                Some(frame) => {
+                    self.level = self.level * 0.99 + waiting as f64 * 0.01;
+                    let lean = ((self.level - PLAYBACK_PRIME as f64) * 0.001)
+                        .clamp(-PLAYBACK_MAX_LEAN, PLAYBACK_MAX_LEAN);
+                    self.step = self.base_step * (1.0 + lean);
+                    frame
+                }
+                None => {
+                    // Dry: one frame of silence, then wait for the prime again.
+                    self.primed = false;
+                    [0.0; 1920]
+                }
+            };
             self.index = 0;
         }
         let pair = [self.frame[self.index * 2], self.frame[self.index * 2 + 1]];
@@ -977,6 +1071,44 @@ mod tests {
         playback.render(&mut data, 2, &gate);
         assert!(data.iter().all(|s| *s == 0.0));
         assert!(playback.input.pop().is_err(), "queued audio was flushed");
+    }
+
+    #[test]
+    fn playback_waits_for_two_frames_and_leans_against_clock_drift() {
+        for drift_ppm in [1000i64, -1000] {
+            let (mut ring, read) = rtrb::RingBuffer::new(RING);
+            let mut playback = Playback::new(48_000, read);
+            let gate = open_gate();
+            let mut data = vec![0.0f32; 2 * 480];
+            // One frame: not yet.
+            ring.push([0.5; 1920]).unwrap();
+            playback.render(&mut data, 2, &gate);
+            assert!(data.iter().all(|s| *s == 0.0), "primes first");
+            ring.push([0.5; 1920]).unwrap();
+            // Ten minutes: the producer's clock runs `drift_ppm` against the device's 10 ms callbacks.
+            let (mut produced, mut owed, mut silent_after_start) = (0i64, 0i64, 0);
+            for callback in 0..60_000i64 {
+                playback.render(&mut data, 2, &gate);
+                if callback > 4 && data.contains(&0.0) {
+                    silent_after_start += 1;
+                }
+                owed += 1_000_000 + drift_ppm;
+                while owed >= 2_000_000 {
+                    owed -= 2_000_000;
+                    produced += 1;
+                    assert!(
+                        ring.push([0.5; 1920]).is_ok(),
+                        "{drift_ppm}: ring full after {produced} frames"
+                    );
+                }
+            }
+            assert_eq!(silent_after_start, 0, "{drift_ppm}: ran dry");
+            assert!(
+                ring.slots() >= RING - 4,
+                "{drift_ppm}: {} waiting",
+                RING - ring.slots()
+            );
+        }
     }
 
     #[test]

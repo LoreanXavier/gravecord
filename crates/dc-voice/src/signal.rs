@@ -19,6 +19,10 @@ pub(crate) const CLOSE_DISCONNECTED: u16 = 4014;
 
 /// `wss://<endpoint>/?v=9`. Like Serein, only `*.discord.media` hosts receive the token.
 pub(crate) fn endpoint_url(raw: &str) -> Result<String, &'static str> {
+    #[cfg(feature = "sim")]
+    if crate::sim::active() {
+        return crate::sim::endpoint_url(raw);
+    }
     if raw.is_empty()
         || raw.len() > 256
         || raw.contains('/')

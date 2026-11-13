@@ -115,6 +115,82 @@ pub(crate) struct StreamControlState {
 enum Capture {
     Screen(screen::Worker),
     Synthetic(Synthetic, u32, u32),
+    /// The call simulator's share (`sim` feature): it stands in for the screen, rate control included.
+    #[cfg(feature = "sim")]
+    Sim(SimShare),
+}
+
+/// A simulated share and the tone its stream audio carries; the tone stops with it.
+#[cfg(feature = "sim")]
+struct SimShare {
+    source: dc_media::sim::Source,
+    tone: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "sim")]
+impl Drop for SimShare {
+    fn drop(&mut self) {
+        self.tone.store(false, Ordering::Release);
+    }
+}
+
+/// The call simulator's capture (`sim` feature): whatever was asked for, a screen or the test pattern, becomes a
+/// simulated share of the same size, rate and limits, drawing what the session's plan says (moving content by default),
+/// with its tone as the stream's audio.
+#[cfg(feature = "sim")]
+fn start_simulated_capture(
+    plan: crate::sim::Plan,
+    source: StreamSource,
+    frames: mpsc::Sender<EncodedFrame>,
+    audio: mpsc::Sender<AudioChunk>,
+    dropped: Arc<AtomicBool>,
+) -> Result<Capture, &'static str> {
+    let limits = source.limits();
+    let content = plan.share.unwrap_or(dc_media::sim::Content::Motion);
+    let video = move |frame: EncodedFrame| {
+        if frames.try_send(frame).is_err() {
+            dropped.store(true, Ordering::Release);
+        }
+    };
+    let started = dc_media::sim::Source::start(
+        content,
+        limits.width,
+        limits.height,
+        limits.framerate,
+        CALL_START_BITRATE.min(limits.bitrate),
+        video,
+    )
+    .map_err(|_| "Simulated share could not start")?;
+    let tone = Arc::new(AtomicBool::new(true));
+    let with_sound = match source {
+        StreamSource::Screen(s) => s.audio,
+        StreamSource::Synthetic { .. } => true,
+    };
+    if with_sound && let Some(hz) = plan.share_tone_hz {
+        let running = tone.clone();
+        let _ = std::thread::Builder::new()
+            .name("dc-voice-sim-share-tone".into())
+            .spawn(move || {
+                let mut phase = 0.0f32;
+                let mut next = std::time::Instant::now();
+                while running.load(Ordering::Acquire) {
+                    let mono = crate::sim::tone(hz, 0.25, &mut phase);
+                    let samples = mono.iter().flat_map(|sample| [*sample, *sample]).collect();
+                    let _ = audio.try_send(AudioChunk { samples });
+                    next += Duration::from_millis(20);
+                    let now = std::time::Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    } else {
+                        next = now;
+                    }
+                }
+            });
+    }
+    Ok(Capture::Sim(SimShare {
+        source: started,
+        tone,
+    }))
 }
 
 impl Capture {
@@ -122,16 +198,26 @@ impl Capture {
         match self {
             Self::Screen(worker) => worker.force_keyframe(),
             Self::Synthetic(source, ..) => source.force_keyframe(),
+            #[cfg(feature = "sim")]
+            Self::Sim(share) => share.source.force_keyframe(),
         }
     }
     fn set_bitrate(&self, bitrate: u32) {
         if let Self::Screen(worker) = self {
             worker.set_bitrate(bitrate);
         }
+        #[cfg(feature = "sim")]
+        if let Self::Sim(share) = self {
+            share.source.set_bitrate(bitrate);
+        }
     }
     fn hold(&self, held: bool) {
         if let Self::Screen(worker) = self {
             worker.hold(held);
+        }
+        #[cfg(feature = "sim")]
+        if let Self::Sim(share) = self {
+            share.source.hold(held);
         }
     }
     /// The owner's own tile shows what the encoder takes, every picture, as the native engine's local video sink does
@@ -152,6 +238,19 @@ impl Capture {
                 true
             }
             Self::Synthetic(..) => false,
+            #[cfg(feature = "sim")]
+            Self::Sim(share) => {
+                share.source.set_local_sink(Some(Arc::new(move |picture| {
+                    if hub.has_sink() {
+                        hub.deliver(RemoteFrame {
+                            user: owner,
+                            source: VideoSource::Stream(owner),
+                            picture,
+                        });
+                    }
+                })));
+                true
+            }
         }
     }
     fn preview(&self) -> Option<dc_media::Picture> {
@@ -169,6 +268,8 @@ impl Capture {
                     .to_rgba()
                     .and_then(|rgba| dc_media::Picture::rgba(*width, *height, rgba))
             }
+            #[cfg(feature = "sim")]
+            Self::Sim(share) => share.source.take_preview(),
         }
     }
     fn finished(&self) -> Option<String> {
@@ -177,6 +278,8 @@ impl Capture {
                 .finished()
                 .then(|| worker.error().unwrap_or_else(|| "capture ended".into())),
             Self::Synthetic(source, ..) => source.finished().then(|| "capture ended".into()),
+            #[cfg(feature = "sim")]
+            Self::Sim(share) => share.source.finished().then(|| "capture ended".into()),
         }
     }
 }
@@ -316,6 +419,8 @@ pub(crate) async fn run(
     hub: VideoHub,
     events: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<DisconnectReason, &'static str> {
+    #[cfg(feature = "sim")]
+    let _live = crate::sim::Live::stream();
     let url = signal::endpoint_url(&join.endpoint)?;
     let own = join.user_id;
     let owner = join.key.owner();
@@ -588,7 +693,15 @@ pub(crate) async fn run(
                         let (frames, audio, dropped) = (frame_send.clone(), audio_send.clone(), dropped.clone());
                         let tap = dc_clips::recorder().attach();
                         _clip_guard = Some(dc_clips::TapGuard(tap.clone()));
-                        capture_task = Some(tokio::task::spawn_blocking(move || start_capture(source, frames, audio, tap, dropped)));
+                        #[cfg(feature = "sim")]
+                        let simulated = crate::sim::active().then(|| crate::sim::plan(&join.session_id));
+                        capture_task = Some(tokio::task::spawn_blocking(move || {
+                            #[cfg(feature = "sim")]
+                            if let Some(plan) = simulated {
+                                return start_simulated_capture(plan, source, frames, audio, dropped);
+                            }
+                            start_capture(source, frames, audio, tap, dropped)
+                        }));
                     }
                     if capture_task.as_ref().is_some_and(|task| task.is_finished()) {
                         let task = capture_task.take().ok_or("Capture task missing")?;
@@ -838,7 +951,7 @@ pub(crate) async fn run(
                             continue;
                         }
                         let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else { continue };
-                        mixer.push(rtp.ssrc, rtp.sequence, opus);
+                        mixer.push(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
                     }
                     rtp::H264_PAYLOAD_TYPE | rtp::H264_RTX_PAYLOAD_TYPE => {
                         tally[2] += 1;

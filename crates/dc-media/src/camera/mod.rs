@@ -120,6 +120,10 @@ impl Camera {
         device_id: Option<&str>,
         on_frame: impl FnMut(CameraFrame) + Send + 'static,
     ) -> Result<Self> {
+        #[cfg(feature = "sim")]
+        if crate::sim::active() {
+            return Self::start_simulated(on_frame);
+        }
         if let Some(id) = device_id {
             parse_device_id(id)?;
         }
@@ -161,6 +165,69 @@ impl Camera {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::failed("camera worker ended")),
         }
+    }
+
+    /// The call simulator's camera (`sim` feature, after `sim::activate`): the moving test picture through the same
+    /// pipeline as a device's pictures, at [`FPS`]. No device is opened.
+    #[cfg(feature = "sim")]
+    fn start_simulated(mut on_frame: impl FnMut(CameraFrame) + Send + 'static) -> Result<Self> {
+        let state = Arc::new(State::default());
+        state.keyframe.store(true, Ordering::Release);
+        let worker = state.clone();
+        let (opened_send, opened) = mpsc::sync_channel::<Result<()>>(1);
+        let thread = std::thread::Builder::new()
+            .name("dc-media-sim-camera".into())
+            .spawn(move || {
+                // The encoder holds COM state on Windows, so it is made on the thread that uses it.
+                let mut pipeline = match Pipeline::new() {
+                    Ok(pipeline) => {
+                        let _ = opened_send.send(Ok(()));
+                        pipeline
+                    }
+                    Err(error) => {
+                        let _ = opened_send.send(Err(error));
+                        worker.finished.store(true, Ordering::Release);
+                        return;
+                    }
+                };
+                let pattern = crate::sim::Pattern::new(
+                    WIDTH as u32,
+                    HEIGHT as u32,
+                    crate::sim::Content::Motion,
+                );
+                let period = Duration::from_micros(1_000_000 / u64::from(FPS));
+                let mut next = Instant::now();
+                let mut index = 0u32;
+                while !worker.stop.load(Ordering::Acquire) {
+                    let rgba = crate::sim::camera_rgba(&pattern, index, FPS);
+                    match pipeline.process(rgba, &worker) {
+                        Ok(frame) => on_frame(frame),
+                        Err(error) => {
+                            *worker.error.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(error.to_string());
+                            break;
+                        }
+                    }
+                    index = index.wrapping_add(1);
+                    next += period;
+                    let now = Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    } else {
+                        next = now;
+                    }
+                }
+                worker.finished.store(true, Ordering::Release);
+            })
+            .map_err(|e| Error::failed(format!("simulated camera could not start: {e}")))?;
+        let camera = Self {
+            state,
+            thread: Some(thread),
+        };
+        opened
+            .recv_timeout(OPEN_TIMEOUT)
+            .map_err(|_| Error::failed("simulated camera did not start"))??;
+        Ok(camera)
     }
 
     /// Moves the encoder's target rate, held to [`MIN_BITRATE`] and [`MAX_BITRATE`]. Applied before the next picture.

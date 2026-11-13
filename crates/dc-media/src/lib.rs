@@ -13,6 +13,8 @@ pub mod camera;
 pub mod decode;
 pub mod h264;
 pub mod screen;
+#[cfg(feature = "sim")]
+pub mod sim;
 pub mod synthetic;
 pub mod throttle;
 

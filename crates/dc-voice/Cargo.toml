@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 # Adapted from Serein's discord-voice crate (MIT OR Apache-2.0); see DECISIONS.md.
 
+[features]
+# The call simulator's hooks (crates/dc-callsim, capture builds): see src/sim.rs. Off in normal builds.
+sim = ["dc-media/sim"]
+
 [dependencies]
 aes-gcm.workspace = true
 chacha20poly1305.workspace = true

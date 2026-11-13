@@ -1,0 +1,29 @@
+[package]
+name = "dc-callsim"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The call simulator: a local voice server (signalling, SFU, DAVE delivery service), the gateway side of calls and Go
+# Live, and headless participants built on dc-voice. Capture builds and tests only; it never talks to Discord.
+
+[dependencies]
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
+davey.workspace = true
+dc-media = { workspace = true, features = ["sim"] }
+dc-voice = { workspace = true, features = ["sim"] }
+futures-util.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+openmls.workspace = true
+# The external sender's signing key and key package validation, the versions dc-voice's loopback test already uses.
+openmls_basic_credential = "=0.5.0"
+openmls_rust_crypto = "=0.5.1"
+rand.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -60,14 +60,18 @@ mod dereverb;
 pub mod devices;
 mod gate;
 pub mod input_watch;
+#[cfg(test)]
 mod jitter;
 mod mixer;
+mod neteq;
 pub mod ogg_opus;
 mod process;
 pub mod recorder;
 mod rtp;
 mod session;
 mod signal;
+#[cfg(feature = "sim")]
+pub mod sim;
 pub mod sound;
 mod stream_conn;
 pub mod streams;
@@ -173,6 +177,21 @@ impl Controls {
     pub fn disconnect(&self) {
         self.state
             .send_if_modified(|state| !std::mem::replace(&mut state.disconnect, true));
+    }
+    /// Starts a fresh control watch for a moved/rejoined session while keeping the shared media state (camera,
+    /// `user_mix`, and `VideoHub`).
+    pub fn rejoin(&self) -> Self {
+        let current = *self.state.borrow();
+        Self {
+            state: Arc::new(
+                watch::channel(ControlState {
+                    disconnect: false,
+                    ..current
+                })
+                .0,
+            ),
+            shared: self.shared.clone(),
+        }
     }
     pub fn self_mute(&self) -> bool {
         self.state.borrow().self_mute

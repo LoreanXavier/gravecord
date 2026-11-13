@@ -679,6 +679,11 @@ pub(crate) fn keepalive(sequence: u32) -> [u8; 8] {
 
 /// Voice servers advertise public addresses; anything else would point media at the LAN.
 pub(crate) fn public_ip(ip: IpAddr) -> bool {
+    // The call simulator listens on loopback, and only there.
+    #[cfg(feature = "sim")]
+    if crate::sim::active() {
+        return ip.is_loopback();
+    }
     match ip {
         IpAddr::V4(ip) => {
             !ip.is_private()

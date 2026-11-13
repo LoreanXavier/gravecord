@@ -62,6 +62,7 @@ fn displays() -> Result<Vec<DisplayInfo>> {
         return Err(Error::unavailable("displays could not be enumerated"));
     }
     let mut out = Vec::new();
+    let single = monitors.len() == 1;
     for (index, monitor) in monitors.into_iter().enumerate() {
         let mut info = MONITORINFOEXW::default();
         info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
@@ -90,20 +91,25 @@ fn displays() -> Result<Vec<DisplayInfo>> {
         };
         // 0 and 1 mean "hardware default" in DEVMODE.
         let refresh_hz = if refresh_hz <= 1 { 0 } else { refresh_hz };
-        let primary = info.monitorInfo.dwFlags & 1 != 0;
         out.push(DisplayInfo {
             handle: handle_value(monitor),
-            name: format!(
-                "Display {}{}",
-                index + 1,
-                if primary { " (primary)" } else { "" }
-            ),
+            name: display_name(index, single),
             width,
             height,
             refresh_hz,
         });
     }
     Ok(out)
+}
+
+/// The names the native picker gives screens, which the Go Live modal (`eA` of module 742527) reads: "Entire screen"
+/// for a lone monitor, else "Screen 1", "Screen 2", in enumeration order.
+fn display_name(index: usize, single: bool) -> String {
+    if single {
+        "Entire screen".to_owned()
+    } else {
+        format!("Screen {}", index + 1)
+    }
 }
 
 fn windows(refresh: &HashMap<u64, u32>) -> Result<Vec<WindowInfo>> {
@@ -310,4 +316,16 @@ fn icon_pixels(icon: HICON) -> Option<Picture> {
 #[allow(dead_code)]
 pub(super) fn window_id(hwnd: HWND) -> SourceId {
     SourceId::Window(hwnd.0 as usize as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name;
+
+    #[test]
+    fn screens_take_the_native_picker_names() {
+        assert_eq!(display_name(0, true), "Entire screen");
+        assert_eq!(display_name(0, false), "Screen 1");
+        assert_eq!(display_name(1, false), "Screen 2");
+    }
 }

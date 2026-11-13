@@ -8,6 +8,10 @@ publish.workspace = true
 # Adapted from Serein's discord-voice and platform crates (MIT OR Apache-2.0); see DECISIONS.md. The OS calls live
 # in the `#![allow(unsafe_code)]` modules under camera/, screen/, encode/ and decode/, so everything else stays safe.
 
+[features]
+# Simulated devices for the call simulator (crates/dc-callsim): test pictures instead of cameras and screens.
+sim = []
+
 [dependencies]
 openh264.workspace = true
 thiserror.workspace = true

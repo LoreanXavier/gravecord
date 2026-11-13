@@ -196,3 +196,59 @@ where
         .await
         .unwrap_or(Err("Media thread stopped unexpectedly"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The send side's cadence: one tick per 20 ms on the high-resolution thread while other threads keep cores busy,
+    /// never two at once (a late wake skips, it does not burst), so one audio packet leaves per tick.
+    #[test]
+    fn ticks_stay_on_a_steady_20_ms_cadence_under_load() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let busy: Vec<_> = (0..2)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut x = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    }
+                    x
+                })
+            })
+            .collect();
+        let mut ticks = ticks().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let times: Vec<Instant> = runtime.block_on(async {
+            let mut times = Vec::new();
+            for _ in 0..60 {
+                ticks.recv().await.unwrap();
+                times.push(Instant::now());
+            }
+            times
+        });
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for thread in busy {
+            let _ = thread.join();
+        }
+        let gaps: Vec<f64> = times
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_secs_f64() * 1000.0)
+            .collect();
+        // A wake late by more than a tick skips (the deadline moves on), so a loaded machine may show 40 ms, and one
+        // late by less is followed by a shorter gap back onto the grid; most gaps are one tick, and two ticks never
+        // come together.
+        let mut sorted = gaps.clone();
+        sorted.sort_by(f64::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        assert!(
+            (18.0..=22.0).contains(&median),
+            "median {median} ms: {gaps:?}"
+        );
+        assert!(gaps.iter().all(|gap| *gap > 1.0), "ticks bunched: {gaps:?}");
+    }
+}

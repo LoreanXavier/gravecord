@@ -219,6 +219,9 @@ fn negotiation_timeout(
 /// The official client's default: a voice channel's 64 kb/s, variable, speech-tuned, with in-band FEC. Serein's profile
 /// (dual-mono stereo at 510 kb/s CBR) sent packets the other members never played: the voice server forwards a
 /// channel's bitrate, not five times it. Mono capture is still sent as dual-mono stereo, as the SDP asks.
+/// `packetLossRate` of `getConnectionTransportOptions` (module 31595), as a percentage.
+const EXPECTED_LOSS_PERCENT: i32 = 30;
+
 fn encoder() -> Result<Encoder, &'static str> {
     let fail = |_| "Opus encoder configuration failed";
     let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Voip).map_err(fail)?;
@@ -227,7 +230,10 @@ fn encoder() -> Result<Encoder, &'static str> {
     encoder.set_complexity(10).map_err(fail)?;
     encoder.set_signal(opus2::Signal::Voice).map_err(fail)?;
     encoder.set_inband_fec(true).map_err(fail)?;
-    encoder.set_packet_loss_perc(10).map_err(fail)?;
+    // `packetLossRate: .3` of the transport options (module 31595): the encoder plans its in-band FEC for 30 % loss.
+    encoder
+        .set_packet_loss_perc(EXPECTED_LOSS_PERCENT)
+        .map_err(fail)?;
     encoder.set_dtx(false).map_err(fail)?;
     Ok(encoder)
 }
@@ -260,6 +266,8 @@ pub(crate) async fn run(
     events: mpsc::UnboundedSender<Event>,
     shared: Arc<Shared>,
 ) -> Result<DisconnectReason, &'static str> {
+    #[cfg(feature = "sim")]
+    let _live = crate::sim::Live::call();
     let url = signal::endpoint_url(&credentials.endpoint)?;
     if controls.borrow_and_update().disconnect {
         return Ok(DisconnectReason::Requested);
@@ -291,6 +299,8 @@ pub(crate) async fn run(
     let mut discovery_deadline = Instant::now();
     let mut ssrc = 0u32;
     let mut mixer = Mixer::default();
+    // The playout side of the receive path: one 20 ms frame per 20 ms of real time, even across a skipped tick.
+    let mut receive_clock = clock::FrameClock::default();
     let mut seq_ack: i64 = -1;
     let mut server_version = 0u64;
     let mut heartbeat_ms: Option<u64> = None;
@@ -506,7 +516,15 @@ pub(crate) async fn run(
                     presence = Some(Presence::begin());
                 }
                 if (enabled || waiting) && audio.is_none() && let Some((capture_send, playback_receive)) = device_ends.take() {
-                    audio = Some(Audio::start(capture_send, playback_receive)?);
+                    #[cfg(feature = "sim")]
+                    let started = if crate::sim::active() {
+                        Audio::start_simulated(capture_send, playback_receive, credentials.session_id.to_string())
+                    } else {
+                        Audio::start(capture_send, playback_receive)
+                    };
+                    #[cfg(not(feature = "sim"))]
+                    let started = Audio::start(capture_send, playback_receive);
+                    audio = Some(started?);
                 }
                 // Quality of Service follows the setting while the call runs.
                 let wanted = prefs().qos();
@@ -587,6 +605,9 @@ pub(crate) async fn run(
                         dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE audio encryption failed")?.into_owned()
                     } else {
                         silence -= 1;
+                        // Encode silence so Opus LBRR clears the final syllable of the finished spurt.
+                        let silence_pcm = [0.0f32; rtp::FRAME_SAMPLES as usize * 2];
+                        let _ = encoder.encode_float(&silence_pcm, &mut encoded);
                         davey::OPUS_SILENCE_PACKET.to_vec()
                     };
                     let header = rtp::header(sequence, timestamp, ssrc);
@@ -606,30 +627,31 @@ pub(crate) async fn run(
                 }
                 timestamp = timestamp.wrapping_add(rtp::FRAME_SAMPLES);
                 if enabled && !control.self_deaf {
-                    if stalled {
-                        mixer.clear();
-                        hub.clear_stream_audio();
-                    }
+                    // A late tick is not a reason to flush: each speaker's jitter buffer absorbs it, and the frames
+                    // the skipped ticks owed are made now (the old flush on a stall cut speech on every hiccup).
                     mixer.set_table(&shared.user_mix.lock().unwrap_or_else(|e| e.into_inner()));
-                    let voices = mixer.pop();
-                    // Voices play on both channels; watched stream audio joins in stereo at its own level.
-                    let mut frame = voices.as_ref().map(crate::to_stereo);
-                    if let Some(extra) = hub.pop_stream_audio(voices.as_ref()) {
-                        match frame.as_mut() {
-                            Some(frame) => {
-                                for (sample, extra) in frame.iter_mut().zip(extra) {
-                                    *sample = (*sample + extra).clamp(-1.0, 1.0);
+                    for _ in 0..receive_clock.due(now.into_std()) {
+                        let voices = mixer.pop();
+                        // Voices play on both channels; watched stream audio joins in stereo at its own level.
+                        let mut frame = voices.as_ref().map(crate::to_stereo);
+                        if let Some(extra) = hub.pop_stream_audio(voices.as_ref()) {
+                            match frame.as_mut() {
+                                Some(frame) => {
+                                    for (sample, extra) in frame.iter_mut().zip(extra) {
+                                        *sample = (*sample + extra).clamp(-1.0, 1.0);
+                                    }
                                 }
+                                None => frame = Some(extra),
                             }
-                            None => frame = Some(extra),
                         }
-                    }
-                    if let Some(frame) = frame {
-                        // A full queue means the device is behind; drop rather than block.
-                        let _ = playback.try_send(frame);
+                        if let Some(frame) = frame {
+                            // A full queue means the device is behind; drop rather than block.
+                            let _ = playback.try_send(frame);
+                        }
                     }
                 } else {
                     mixer.clear();
+                    receive_clock.reset();
                     hub.clear_stream_audio();
                 }
                 // Video never gates audio: every step here fails alone.
@@ -799,6 +821,23 @@ pub(crate) async fn run(
                         "voice packet tally"
                     );
                     tally = [0; 5];
+                    let receive = mixer.report();
+                    debug!(
+                        speakers = receive.speakers,
+                        target_delay_ms = receive.target_delay_ms,
+                        buffer_level_ms = receive.buffer_level_ms,
+                        packets = receive.since.packets_received,
+                        lost = receive.since.packets_lost,
+                        late = receive.since.packets_late,
+                        fec_recovered = receive.since.fec_recovered,
+                        flushes = receive.since.flushes,
+                        concealed_ms = receive.since.concealed_samples / 48,
+                        concealment_events = receive.since.concealment_events,
+                        accelerated_ms = receive.since.accelerated_samples / 48,
+                        expanded_ms = receive.since.expanded_samples / 48,
+                        underrun_ms = receive.since.underrun_samples / 48,
+                        "voice receive"
+                    );
                     tally_at = now + Duration::from_secs(5);
                 }
                 if now >= speakers_at {
@@ -900,7 +939,7 @@ pub(crate) async fn run(
                 }
                 let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else { continue };
                 tally[3] += 1;
-                mixer.push(rtp.ssrc, rtp.sequence, opus);
+                mixer.push(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
             },
             event = ws.next() => {
                 let event = match event {
@@ -1232,6 +1271,9 @@ mod tests {
             total += encoder.encode_float(&stereo, &mut out).unwrap();
         }
         // One second of audio: 64 kb/s is 8000 bytes; VBR may run somewhat over on a pure tone.
-        assert!(total < 12_000, "{total} bytes in a second");
+        assert!(total < 12_000, "{total} bytes in a second"); // In-band FEC planned for the client's 30 % (`fec: !0, packetLossRate: .3`), no DTX.
+        assert!(encoder.get_inband_fec().unwrap());
+        assert_eq!(encoder.get_packet_loss_perc().unwrap(), 30);
+        assert!(!encoder.get_dtx().unwrap());
     }
 }
