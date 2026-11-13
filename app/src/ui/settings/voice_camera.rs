@@ -6,8 +6,12 @@
 //! camera on a worker (the open can take seconds), shows its pictures, and closes it again on Stop Testing or when the
 //! page goes away.
 //!
-//! Video Background (None, Blur, Custom) is not here: this client does not process camera video, and a row of
-//! backgrounds that change nothing would be a lie.
+//! Video Background (None, Blur, Custom and the presets) is in [`background`]: its grid, the stored choice, and the
+//! hand-over to the camera processing of `dc_media::background`, which both Test Video and the call's camera run.
+
+mod background;
+
+pub(in crate::ui) use background::BackgroundPage;
 
 use super::{ButtonKind, Root, button, color, mask_icon};
 use crate::ui::video_tiles::render_image;
@@ -37,6 +41,7 @@ pub(in crate::ui) struct CameraPage {
     pub open: bool,
     pub devices: Vec<CameraDevice>,
     pub test: Option<Test>,
+    pub background: BackgroundPage,
 }
 
 /// The stored camera id, if it is still one of `devices`; else the first device.
@@ -91,6 +96,8 @@ impl Root {
 
     pub(in crate::ui) fn camera_test_start(&mut self, cx: &mut Context<Self>) {
         self.camera_test_stop(cx);
+        // The stored Video Background is on the engine before the camera opens.
+        self.video_background_restore(cx);
         // The call's camera owns the device while it is on.
         if self.call.as_ref().is_some_and(|call| call.camera) {
             return;

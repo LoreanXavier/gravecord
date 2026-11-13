@@ -38,15 +38,10 @@ pub(super) fn mutual_user(entry: &serde_json::Value) -> Option<dc_state::User> {
 /// Discord's snowflake epoch, for the account's creation date.
 const EPOCH_MS: i64 = 1_420_070_400_000;
 
+/// Module 743987: the snowflake's time through `An` of module 370480 (`toLocaleDateString` with a short month) in
+/// the interface locale.
 pub(super) fn member_since(user: Id) -> String {
-    let millis = (user >> 22) as i64 + EPOCH_MS;
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%b %-d, %Y")
-                .to_string()
-        })
-        .unwrap_or_default()
+    super::timestamps::short_month_date((user >> 22) as i64 + EPOCH_MS)
 }
 
 impl Root {
@@ -163,13 +158,6 @@ impl Root {
         let text = palette.text;
         let subtle = palette.subtle;
         let dot = |tint: Hsla| div().size(px(4.)).rounded_full().bg(tint);
-        let plural = |count: usize, one: &str, many: &str| {
-            if count == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{count} {many}")
-            }
-        };
         let header = div()
             .relative()
             .h(px(144.))
@@ -315,11 +303,8 @@ impl Root {
                             )
                         }))
                         .child(self.mutual_avatars(body))
-                        .child(plural(
-                            mutual_friends,
-                            "Mutual Friend",
-                            dc_intl::tr("Mutual Friends"),
-                        )),
+                        // Module 791556: the count through 837531 (`5s9jl+`).
+                        .child(dc_intl::t!("5s9jl+", count = mutual_friends)),
                 )
             })
             .when(mutual_friends > 0 && mutual_servers > 0, |this| {
@@ -338,11 +323,8 @@ impl Root {
                                 cx,
                             )
                         }))
-                        .child(plural(
-                            mutual_servers,
-                            "Mutual Server",
-                            dc_intl::tr("Mutual Servers"),
-                        )),
+                        // Module 791556: the count through 186272 (`eE3oep`).
+                        .child(dc_intl::t!("eE3oep", count = mutual_servers)),
                 )
             });
         let sections = div()
@@ -371,7 +353,12 @@ impl Root {
                             .line_height(px(16.))
                             .font_weight(FontWeight(600.))
                             .text_color(text)
-                            .child(dc_intl::tr("Member Since")),
+                            // Module 289287: `a6XYD9`, `A//N4k` for a bot.
+                            .child(if user.bot {
+                                dc_intl::t!("A//N4k")
+                            } else {
+                                dc_intl::t!("a6XYD9")
+                            }),
                     )
                     .child(
                         div()

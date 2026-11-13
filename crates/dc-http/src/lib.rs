@@ -49,8 +49,13 @@ pub enum Error {
         status: StatusCode,
         body: Value,
     },
+    /// Every attempt was answered 429. `retry_after` is what the last answer asked to wait, in seconds as the body
+    /// carries it (`retry_after`), so a caller can hold off as the official client does.
     #[error("{route} stayed rate limited")]
-    RateLimited { route: String },
+    RateLimited {
+        route: String,
+        retry_after: Option<f64>,
+    },
     #[error("invalid header value")]
     Header,
 }
@@ -190,6 +195,7 @@ impl Client {
         body: Option<&Value>,
     ) -> Result<Value, Error> {
         let diagnostic = diagnostic_route(route);
+        let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let response = self.send(&method, route, body).await?;
             let status = response.status();
@@ -203,8 +209,13 @@ impl Client {
                         body,
                     });
                 }
+                last_retry_after = body["retry_after"].as_f64();
                 let wait = retry_after(&body);
                 warn!("{diagnostic} rate limited for {wait:?}, attempt {attempt}");
+                if attempt == MAX_RATE_LIMIT_RETRIES {
+                    // No attempt follows; the caller gets the wait instead.
+                    break;
+                }
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -229,6 +240,7 @@ impl Client {
         }
         Err(Error::RateLimited {
             route: diagnostic.to_owned(),
+            retry_after: last_retry_after,
         })
     }
 
@@ -265,6 +277,7 @@ impl Client {
     /// each time.
     pub async fn post_form(&self, route: &str, form: &Form) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
+        let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let file = reqwest::multipart::Part::bytes(form.file.clone())
                 .file_name(form.file_name.clone())
@@ -290,8 +303,12 @@ impl Client {
             debug!("POST {route}: {status}");
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
+                last_retry_after = body["retry_after"].as_f64();
                 let wait = retry_after(&body);
                 warn!("{route} rate limited for {wait:?}, attempt {attempt}");
+                if attempt == MAX_RATE_LIMIT_RETRIES {
+                    break;
+                }
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -312,6 +329,7 @@ impl Client {
         }
         Err(Error::RateLimited {
             route: route.to_owned(),
+            retry_after: last_retry_after,
         })
     }
 
@@ -567,5 +585,47 @@ mod tests {
     #[test]
     fn client_debug_cannot_show_the_token() {
         assert!(!format!("{:?}", Token::new("secret")).contains("secret"));
+    }
+
+    /// A local server that answers every request 429: the error that ends the retries carries the last wait.
+    #[tokio::test]
+    async fn a_route_that_stays_rate_limited_reports_the_last_retry_after() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut answered = 0;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut seen = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buffer[..read]);
+                }
+                let body = r#"{"message":"You are being rate limited.","retry_after":0.01,"global":false}"#;
+                let answer = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(answer.as_bytes()).await.unwrap();
+                answered += 1;
+                if answered > MAX_RATE_LIMIT_RETRIES {
+                    break;
+                }
+            }
+            answered
+        });
+        let client = Client::new(Token::new("fixture"), Identity::new())
+            .unwrap()
+            .with_api_base(format!("http://{address}"));
+        let error = client.get("/streams/call:1:2/preview").await.unwrap_err();
+        let Error::RateLimited { retry_after, .. } = error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(retry_after, Some(0.01));
+        assert_eq!(server.await.unwrap(), MAX_RATE_LIMIT_RETRIES + 1);
     }
 }

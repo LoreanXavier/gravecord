@@ -75,6 +75,14 @@ impl Previews {
     }
 }
 
+/// The wait a failed fetch's answer asks for, in milliseconds: `body.retry_after` of a 429, in seconds, also when the
+/// HTTP client gave up after its own retries (`dc_http::Error::RateLimited`).
+fn retry_after_ms(failure: &Value) -> Option<f64> {
+    failure["body"]["retry_after"]
+        .as_f64()
+        .map(|seconds| seconds * 1000.)
+}
+
 fn now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -133,12 +141,7 @@ impl Root {
                 }
                 self.stream_previews.success(key, url.to_owned(), now);
             }
-            None => {
-                let retry = body["body"]["retry_after"]
-                    .as_f64()
-                    .map(|seconds| seconds * 1000.);
-                self.stream_previews.fail(key, retry, now);
-            }
+            None => self.stream_previews.fail(key, retry_after_ms(body), now),
         }
         cx.notify();
     }
@@ -186,6 +189,32 @@ mod tests {
         store.start("k");
         store.fail("k", Some(3000.), 300_000.);
         assert!(store.should_fetch("k", 303_001.));
+    }
+
+    #[test]
+    fn a_rate_limited_fetch_waits_what_the_429_asked() {
+        let failure = crate::net::fetch_failure(
+            "stream-preview:call:1:2",
+            &dc_http::Error::RateLimited {
+                route: "/streams/call:1:2/preview".into(),
+                retry_after: Some(42.5),
+            },
+        );
+        assert_eq!(retry_after_ms(&failure), Some(42_500.));
+        let mut store = Previews::default();
+        store.start("k");
+        store.fail("k", retry_after_ms(&failure), 1_000.);
+        assert!(!store.should_fetch("k", 43_499.));
+        assert!(store.should_fetch("k", 43_501.));
+        // Without a wait in the answer the ten seconds per failure apply.
+        let failure = crate::net::fetch_failure(
+            "stream-preview:call:1:2",
+            &dc_http::Error::RateLimited {
+                route: "/streams/call:1:2/preview".into(),
+                retry_after: None,
+            },
+        );
+        assert_eq!(retry_after_ms(&failure), None);
     }
 
     #[test]

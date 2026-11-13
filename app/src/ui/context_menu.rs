@@ -1011,7 +1011,7 @@ pub(super) fn group_items(unread: bool, owner: bool, developer: bool) -> Vec<Ent
     group(
         &mut out,
         vec![
-            Row::new(Act::PinDm, dc_intl::tr("Pin")).icon("menu_pin_message"),
+            Row::new(Act::PinDm, dc_intl::t!("uKw3A+")).icon("menu_pin_message"),
             Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"),
         ],
     );
@@ -1048,7 +1048,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         group(
             &mut out,
             vec![
-                Row::new(Act::PinDm, dc_intl::tr("Pin")).icon("menu_pin_message"),
+                Row::new(Act::PinDm, dc_intl::t!("uKw3A+")).icon("menu_pin_message"),
                 Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"),
             ],
         );
@@ -1057,7 +1057,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if facts.dm.is_none() {
         first.push(Row::new(Act::Mention, dc_intl::tr("Mention")));
         if !facts.me {
-            first.push(Row::new(Act::Message, dc_intl::tr("Message")));
+            first.push(Row::new(Act::Message, dc_intl::t!("OAJQlP")));
         }
     }
     if !facts.me {
@@ -1146,9 +1146,9 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         mid.push(Row::new(
             Act::Ignore,
             if facts.ignored {
-                dc_intl::tr("Unignore")
+                dc_intl::t!("8wXU9B")
             } else {
-                dc_intl::tr("Ignore")
+                dc_intl::t!("ytCpKs")
             },
         ));
         mid.push(
@@ -1418,7 +1418,7 @@ fn plan_channel_move(
 
 fn level_label(level: u64) -> &'static str {
     match level {
-        0 => dc_intl::tr("All Messages"),
+        0 => dc_intl::t!("n/bTaY"),
         1 => dc_intl::tr("Only @mentions"),
         2 => dc_intl::tr("Nothing"),
         _ => dc_intl::tr("Use Category Default"),
@@ -1846,7 +1846,7 @@ impl Root {
                 Act::Favorite if favorite => {
                     row.label = dc_intl::tr("Remove from Favorites").to_owned()
                 }
-                Act::PinDm if dm_pinned => row.label = dc_intl::tr("Unpin").to_owned(),
+                Act::PinDm if dm_pinned => row.label = dc_intl::t!("vDYmad").to_owned(),
                 Act::HideNames => {
                     if let Target::Channel(id) = target {
                         row.check = Some(self.names_hidden(id));
@@ -3008,7 +3008,7 @@ impl Root {
                     // What "Use Category Default" would give: the category's level, else the server's.
                     let inherited = match target {
                         Target::Channel(id) | Target::Thread(id) => self.inherited_level_label(id),
-                        _ => dc_intl::tr("All Messages"),
+                        _ => dc_intl::t!("n/bTaY"),
                     };
                     rows.push(SubRow {
                         sub: Some(inherited.to_owned()),
@@ -3033,7 +3033,7 @@ impl Root {
     /// The level a channel gets from "Use Category Default": its category's own, else the server's.
     fn inherited_level_label(&self, channel: Id) -> &'static str {
         let Some(guild) = self.guild_of_channel(channel) else {
-            return dc_intl::tr("All Messages");
+            return dc_intl::t!("n/bTaY");
         };
         let parent = self
             .stores

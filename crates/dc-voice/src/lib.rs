@@ -52,6 +52,7 @@
 //! capture ends only its own source.
 mod activity;
 mod audio;
+mod bwe;
 mod capture;
 mod clock;
 mod dave;

@@ -392,6 +392,12 @@ mod guard {
         "ui/profile_editor/widgets.rs",
         "ui/profile_editor/servers.rs",
         "ui/profile_editor/styles.rs",
+        "ui/timestamps.rs",
+        "ui/full_profile.rs",
+        "ui/home.rs",
+        "ui/saved.rs",
+        "ui/inbox.rs",
+        "ui/settings/pages.rs",
     ];
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).

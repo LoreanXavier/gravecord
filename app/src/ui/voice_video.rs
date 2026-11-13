@@ -400,6 +400,8 @@ impl Root {
     fn voice_camera_toggle(&mut self, cx: &mut Context<Self>) {
         // The Test Video camera and the call's camera never share the device.
         self.camera_test_stop(cx);
+        // The stored Video Background is on the engine before the camera opens.
+        self.video_background_restore(cx);
         let Some(call) = &self.call else {
             return;
         };

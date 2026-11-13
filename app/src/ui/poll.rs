@@ -321,7 +321,7 @@ impl Root {
         let description = if total == 0 {
             // a+lSZ/
             div().flex().flex_col().child(text(
-                "There was no winner".into(),
+                dc_intl::t!("a+lSZ/").into(),
                 14.,
                 18.,
                 600.,
@@ -349,7 +349,7 @@ impl Root {
                 )
                 // ufIDIx
                 .child(text(
-                    format!("Winning answer \u{2022} {percentage}%"),
+                    format!("{} \u{2022} {percentage}%", dc_intl::t!("ufIDIx")),
                     12.,
                     16.,
                     500.,
@@ -362,7 +362,7 @@ impl Root {
                 .gap(px(2.))
                 // kPN9si
                 .child(text(
-                    "The results were tied".into(),
+                    dc_intl::t!("kPN9si").into(),
                     14.,
                     18.,
                     600.,

@@ -563,9 +563,9 @@ impl Root {
                 let delta = due.timestamp_millis() - chrono::Utc::now().timestamp_millis();
                 let span = super::saved::humanize(delta);
                 if delta < 0 {
-                    format!("Due {span} ago")
+                    dc_intl::t!("Uq7Y+7", duration = span)
                 } else {
-                    format!("Due in {span}")
+                    dc_intl::t!("H4gnX9", duration = span)
                 }
             })
             .unwrap_or_default();
@@ -938,9 +938,9 @@ impl Root {
             .into_any_element();
         self.upsell(
             "inbox:bookmarks",
-            "Collect your favorite memories",
+            dc_intl::tr("Collect your favorite memories"),
             "Right-click any message and pick\u{a0}",
-            "Bookmark Message",
+            dc_intl::tr("Bookmark Message"),
             ". Find it here, for your eyes only.",
             demo,
         )
@@ -997,9 +997,9 @@ impl Root {
             .into_any_element();
         self.upsell(
             "inbox:scheduled",
-            "Send it at the perfect moment",
+            dc_intl::tr("Send it at the perfect moment"),
             "Draft your message then click the plus button and pick\u{a0}",
-            "Schedule Message",
+            dc_intl::tr("Schedule Message"),
             "\u{a0}to choose when to send. We'll handle the rest.",
             demo,
         )
@@ -1067,7 +1067,7 @@ impl Root {
                                     crate::storage::set(TUTORIAL_SEEN, serde_json::json!(true));
                                     cx.notify();
                                 }))
-                                .child("Got it!"),
+                                .child(dc_intl::tr("Got it!")),
                         ),
                     ),
             )
@@ -1402,18 +1402,18 @@ impl Root {
             .filter(|due| due.is_some())
             .count();
         let tabs: Vec<AnyElement> = [
-            (InboxTab::Unreads, "Unreads".to_owned()),
-            (InboxTab::Mentions, "Mentions".to_owned()),
-            (InboxTab::Bookmarks, "Bookmarks".to_owned()),
+            (InboxTab::Unreads, dc_intl::tr("Unreads").to_owned()),
+            (InboxTab::Mentions, dc_intl::tr("Mentions").to_owned()),
+            (InboxTab::Bookmarks, dc_intl::tr("Bookmarks").to_owned()),
             (
                 InboxTab::Reminders,
                 if reminders > 0 {
                     format!("Reminders ({reminders})")
                 } else {
-                    "Reminders".to_owned()
+                    dc_intl::tr("Reminders").to_owned()
                 },
             ),
-            (InboxTab::Scheduled, "Scheduled".to_owned()),
+            (InboxTab::Scheduled, dc_intl::tr("Scheduled").to_owned()),
         ]
         .into_iter()
         .map(|(which, label)| {
@@ -1495,7 +1495,7 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child("Inbox"),
+                                    .child(dc_intl::tr("Inbox")),
                             )
                             .when(tab == InboxTab::Mentions, |this| {
                                 this.child(
@@ -1612,9 +1612,9 @@ impl Root {
                 .font_weight(FontWeight(500.))
                 .text_color(color("--text-muted"))
                 .child(if overdue {
-                    "Snooze Reminder"
+                    dc_intl::tr("Snooze Reminder")
                 } else {
-                    "Remind Me"
+                    dc_intl::tr("Remind Me")
                 })
                 .into_any_element(),
         ];
@@ -1629,7 +1629,7 @@ impl Root {
             );
         }
         rows.push(
-            item("snooze-custom".into(), "Custom...")
+            item("snooze-custom".into(), dc_intl::tr("Custom..."))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.snooze_menu = None;
                     this.custom_reminder =

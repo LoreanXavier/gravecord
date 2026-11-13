@@ -112,21 +112,30 @@ pub(super) fn runs_text(runs: Runs, base: &str) -> impl IntoElement {
     // The links in the text of the row being built, as ranges and as their words, for the clicks.
     let mut ranges = Vec::new();
     let mut words: Vec<&'static str> = Vec::new();
-    for (part, link) in runs {
+    // A part that starts with U+0002 is bold (`<strong>` in the official strings: "Compact", "Chat Message Display").
+    let english: Vec<(&'static str, dc_intl::parts::Style)> = runs
+        .iter()
+        .map(|(part, link)| match part.strip_prefix('\u{2}') {
+            Some(rest) => (rest, dc_intl::parts::Style::Bold),
+            None if *link => (*part, dc_intl::parts::Style::Link),
+            None => (*part, dc_intl::parts::Style::Plain),
+        })
+        .collect();
+    // The links keep their English words for the clicks, in their order.
+    let mut english_links = english
+        .iter()
+        .filter(|(_, style)| *style == dc_intl::parts::Style::Link)
+        .map(|(part, _)| *part);
+    for (part, style) in dc_intl::parts::parts(&english) {
         let start = text.len();
-        // A part that starts with U+0002 is bold (`<strong>` in the official strings: "Compact", "Chat Message Display").
-        let (part, bold) = match part.strip_prefix('\u{2}') {
-            Some(rest) => (rest, true),
-            None => (*part, false),
-        };
-        text.push_str(if runs.len() == 1 {
-            dc_intl::tr(part)
-        } else {
-            part
-        });
-        if *link {
+        let (link, bold) = (
+            style == dc_intl::parts::Style::Link,
+            style == dc_intl::parts::Style::Bold,
+        );
+        text.push_str(&part);
+        if link {
             ranges.push(start..text.len());
-            words.push(part);
+            words.push(english_links.next().unwrap_or_default());
             links.push((
                 start..text.len(),
                 HighlightStyle {

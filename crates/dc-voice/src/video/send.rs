@@ -5,8 +5,9 @@ use tokio::time::Instant;
 
 const MTU: usize = 1200;
 const RTP_HEADER: usize = 12;
-// XChaCha20-Poly1305 tag plus the rtpsize nonce trailer.
-const TRANSPORT_OVERHEAD: usize = 20;
+// The AEAD tag plus the rtpsize nonce trailer, and the transport-wide sequence extension (a four-byte preamble and one
+// word of elements, `rtp::Transport::seal`).
+const TRANSPORT_OVERHEAD: usize = 20 + 8;
 // Reserve the original sequence number added by RFC 4588 retransmission.
 const MAX_PAYLOAD: usize = MTU - RTP_HEADER - TRANSPORT_OVERHEAD - 2;
 pub(crate) const MAX_FRAGMENTS: usize = 2048;
@@ -148,9 +149,10 @@ impl Pacer {
     }
 }
 
-/// Loss-based control as libwebrtc's send-side estimator runs it without delay feedback (`SendSideBandwidthEstimation`):
-/// below 2% loss the rate grows 8% a second, above 10% it falls by half the loss, in between it holds. REMB is a
-/// ceiling, nothing grows without feedback, and the rate stays between the official floor and the encoder's top.
+/// The target as libwebrtc's `SendSideBandwidthEstimation` keeps it: loss-based control (below 2% loss the rate grows
+/// 8% a second, above 10% it falls by half the loss, in between it holds), capped by the delay-based estimate
+/// (`delay_based_limit_`, from `crate::bwe::DelayBased`) and by REMB. Nothing grows without feedback, and the rate stays
+/// between the official floor and the encoder's top.
 pub(crate) struct Rate {
     pub target: u32,
     minimum: u32,
@@ -159,6 +161,10 @@ pub(crate) struct Rate {
     loss: Option<u8>,
     limit: Option<(u32, Instant)>,
     estimate: Option<u32>,
+    /// The delay-based estimate, once transport-wide feedback produced one.
+    delay: Option<u32>,
+    /// The target last handed to the encoder.
+    reported: u32,
 }
 /// Fractions lost over 256: libwebrtc's low (2%) and high (10%) loss thresholds.
 const LOW_LOSS: u8 = 5;
@@ -173,7 +179,19 @@ impl Rate {
             loss: None,
             limit: None,
             estimate: None,
+            delay: None,
+            reported: maximum,
         }
+    }
+    /// A new delay-based estimate caps the target at once (`UpdateDelayBasedEstimate`); the target grows back towards it
+    /// only as the loss-based control lets it.
+    pub fn delay_based(&mut self, estimate: u32) {
+        self.delay = Some(estimate);
+        self.target = self.target.min(estimate).clamp(self.minimum, self.maximum);
+    }
+    /// The delay-based estimate, for the log.
+    pub fn delay_limit(&self) -> Option<u32> {
+        self.delay
     }
     pub fn observe(&mut self, loss: Option<u8>, estimate: Option<u32>) {
         if let Some(loss) = loss {
@@ -185,11 +203,19 @@ impl Rate {
             self.estimate = Some(self.estimate.map_or(estimate, |old| old.min(estimate)));
         }
     }
+    /// The new target when it moved since the last call: the loss step once a second, a delay-based cap at any time.
     pub fn tick(&mut self, now: Instant) -> Option<u32> {
-        if now.duration_since(self.at) < Duration::from_secs(1) {
+        if now.duration_since(self.at) >= Duration::from_secs(1) {
+            self.at = now;
+            self.loss_step(now);
+        }
+        if self.target == self.reported {
             return None;
         }
-        self.at = now;
+        self.reported = self.target;
+        Some(self.target)
+    }
+    fn loss_step(&mut self, now: Instant) {
         let loss = self.loss.take();
         let estimate = self.estimate.take();
         if let Some(estimate) = estimate {
@@ -199,6 +225,7 @@ impl Rate {
             .limit
             .filter(|(_, at)| now.duration_since(*at) < Duration::from_secs(5))
             .map_or(self.maximum, |(limit, _)| limit.min(self.maximum))
+            .min(self.delay.unwrap_or(u32::MAX))
             .max(self.minimum);
         let mut target = self.target.min(ceiling);
         match loss {
@@ -212,12 +239,7 @@ impl Rate {
             }
             _ => {}
         }
-        target = target.clamp(self.minimum, self.maximum);
-        if target == self.target {
-            return None;
-        }
-        self.target = target;
-        Some(target)
+        self.target = target.clamp(self.minimum, self.maximum);
     }
 }
 

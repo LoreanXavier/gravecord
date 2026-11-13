@@ -562,7 +562,7 @@ pub(crate) async fn run(
                         davey::OPUS_SILENCE_PACKET.to_vec()
                     };
                     let header = rtp::header(sequence, timestamp, ssrc);
-                    let wire = transport.as_mut().ok_or("Missing voice transport key")?.seal(&header, &data)?;
+                    let wire = transport.as_mut().ok_or("Missing voice transport key")?.seal(&header, &data, now)?;
                     if let Some(socket) = &udp {
                         udp_failures.send(socket, &wire, "Voice UDP send failed")?;
                         tally[4] += 1;
@@ -717,6 +717,21 @@ pub(crate) async fn run(
                         without_transport_cc = unnumbered,
                         "voice video tally"
                     );
+                    if let Some(sender) = video_sender.as_ref() {
+                        let estimation = sender.estimation(transport.as_ref());
+                        debug!(
+                            bitrate = sender.bitrate(),
+                            delay_estimate = estimation.delay_estimate,
+                            acknowledged = estimation.acknowledged,
+                            overusing = estimation.overusing,
+                            overuses = estimation.overuses,
+                            feedback_reports = estimation.feedback_reports,
+                            packets_acked = estimation.packets_acked,
+                            packets_lost = estimation.packets_lost,
+                            packets_unknown = estimation.packets_unknown,
+                            "camera send-side estimation"
+                        );
+                    }
                     video_tally = [0; 3];
                     debug!(
                         received = tally[0],
@@ -778,16 +793,21 @@ pub(crate) async fn run(
                         if let Some(percent) = rtp::outbound_loss(&compound, ssrc) {
                             emit(&events, Event::OutboundLoss { percent });
                         }
-                        // A viewer of our camera: keyframe requests, repairs and rate hints.
+                        // A viewer of our camera: keyframe requests, repairs and rate hints; and the transport-wide
+                        // feedback of everything this connection sent.
                         if let Some(sender) = video_sender.as_mut()
+                            && let Some(crypto) = transport.as_mut()
                             && let Some(feedback) = rtp::feedback(&compound, sender.video_ssrc())
                             && video_announced
                             && dave.ready
                             && !dave.transitioning()
-                            && sender.feedback(&feedback, Instant::now())
-                            && let Some(started) = &camera
                         {
-                            started.force_keyframe();
+                            if !feedback.transport.is_empty() && crypto.sent.reports == 0 {
+                                debug!("transport-wide feedback received; send-side estimation runs");
+                            }
+                            if sender.feedback(&feedback, crypto, Instant::now()) && let Some(started) = &camera {
+                                started.force_keyframe();
+                            }
                         }
                     }
                     continue;

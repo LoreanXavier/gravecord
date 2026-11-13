@@ -182,6 +182,8 @@ pub(super) struct State {
     /// The red button of the tray shows Stop Watching, not Disconnect (`D` of `eT` in module 105225: it changes
     /// once the button has shrunk).
     pub end_shows_stream: std::cell::Cell<bool>,
+    /// `controlsBottom` of the focused tile (module 699707): how far the call bar reaches into it.
+    pub controls_bottom: std::cell::Cell<f32>,
     /// The call view is being built for a call this account has not joined (`inCall` is false): every participant
     /// has a tile, none can be focused, and the bar and its menus are left to the join buttons.
     pub outside: bool,
@@ -210,6 +212,7 @@ impl Default for State {
             popout_on_top: false,
             outside: false,
             end_shows_stream: std::cell::Cell::new(false),
+            controls_bottom: std::cell::Cell::new(0.),
             shown_call: (0, 0),
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
@@ -830,6 +833,10 @@ impl Root {
             tile_height: 112.,
             ..big
         };
+        // `ed`: the bar's 72px less the room under the tile; the focused tile's action row keeps clear of it.
+        self.vv
+            .controls_bottom
+            .set((72. - (height - main_height) / 2.).max(0.));
         let strip: Vec<AnyElement> = if strip_shown {
             others
                 .into_iter()
@@ -1552,7 +1559,14 @@ impl Root {
                                 TileMedia::Video(key) => self.video.images.image(key).cloned(),
                                 _ => None,
                             };
-                            this.child(self.stream_zoom_controls(image, cx))
+                            // `marginBottom: controlsBottom` on the action row (module 175203).
+                            this.child(
+                                div()
+                                    .mb(px(self.vv.controls_bottom.get()))
+                                    .child(self.stream_zoom_controls(image, cx)),
+                            )
+                        } else if is_focus {
+                            this
                         } else {
                             this.child(options)
                         }
@@ -2931,14 +2945,24 @@ impl Root {
                         cx,
                         |_, _, _| toggle_call_setting(SHOW_OWN_CAMERA),
                     ));
-                    // `Preview Camera` (module 855187): with a camera to preview and video off.
-                    if !self.call.as_ref().is_some_and(|call| call.camera)
+                    // `change-video-background` (module 855187): "Preview Camera" with video off, "Change Video
+                    // Background" with it on when the engine has the background filter.
+                    let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
+                    if (!camera_on || self.video_background_shown())
                         && !dc_voice::camera_devices().is_empty()
                     {
                         rows.push(self.vmenu_row(
                             "vmenu-preview-camera",
-                            Some("voice_view_preview"),
-                            "Preview Camera",
+                            Some(if camera_on {
+                                "vbg_blur"
+                            } else {
+                                "voice_view_preview"
+                            }),
+                            if camera_on {
+                                dc_intl::tr("Change Video Background")
+                            } else {
+                                dc_intl::tr("Preview Camera")
+                            },
                             None,
                             false,
                             cx,

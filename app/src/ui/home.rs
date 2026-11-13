@@ -789,7 +789,7 @@ impl Root {
                                             .line_height(px(18.))
                                             .text_center()
                                             .text_color(color("--interactive-text-default"))
-                                            .child("When a friend starts an activity—like playing a game or hanging out on voice—we'll show it here!"),
+                                            .child(dc_intl::t!("99ZWxQ")),
                                     ),
                             ),
                     ),

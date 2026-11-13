@@ -8,6 +8,7 @@
 // Per-pixel loops over tight 4-byte pixels read better with `chunks_exact(4)` than with `as_chunks`.
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
+pub mod background;
 pub mod camera;
 pub mod decode;
 pub mod h264;

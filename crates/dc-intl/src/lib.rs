@@ -15,6 +15,8 @@
 //! - [`tr`]: a literal en-US text, looked up through the compile-time table of literal en-US messages ([`keys_of`]),
 //!   so existing English literals adopt without naming their key.
 //! - [`string`]: `intl.string`, the message reserialized (rich-text tags as markdown).
+//! - [`parts::parts`]: a text drawn in parts (words, links, bold words), as the whole message they make.
+//! - [`humanize`]: moment's `duration.humanize()` in the locale's moment words ("2 minutes", "a day ago").
 
 mod ast;
 mod chunk;
@@ -22,12 +24,15 @@ mod chunks;
 mod format;
 mod hash;
 mod locale_data;
+pub mod parts;
+mod relative;
 mod reverse;
 
 pub use ast::Node;
 pub use chunk::catalog_json;
 pub use format::{Arg, Args};
 pub use hash::message_key;
+pub use relative::{humanize, humanize_in};
 
 use std::borrow::Cow;
 use std::collections::HashMap;

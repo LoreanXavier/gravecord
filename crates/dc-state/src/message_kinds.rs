@@ -1,6 +1,6 @@
 //! What each message type draws. Port of the message type enum (module 448761), the system message table `ls` in
-//! module 117096 and the thread starter component `n$` in module 891522, with the strings from
-//! `design/snapshot/dumps/STRINGS/en-US.json`.
+//! module 117096 and the thread starter component `n$` in module 891522. Each line is the catalog message its handler
+//! formats (`intl.format(key, values)`), in the interface locale.
 //!
 //! The official client sends every type that is not a user message (`USER_MESSAGE` in 448761) to the system message
 //! table. A type whose table entry is `void 0`, or that is missing from it, draws nothing at all, and a handler
@@ -383,13 +383,20 @@ pub enum Part {
     Link(String),
 }
 
+/// The trailing control of a line, drawn by the view: `T.A.Action` "Join the call" (`oa9mvZ`) after an active call's
+/// line, or the "Edit Group" link (`5Q9+/L`, the `editGroupButton` of the group name and icon lines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineAction {
+    JoinCall,
+    EditGroup,
+}
+
 /// A system message's line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub icon: LineIcon,
     pub parts: Vec<Part>,
-    /// `T.A.Action`: " — Join the call".
-    pub action: Option<String>,
+    pub action: Option<LineAction>,
 }
 
 /// What the line needs to know about where the message sits.
@@ -402,437 +409,415 @@ pub struct LineContext {
     pub me: Id,
 }
 
-/// `moment.duration(...).humanize()`.
+/// `moment.duration(...).humanize()` in the interface locale.
 pub fn humanize(milliseconds: i64) -> String {
-    let seconds = (milliseconds.max(0) as f64 / 1000.).round() as i64;
-    let minutes = (seconds as f64 / 60.).round() as i64;
-    let hours = (minutes as f64 / 60.).round() as i64;
-    let days = (hours as f64 / 24.).round() as i64;
-    let months = (days as f64 / 30.).round() as i64;
-    let plural =
-        |count: i64, unit: &str| format!("{count} {unit}{}", if count == 1 { "" } else { "s" });
-    if seconds < 45 {
-        "a few seconds".to_owned()
-    } else if seconds < 90 {
-        "a minute".to_owned()
-    } else if minutes < 45 {
-        plural(minutes, "minute")
-    } else if minutes < 90 {
-        "an hour".to_owned()
-    } else if hours < 22 {
-        plural(hours, "hour")
-    } else if hours < 36 {
-        "a day".to_owned()
-    } else if days < 26 {
-        plural(days, "day")
-    } else if days < 46 {
-        "a month".to_owned()
-    } else if days < 320 {
-        plural(months, "month")
-    } else if days < 548 {
-        "a year".to_owned()
-    } else {
-        plural((days as f64 / 365.).round() as i64, "year")
+    dc_intl::humanize(milliseconds, false)
+}
+
+/// What a hook of a message stands for in the line.
+#[derive(Clone, Copy)]
+enum Hook<'a> {
+    /// A user's name, a link to their profile (`usernameHook` and the like).
+    User(&'a User),
+    /// A name with no profile behind it.
+    Name,
+    /// Medium weight, strong colour.
+    Bold,
+    /// A link.
+    Link,
+}
+
+/// A catalog message as the parts of a line: its plain runs as text, `$b` as bold, `$link` as a link, and each hook
+/// as `hooks` says. The hooks are given no value, so their runs carry their children (the name they wrap).
+fn keyed(key: &str, values: &[(&str, dc_intl::Arg<'_>)], hooks: &[(&str, Hook<'_>)]) -> Vec<Part> {
+    let mut parts: Vec<Part> = Vec::new();
+    for (text, tag) in dc_intl::format_runs(key, values) {
+        let hook = tag.as_deref().and_then(|tag| {
+            hooks
+                .iter()
+                .find(|(name, _)| *name == tag)
+                .map(|(_, hook)| *hook)
+        });
+        let part = match (tag.as_deref(), hook) {
+            (_, Some(Hook::User(user))) => Part::User(Box::new(user.clone())),
+            (_, Some(Hook::Name)) => Part::Name(text),
+            (Some("$b"), None) | (_, Some(Hook::Bold)) => Part::Bold(text),
+            (Some("$link"), None) | (_, Some(Hook::Link)) => Part::Link(text),
+            _ => Part::Text(text),
+        };
+        parts.push(part);
     }
+    parts
+}
+
+/// The last text of a line without its trailing space, for a line the view ends with a control of its own.
+fn trim_end(mut parts: Vec<Part>) -> Vec<Part> {
+    if let Some(Part::Text(text)) = parts.last_mut() {
+        let kept = text.trim_end().len();
+        text.truncate(kept);
+        if text.is_empty() {
+            parts.pop();
+        }
+    }
+    parts
 }
 
 /// The strings table's entry for a type, with the message's own data filled in. `None` when the official handler
 /// would return `null` for this message.
 pub fn system_line(message: &Message, context: &LineContext) -> Option<Line> {
-    let actor = || Part::User(Box::new(message.author.clone()));
-    let text = |value: &str| Part::Text(value.to_owned());
+    use dc_intl::Arg;
+    let author = &message.author;
+    let name = author.display_name().to_owned();
     let line = |icon, parts: Vec<Part>| Line {
         icon,
         parts,
         action: None,
+    };
+    // `{username}` and its `usernameHook`: the author, the shape most entries take.
+    let by_author = |key: &str, extra: Vec<(&str, Arg<'_>)>, hooks: &[(&str, Hook<'_>)]| {
+        let mut values = vec![("username", Arg::from(name.clone()))];
+        values.extend(extra);
+        let mut all = vec![("usernameHook", Hook::User(author))];
+        all.extend_from_slice(hooks);
+        keyed(key, &values, &all)
     };
     let guild = context.guild_name.clone().unwrap_or_default();
     let first = message.extra.mention_users.first();
     Some(match message.kind {
         RECIPIENT_ADD => {
             let target = first?;
-            if context.in_thread {
-                // `tusv2h`
-                line(
-                    LineIcon::ArrowIn,
-                    vec![
-                        actor(),
-                        text(" added "),
-                        Part::User(Box::new(target.clone())),
-                        text(" to the thread."),
+            let parts = if context.in_thread {
+                // `ss`
+                keyed(
+                    "tusv2h",
+                    &[
+                        ("actorName", Arg::from(name.clone())),
+                        ("targetName", Arg::from(target.display_name())),
+                    ],
+                    &[
+                        ("actorHook", Hook::User(author)),
+                        ("targetHook", Hook::User(target)),
                     ],
                 )
             } else {
-                // `MMN2Jq`
-                line(
-                    LineIcon::ArrowIn,
-                    vec![
-                        actor(),
-                        text(" added "),
-                        Part::User(Box::new(target.clone())),
-                        text(" to the group."),
-                    ],
+                // `i1`
+                by_author(
+                    "MMN2Jq",
+                    vec![("otherUsername", Arg::from(target.display_name()))],
+                    &[("otherUsernameHook", Hook::User(target))],
                 )
-            }
+            };
+            line(LineIcon::ArrowIn, parts)
         }
         RECIPIENT_REMOVE => {
             let target = first?;
-            let left = target.id == message.author.id;
-            match (context.in_thread, left) {
-                // `32QI5/`
-                (true, _) => line(
-                    LineIcon::ArrowOut,
-                    vec![
-                        actor(),
-                        text(" removed "),
-                        Part::User(Box::new(target.clone())),
-                        text(" from the thread."),
+            let left = target.id == author.id;
+            let parts = match (context.in_thread, left) {
+                // `sl`
+                (true, _) => keyed(
+                    "32QI5/",
+                    &[
+                        ("actorName", Arg::from(name.clone())),
+                        ("targetName", Arg::from(target.display_name())),
+                    ],
+                    &[
+                        ("actorHook", Hook::User(author)),
+                        ("targetHook", Hook::User(target)),
                     ],
                 ),
-                // `5v2xa8`
-                (false, true) => line(LineIcon::ArrowOut, vec![actor(), text(" left the group.")]),
-                // `L2FyVq`
-                (false, false) => line(
-                    LineIcon::ArrowOut,
-                    vec![
-                        actor(),
-                        text(" removed "),
-                        Part::User(Box::new(target.clone())),
-                        text(" from the group."),
-                    ],
+                // `i2` without another user.
+                (false, true) => by_author("5v2xa8", Vec::new(), &[]),
+                (false, false) => by_author(
+                    "L2FyVq",
+                    vec![("otherUsername", Arg::from(target.display_name()))],
+                    &[("otherUsernameHook", Hook::User(target))],
                 ),
-            }
+            };
+            line(LineIcon::ArrowOut, parts)
         }
         CALL => {
             let call = message.extra.call.as_ref()?;
             // Module 117096: missed is `!isCallActive && !participants.includes(me)`; a call with no end is active.
             let missed = call.ended.is_some() && !call.participants.contains(&context.me);
+            // Module 480012: `call.duration.humanize()`, none while the call goes on.
             let length = call
                 .ended
                 .map(|ended| humanize((ended - message.timestamp).num_milliseconds()));
+            let duration = |length: &String| vec![("callDuration", Arg::from(length.clone()))];
             if missed {
-                // `AcqBmO`, `43phHx`: "You missed a call from {username}."
-                let mut parts = vec![text("You missed a call from "), actor()];
-                match length {
-                    Some(length) => parts.push(Part::Text(format!(" that lasted {length}."))),
-                    None => parts.push(text(".")),
-                }
+                let parts = match &length {
+                    Some(length) => by_author("AcqBmO", duration(length), &[]),
+                    None => by_author("43phHx", Vec::new(), &[]),
+                };
                 line(LineIcon::CallMissed, parts)
             } else {
-                // `7TeC1P`, `LuB5RD`
-                let mut parts = vec![actor()];
-                match length {
-                    Some(length) => {
-                        parts.push(Part::Text(format!(" started a call that lasted {length}.")))
-                    }
-                    None => parts.push(text(" started a call.")),
-                }
+                let parts = match &length {
+                    Some(length) => by_author("7TeC1P", duration(length), &[]),
+                    None => by_author("LuB5RD", Vec::new(), &[]),
+                };
                 let mut shown = line(LineIcon::Call, parts);
                 if call.ended.is_none() {
-                    shown.action = Some("Join the call".to_owned());
+                    shown.action = Some(LineAction::JoinCall);
                 }
                 shown
             }
         }
         CHANNEL_NAME_CHANGE => {
+            // `iD`
             if context.in_group_dm {
-                // `AI1ZZr`, `geP3rU`
-                let mut shown = if message.content.is_empty() {
-                    line(
-                        LineIcon::Pencil,
-                        vec![actor(), text(" removed the custom group name.")],
-                    )
+                let key = if message.content.is_empty() {
+                    "AI1ZZr"
                 } else {
-                    line(
-                        LineIcon::Pencil,
-                        vec![
-                            actor(),
-                            text(" changed the group name: "),
-                            Part::Bold(message.content.clone()),
-                            text("."),
-                        ],
-                    )
+                    "geP3rU"
                 };
-                shown.action = Some("Edit Group".to_owned());
-                shown
+                let parts = by_author(
+                    key,
+                    vec![
+                        ("channelName", Arg::from(message.content.clone())),
+                        ("editGroupButton", Arg::from("")),
+                    ],
+                    &[],
+                );
+                Line {
+                    icon: LineIcon::Pencil,
+                    parts: trim_end(parts),
+                    action: Some(LineAction::EditGroup),
+                }
             } else {
-                // `SOQ4hJ` for a forum post, `oItgEw` otherwise.
-                let what = if context.in_forum_post {
-                    " changed the post title: "
+                let key = if context.in_forum_post {
+                    "SOQ4hJ"
                 } else {
-                    " changed the channel name: "
+                    "oItgEw"
                 };
                 line(
                     LineIcon::Pencil,
-                    vec![actor(), text(what), Part::Bold(message.content.clone())],
+                    by_author(
+                        key,
+                        vec![("channelName", Arg::from(message.content.clone()))],
+                        &[],
+                    ),
                 )
             }
         }
         CHANNEL_ICON_CHANGE => {
-            // `4wLp25`
-            let mut shown = line(
-                LineIcon::Pencil,
-                vec![actor(), text(" changed the group icon.")],
-            );
-            shown.action = Some("Edit Group".to_owned());
-            shown
+            // `iy`
+            let parts = by_author("4wLp25", vec![("editGroupButton", Arg::from(""))], &[]);
+            Line {
+                icon: LineIcon::Pencil,
+                parts: trim_end(parts),
+                action: Some(LineAction::EditGroup),
+            }
         }
         GUILD_BOOST..=GUILD_BOOST_TIER_3 => {
+            // `sY`; the tier names of module 473145 `gb`.
             let tier = match message.kind {
-                GUILD_BOOST_TIER_1 => Some("Level 1"),
-                GUILD_BOOST_TIER_2 => Some("Level 2"),
-                GUILD_BOOST_TIER_3 => Some("Level 3"),
+                GUILD_BOOST_TIER_1 => Some("nzXtaS"),
+                GUILD_BOOST_TIER_2 => Some("h33/uW"),
+                GUILD_BOOST_TIER_3 => Some("BfF6ED"),
                 _ => None,
             };
-            // `57St/7`, `cUfTTE`
-            let mut parts = vec![actor(), text(" just boosted the server!")];
-            if let (Some(tier), false) = (tier, guild.is_empty()) {
-                parts.push(Part::Text(format!(" {guild} has achieved ")));
-                parts.push(Part::Bold(format!("{tier}!")));
-            }
+            // `sp`: the content is the number of boosts, 1 when it is not a positive number.
+            let count = message
+                .content
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|count| *count != 0.0 && !count.is_nan())
+                .unwrap_or(1.0);
+            let times = vec![("numSubscriptions", Arg::Num(count))];
+            let parts = match tier.filter(|_| !guild.is_empty()) {
+                Some(tier) => {
+                    let mut values = vec![
+                        ("guildName", Arg::from(guild.clone())),
+                        ("newTierName", Arg::from(dc_intl::t(tier))),
+                    ];
+                    if count > 1.0 {
+                        values.extend(times);
+                        by_author("PO9uJD", values, &[])
+                    } else {
+                        by_author("cUfTTE", values, &[])
+                    }
+                }
+                None if count > 1.0 => by_author("yfC9ds", times, &[]),
+                None => by_author("57St/7", Vec::new(), &[]),
+            };
             line(LineIcon::Boost, parts)
         }
         CHANNEL_FOLLOW_ADD => {
-            // `47CZc2`: the webhook's name is the content.
+            // `iS`: the webhook's name is the content.
             line(
                 LineIcon::ArrowIn,
-                vec![
-                    actor(),
-                    text(" has added "),
-                    Part::Bold(message.content.clone()),
-                    text(" to this channel. Its most important updates will show up here."),
-                ],
+                by_author(
+                    "47CZc2",
+                    vec![("webhookName", Arg::from(message.content.clone()))],
+                    &[("webhookNameHook", Hook::Bold)],
+                ),
             )
         }
-        GUILD_DISCOVERY_DISQUALIFIED => line(
-            LineIcon::Warning,
-            vec![
-                Part::Link(guild.clone()),
-                text(
-                    " has been removed from Server Discovery because it no longer passes all the requirements. Check ",
-                ),
-                Part::Link("Server Settings".to_owned()),
-                text(" for more details."),
-            ],
-        ),
+        // `iB`, `iJ`, `iz`: the guild's name, else the literal "this server" (`iV`, not a catalog message).
+        GUILD_DISCOVERY_DISQUALIFIED
+        | GUILD_DISCOVERY_GRACE_PERIOD_INITIAL_WARNING
+        | GUILD_DISCOVERY_GRACE_PERIOD_FINAL_WARNING => {
+            let key = match message.kind {
+                GUILD_DISCOVERY_DISQUALIFIED => "bYdG3f",
+                GUILD_DISCOVERY_GRACE_PERIOD_INITIAL_WARNING => "vzfXql",
+                _ => "/TfvyR",
+            };
+            let shown = if guild.is_empty() {
+                "this server".to_owned()
+            } else {
+                guild.clone()
+            };
+            line(
+                LineIcon::Warning,
+                keyed(key, &[("guildName", Arg::from(shown))], &[]),
+            )
+        }
         GUILD_DISCOVERY_REQUALIFIED => line(
             LineIcon::Discovery,
-            vec![text(
-                "This server is eligible for Server Discovery again and has been automatically relisted!",
-            )],
+            vec![Part::Text(dc_intl::t("tu6tOR").to_owned())],
         ),
-        GUILD_DISCOVERY_GRACE_PERIOD_INITIAL_WARNING => line(
-            LineIcon::Warning,
-            vec![
-                Part::Link(guild.clone()),
-                text(
-                    " has failed Discovery activity requirements for 1 week. If it fails for 4 weeks in a row, it will be automatically removed from Discovery.",
-                ),
-            ],
-        ),
-        GUILD_DISCOVERY_GRACE_PERIOD_FINAL_WARNING => line(
-            LineIcon::Warning,
-            vec![
-                Part::Link(guild.clone()),
-                text(
-                    " has failed Discovery activity requirements for 3 weeks in a row. If it fails for 1 more week, it will be removed from Discovery.",
-                ),
-            ],
-        ),
-        STAGE_START => line(
-            LineIcon::StageStart,
-            vec![
-                actor(),
-                text(" started "),
-                Part::Bold(message.content.clone()),
-            ],
-        ),
-        STAGE_END => line(
-            LineIcon::Stage,
-            vec![
-                actor(),
-                text(" ended "),
-                Part::Bold(message.content.clone()),
-            ],
-        ),
-        STAGE_SPEAKER => line(
-            LineIcon::SpeakerArrow,
-            vec![actor(), text(" is now a speaker.")],
-        ),
-        STAGE_RAISE_HAND => line(LineIcon::Hand, vec![actor(), text(" requested to speak.")]),
-        STAGE_TOPIC => line(
-            LineIcon::Stage,
-            vec![
-                actor(),
-                text(" changed the Stage topic: "),
-                Part::Bold(message.content.clone()),
-            ],
-        ),
-        GUILD_APPLICATION_PREMIUM_SUBSCRIPTION => {
-            let (_, name) = message.extra.application.as_ref()?;
-            // `dXdgno`
+        // `i4`, `i6`, `se`: the content is the topic.
+        STAGE_START | STAGE_END | STAGE_TOPIC => {
+            let (key, icon) = match message.kind {
+                STAGE_START => ("Rv+TSM", LineIcon::StageStart),
+                STAGE_END => ("zla/ux", LineIcon::Stage),
+                _ => ("Yy6vLs", LineIcon::Stage),
+            };
             line(
-                LineIcon::Ticket,
-                vec![
-                    actor(),
-                    Part::Text(format!(
-                        " upgraded {name} to premium for this server! \u{1f389}"
-                    )),
-                ],
+                icon,
+                by_author(
+                    key,
+                    vec![("topic", Arg::from(message.content.clone()))],
+                    &[],
+                ),
             )
         }
+        // `i8`
+        STAGE_SPEAKER => line(LineIcon::SpeakerArrow, by_author("dKW5C+", Vec::new(), &[])),
+        // `i9`
+        STAGE_RAISE_HAND => line(LineIcon::Hand, by_author("tv2DNy", Vec::new(), &[])),
+        GUILD_APPLICATION_PREMIUM_SUBSCRIPTION => {
+            let parts = match &message.extra.application {
+                Some((_, application)) => by_author(
+                    "dXdgno",
+                    vec![("applicationName", Arg::from(application.clone()))],
+                    &[],
+                ),
+                None => by_author("O829Uu", Vec::new(), &[]),
+            };
+            line(LineIcon::Ticket, parts)
+        }
         PRIVATE_CHANNEL_INTEGRATION_ADDED | PRIVATE_CHANNEL_INTEGRATION_REMOVED => {
-            let name = message
-                .extra
-                .application
-                .as_ref()
-                .map(|(_, name)| name.clone());
+            // Module 552691 `eu` / `A0`.
             let added = message.kind == PRIVATE_CHANNEL_INTEGRATION_ADDED;
             let icon = if added {
                 LineIcon::ArrowIn
             } else {
                 LineIcon::ArrowOut
             };
-            match name {
-                // `/qIck6`
-                Some(name) if added => line(
-                    icon,
-                    vec![
-                        actor(),
-                        text(" has added "),
-                        Part::Name(name),
-                        text(" to the server."),
-                    ],
+            let parts = match &message.extra.application {
+                Some((_, application)) => by_author(
+                    if added { "J8SaGy" } else { "eGCDak" },
+                    vec![("otherUsername", Arg::from(application.clone()))],
+                    &[("otherUsernameHook", Hook::Name)],
                 ),
-                Some(name) => line(
-                    icon,
-                    vec![
-                        actor(),
-                        text(" removed "),
-                        Part::Name(name),
-                        text(" from the server."),
-                    ],
-                ),
-                None if added => line(icon, vec![text("An app was added to the server.")]),
-                None => line(icon, vec![text("An app was removed from the server.")]),
-            }
+                None => by_author(if added { "+6V2sd" } else { "sAX6rs" }, Vec::new(), &[]),
+            };
+            line(icon, parts)
         }
+        // `iw`: the content is the time the actions end, written by `toLocaleString` (not ported: the content is
+        // shown as sent).
         GUILD_INCIDENT_ALERT_MODE_ENABLED => line(
             LineIcon::Warning,
-            vec![
-                actor(),
-                Part::Text(format!(" enabled security actions for {guild}")),
-                Part::Text(if message.content.is_empty() {
-                    String::new()
-                } else {
-                    format!(" until {}", message.content)
-                }),
-            ],
+            by_author(
+                "+m8eD7",
+                vec![("time", Arg::from(message.content.clone()))],
+                &[],
+            ),
         ),
-        GUILD_INCIDENT_ALERT_MODE_DISABLED => line(
-            LineIcon::Warning,
-            vec![
-                actor(),
-                Part::Text(format!(" disabled security actions for {guild}")),
-            ],
-        ),
+        GUILD_INCIDENT_ALERT_MODE_DISABLED => {
+            line(LineIcon::Warning, by_author("BHeke+", Vec::new(), &[]))
+        }
+        // `iK`
         GUILD_INCIDENT_REPORT_RAID => line(
             LineIcon::Warning,
-            vec![actor(), Part::Text(format!(" reported a raid in {guild}."))],
+            by_author("W0UBI3", vec![("guildName", Arg::from(guild.clone()))], &[]),
         ),
-        GUILD_INCIDENT_REPORT_FALSE_ALARM => line(
-            LineIcon::Warning,
-            vec![actor(), text(" resolved an Activity Alert.")],
-        ),
+        // `iZ`
+        GUILD_INCIDENT_REPORT_FALSE_ALARM => {
+            line(LineIcon::Warning, by_author("qntXNQ", Vec::new(), &[]))
+        }
         PURCHASE_NOTIFICATION => {
             let product = message.extra.purchase_product.clone()?;
-            // `TQs67g`
+            // `V`
             line(
                 LineIcon::ArrowIn,
-                vec![
-                    actor(),
-                    text(" has purchased "),
-                    Part::Link(product),
-                    text("!"),
-                ],
+                by_author("TQs67g", vec![("productName", Arg::from(product))], &[]),
             )
         }
         CHANNEL_LINKED_TO_LOBBY => {
-            let (_, name) = message.extra.application.as_ref()?;
-            // `mAtJTC`
+            let (_, application) = message.extra.application.as_ref()?;
+            // `ik`
             line(
                 LineIcon::Refresh,
-                vec![
-                    actor(),
-                    text(" has linked this channel to "),
-                    Part::Bold(name.clone()),
-                    text(". Messages are now syncing. "),
-                    Part::Link("Learn More".to_owned()),
-                ],
+                by_author(
+                    "mAtJTC",
+                    vec![("applicationName", Arg::from(application.clone()))],
+                    &[("applicationNameHook", Hook::Bold)],
+                ),
             )
         }
+        // Without the join request's user and guild the handlers write the short strings.
         GUILD_JOIN_REQUEST_ACCEPT_NOTIFICATION => line(
             LineIcon::ArrowIn,
-            vec![text("This application was approved! Welcome!")],
+            vec![Part::Text(dc_intl::t("2VLV0d").to_owned())],
         ),
         GUILD_JOIN_REQUEST_REJECT_NOTIFICATION => line(
             LineIcon::ArrowOut,
-            vec![text("This application was rejected.")],
+            vec![Part::Text(dc_intl::t("FVF6qU").to_owned())],
         ),
         GUILD_JOIN_REQUEST_WITHDRAWN_NOTIFICATION => line(
             LineIcon::ArrowOut,
-            vec![text("This application has been withdrawn.")],
+            vec![Part::Text(dc_intl::t("BMlbE7").to_owned())],
         ),
+        // `s9` without the session's length.
         VOICE_SESSION => line(
             LineIcon::Voice,
-            vec![
-                actor(),
-                text(" started "),
-                Part::Link("a voice hangout".to_owned()),
-            ],
+            by_author("eX6e/3", Vec::new(), &[("channelHook", Hook::Link)]),
         ),
         ROLE_SUBSCRIPTION_PURCHASE => {
             let role = message.extra.role_subscription.as_ref()?;
-            let months = role.total_months;
-            let how = if role.renewal {
-                " renewed "
-            } else {
-                " joined "
+            // Module 942075 `gw`: with the months when there are any.
+            let key = match (role.total_months > 0, role.renewal) {
+                (true, true) => "Iy66M7",
+                (true, false) => "eCgb2W",
+                (false, true) => "mPTTdv",
+                (false, false) => "mYjFFx",
             };
-            let mut parts = vec![actor(), text(how), Part::Bold(role.tier_name.clone())];
-            // `OQ0OUy`, `+N9bxq`, `OxP1NC`, `6Z1E+7`
-            if months > 0 {
-                parts.push(Part::Text(" and has been a subscriber of ".to_owned()));
-                parts.push(Part::Link(guild));
-                parts.push(Part::Text(format!(
-                    " for {months} month{}!",
-                    if months == 1 { "" } else { "s" }
-                )));
-            } else if role.renewal {
-                parts.push(Part::Text(" in their ".to_owned()));
-                parts.push(Part::Link(guild));
-                parts.push(Part::Text(" subscription!".to_owned()));
-            } else {
-                parts.push(Part::Text(" as a subscriber of ".to_owned()));
-                parts.push(Part::Link(guild));
-                parts.push(Part::Text("!".to_owned()));
-            }
-            line(LineIcon::Ticket, parts)
+            line(
+                LineIcon::Ticket,
+                by_author(
+                    key,
+                    vec![
+                        ("guildName", Arg::from(guild.clone())),
+                        ("tierName", Arg::from(role.tier_name.clone())),
+                        ("months", Arg::from(role.total_months)),
+                    ],
+                    &[],
+                ),
+            )
         }
         IN_GAME_MESSAGE_NUX => {
-            let (_, name) = message.extra.application.as_ref()?;
-            // `m7Lwas`
+            let (_, application) = message.extra.application.as_ref()?;
+            // `i0`
             line(
                 LineIcon::GameController,
-                vec![
-                    actor(),
-                    text(" messaged you from "),
-                    Part::Name(name.clone()),
-                    text(
-                        ". In-game chat may not include rich messaging features such as images, polls, or apps. ",
-                    ),
-                    Part::Link("Learn More".to_owned()),
-                ],
+                by_author(
+                    "m7Lwas",
+                    vec![("gameName", Arg::from(application.clone()))],
+                    &[("gameIconHook", Hook::Name)],
+                ),
             )
         }
         POLL_RESULT => {
@@ -844,7 +829,7 @@ pub fn system_line(message: &Message, context: &LineContext) -> Option<Line> {
                 .find(|field| field.name == "poll_question_text")?
                 .value
                 .clone();
-            // `VJcK41`: the title is cut to 50 characters by `EJ`.
+            // The title is cut to 50 characters by `EJ`.
             let title: String = if question.chars().count() > 50 {
                 question.chars().take(50).collect::<String>() + "…"
             } else {
@@ -852,12 +837,7 @@ pub fn system_line(message: &Message, context: &LineContext) -> Option<Line> {
             };
             line(
                 LineIcon::Polls,
-                vec![
-                    actor(),
-                    text("'s poll "),
-                    Part::Link(title),
-                    text(" has closed."),
-                ],
+                by_author("VJcK41", vec![("title", Arg::from(title))], &[]),
             )
         }
         _ => return None,
@@ -975,12 +955,90 @@ mod tests {
             },
         )
         .unwrap();
+        // `cUfTTE`: "{username} just boosted the server! {guildName} has achieved **{newTierName}!**".
         assert_eq!(
             line.parts[1],
-            Part::Text(" just boosted the server!".into())
+            Part::Text(" just boosted the server! Fixture has achieved ".into())
         );
-        assert_eq!(line.parts[2], Part::Text(" Fixture has achieved ".into()));
-        assert_eq!(line.parts[3], Part::Bold("Level 2!".into()));
+        assert_eq!(line.parts[2], Part::Bold("Level 2!".into()));
+        // `yfC9ds`: a content of several boosts names their number.
+        let mut many = message(GUILD_BOOST);
+        many.content = "3".into();
+        let line = system_line(&many, &LineContext::default()).unwrap();
+        assert_eq!(
+            line.parts[1..],
+            [
+                Part::Text(" just boosted the server ".into()),
+                Part::Bold("3".into()),
+                Part::Text(" times!".into())
+            ]
+        );
+    }
+
+    /// The group name line ends before its "Edit Group" link, which the view draws as the line's action.
+    #[test]
+    fn the_group_name_line_leaves_its_link_to_the_view() {
+        let mut renamed = message(CHANNEL_NAME_CHANGE);
+        renamed.content = "pals".into();
+        let line = system_line(
+            &renamed,
+            &LineContext {
+                in_group_dm: true,
+                ..LineContext::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(line.action, Some(LineAction::EditGroup));
+        assert_eq!(
+            line.parts[1..],
+            [
+                Part::Text(" changed the group name: ".into()),
+                Part::Bold("pals".into()),
+                Part::Text(".".into())
+            ]
+        );
+    }
+
+    /// Module 552691 `eu`: the app's name, then the help center link.
+    #[test]
+    fn an_added_app_names_it_and_links_the_help_center() {
+        let mut added = message(PRIVATE_CHANNEL_INTEGRATION_ADDED);
+        added.extra.application = Some((5, "Helper".into()));
+        let line = system_line(&added, &LineContext::default()).unwrap();
+        assert_eq!(
+            line.parts[1..],
+            [
+                Part::Text(" added the ".into()),
+                Part::Name("Helper".into()),
+                Part::Text(" app. See our ".into()),
+                Part::Link("help center".into()),
+                Part::Text(" for more info.".into())
+            ]
+        );
+    }
+
+    /// Module 942075: months in the plural form of the message, the membership wording without them.
+    #[test]
+    fn role_subscriptions_pick_their_message_by_months_and_renewal() {
+        let mut joined = message(ROLE_SUBSCRIPTION_PURCHASE);
+        joined.extra.role_subscription = Some(RoleSubscription {
+            tier_name: "Gold".into(),
+            total_months: 1,
+            renewal: false,
+        });
+        let context = LineContext {
+            guild_name: Some("Fixture".into()),
+            ..LineContext::default()
+        };
+        let line = system_line(&joined, &context).unwrap();
+        assert_eq!(line.parts.last(), Some(&Part::Text(" for 1 month!".into())));
+        joined.extra.role_subscription = Some(RoleSubscription {
+            tier_name: "Gold".into(),
+            total_months: 0,
+            renewal: true,
+        });
+        let line = system_line(&joined, &context).unwrap();
+        assert_eq!(line.parts.last(), Some(&Part::Text(" membership!".into())));
     }
 
     #[test]
@@ -1037,5 +1095,37 @@ mod tests {
             ..crate::Embed::default()
         });
         assert_eq!(presentation(&alert), Presentation::Normal);
+    }
+
+    /// The lines' words come from the catalog: the line builder's string literals are catalog keys and the names of
+    /// values and hooks, never interface text (the guard against a sentence written back in English).
+    #[test]
+    fn the_line_builder_writes_no_interface_text() {
+        let source = include_str!("message_kinds.rs");
+        let start = source.find("fn keyed(").expect("the builder");
+        let end = source.find("#[cfg(test)]").expect("the tests");
+        let body = &source[start..end];
+        let allowed = ["this server", "\u{2026}", "poll_question_text"];
+        let mut found = Vec::new();
+        let mut rest = body;
+        while let Some(open) = rest.find('"') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('"') else {
+                break;
+            };
+            let text = &after[..close];
+            rest = &after[close + 1..];
+            let name = text
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '$');
+            let english = dc_intl::keys_of(text).next().is_some() && !dc_intl::has_key(text);
+            if !allowed.contains(&text) && (english || !(dc_intl::has_key(text) || name)) {
+                found.push(text.to_owned());
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "literal text in the line builder: {found:?}"
+        );
     }
 }

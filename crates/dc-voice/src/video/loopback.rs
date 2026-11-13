@@ -177,7 +177,7 @@ fn a_camera_picture_survives_dave_loss_reordering_and_repair() {
         "and a PLI: bob has no keyframe yet"
     );
     assert!(
-        sender.feedback(&asked, Instant::now()) || !asked.keyframe,
+        sender.feedback(&asked, &mut alice_wire, Instant::now()) || !asked.keyframe,
         "a NACK for a packet still in the history needs no new keyframe"
     );
     let mut repairs = Vec::new();

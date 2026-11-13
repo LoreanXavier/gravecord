@@ -894,10 +894,9 @@ impl Root {
             extra::ATTENUATION_SET => extra::attenuation_shown(),
             // `usePredicate`: the strength only while Stream Attenuation is on.
             extra::STREAM_ATTEN_STRENGTH => self.voice.extra.stream_attenuation,
-            // `usePredicate` of the Video Background row (module 463951): a device with a video filter. The
-            // backgrounds are not drawn by this client (voice_camera.rs), so the section never shows: a grid whose
-            // choices change nothing would be a lie, and without a camera the official one is hidden too.
-            "camera_background_setting" => false,
+            // `usePredicate` of the Video Background row (module 463951): the engine has the video filter (here: the
+            // segmentation model is present, see voice_camera/background.rs) and there is a camera.
+            "camera_background_setting" => self.video_background_shown(),
             _ => true,
         }
     }
@@ -1496,6 +1495,7 @@ impl Root {
             KEYBIND => self.keybind_row(width, cx),
             "camera_video_preview" => self.camera_preview_row(cx),
             "camera_selection_setting" => self.camera_select_row(false, cx),
+            "camera_background_setting" => self.video_background_row(width, cx),
             RELEASE_DELAY => self.slider_row(
                 RELEASE_DELAY,
                 dc_intl::tr("Push to Talk Release Delay"),

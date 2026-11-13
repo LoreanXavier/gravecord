@@ -4824,17 +4824,22 @@ impl Root {
             .filter(|channel| channel.kind == 3)
             .cloned();
         let muted = self.channel_muted_now();
-        // Module 586944: "Search {name}" (`LDZtFO`) with the server's or the person's name.
-        let search = dc_intl::t!(
-            "LDZtFO",
-            name = match &dm_user {
-                Some(user) => user.username.as_str(),
-                None => self
-                    .current_guild()
-                    .map(|guild| guild.name.as_str())
-                    .unwrap_or_default(),
-            }
-        );
+        // Module 586944: "Search in DMs" (`m7OrlR`) in the every-DM context, else "Search {name}" (`LDZtFO`) with the
+        // server's or the conversation's name (the key is the same for both; its Turkish reads "{name} sunucusunu ara").
+        let search = if self.search_all_dms() {
+            dc_intl::t!("m7OrlR").to_owned()
+        } else {
+            dc_intl::t!(
+                "LDZtFO",
+                name = match &dm_user {
+                    Some(user) => user.username.as_str(),
+                    None => self
+                        .current_guild()
+                        .map(|guild| guild.name.as_str())
+                        .unwrap_or_default(),
+                }
+            )
+        };
         // Header icons brighten to `--interactive-text-default` under the pointer.
         // A button whose popout is open shows in `--interactive-text-active`.
         let open_popout = |name: &str| match name {

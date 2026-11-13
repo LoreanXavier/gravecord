@@ -1866,7 +1866,7 @@ impl Root {
                     },
                     vec![modal::button(
                         "account-ok",
-                        "Let\u{2019}s go",
+                        dc_intl::t!("oibaQa"),
                         if form.working || form.mfa.waiting || form.mfa.challenge.is_empty() {
                             modal::Tone::PrimaryLoading
                         } else {
@@ -2009,7 +2009,7 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .child("Don\u{2019}t see an email? Resend it.")
+                    .child(dc_intl::t!("PZgmxv"))
                     .into_any_element(),
             );
         }
@@ -2071,7 +2071,7 @@ impl Root {
                         ),
                         modal::button(
                             "mfa-skip-ok",
-                            "I\u{2019}m sure",
+                            dc_intl::t!("MwSEoz"),
                             modal::Tone::Critical,
                             |this, _, _| {
                                 // `MFA_SEEN_BACKUP_CODE_PROMPT`, then the dialog closes.
@@ -2310,7 +2310,7 @@ impl Root {
             .child(self.mfa_section(
                 qr,
                 dc_intl::tr("Scan the QR code"),
-                body("Open the authentication app and scan the image to the left using your phone\u{2019}s camera."),
+                body(dc_intl::t!("hFeBkl")),
                 // `topSpacing_uV72M-`: 20 above the manual key, whose value is `secret_uV72M-` (`--font-code`).
                 vec![div()
                     .mt(px(20.))
@@ -2338,7 +2338,9 @@ impl Root {
             .child(self.mfa_section(
                 div().size(px(100.)).into_any_element(),
                 dc_intl::tr("Log in with your code"),
-                body(dc_intl::tr("Enter the 6-digit verification code generated.")),
+                body(dc_intl::tr(
+                    "Enter the 6-digit verification code generated.",
+                )),
                 // `inputContainer_uV72M-`: the field and the button in a row, 8 apart and 8 below the text.
                 vec![div()
                     .mt(px(8.))

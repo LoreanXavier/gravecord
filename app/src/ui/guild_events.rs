@@ -145,17 +145,17 @@ impl Root {
     /// The number beside the Events row and in the modal's title (`IBdqSu`): "Events" until there is one.
     fn events_title(&self, guild: Id) -> String {
         match self.visible_upcoming_events(guild).len() {
-            0 => "Events".to_owned(),
-            1 => "1 Event".to_owned(),
-            count => format!("{count} Events"),
+            0 => dc_intl::t!("tlopTM").to_owned(),
+            count => dc_intl::t!("IBdqSu", number = count),
         }
     }
 
     /// The sidebar's Events row (module 616740): the label counts the upcoming events, a click opens the modal.
     pub(super) fn guild_events_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let label = self
-            .guild
-            .map_or_else(|| "Events".to_owned(), |guild| self.events_title(guild));
+        let label = self.guild.map_or_else(
+            || dc_intl::t!("tlopTM").to_owned(),
+            |guild| self.events_title(guild),
+        );
         div()
             .flex_none()
             .h(px(34.))

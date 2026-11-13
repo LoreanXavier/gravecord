@@ -395,3 +395,60 @@ fn runs_keep_the_bold_names_apart() {
         ]
     );
 }
+
+/// moment's `humanize()`: its rounding and thresholds, and the words of the moment locales (functions included).
+#[test]
+fn durations_humanize_in_the_moment_locales() {
+    let minute = 60_000;
+    let hour = 60 * minute;
+    let day = 24 * hour;
+    assert_eq!(humanize_in("en-US", 10_000, false), "a few seconds");
+    assert_eq!(humanize_in("en-US", 60_000, false), "a minute");
+    assert_eq!(humanize_in("en-US", 89_000, false), "a minute");
+    assert_eq!(humanize_in("en-US", 120_000, false), "2 minutes");
+    assert_eq!(humanize_in("en-US", 44 * minute, false), "44 minutes");
+    assert_eq!(humanize_in("en-US", 45 * minute, false), "an hour");
+    assert_eq!(humanize_in("en-US", 3 * hour, false), "3 hours");
+    assert_eq!(humanize_in("en-US", 30 * hour, false), "a day");
+    assert_eq!(humanize_in("en-US", 25 * day, false), "25 days");
+    assert_eq!(humanize_in("en-US", 26 * day, false), "a month");
+    assert_eq!(humanize_in("en-US", 100 * day, false), "3 months");
+    assert_eq!(humanize_in("en-US", 400 * day, false), "a year");
+    assert_eq!(humanize_in("en-US", 800 * day, false), "2 years");
+    assert_eq!(humanize_in("en-US", -day, true), "a day ago");
+    assert_eq!(humanize_in("en-US", 3 * hour, true), "in 3 hours");
+    assert_eq!(humanize_in("tr", 120_000, false), "2 dakika");
+    assert_eq!(humanize_in("tr", 10_000, false), "birkaç saniye");
+    assert_eq!(humanize_in("tr", -day, true), "bir gün önce");
+    assert_eq!(humanize_in("de", 30 * hour, false), "ein Tag");
+    assert_eq!(humanize_in("de", -30 * hour, true), "vor einem Tag");
+    assert_eq!(humanize_in("ru", 2 * minute, false), "2 минуты");
+    assert_eq!(humanize_in("ru", 5 * minute, true), "через 5 минут");
+    assert_eq!(humanize_in("ru", -21 * hour, true), "21 час назад");
+    assert_eq!(humanize_in("pl", 22 * minute, false), "22 minuty");
+    assert_eq!(humanize_in("pl", 12 * minute, false), "12 minut");
+    assert_eq!(humanize_in("cs", -3 * hour, true), "před 3 hodinami");
+    assert_eq!(humanize_in("fi", 3 * hour, false), "kolmen tunnin");
+    assert_eq!(humanize_in("fi", -3 * hour, true), "kolme tuntia sitten");
+    assert_eq!(humanize_in("lt", -12 * minute, true), "prieš 12 minučių");
+    assert_eq!(humanize_in("ro", 20 * minute, false), "20 de minute");
+    assert_eq!(humanize_in("hu", -2 * day, true), "2 napja");
+    assert_eq!(humanize_in("uk", hour, false), "годину");
+    assert_eq!(humanize_in("hi", 3 * hour, false), "३ घंटे");
+    assert_eq!(humanize_in("id", 3 * hour, false), "3 hours");
+}
+
+/// A text in parts is found as the one message with its `$link` (`LJzl+0`); a lone link is no tagged message.
+#[test]
+fn parts_find_their_whole_message() {
+    use crate::parts::{Style, key_of};
+    let text = [
+        (
+            "Due to system permissions, keybinds won't work during gameplay. To enable, install Discord System Helper. ",
+            Style::Plain,
+        ),
+        ("Learn more", Style::Link),
+    ];
+    assert_eq!(key_of(&text), Some("LJzl+0"));
+    assert_eq!(key_of(&[("Learn more", Style::Plain)]), None);
+}

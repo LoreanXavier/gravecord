@@ -2173,10 +2173,14 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
 /// The body of an `Update::Fetched` for a failed `Request::Fetch`, one shape for every key: `fetch_failed` marks
 /// it, `status` is the HTTP status (0 for a transport error), `body` the response. The invite lookup and the two
 /// feeds that read their own flags keep them beside it.
-fn fetch_failure(key: &str, error: &dc_http::Error) -> Value {
+pub(crate) fn fetch_failure(key: &str, error: &dc_http::Error) -> Value {
     let (status, body) = match error {
         dc_http::Error::Status { status, body, .. } => (status.as_u16(), body.clone()),
-        dc_http::Error::RateLimited { .. } => (429, Value::Null),
+        // The wait the last 429 asked for stays where readers of a 429 body look (`body.retry_after`, seconds).
+        dc_http::Error::RateLimited { retry_after, .. } => (
+            429,
+            retry_after.map_or(Value::Null, |seconds| json!({"retry_after": seconds})),
+        ),
         _ => (0, Value::Null),
     };
     let mut out = json!({"ok": false, "fetch_failed": true, "status": status, "body": body});
@@ -2315,9 +2319,13 @@ mod tests {
         assert_eq!(plain["body"]["message"], "no");
         let limited = fetch_failure(
             "presence-app:1",
-            &dc_http::Error::RateLimited { route: "/x".into() },
+            &dc_http::Error::RateLimited {
+                route: "/x".into(),
+                retry_after: Some(2.5),
+            },
         );
         assert_eq!(limited["status"], 429);
+        assert_eq!(limited["body"]["retry_after"], 2.5);
         assert_eq!(
             fetch_failure("content-inventory:feed", &status(500, json!(null)))["error"],
             true
@@ -2520,7 +2528,8 @@ mod fetch_failure_tests {
             kept(
                 "invite:fixture",
                 Error::RateLimited {
-                    route: "/invites/fixture".into()
+                    route: "/invites/fixture".into(),
+                    retry_after: None,
                 }
             ),
             (json!(true), json!(false), json!(null))

@@ -47,6 +47,9 @@ pub(in crate::ui) const VIDEO_HOOK: &str = "streaming_advanced_screenshare";
 /// "Always preview video": the camera button opens the preview modal first.
 pub(in crate::ui) const PREVIEW_PREFERENCE: &str = "camera_preview_preference";
 const ALWAYS_PREVIEW: &str = "audio.always_preview_video";
+/// The preview modal's body scrolls past this height so the dialog stays inside a 720px window (the official modal
+/// scrolls its content too; its exact height was not captured).
+const PREVIEW_BODY_MAX_HEIGHT: f32 = 460.;
 
 /// `MediaEngineStore`'s part of these settings, in storage.json next to the other `audio.*` keys.
 const SILENCE_STORED: &str = "audio.silence_warning";
@@ -913,6 +916,8 @@ impl Root {
         if matches!(self.voice.extra.dialog, Some(Dialog::PreviewCamera)) {
             self.camera_test_stop(cx);
             self.voice.camera.open = false;
+            // Closed without its button: the background it previewed is dropped.
+            self.video_background_drop_pending(cx);
         }
         self.voice.extra.dialog = None;
     }
@@ -920,6 +925,9 @@ impl Root {
     /// Opens the preview modal and its live camera ("Preview Camera", or "Always preview video" on turning video on).
     pub(in crate::ui) fn open_camera_preview(&mut self, cx: &mut Context<Self>) {
         self.voice.extra.dialog = Some(Dialog::PreviewCamera);
+        self.video_background_restore(cx);
+        self.voice.camera.background.pending = None;
+        self.voice.camera.background.error = None;
         self.camera_test_start(cx);
         cx.notify();
     }
@@ -929,8 +937,9 @@ impl Root {
         self.voice.extra.always_preview
     }
 
-    /// The preview modal: title, picture and select in the body, "Turn On Camera" (or "Change Background" while the
-    /// camera is on) and the "Always preview video" checkbox in the action bar.
+    /// The preview modal (module 308229): "Ready to video chat?" with the picture, the camera select and the Video
+    /// Background grid (module 745317), "Turn On Camera" and the "Always preview video" checkbox; while the camera is
+    /// on it is "Change Video Background" without the select, and its button "Change Background" applies the choice.
     fn camera_preview_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.call.as_ref().is_some_and(|call| call.camera);
         let checked = self.always_preview_video();
@@ -947,17 +956,30 @@ impl Root {
                     .insert(PREVIEW_PREFERENCE, Choice::On(now));
             },
         );
+        // The dialog is 480 wide with 24px on each side.
+        const BODY_WIDTH: f32 = 432.;
         let body = div()
+            .id("voice-camera-preview-body")
+            .max_h(px(PREVIEW_BODY_MAX_HEIGHT))
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(20.))
             .child(self.camera_preview_box())
-            .child(self.camera_select_row(true, cx))
+            .when(!on, |this| this.child(self.camera_select_row(true, cx)))
+            .when(self.video_background_shown(), |this| {
+                this.child(self.video_background_grid(BODY_WIDTH, true, cx))
+            })
             .into_any_element();
         modal::render_with_input(
             modal::Spec {
                 id: "voice-camera-preview",
-                title: dc_intl::tr("Ready to video chat?").into(),
+                title: if on {
+                    dc_intl::tr("Change Video Background")
+                } else {
+                    dc_intl::tr("Ready to video chat?")
+                }
+                .into(),
                 subtitle: None,
                 body: Some(body),
                 buttons: vec![modal::button(
@@ -969,6 +991,8 @@ impl Root {
                     },
                     Tone::Primary,
                     move |this, _, cx| {
+                        // `B`: the previewed background becomes the saved one, then the dialog closes.
+                        this.video_background_commit_pending(cx);
                         this.close_voice_dialog(cx);
                         if !on {
                             this.voice_camera_start(cx);

@@ -5,12 +5,14 @@
 //! MIT OR Apache-2.0. Changes: AES-256-GCM added beside XChaCha20-Poly1305; packets are routed by payload type (Opus,
 //! H.264 and its RTX stream); RTCP feedback builders and parsers (PLI, NACK, receiver reports, REMB); the soundshare
 //! extension for Go Live audio. The Rust here stays `unsafe`-free.
+use crate::bwe::{SentHistory, TransportCc};
 use aes_gcm::Aes256Gcm;
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305,
     aead::{Aead, Payload},
 };
 use std::net::IpAddr;
+use tokio::time::Instant;
 
 /// Largest datagram accepted or produced.
 pub(crate) const MAX_PACKET: usize = 4096;
@@ -226,6 +228,9 @@ pub(crate) struct Feedback {
     pub nacks: Vec<u16>,
     /// REMB estimate in bits per second.
     pub bitrate: Option<u32>,
+    /// Transport-wide feedback messages (RTPFB FMT 15). They describe the transport, not one source, so every one is
+    /// kept whatever media SSRC it names.
+    pub transport: Vec<TransportCc>,
 }
 
 /// Parses a decrypted compound RTCP packet: reports (RFC 3550), PLI and NACK (RFC 4585) and REMB, keeping what names
@@ -273,6 +278,13 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                 }
                 let matching = content[8..12] == video_ssrc.to_be_bytes();
                 match (kind, count) {
+                    (205, 15) => {
+                        if feedback.transport.len() < 16 {
+                            feedback
+                                .transport
+                                .push(crate::bwe::parse_transport_cc(content)?);
+                        }
+                    }
                     (206, 1) => {
                         if content.len() != 12 {
                             return None;
@@ -405,6 +417,8 @@ pub(crate) fn transport_sequence(profile: [u8; 2], mut block: &[u8]) -> Option<u
 pub(crate) struct Transport {
     cipher: Cipher,
     counter: u32,
+    /// Every RTP packet this transport numbered and sealed, for the transport-wide feedback that comes back.
+    pub sent: SentHistory,
 }
 impl Transport {
     pub fn new(mode: Mode, key: &[u8; 32]) -> Self {
@@ -414,28 +428,79 @@ impl Transport {
                 Cipher::XChaCha(Box::new(XChaCha20Poly1305::new(key.into())))
             }
         };
-        Self { cipher, counter: 0 }
+        Self {
+            cipher,
+            counter: 0,
+            sent: SentHistory::default(),
+        }
     }
-    pub fn seal(&mut self, header: &[u8; 12], frame: &[u8]) -> Result<Vec<u8>, &'static str> {
-        self.seal_packet(header, frame)
+    /// One RTP packet (Opus, H.264 or a retransmission) with the transport-wide sequence number in a one-byte RFC 8285
+    /// extension (`TRANSPORT_EXTENSION`), recorded in [`Self::sent`] as leaving at `now`. As with every `rtpsize`
+    /// extension, the four-byte preamble is authenticated in the clear and the element is sealed with the payload.
+    pub fn seal(
+        &mut self,
+        header: &[u8; 12],
+        frame: &[u8],
+        now: Instant,
+    ) -> Result<Vec<u8>, &'static str> {
+        let sequence = self.sent.next().to_be_bytes();
+        self.seal_numbered(
+            header,
+            &[
+                TRANSPORT_SEQUENCE_EXTENSION << 4 | 1,
+                sequence[0],
+                sequence[1],
+                0,
+            ],
+            frame,
+            now,
+        )
     }
-    /// Go Live audio: RFC 8285 extension 9 marks it as soundshare. The extension preamble is authenticated; its body is
-    /// sealed with the payload.
+    /// Go Live audio: RFC 8285 extension 9 marks it as soundshare, next to the transport-wide sequence number.
     // Serein (MIT OR Apache-2.0): `seal_soundshare` in discord-voice/src/crypto.rs. The extension is unofficial there
     // too: the native module that sends it cannot be read from the pinned build.
     pub fn seal_soundshare(
         &mut self,
         header: &[u8; 12],
         frame: &[u8],
+        now: Instant,
+    ) -> Result<Vec<u8>, &'static str> {
+        let sequence = self.sent.next().to_be_bytes();
+        self.seal_numbered(
+            header,
+            &[
+                0x90,
+                0x04,
+                TRANSPORT_SEQUENCE_EXTENSION << 4 | 1,
+                sequence[0],
+                sequence[1],
+                0,
+                0,
+                0,
+            ],
+            frame,
+            now,
+        )
+    }
+    /// `elements` is the one-byte extension block, padded to whole words.
+    fn seal_numbered(
+        &mut self,
+        header: &[u8; 12],
+        elements: &[u8],
+        frame: &[u8],
+        now: Instant,
     ) -> Result<Vec<u8>, &'static str> {
         let mut extended = [0; 16];
         extended[..12].copy_from_slice(header);
         extended[0] |= 0x10;
-        extended[12..].copy_from_slice(&[0xbe, 0xde, 0, 1]);
-        let mut payload = Vec::with_capacity(4 + frame.len());
-        payload.extend([0x90, 0x04, 0, 0]);
+        extended[12..14].copy_from_slice(&[0xbe, 0xde]);
+        extended[14..].copy_from_slice(&((elements.len() / 4) as u16).to_be_bytes());
+        let mut payload = Vec::with_capacity(elements.len() + frame.len());
+        payload.extend_from_slice(elements);
         payload.extend_from_slice(frame);
-        self.seal_packet(&extended, &payload)
+        let wire = self.seal_packet(&extended, &payload)?;
+        self.sent.sent(wire.len(), now);
+        Ok(wire)
     }
     /// One RTCP packet: the eight-byte header stays clear as associated data, the rest is sealed, and the four-byte
     /// nonce trails, as in `rtpsize` RTP.
@@ -703,8 +768,8 @@ mod tests {
             let key = [7; 32];
             let mut transport = Transport::new(mode, &key);
             let header = header(1, 960, 9);
-            let first = transport.seal(&header, b"one").unwrap();
-            let second = transport.seal(&header, b"two").unwrap();
+            let first = transport.seal_packet(&header, b"one").unwrap();
+            let second = transport.seal_packet(&header, b"two").unwrap();
             assert_eq!(&first[first.len() - 4..], &[0, 0, 0, 1]);
             assert_eq!(&second[second.len() - 4..], &[0, 0, 0, 2]);
             assert_eq!(&first[..12], &header);
@@ -736,7 +801,7 @@ mod tests {
 
             transport.counter = u32::MAX;
             assert!(
-                transport.seal(&header, b"x").is_err(),
+                transport.seal_packet(&header, b"x").is_err(),
                 "nonce reuse refused"
             );
         }
@@ -777,7 +842,9 @@ mod tests {
     fn open_authenticates_strips_extensions_and_padding() {
         for mode in Mode::PREFERENCE {
             let mut transport = Transport::new(mode, &[7; 32]);
-            let packet = transport.seal(&header(5, 4800, 42), b"dave frame").unwrap();
+            let packet = transport
+                .seal_packet(&header(5, 4800, 42), b"dave frame")
+                .unwrap();
             let rtp = transport.open(&packet).unwrap();
             assert_eq!((rtp.ssrc, rtp.sequence), (42, 5));
             assert_eq!(rtp.payload, b"dave frame");
@@ -809,14 +876,14 @@ mod tests {
             // Padding: the last byte counts the padding bytes, itself included.
             let mut padded = header(7, 6720, 42);
             padded[0] |= 0x20;
-            let wire = transport.seal(&padded, &[4, 5, 0, 0, 3]).unwrap();
+            let wire = transport.seal_packet(&padded, &[4, 5, 0, 0, 3]).unwrap();
             assert_eq!(transport.open(&wire).unwrap().payload, [4, 5]);
-            let wire = transport.seal(&padded, &[4, 5, 0]).unwrap();
+            let wire = transport.seal_packet(&padded, &[4, 5, 0]).unwrap();
             assert!(transport.open(&wire).is_none(), "zero padding length");
 
             // Video is routed by payload type, with its marker; other payload types never open.
             let video = video_header(H264_PAYLOAD_TYPE, true, 8, 90_000, 42);
-            let wire = transport.seal(&video, b"h264").unwrap();
+            let wire = transport.seal_packet(&video, b"h264").unwrap();
             let rtp = transport.open(&wire).unwrap();
             assert_eq!(
                 (rtp.payload_type, rtp.marker, rtp.sequence, rtp.timestamp),
@@ -824,16 +891,16 @@ mod tests {
             );
             assert_eq!(rtp.payload, b"h264");
             let rtx = video_header(H264_RTX_PAYLOAD_TYPE, false, 9, 90_000, 43);
-            let wire = transport.seal(&rtx, b"x").unwrap();
+            let wire = transport.seal_packet(&rtx, b"x").unwrap();
             let rtp = transport.open(&wire).unwrap();
             assert_eq!((rtp.payload_type, rtp.marker), (102, false));
-            let wire = transport.seal(&header(1, 960, 42), b"a").unwrap();
+            let wire = transport.seal_packet(&header(1, 960, 42), b"a").unwrap();
             assert_eq!(
                 transport.open(&wire).unwrap().payload_type,
                 OPUS_PAYLOAD_TYPE
             );
             let other = video_header(96, true, 8, 0, 42);
-            let wire = transport.seal(&other, b"p").unwrap();
+            let wire = transport.seal_packet(&other, b"p").unwrap();
             assert!(transport.open(&wire).is_none());
         }
     }
@@ -959,7 +1026,7 @@ mod tests {
         assert_eq!(transport_sequence([0xbe, 0xde], &[0xf0, 0x51, 1, 2]), None);
         // A packet without extensions has none either.
         let mut sender = Transport::new(Mode::Aes256GcmRtpSize, &[7; 32]);
-        let plain = sender.seal(&super::header(1, 960, 9), b"a").unwrap();
+        let plain = sender.seal_packet(&super::header(1, 960, 9), b"a").unwrap();
         assert_eq!(transport.open(&plain).unwrap().transport_sequence, None);
     }
 
@@ -981,15 +1048,68 @@ mod tests {
     fn soundshare_audio_carries_an_encrypted_extension_that_open_strips() {
         let mut transport = Transport::new(Mode::XChaCha20Poly1305RtpSize, &[7; 32]);
         let wire = transport
-            .seal_soundshare(&header(3, 960, 8), b"opus")
+            .seal_soundshare(&header(3, 960, 8), b"opus", Instant::now())
             .unwrap();
         assert_eq!(wire[0] & 0x10, 0x10, "extension bit");
-        assert_eq!(&wire[12..16], &[0xbe, 0xde, 0, 1], "preamble in the clear");
+        assert_eq!(&wire[12..16], &[0xbe, 0xde, 0, 2], "preamble in the clear");
         let rtp = transport.open(&wire).unwrap();
         assert_eq!(
             (rtp.payload_type, rtp.payload.as_slice()),
             (120, &b"opus"[..])
         );
+    }
+
+    #[test]
+    fn every_sent_packet_is_numbered_on_one_transport_wide_counter() {
+        let now = Instant::now();
+        let mut sender = Transport::new(Mode::Aes256GcmRtpSize, &[5; 32]);
+        let receiver = Transport::new(Mode::Aes256GcmRtpSize, &[5; 32]);
+        let audio = sender.seal(&header(1, 960, 9), b"opus", now).unwrap();
+        let video = sender
+            .seal(
+                &video_header(H264_PAYLOAD_TYPE, true, 7, 90, 10),
+                b"h264",
+                now,
+            )
+            .unwrap();
+        let rtx = sender
+            .seal(
+                &video_header(H264_RTX_PAYLOAD_TYPE, false, 3, 90, 11),
+                b"x",
+                now,
+            )
+            .unwrap();
+        let share = sender
+            .seal_soundshare(&header(2, 1920, 9), b"music", now)
+            .unwrap();
+        // Preamble in the clear, one word of elements (two with the soundshare element), then the sealed rest.
+        assert_eq!(&audio[12..16], &[0xbe, 0xde, 0, 1]);
+        assert_eq!(&share[12..16], &[0xbe, 0xde, 0, 2]);
+        assert_eq!(audio.len(), 16 + 4 + 4 + 16 + 4);
+        for (n, (wire, payload)) in [
+            (audio, &b"opus"[..]),
+            (video, b"h264"),
+            (rtx, b"x"),
+            (share, b"music"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rtp = receiver.open(&wire).unwrap();
+            assert_eq!(rtp.transport_sequence, Some(n as u16));
+            assert_eq!(rtp.payload, payload);
+        }
+        assert_eq!(sender.sent.next(), 4);
+
+        // The feedback that comes back is parsed whatever media SSRC it names, next to the source's own feedback.
+        let mut compound = vec![0x8f, 205, 0, 5, 0, 0, 0, 1, 0, 0, 0, 99, 0, 0, 0, 1];
+        compound.extend([0, 0, 0, 0, 0x20, 1, 4, 0]);
+        compound.extend(pli(1, 10).0);
+        compound.extend(pli(1, 10).1);
+        let found = feedback(&compound, 10).unwrap();
+        assert!(found.keyframe);
+        assert_eq!(found.transport.len(), 1);
+        assert_eq!(found.transport[0].arrivals, [Some(1000)]);
     }
 
     #[test]

@@ -717,7 +717,7 @@ impl Row {
                     .line_height(px(20.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .child(self.title),
+                    .child(dc_intl::tr(self.title)),
             )
             .when(self.badge, |this| this.child(new_badge()));
         let row = div()

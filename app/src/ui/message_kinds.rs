@@ -4,7 +4,7 @@
 
 use super::{Root, color, header_time, icon};
 use dc_state::Message;
-use dc_state::message_kinds::{self, Line, LineContext, LineIcon, Part};
+use dc_state::message_kinds::{self, Line, LineAction, LineContext, LineIcon, Part};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px, rgb,
 };
@@ -100,10 +100,11 @@ impl Root {
     /// `n$` without a loaded message: the thread icon with "Sorry, we couldn't load the first message in this thread",
     /// or "Original message was deleted" when the server said the message is gone.
     pub(super) fn starter_missing_line(&self, starter: &Message) -> AnyElement {
+        // `mE3KJN` when the reference is deleted, else `OCs36J`.
         let text = if starter.extra.reference_deleted {
-            dc_intl::tr("Original message was deleted")
+            dc_intl::t!("mE3KJN")
         } else {
-            dc_intl::tr("Sorry, we couldn't load the first message in this thread")
+            dc_intl::t!("OCs36J")
         };
         div()
             .relative()
@@ -270,7 +271,7 @@ impl Root {
         }
         // 4wLp25, geP3rU, AI1ZZr: the group's name and icon lines end with an inline "Edit Group" link (`$link`) that
         // opens the group's edit modal; it follows the sentence's full stop and a space.
-        if line.action.as_deref() == Some("Edit Group") {
+        if line.action == Some(LineAction::EditGroup) {
             let channel = message.channel_id;
             pieces.push(
                 div()
@@ -283,7 +284,7 @@ impl Root {
                     .text_color(color("--text-link"))
                     .cursor_pointer()
                     .hover(|style| style.underline())
-                    .child(dc_intl::tr("Edit Group"))
+                    .child(dc_intl::t!("5Q9+/L"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_group_edit(channel, window, cx);
                     }))
@@ -303,22 +304,21 @@ impl Root {
             // not in it.
             .children(
                 line.action
-                    .as_ref()
-                    .filter(|action| action.as_str() != "Edit Group")
+                    .filter(|action| *action == LineAction::JoinCall)
                     .filter(|_| {
                         self.stores
                             .calls
                             .is_call_active(message.channel_id, Some(message.id))
                             && !self.dm_call_in(Some(message.channel_id))
                     })
-                    .map(|action| {
-                        // `T.A.Action`: an em dash and the link, 3px in.
+                    .map(|_| {
+                        // `T.A.Action`: an em dash and the link (`oa9mvZ`), 3px in.
                         div().ml(px(3.)).flex().child("\u{2014}").child(
                             div()
                                 .id(SharedString::from(format!("system-action-{}", message.id)))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-link"))
-                                .child(action.clone()),
+                                .child(dc_intl::t!("oa9mvZ")),
                         )
                     }),
             )
@@ -332,7 +332,7 @@ impl Root {
             .into_any_element()
     }
 
-    /// `nV`: the bar above a command's reply, the avatar and "{user} used /{command}".
+    /// `nV`: the bar above a command's reply, the avatar and "{user} used /{command}" (`rg7U+C` of module 267508).
     pub(super) fn interaction_bar(&self, message: &Message) -> Option<AnyElement> {
         let (name, user) = message.extra.interaction.as_ref()?;
         let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
@@ -363,32 +363,62 @@ impl Root {
                         .flex_none()
                         .children(avatar.map(|image| img(image).size(px(16.)).rounded_full())),
                 )
-                .child(
-                    div()
-                        .ml(px(4.))
-                        .flex_none()
+                .children(self.interaction_words(name, user))
+                .into_any_element(),
+        )
+    }
+}
+
+impl Root {
+    /// `rg7U+C`'s runs: the name (`userHook`), the words, the command (`commandHook`), each 4px after a space.
+    fn interaction_words(&self, command: &str, user: &dc_state::User) -> Vec<AnyElement> {
+        let runs = dc_intl::format_runs(
+            "rg7U+C",
+            &[
+                ("userHook", dc_intl::Arg::from("user")),
+                ("commandHook", dc_intl::Arg::from("command")),
+            ],
+        );
+        let mut gap = true;
+        let mut out = Vec::new();
+        for (text, tag) in runs {
+            let piece = div().flex_none();
+            match tag.as_deref() {
+                Some("userHook") => out.push(
+                    piece
+                        .when(gap, |this| this.ml(px(4.)))
                         .opacity(0.64)
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
-                        .child(self.guild_display_name(user)),
-                )
-                .child(
-                    div()
-                        .ml(px(4.))
-                        .flex_none()
-                        .text_color(color("--text-default"))
-                        .child("used"),
-                )
-                .child(
-                    div()
-                        .ml(px(4.))
-                        .flex_none()
+                        .child(self.guild_display_name(user))
+                        .into_any_element(),
+                ),
+                Some("commandHook") => out.push(
+                    piece
+                        .when(gap, |this| this.ml(px(4.)))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-link"))
-                        .child(format!("/{name}")),
-                )
-                .into_any_element(),
-        )
+                        .child(format!("/{command}"))
+                        .into_any_element(),
+                ),
+                _ => {
+                    let words = text.trim();
+                    if !words.is_empty() {
+                        out.push(
+                            piece
+                                .when(gap || text.starts_with(' '), |this| this.ml(px(4.)))
+                                .text_color(color("--text-default"))
+                                .child(words.to_owned())
+                                .into_any_element(),
+                        );
+                    }
+                    gap = text.ends_with(' ');
+                    continue;
+                }
+            }
+            gap = false;
+        }
+        out
     }
 }
 

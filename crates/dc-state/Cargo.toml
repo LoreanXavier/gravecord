@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 chrono.workspace = true
+dc-intl.workspace = true
 dc-proto.workspace = true
 serde_json.workspace = true
 unicode-normalization.workspace = true

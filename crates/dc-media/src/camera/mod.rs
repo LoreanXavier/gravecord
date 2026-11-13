@@ -5,6 +5,9 @@
 //! 600 kb/s like Serein's. The pinned official client defaults to a 1280x720 / 30 fps budget with 150 kb/s to 2.5 Mb/s
 //! (`eQ` in `design/snapshot/modules/731854.js`); the constants below are the place to move to it once the sender can
 //! use them. Each frame carries the raw picture for the local preview and, when the encoder produced one, an access unit.
+//!
+//! The chosen Video Background ([`crate::background`]) is applied to the picture first, so the preview and the
+//! encoder see the same processed frame.
 
 use crate::convert::{PixelOrder, Raw, to_yuv420};
 use crate::encode::{Backend, Config, Content, Encoder, Profile};
@@ -207,6 +210,7 @@ struct Pipeline {
     encoder: Encoder,
     yuv: Vec<u8>,
     origin: Instant,
+    background: crate::background::Processor,
 }
 
 impl Pipeline {
@@ -215,10 +219,14 @@ impl Pipeline {
             encoder: Encoder::new(camera_config())?,
             yuv: vec![0; WIDTH * HEIGHT * 3 / 2],
             origin: Instant::now(),
+            background: crate::background::Processor::new(),
         })
     }
 
-    fn process(&mut self, rgba: Vec<u8>, state: &State) -> Result<CameraFrame> {
+    fn process(&mut self, mut rgba: Vec<u8>, state: &State) -> Result<CameraFrame> {
+        if rgba.len() == WIDTH * HEIGHT * 4 {
+            self.background.apply(&mut rgba, WIDTH, HEIGHT);
+        }
         let preview = Picture::rgba(WIDTH as u32, HEIGHT as u32, rgba)
             .ok_or_else(|| Error::failed("camera did not provide a 640x480 picture"))?;
         let chroma = self.encoder.chroma();
@@ -343,6 +351,7 @@ mod tests {
             encoder: Encoder::software(camera_config()).unwrap(),
             yuv: vec![0; WIDTH * HEIGHT * 3 / 2],
             origin: Instant::now(),
+            background: crate::background::Processor::new(),
         };
         let picture = |shade: u8| {
             let mut rgba = vec![shade; WIDTH * HEIGHT * 4];

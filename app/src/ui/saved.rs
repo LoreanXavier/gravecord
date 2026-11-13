@@ -34,35 +34,9 @@ pub(crate) struct AppToast {
     pub until: Instant,
 }
 
-/// moment's `humanize()` with its default thresholds, as the reminder labels use it.
+/// moment's `humanize()` with its default thresholds in the interface locale, as the reminder labels use it.
 pub(crate) fn humanize(milliseconds: i64) -> String {
-    let seconds = (milliseconds.abs() as f64 / 1000.).round();
-    let minutes = (seconds / 60.).round();
-    let hours = (minutes / 60.).round();
-    let days = (hours / 24.).round();
-    if seconds < 45. {
-        "a few seconds".to_owned()
-    } else if seconds < 90. {
-        "a minute".to_owned()
-    } else if minutes < 45. {
-        format!("{minutes} minutes")
-    } else if minutes < 90. {
-        "an hour".to_owned()
-    } else if hours < 22. {
-        format!("{hours} hours")
-    } else if hours < 36. {
-        "a day".to_owned()
-    } else if days < 26. {
-        format!("{days} days")
-    } else if days < 45. {
-        "a month".to_owned()
-    } else if days < 320. {
-        format!("{} months", (days / 30.4).round())
-    } else if days < 548. {
-        "a year".to_owned()
-    } else {
-        format!("{} years", (days / 365.).round())
-    }
+    dc_intl::humanize(milliseconds, false)
 }
 
 /// The five preset reminder times (`b` in module 243656) as (label, due time), now being `now`.
@@ -77,9 +51,12 @@ pub(crate) fn reminder_choices(
     };
     let today = now.date_naive();
     let (morning_label, morning) = if now.hour() >= 9 {
-        ("Tomorrow at 9:00am", nine(today + Duration::days(1)))
+        (
+            dc_intl::tr("Tomorrow at 9:00am"),
+            nine(today + Duration::days(1)),
+        )
     } else {
-        ("Today at 9:00am", nine(today))
+        (dc_intl::tr("Today at 9:00am"), nine(today))
     };
     // `day(1)` for Sunday, or Monday before 9:00; otherwise `day(8)`: next week's Monday.
     let weekday = now.weekday().num_days_from_sunday();
@@ -91,11 +68,11 @@ pub(crate) fn reminder_choices(
     };
     let monday = today - Duration::days(i64::from(weekday)) + Duration::days(monday_offset);
     vec![
-        ("in 30m", now + Duration::minutes(30)),
-        ("in 1h", now + Duration::hours(1)),
-        ("in 4h", now + Duration::hours(4)),
+        (dc_intl::tr("in 30m"), now + Duration::minutes(30)),
+        (dc_intl::tr("in 1h"), now + Duration::hours(1)),
+        (dc_intl::tr("in 4h"), now + Duration::hours(4)),
         (morning_label, morning),
-        ("Monday at 9:00am", nine(monday)),
+        (dc_intl::tr("Monday at 9:00am"), nine(monday)),
     ]
 }
 
@@ -274,10 +251,10 @@ impl Root {
             save: !bookmarked,
         });
         if bookmarked {
-            self.show_toast("Bookmark removed.", ToastIcon::Bookmark, cx);
+            self.show_toast(dc_intl::tr("Bookmark removed."), ToastIcon::Bookmark, cx);
         } else {
             self.show_toast(
-                "Bookmark added. For your eyes only.",
+                dc_intl::tr("Bookmark added. For your eyes only."),
                 ToastIcon::Bookmark,
                 cx,
             );
@@ -304,7 +281,7 @@ impl Root {
             due_at: Some(due_at),
             save: true,
         });
-        self.show_toast("Reminder added.", ToastIcon::Clock, cx);
+        self.show_toast(dc_intl::tr("Reminder added."), ToastIcon::Clock, cx);
     }
 
     pub(super) fn complete_reminder(&mut self, channel: Id, message: Id, cx: &mut Context<Self>) {
@@ -315,7 +292,7 @@ impl Root {
             due_at: None,
             save: false,
         });
-        self.show_toast("Reminder removed.", ToastIcon::Clock, cx);
+        self.show_toast(dc_intl::tr("Reminder removed."), ToastIcon::Clock, cx);
     }
 
     /// The reminder submenu: `Remind Me` and the five times plus Custom..., or for a reminder already set, its due
@@ -363,14 +340,15 @@ impl Root {
         let mut rows: Vec<(AnyElement, f32)> = Vec::new();
         if let Some(due) = due {
             let left = due.timestamp_millis() - now.timestamp_millis();
+            // `H4gnX9` / `Uq7Y+7`.
             let text = if left >= 0 {
-                format!("Due in {}", humanize(left))
+                dc_intl::t!("H4gnX9", duration = humanize(left))
             } else {
-                format!("Due {} ago", humanize(left))
+                dc_intl::t!("Uq7Y+7", duration = humanize(left))
             };
             rows.push((label(text), 36.));
             rows.push((
-                item("reminder-complete".into(), "Mark Complete")
+                item("reminder-complete".into(), dc_intl::tr("Mark Complete"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
                         this.submenu = None;
@@ -379,9 +357,9 @@ impl Root {
                     .into_any_element(),
                 34.,
             ));
-            rows.push((label("Edit Reminder".to_owned()), 36.));
+            rows.push((label(dc_intl::tr("Edit Reminder").to_owned()), 36.));
         } else {
-            rows.push((label("Remind Me".to_owned()), 36.));
+            rows.push((label(dc_intl::tr("Remind Me").to_owned()), 36.));
         }
         for (index, (text, time)) in reminder_choices(now).into_iter().enumerate() {
             rows.push((
@@ -396,7 +374,7 @@ impl Root {
             ));
         }
         rows.push((
-            item("reminder-custom".into(), "Custom...")
+            item("reminder-custom".into(), dc_intl::tr("Custom..."))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.menu = None;
                     this.submenu = None;

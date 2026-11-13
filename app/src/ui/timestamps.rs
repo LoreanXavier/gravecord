@@ -272,6 +272,31 @@ fn fallback(date: Option<DateStyle>, time: Option<TimeStyle>, local: &DateTime<L
     }
 }
 
+/// `date.toLocaleDateString(locale, {month: "short", day: "numeric", year: "numeric"})` (module 370480 `An`, the
+/// profile's Member Since): "Oct 29, 2021" in en-US, "29 Eki 2021" in Turkish.
+pub(super) fn short_month_date(millis: i64) -> String {
+    intl_format(millis, "yMMMd")
+}
+
+/// `Intl.DateTimeFormat(locale, options).format(date)` for the options a skeleton stands for, in the interface
+/// locale and the system's time zone. Chromium's `Intl.DateTimeFormat` asks ICU's pattern generator for the
+/// skeleton's best pattern; on Windows the same ICU ships with the system (`icuin.dll`), so the pattern comes from
+/// it. Elsewhere, or when ICU cannot be had, the en-US form.
+pub(super) fn intl_format(millis: i64, skeleton: &str) -> String {
+    #[cfg(windows)]
+    if let Some(text) = native::icu_format(dc_intl::locale(), millis, skeleton) {
+        return text;
+    }
+    let Some(time) = chrono::DateTime::from_timestamp_millis(millis) else {
+        return String::new();
+    };
+    let local = time.with_timezone(&Local);
+    match skeleton {
+        "yMMMd" => local.format("%b %-d, %Y").to_string(),
+        _ => local.format("%-m/%-d/%Y").to_string(),
+    }
+}
+
 #[cfg(windows)]
 mod native {
     use super::{DateStyle, TimeStyle, hour_cycle};
@@ -370,6 +395,74 @@ mod native {
         out
     }
 
+    /// ICU's best pattern for `skeleton` in `locale` (`udatpg_getBestPattern`), formatted at `millis` in the default
+    /// time zone (`udat_open` with the pattern, `udat_format`).
+    pub(super) fn icu_format(locale: &str, millis: i64, skeleton: &str) -> Option<String> {
+        use windows::Win32::Globalization::{
+            U_ZERO_ERROR, UDAT_PATTERN, UErrorCode, udat_close, udat_format, udat_open,
+            udatpg_close, udatpg_getBestPattern, udatpg_open,
+        };
+        use windows::core::PCSTR;
+        let name = std::ffi::CString::new(locale.replace('-', "_")).ok()?;
+        let skeleton: Vec<u16> = skeleton.encode_utf16().collect();
+        let mut status = U_ZERO_ERROR;
+        // SAFETY: the locale name is NUL-terminated and outlives the call; `status` is a valid out pointer.
+        let generator = unsafe { udatpg_open(PCSTR(name.as_ptr().cast()), &mut status) };
+        if generator.is_null() || status.0 > 0 {
+            return None;
+        }
+        let mut pattern = [0u16; 128];
+        // SAFETY: the generator is open; the skeleton's and the buffer's lengths are passed with them.
+        let length = unsafe {
+            udatpg_getBestPattern(
+                generator,
+                skeleton.as_ptr(),
+                skeleton.len() as i32,
+                pattern.as_mut_ptr(),
+                pattern.len() as i32,
+                &mut status,
+            )
+        };
+        // SAFETY: opened above, closed once.
+        unsafe { udatpg_close(generator) };
+        if status.0 > 0 || length <= 0 || length as usize > pattern.len() {
+            return None;
+        }
+        let mut status = UErrorCode(0);
+        // SAFETY: as above; a null zone is the default zone, `UDAT_PATTERN` takes the pattern given.
+        let format = unsafe {
+            udat_open(
+                UDAT_PATTERN,
+                UDAT_PATTERN,
+                PCSTR(name.as_ptr().cast()),
+                std::ptr::null(),
+                -1,
+                pattern.as_ptr(),
+                length,
+                &mut status,
+            )
+        };
+        if format.is_null() || status.0 > 0 {
+            return None;
+        }
+        let mut out = [0u16; 256];
+        // SAFETY: the formatter is open and the buffer's length is passed with it; no field position is asked.
+        let written = unsafe {
+            udat_format(
+                format as *const *const core::ffi::c_void,
+                millis as f64,
+                out.as_mut_ptr(),
+                out.len() as i32,
+                std::ptr::null_mut(),
+                &mut status,
+            )
+        };
+        // SAFETY: opened above, closed once.
+        unsafe { udat_close(format) };
+        (status.0 <= 0 && written > 0 && written as usize <= out.len())
+            .then(|| String::from_utf16_lossy(&out[..written as usize]))
+    }
+
     pub(super) fn format(
         locale: Option<&str>,
         date_style: Option<DateStyle>,
@@ -453,6 +546,22 @@ mod tests {
         assert_eq!(long_token("L LT x"), "L LT");
         assert_eq!(long_token("LT[-kor]"), "LT");
         assert_eq!(long_token("LLLL"), "LLLL");
+    }
+
+    /// `toLocaleDateString` with a short month: ICU's pattern for the skeleton in the locale.
+    #[test]
+    fn short_month_dates_follow_the_locale_pattern() {
+        // Noon UTC is the same calendar day in every zone from UTC-11 to UTC+11.
+        let noon = chrono::Utc
+            .with_ymd_and_hms(2021, 10, 29, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(short_month_date(noon), "Oct 29, 2021");
+        #[cfg(windows)]
+        assert_eq!(
+            native::icu_format("tr", noon, "yMMMd").as_deref(),
+            Some("29 Eki 2021")
+        );
     }
 
     #[test]

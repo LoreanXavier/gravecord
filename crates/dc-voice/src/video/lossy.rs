@@ -375,6 +375,200 @@ pub(crate) fn run_seeded(
     outcome
 }
 
+/// The bottleneck's buffer: half a megabyte, half a second at 8 Mb/s and nearly three seconds at 1.5 Mb/s, the deep
+/// buffer of a home router in which a sender that only reacts to loss builds seconds of delay.
+const QUEUE_BYTES: f64 = 500_000.0;
+/// The share's encoder: the top rate of a 1440p60 share and the official floor (`desktopBitrate.min`).
+const SHARE_TOP: u32 = 9_000_000;
+const SHARE_FLOOR: u32 = dc_media::screen::BITRATE_MIN;
+
+/// One second of [`run_capacity`].
+#[derive(Debug)]
+pub(crate) struct LinkSecond {
+    pub second: u64,
+    pub capacity: u32,
+    /// The sender's target at the end of the second.
+    pub target: u32,
+    /// What reached the receiver, bits per second.
+    pub delivered: u32,
+    /// The longest a packet that left in this second waited in the bottleneck.
+    pub queue_ms: u64,
+    pub dropped: u64,
+}
+
+/// A Go Live sender through a bandwidth-limited link, every piece real but the encoder and the clock: the sender
+/// (`VideoSender`: pacer, retransmissions, the loss-based control and, with `delay_based`, the send-side estimator), the
+/// transport seal with its transport-wide numbers, a FIFO bottleneck whose rate follows `phases` (until which second,
+/// at what rate) with a drop-tail buffer of `QUEUE_BYTES`, 25 ms each way, the transport open, and this crate's receiver
+/// sending transport-wide feedback, receiver reports, NACK and PLI back. The encoder makes pictures of the sender's
+/// current target at 60 fps (keyframes on request, 8.5 times a picture, the ratio of the 1440p60 measurement), and
+/// skips a picture while the previous one is still leaving, as the capture holds.
+pub(crate) fn run_capacity(phases: &[(u64, u32)], delay_based: bool) -> Vec<LinkSecond> {
+    use super::{receive::Received, sender::VideoSender};
+    use crate::rtp::{Mode, Transport};
+    let key = [9u8; 32];
+    let mut tx = Transport::new(Mode::Aes256GcmRtpSize, &key);
+    let mut rx = Transport::new(Mode::Aes256GcmRtpSize, &key);
+    let mut sender = VideoSender::new(SSRC, RTX, SHARE_FLOOR, SHARE_TOP);
+    sender.set_delay_based(delay_based);
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let mut receivers = Receivers::default();
+    receivers.announce(1, SSRC, RTX).unwrap();
+    let end = phases.last().map_or(0, |phase| phase.0) * 1000;
+    let capacity_at = |ms: u64| {
+        phases
+            .iter()
+            .find(|(until, _)| ms < until * 1000)
+            .map_or(0, |phase| phase.1)
+    };
+    // Datagrams on the way, by arrival in microseconds; the feedback path has no bottleneck.
+    let mut air: BinaryHeap<std::cmp::Reverse<(u64, u64, Vec<u8>)>> = BinaryHeap::new();
+    let mut back: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut order = 0u64;
+    // When the bottleneck is free again, in microseconds.
+    let mut link_free = 0f64;
+    let mut seconds = Vec::new();
+    let (mut delivered, mut queue_us, mut dropped) = (0u64, 0f64, 0u64);
+    let mut frame = 0u64;
+    let mut force_key = true;
+    let mut ready: Vec<Received> = Vec::new();
+    for now_ms in 0..end {
+        let now = at(now_ms);
+        let now_us = now_ms as f64 * 1000.0;
+        let capacity = f64::from(capacity_at(now_ms));
+        if now_ms * FPS >= frame * 1000 {
+            frame += 1;
+            if sender.ready() {
+                let picture = (u64::from(sender.bitrate()) / 8 / FPS) as usize;
+                let size = if force_key {
+                    picture * KEY_BYTES / DELTA_BYTES
+                } else {
+                    picture
+                }
+                .max(200);
+                let mut data = vec![0x55u8; size];
+                data[..5].copy_from_slice(&[0, 0, 0, 1, if force_key { 0x65 } else { 0x41 }]);
+                let timestamp = (frame * 90_000 / FPS) as u32;
+                if sender
+                    .offer_plain(&data, timestamp, force_key, now)
+                    .unwrap()
+                {
+                    force_key = false;
+                }
+            }
+        }
+        if sender.deadline().is_some_and(|deadline| deadline <= now) {
+            sender
+                .flush(now, &mut tx, |wire| {
+                    let queued_bytes = (link_free - now_us).max(0.0) * capacity / 8e6;
+                    if queued_bytes + wire.len() as f64 > QUEUE_BYTES {
+                        dropped += 1;
+                        return Ok(());
+                    }
+                    let departs = link_free.max(now_us) + wire.len() as f64 * 8e6 / capacity;
+                    queue_us = queue_us.max(departs - now_us);
+                    link_free = departs;
+                    order += 1;
+                    let arrives = departs as u64 + DELAY_MS * 1000;
+                    air.push(std::cmp::Reverse((arrives, order, wire.to_vec())));
+                    Ok(())
+                })
+                .unwrap();
+        }
+        // The receiver: open, number, reorder, hand over, and its feedback.
+        while air.peek().is_some_and(|flight| flight.0.0 <= now_ms * 1000) {
+            let std::cmp::Reverse((_, _, wire)) = air.pop().unwrap();
+            delivered += wire.len() as u64 * 8;
+            let rtp = rx.open(&wire).unwrap();
+            receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, now);
+            receivers.push(rtp, now);
+        }
+        receivers.drain(now, &mut ready);
+        for unit in ready.drain(..) {
+            let keyframe = dc_media::h264::is_keyframe(&unit.data);
+            receivers.accept(unit.user, keyframe);
+        }
+        for (header, body) in receivers.feedback(OWN, now) {
+            back.push((now_ms + DELAY_MS, rx.seal_rtcp(&header, &body).unwrap()));
+        }
+        // Feedback reaching the sender.
+        let (due, later): (Vec<_>, Vec<_>) = back.drain(..).partition(|(t, _)| *t <= now_ms);
+        back = later;
+        for (_, wire) in due {
+            let compound = tx.open_rtcp(&wire).unwrap();
+            if let Some(feedback) = rtp::feedback(&compound, SSRC)
+                && sender.feedback(&feedback, &mut tx, now)
+            {
+                force_key = true;
+            }
+        }
+        if now_ms % 20 == 0 {
+            sender.tick_rate(now);
+            if sender.stale(now) {
+                sender.clear();
+                force_key = true;
+            }
+        }
+        if (now_ms + 1) % 1000 == 0 {
+            seconds.push(LinkSecond {
+                second: now_ms / 1000,
+                capacity: capacity as u32,
+                target: sender.bitrate(),
+                delivered: delivered as u32,
+                queue_ms: (queue_us / 1000.0) as u64,
+                dropped,
+            });
+            (delivered, queue_us, dropped) = (0, 0.0, 0);
+        }
+    }
+    seconds
+}
+
+fn print_link(label: &str, seconds: &[LinkSecond]) {
+    println!("{label}");
+    println!("  s  capacity   target  delivered  queue ms  dropped");
+    for s in seconds {
+        println!(
+            "{:3} {:9} {:8} {:10} {:9} {:8}",
+            s.second, s.capacity, s.target, s.delivered, s.queue_ms, s.dropped
+        );
+    }
+}
+
+#[test]
+fn the_sender_settles_under_a_narrowed_link_and_recovers_when_it_widens() {
+    // 8 Mb/s for 15 s, 1.5 Mb/s until 45 s, 8 Mb/s again until 120 s.
+    let phases = [(15, 8_000_000), (45, 1_500_000), (120, 8_000_000)];
+    let before = run_capacity(&phases, false);
+    let after = run_capacity(&phases, true);
+    print_link("loss-based control only (before):", &before);
+    print_link("with the delay-based estimator (after):", &after);
+    // A second after the drop the target is under the capacity, and stays there.
+    let narrow = &after[16..45];
+    assert!(narrow.iter().all(|s| s.target < 1_500_000), "{narrow:#?}");
+    // What the half second of detection queued drains (the target holds while the delay falls) and the queue stays
+    // short; without the estimator the buffer stays full and drops.
+    let worst = narrow.iter().map(|s| s.queue_ms).max().unwrap();
+    let worst_before = before[16..45].iter().map(|s| s.queue_ms).max().unwrap();
+    assert!(worst < worst_before, "{worst} ms against {worst_before} ms");
+    let settled = after[30..45].iter().map(|s| s.queue_ms).max().unwrap();
+    assert!(settled < 100, "{settled} ms; {narrow:#?}");
+    assert_eq!(narrow.iter().map(|s| s.dropped).sum::<u64>(), 0);
+    assert!(before[16..45].iter().map(|s| s.dropped).sum::<u64>() > 0);
+    // Most of the narrowed link is still used.
+    let used = narrow.iter().map(|s| u64::from(s.delivered)).sum::<u64>() / narrow.len() as u64;
+    assert!(used > 1_200_000, "{used} b/s");
+    // Capacity back: the rate climbs back towards it at 8% a second, and the queue stays short.
+    let last = after.last().unwrap();
+    assert!(last.target > 7_000_000, "{last:?}");
+    assert!(
+        after[60..]
+            .iter()
+            .all(|s| s.queue_ms < 100 && s.dropped == 0)
+    );
+}
+
 #[test]
 fn a_clean_stream_is_handed_over_evenly_only_when_drained_on_arrival() {
     let tick = run(20, 0.0, false);

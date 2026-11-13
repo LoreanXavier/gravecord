@@ -123,7 +123,7 @@ impl Root {
                 ..super::editor_style()
             };
             let mut editor = Editor::new(style, cx);
-            editor.set_placeholder("Click to add a note".to_owned());
+            editor.set_placeholder(dc_intl::tr("Click to add a note").to_owned());
             editor
         });
         let events = cx.subscribe(&note, |this, editor, event: &EditorEvent, cx| {
@@ -537,13 +537,6 @@ impl Root {
             .and_then(|body| body["user_profile"]["bio"].as_str())
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
-        let plural = |count: usize, one: &str, many: &str| {
-            if count == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{count} {many}")
-            }
-        };
         let relationship = self.stores.relationships.get(&id).copied();
         let friend_since = (relationship == Some(RELATIONSHIP_FRIEND))
             .then(|| {
@@ -917,17 +910,17 @@ impl Root {
             .border_color(hsla(0., 0., 1., 0.12))
             .flex()
             .gap(px(24.))
-            .child(tab_item(Tab::Activity, "Activity".to_owned()))
+            .child(tab_item(Tab::Activity, dc_intl::t!("chq59f").to_owned()))
             .when(!friends.is_empty(), |this| {
                 this.child(tab_item(
                     Tab::Friends,
-                    plural(friends.len(), "Mutual Friend", "Mutual Friends"),
+                    dc_intl::t!("5s9jl+", count = friends.len()),
                 ))
             })
             .when(!servers.is_empty(), |this| {
                 this.child(tab_item(
                     Tab::Servers,
-                    plural(servers.len(), "Mutual Server", "Mutual Servers"),
+                    dc_intl::t!("eE3oep", count = servers.len()),
                 ))
             });
         let now_ms = chrono::Utc::now().timestamp_millis();

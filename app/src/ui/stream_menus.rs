@@ -401,12 +401,23 @@ impl Root {
                     .into_any_element(),
             );
         }
-        if !devices.is_empty() && !self.call.as_ref().is_some_and(|call| call.camera) {
+        // `change-video-background` (module 855187): "Preview Camera" while the camera is off, "Change Video
+        // Background" while it is on and the engine has the background filter.
+        let camera_on = self.call.as_ref().is_some_and(|call| call.camera);
+        if !devices.is_empty() && (!camera_on || self.video_background_shown()) {
             rows.push(Self::menu_separator(true));
             rows.push(self.vmenu_row(
                 "vmenu-preview-camera",
-                Some("voice_view_preview"),
-                "Preview Camera",
+                Some(if camera_on {
+                    "vbg_blur"
+                } else {
+                    "voice_view_preview"
+                }),
+                if camera_on {
+                    dc_intl::tr("Change Video Background")
+                } else {
+                    dc_intl::tr("Preview Camera")
+                },
                 None,
                 true,
                 cx,

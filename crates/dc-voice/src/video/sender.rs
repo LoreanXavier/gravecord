@@ -9,6 +9,7 @@ use super::{
     sps,
 };
 use crate::{
+    bwe::{DelayBased, Usage},
     dave::Dave,
     rtp::{Feedback, Transport},
 };
@@ -37,6 +38,30 @@ pub(crate) struct VideoSender {
     pub dropped: u64,
     /// Retransmissions sent, for the log.
     pub repairs: u64,
+    /// Send-side estimation from the transport-wide feedback of the connection.
+    delay: DelayBased,
+    delay_enabled: bool,
+    /// Packets transport-wide feedback reported, and how many of them lost, since the last loss update.
+    expected: u64,
+    lost: u64,
+    next_loss_update: Instant,
+}
+
+/// libwebrtc's `kLossUpdateInterval` (GoogCC, 1 s): how often the loss transport-wide feedback reports is handed to the
+/// loss-based control, as GoogCC does when it runs on packet feedback.
+const LOSS_UPDATE: Duration = Duration::from_secs(1);
+
+/// What the send-side estimation knows, for the debug log.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Estimation {
+    pub feedback_reports: u64,
+    pub packets_acked: u64,
+    pub packets_lost: u64,
+    pub packets_unknown: u64,
+    pub delay_estimate: u32,
+    pub acknowledged: u32,
+    pub overuses: u64,
+    pub overusing: bool,
 }
 
 impl VideoSender {
@@ -56,6 +81,32 @@ impl VideoSender {
             last_keyframe: None,
             dropped: 0,
             repairs: 0,
+            delay: DelayBased::new(bitrate, minimum, now),
+            delay_enabled: true,
+            expected: 0,
+            lost: 0,
+            next_loss_update: now + LOSS_UPDATE,
+        }
+    }
+
+    /// The simulation's "before" run: loss-based control only, as this sender was without the delay-based estimator.
+    #[cfg(test)]
+    pub fn set_delay_based(&mut self, enabled: bool) {
+        self.delay_enabled = enabled;
+    }
+
+    /// The send-side estimation's counters; the counters of `transport` are the connection's.
+    pub fn estimation(&self, transport: Option<&Transport>) -> Estimation {
+        let sent = transport.map(|transport| &transport.sent);
+        Estimation {
+            feedback_reports: sent.map_or(0, |sent| sent.reports),
+            packets_acked: sent.map_or(0, |sent| sent.acked),
+            packets_lost: sent.map_or(0, |sent| sent.lost),
+            packets_unknown: sent.map_or(0, |sent| sent.unknown),
+            delay_estimate: self.rate.delay_limit().unwrap_or(0),
+            acknowledged: self.delay.acknowledged().unwrap_or(0),
+            overuses: self.delay.overuses,
+            overusing: self.delay.usage() == Usage::Overusing,
         }
     }
 
@@ -104,17 +155,40 @@ impl VideoSender {
             .session
             .encrypt(davey::MediaType::VIDEO, davey::Codec::H264, &normalized)
             .map_err(|_| "DAVE H264 encryption failed")?;
-        let packets = packetize(
-            &encrypted,
-            &mut self.sequence,
-            frame.timestamp,
-            self.video_ssrc,
-        )?;
+        self.queue(&encrypted, frame.timestamp, frame.keyframe, now)?;
+        Ok(true)
+    }
+
+    /// An access unit without SPS normalization and DAVE, for the simulations.
+    #[cfg(test)]
+    pub fn offer_plain(
+        &mut self,
+        data: &[u8],
+        timestamp: u32,
+        keyframe: bool,
+        now: Instant,
+    ) -> Result<bool, &'static str> {
+        if !self.ready() {
+            self.dropped += 1;
+            return Ok(false);
+        }
+        self.queue(data, timestamp, keyframe, now)?;
+        Ok(true)
+    }
+
+    fn queue(
+        &mut self,
+        data: &[u8],
+        timestamp: u32,
+        keyframe: bool,
+        now: Instant,
+    ) -> Result<(), &'static str> {
+        let packets = packetize(data, &mut self.sequence, timestamp, self.video_ssrc)?;
         self.pacer.queue(packets, now);
-        if frame.keyframe {
+        if keyframe {
             self.last_keyframe = Some(now);
         }
-        Ok(true)
+        Ok(())
     }
 
     /// When the pacer or a repair wants the loop to wake, if it does.
@@ -136,22 +210,49 @@ impl VideoSender {
             else {
                 break;
             };
-            // The original DAVE ciphertext is reused; the transport nonce is always fresh.
-            send(&transport.seal(&packet.header, &packet.payload)?)?;
+            // The original DAVE ciphertext is reused; the transport nonce and the transport-wide number are fresh.
+            send(&transport.seal(&packet.header, &packet.payload, now)?)?;
             self.pacer.charge_repair(packet.payload.len());
             self.repairs += 1;
         }
         let batch: Vec<Packet> = self.pacer.next_batch(now, self.rate.target).collect();
         for packet in batch {
-            send(&transport.seal(&packet.header, &packet.payload)?)?;
+            send(&transport.seal(&packet.header, &packet.payload, now)?)?;
             self.history.remember(packet, now);
         }
         Ok(())
     }
 
-    /// Takes a viewer's feedback. True when the source should produce a keyframe now.
-    pub fn feedback(&mut self, feedback: &Feedback, now: Instant) -> bool {
+    /// Takes a viewer's feedback, and the transport-wide feedback of the connection, matched against what `transport`
+    /// sent. True when the source should produce a keyframe now.
+    pub fn feedback(
+        &mut self,
+        feedback: &Feedback,
+        transport: &mut Transport,
+        now: Instant,
+    ) -> bool {
         self.rate.observe(feedback.loss, feedback.bitrate);
+        for report in &feedback.transport {
+            let packets = transport.sent.feedback(report);
+            self.expected += packets.len() as u64;
+            self.lost += packets
+                .iter()
+                .filter(|packet| packet.received.is_none())
+                .count() as u64;
+            if let Some(estimate) = self.delay.feedback(&packets, now)
+                && self.delay_enabled
+            {
+                self.rate.delay_based(estimate);
+            }
+        }
+        if now >= self.next_loss_update && self.expected > 0 {
+            // Q8 like a report block's fraction lost (`UpdatePacketsLost`).
+            let fraction = (self.lost * 256 / self.expected).min(255) as u8;
+            self.rate.observe(Some(fraction), None);
+            self.expected = 0;
+            self.lost = 0;
+            self.next_loss_update = now + LOSS_UPDATE;
+        }
         let missing = self.history.request(&feedback.nacks, now);
         if (feedback.keyframe || missing) && now >= self.next_keyframe {
             self.next_keyframe = now + KEYFRAME_INTERVAL;

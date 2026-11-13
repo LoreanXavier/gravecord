@@ -637,7 +637,7 @@ pub(crate) async fn run(
                         let data = dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE stream audio encryption failed")?.into_owned();
                         let header = rtp::header(audio_sequence, audio_timestamp, ssrc);
                         if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
-                            udp_failures.send(socket, &crypto.seal_soundshare(&header, &data)?, "Stream audio UDP send failed")?;
+                            udp_failures.send(socket, &crypto.seal_soundshare(&header, &data, now)?, "Stream audio UDP send failed")?;
                         }
                         audio_sequence = audio_sequence.wrapping_add(1);
                         audio_timestamp = audio_timestamp.wrapping_add(rtp::FRAME_SAMPLES);
@@ -715,6 +715,21 @@ pub(crate) async fn run(
                         bitrate = sender.as_ref().map_or(0, VideoSender::bitrate),
                         "stream packet tally"
                     );
+                    if let Some(sender) = sender.as_ref() {
+                        let estimation = sender.estimation(transport.as_ref());
+                        debug!(
+                            bitrate = sender.bitrate(),
+                            delay_estimate = estimation.delay_estimate,
+                            acknowledged = estimation.acknowledged,
+                            overusing = estimation.overusing,
+                            overuses = estimation.overuses,
+                            feedback_reports = estimation.feedback_reports,
+                            packets_acked = estimation.packets_acked,
+                            packets_lost = estimation.packets_lost,
+                            packets_unknown = estimation.packets_unknown,
+                            "stream send-side estimation"
+                        );
+                    }
                     tally = [0; 4];
                     tally_at = now + Duration::from_secs(5);
                 }
@@ -743,14 +758,18 @@ pub(crate) async fn run(
                         receivers.sender_reports(&compound, Instant::now());
                     }
                     if let Some(sender) = sender.as_mut()
+                        && let Some(crypto) = transport.as_mut()
                         && let Some(feedback) = rtp::feedback(&compound, video_ssrc)
                         && announced
                         && dave.ready
                         && !dave.transitioning()
-                        && sender.feedback(&feedback, Instant::now())
-                        && let Some(capture) = &capture
                     {
-                        capture.force_keyframe();
+                        if !feedback.transport.is_empty() && crypto.sent.reports == 0 {
+                            debug!("transport-wide feedback received; send-side estimation runs");
+                        }
+                        if sender.feedback(&feedback, crypto, Instant::now()) && let Some(capture) = &capture {
+                            capture.force_keyframe();
+                        }
                     }
                     continue;
                 }
