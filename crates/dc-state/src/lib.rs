@@ -1743,6 +1743,15 @@ impl Stores {
                         endpoint,
                         token,
                     });
+                } else if let Some(guild_id) = guild
+                    && self.voice_server.as_ref().is_some_and(|server| {
+                        server.guild_id == guild_id
+                            && (guild_id != 0 || server.channel_id == id(&data["channel_id"]))
+                    })
+                {
+                    // `endpoint: null`: the voice server is gone and another is being allocated. The old one is
+                    // not connected to again.
+                    self.voice_server = None;
                 }
             }
             "GUILD_CREATE" => {
@@ -3474,6 +3483,17 @@ mod tests {
             stores.voice_server.as_ref().unwrap().endpoint,
             "c-ams.discord.media"
         );
+        // Another guild's server going away leaves this one; its own going away clears it.
+        stores.dispatch(
+            "VOICE_SERVER_UPDATE",
+            &json!({"guild_id": "2", "endpoint": null, "token": "t"}),
+        );
+        assert!(stores.voice_server.is_some());
+        stores.dispatch(
+            "VOICE_SERVER_UPDATE",
+            &json!({"guild_id": "1", "endpoint": null, "token": "t"}),
+        );
+        assert!(stores.voice_server.is_none());
     }
 
     #[test]

@@ -72,7 +72,19 @@ fn rate(value: f32) -> String {
     format!("x{value:.2}")
 }
 
-pub(super) static SLIDERS: [SliderSpec; 6] = [
+/// Max Users Displayed (`p$`, module 158935): 0 to 25, whole people, Off under 1.
+const MAX_USERS: [f32; 26] = steps(0., 1.);
+
+/// `onValueRender`: "Off" under 1, else the whole number.
+fn people(value: f32) -> String {
+    if value < 1. {
+        dc_intl::tr("Off").to_owned()
+    } else {
+        format!("{}", value.floor())
+    }
+}
+
+pub(super) static SLIDERS: [SliderSpec; 7] = [
     SliderSpec {
         key: FONT_SIZE,
         min: 12.,
@@ -120,6 +132,14 @@ pub(super) static SLIDERS: [SliderSpec; 6] = [
         markers: &RATES,
         default: 1.,
         format: rate,
+    },
+    SliderSpec {
+        key: super::overlay_page::MAX_USERS,
+        min: 0.,
+        max: 25.,
+        markers: &MAX_USERS,
+        default: 8.,
+        format: people,
     },
 ];
 
@@ -173,6 +193,9 @@ impl Root {
     pub(super) fn slider_value(&self, spec: &SliderSpec) -> f32 {
         if spec.key == GROUP_SPACING {
             return self.message_group_spacing();
+        }
+        if spec.key == super::overlay_page::MAX_USERS {
+            return super::overlay_page::max_users_value(&self.overlay_layout());
         }
         self.pref_number(spec.key, spec.default)
     }

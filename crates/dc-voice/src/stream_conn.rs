@@ -289,11 +289,11 @@ const HOLD_AT: usize = 2;
 const AUDIO_BACKLOG: usize = 1920 * 6;
 
 /// Drops a watched stream's audio queue from the hub when its connection ends.
-struct ForgetAudio(VideoHub, u64);
+struct ForgetAudio(VideoHub, u64, u64);
 
 impl Drop for ForgetAudio {
     fn drop(&mut self) {
-        self.0.forget_stream_audio(self.1);
+        self.0.forget_stream_audio(self.1, self.2);
     }
 }
 
@@ -308,7 +308,8 @@ pub(crate) async fn run(
     let own = join.user_id;
     let owner = join.key.owner();
     // However this connection ends, the audio that waited for the call goes with it.
-    let _audio = ForgetAudio(hub.clone(), owner);
+    let audio_queue = hub.begin_stream_audio(owner);
+    let _audio = ForgetAudio(hub.clone(), owner, audio_queue);
     let sending = join.role == Role::Send;
     if sending && source.is_none() {
         return Err("A stream sender needs a source");
@@ -678,7 +679,7 @@ pub(crate) async fn run(
                         // One frame per 20 ms of real time: a late tick that the clock skipped owes two.
                         for _ in 0..audio_clock.due(now.into_std()) {
                             if let Some(frame) = mixer.pop_stereo() {
-                                hub.push_stream_audio(owner, frame);
+                                hub.push_stream_audio(owner, audio_queue, frame);
                             }
                         }
                         // Repairs that expired since the last packet; arrivals are handed over as they come.

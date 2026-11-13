@@ -28,6 +28,7 @@ mod languages;
 mod model;
 pub(super) mod nitro_page;
 mod notifications_page;
+mod overlay_page;
 mod pages;
 mod phone_countries;
 pub(super) mod prefs;
@@ -956,6 +957,9 @@ impl Root {
             "https://cdn.discordapp.com/assets/content/568728735ebc2ee3eb3a7ab29d37c1f698f413d29cee50f9a19ed2d2eefea27f.svg"
                 .to_owned(),
         );
+        for (key, url) in overlay_page::requests() {
+            self.request_image(key.to_owned(), url.to_owned());
+        }
         for (key, url) in preview::requests() {
             self.request_image(key, url);
         }

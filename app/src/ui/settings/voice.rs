@@ -935,6 +935,9 @@ impl Root {
     /// A page choice changed (the generated switch, radio or select already wrote it into `setting_choices`): the
     /// store takes it as the official action does, saves, and the processors follow.
     pub(in crate::ui) fn voice_setting_changed(&mut self, key: &'static str) {
+        if self.overlay_setting_changed(key) {
+            return;
+        }
         if self.clips_setting_changed(key) {
             return;
         }

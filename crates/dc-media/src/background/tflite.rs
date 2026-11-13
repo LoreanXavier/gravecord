@@ -186,6 +186,8 @@ mod code {
 }
 
 /// TensorFlow Lite tensor types (schema.fbs `TensorType`).
+/// More values than any tensor of a selfie segmentation model holds, by a wide margin.
+const MAX_TENSOR_VALUES: usize = 1 << 24;
 const FLOAT32: u8 = 0;
 const FLOAT16: u8 = 1;
 const INT32: u8 = 2;
@@ -359,7 +361,13 @@ impl Model {
                 return Err(bad("quantised tensors are not supported"));
             }
             let data = buffers.get(buffer).copied().unwrap_or(&[]);
-            let count: usize = shape.iter().product();
+            // The largest tensor of the real models has under two million values; a file that declares far more is
+            // refused before anything is allocated for it.
+            let count = shape
+                .iter()
+                .try_fold(1usize, |all, side| all.checked_mul(*side))
+                .filter(|count| *count <= MAX_TENSOR_VALUES)
+                .ok_or_else(|| bad("tensor is too large"))?;
             let (constant, integer) = match (kind, data.is_empty()) {
                 (_, true) => (None, None),
                 (FLOAT32, false) if data.len() == count * 4 => (
@@ -541,6 +549,10 @@ impl Model {
             return Err(bad("model output must be a one-channel mask"));
         }
         for op in &self.ops {
+            // An operator writes into a tensor the interpreter allocates; one that holds file data has no room.
+            if self.constants.get(op.output).is_none_or(Option::is_some) {
+                return Err(bad("operator output is not a variable tensor"));
+            }
             let out = four(op.output)?;
             let first = *op
                 .inputs
@@ -574,7 +586,15 @@ impl Model {
                     }
                 }
                 Kind::Depthwise(w, _) => {
-                    let f = four_any(&self.shapes[op.inputs[1]])?;
+                    let filter = *op
+                        .inputs
+                        .get(1)
+                        .ok_or_else(|| bad("depthwise convolution without a filter"))?;
+                    let f = four_any(
+                        self.shapes
+                            .get(filter)
+                            .ok_or_else(|| bad("depthwise filter out of range"))?,
+                    )?;
                     if f[3] != a[3]
                         || out[3] != a[3]
                         || constant(1)?.len() != f.iter().product::<usize>()

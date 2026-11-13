@@ -435,6 +435,38 @@ impl RunningGames {
         self.refresh_visible(now_ms);
     }
 
+    /// The user's own overlay switches for a game: `enableOverlay[key]` (legacy) and `enableOverlayV3[key]`.
+    pub fn overlay_override(&self, game: &Game) -> (Option<bool>, Option<bool>) {
+        let read = |name: &str| {
+            self.other
+                .get(name)
+                .and_then(|map| map.get(key(game)))
+                .and_then(Value::as_bool)
+        };
+        (read("enableOverlay"), read("enableOverlayV3"))
+    }
+
+    /// `RUNNING_GAME_TOGGLE_OVERLAY`: the legacy value is always written, the v3 one when given.
+    pub fn toggle_overlay(&mut self, game: &Game, legacy: bool, v3: Option<bool>) {
+        let name = key(game);
+        let mut write = |store: &str, on: bool| {
+            let entry = self
+                .other
+                .entry(store.to_owned())
+                .or_insert_with(|| json!({}));
+            if !entry.is_object() {
+                *entry = json!({});
+            }
+            if let Some(map) = entry.as_object_mut() {
+                map.insert(name.clone(), json!(on));
+            }
+        };
+        write("enableOverlay", legacy);
+        if let Some(on) = v3 {
+            write("enableOverlayV3", on);
+        }
+    }
+
     /// `RUNNING_GAME_EDIT_NAME`: only for games added by hand or not in the database; the settings follow the
     /// new key.
     pub fn edit_name(&mut self, game: &Game, new_name: &str, now_ms: u64) {
@@ -683,5 +715,21 @@ mod tests {
         let seen = store.games_seen(false);
         assert_eq!(seen[0].name.as_deref(), Some("New"));
         assert_eq!(seen[0].id, None);
+    }
+
+    #[test]
+    fn overlay_switches_are_kept_per_game_and_survive_a_restart() {
+        let mut store = RunningGames::default();
+        let game = running(4, Some("1"), "Game", "c:/games/game.exe");
+        assert_eq!(store.overlay_override(&game), (None, None));
+        store.toggle_overlay(&game, true, Some(false));
+        assert_eq!(store.overlay_override(&game), (Some(true), Some(false)));
+        // Only the legacy value: the v3 one stays.
+        store.toggle_overlay(&game, false, None);
+        assert_eq!(store.overlay_override(&game), (Some(false), Some(false)));
+        let stored = store.to_json();
+        assert_eq!(stored["enableOverlayV3"]["c:/games/game.exe:Game"], false);
+        let read = RunningGames::from_json(&stored);
+        assert_eq!(read.overlay_override(&game), (Some(false), Some(false)));
     }
 }

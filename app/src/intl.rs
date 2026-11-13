@@ -398,6 +398,8 @@ mod guard {
         "ui/saved.rs",
         "ui/inbox.rs",
         "ui/settings/pages.rs",
+        "ui/settings/overlay_page.rs",
+        "ui/overlay.rs",
     ];
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).

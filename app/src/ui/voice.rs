@@ -16,6 +16,8 @@ use tracing::info;
 const ALLOW_VOICE_RECORDING: u64 = 2;
 
 pub(crate) struct Call {
+    /// The number of the voice connection this call opened last; 0 before the first.
+    pub(super) generation: u64,
     pub guild: Id,
     pub channel: Id,
     pub(super) controls: dc_voice::Controls,
@@ -60,6 +62,9 @@ fn source_letter(name: &str) -> String {
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "?".to_owned())
 }
+
+/// Numbers the voice connections this process opens.
+static VOICE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Root {
     fn voice_flags(&self) -> u64 {
@@ -130,6 +135,7 @@ impl Root {
             rtc_users: Vec::new(),
             flags: std::collections::HashMap::new(),
             tracker: Default::default(),
+            generation: 0,
         });
         self.stores.voice_server = None;
     }
@@ -147,10 +153,12 @@ impl Root {
         self.speaking.clear();
         let server = self.stores.voice_server.take();
         self.open_call(call.guild, call.channel);
-        if tell {
-            self.send_voice_state(call.guild, Some(call.channel));
-        } else {
+        if !tell {
             self.stores.voice_server = server;
+        }
+        // The new connection sends no camera: the service hears it, whoever asked for the restart.
+        if tell || call.camera {
+            self.send_voice_state(call.guild, Some(call.channel));
         }
         self.video_call_started(cx);
         self.sync_ptt_hook();
@@ -175,6 +183,7 @@ impl Root {
                         .iter()
                         .any(|dm| dm.id == channel);
                     self.stores.calls.connect_channel(channel, private, true);
+                    self.calls_after_dispatch_effects();
                 }
             }
             "VOICE_SERVER_UPDATE"
@@ -206,6 +215,7 @@ impl Root {
             rtc_users: Vec::new(),
             flags: std::collections::HashMap::new(),
             tracker: Default::default(),
+            generation: 0,
         });
         self.start_voice_tick(cx);
     }
@@ -226,6 +236,7 @@ impl Root {
             rtc_users: Vec::new(),
             flags: std::collections::HashMap::new(),
             tracker: Default::default(),
+            generation: 0,
         });
     }
 
@@ -268,7 +279,11 @@ impl Root {
         // The service took this session out of voice (disconnected by a moderator, removed from the group, the
         // call ended): the call here is over. A call that has not connected yet may still see the state of the one
         // left before it, which is not about it.
-        if own == theirs && call.started && id(&data["channel_id"]).is_none() {
+        if own == theirs
+            && call.started
+            && id(&data["channel_id"]).is_none()
+            && id(&data["guild_id"]).unwrap_or(0) == call.guild
+        {
             self.end_voice(false, cx);
             return;
         }
@@ -378,6 +393,8 @@ impl Root {
             return;
         };
         call.started = true;
+        call.generation = VOICE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let generation = call.generation;
         let join = dc_voice::Join {
             endpoint: server.endpoint.clone(),
             token: server.token.clone(),
@@ -394,10 +411,21 @@ impl Root {
         let _ = self.requests.send(Request::VoiceConnect {
             join,
             controls: call.controls.clone(),
+            generation,
         });
     }
 
-    pub(super) fn on_voice_event(&mut self, event: dc_voice::Event, cx: &mut Context<Self>) {
+    pub(super) fn on_voice_event(
+        &mut self,
+        generation: u64,
+        event: dc_voice::Event,
+        cx: &mut Context<Self>,
+    ) {
+        // A connection that was replaced (another call, a new voice server) or whose call ended still reports its
+        // last events: they are not about the call here.
+        if self.call.as_ref().map(|call| call.generation) != Some(generation) {
+            return;
+        }
         match event {
             dc_voice::Event::Connected => {
                 info!("voice connected");

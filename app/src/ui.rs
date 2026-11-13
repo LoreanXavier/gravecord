@@ -169,6 +169,7 @@ mod notify;
 mod oauth;
 mod oauth_spec;
 mod official_messages;
+mod overlay;
 mod paste;
 #[cfg(feature = "capture")]
 mod perf;
@@ -443,6 +444,8 @@ pub struct Root {
     notification_runtime: crate::notifications::Runtime,
     /// Game detection and the Registered Games page (`running_games`).
     detect: running_games::Games,
+    /// The game overlay window and what it follows (`overlay`).
+    overlay: overlay::Overlay,
     tray_runtime: crate::tray::Runtime,
     #[cfg(feature = "capture")]
     capture_badge: Option<(u64, bool)>,
@@ -853,6 +856,7 @@ impl Root {
             official_messages: official_messages::OfficialMessages::default(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
             detect: running_games::Games::new(updates.clone()),
+            overlay: overlay::Overlay::default(),
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
             #[cfg(feature = "capture")]
             capture_badge: None,
@@ -1094,7 +1098,11 @@ impl Root {
                 self.inventory_connection_changed(connected, cx);
                 self.detect_connection_changed(connected, cx);
             }
-            Update::Games(scan) => self.detect_scanned(*scan, cx),
+            Update::Games(scan) => {
+                self.detect_scanned(*scan, cx);
+                self.overlay_sync(cx);
+            }
+            Update::OverlayFocus(foreground) => self.overlay_focus_changed(foreground, cx),
             Update::Rpc(event) => self.rpc_event(event, cx),
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
@@ -1333,7 +1341,7 @@ impl Root {
                 }
                 cx.notify();
             }
-            Update::Voice(event) => self.on_voice_event(event, cx),
+            Update::Voice(generation, event) => self.on_voice_event(generation, event, cx),
             Update::Stream { key, event } => self.on_stream_event(key, event, cx),
             Update::PushToTalk(held) => self.ptt_held_changed(held),
             Update::ClipSaveKey => self.clips_save_key(cx),
@@ -9051,6 +9059,7 @@ impl Render for Root {
             .children(self.boost_perks_modal(cx))
             .children({
                 self.call_popout_frame(cx);
+                self.overlay_frame(cx);
                 self.call_fullscreen_layer(window, cx)
             })
             .children(self.boost_page_overlay(cx))

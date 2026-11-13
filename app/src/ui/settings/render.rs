@@ -532,7 +532,7 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
         "language_select_setting/open",
         super::languages::NAMES,
     ),
-    // Game Overlay's voice widget (module 158935 `pH`, `pY`, `pW`): kept on this machine, nothing draws it yet.
+    // Game Overlay's voice widget (module 158935 `pH`, `pY`, `pW`): `OverlayStoreV2` (`overlay_page`).
     (
         "overlay_voice_widget_avatar_size",
         "overlay_voice_widget_avatar_size/open",
@@ -964,6 +964,9 @@ impl Root {
         if let Some(index) = self.notification_page_index(key) {
             return index;
         }
+        if let Some(index) = self.overlay_index(key) {
+            return index;
+        }
         self.pref_index(key, captured)
     }
 
@@ -975,6 +978,9 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(row) = self.overlay_row(node, width, window, cx) {
+            return row;
+        }
         match node {
             Node::Category {
                 key,

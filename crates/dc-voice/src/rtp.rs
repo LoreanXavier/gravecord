@@ -279,10 +279,12 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                 let matching = content[8..12] == video_ssrc.to_be_bytes();
                 match (kind, count) {
                     (205, 15) => {
-                        if feedback.transport.len() < 16 {
-                            feedback
-                                .transport
-                                .push(crate::bwe::parse_transport_cc(content)?);
+                        // A block this parser refuses is skipped alone: the keyframe requests and repairs beside
+                        // it in the compound still count.
+                        if feedback.transport.len() < 16
+                            && let Some(report) = crate::bwe::parse_transport_cc(content)
+                        {
+                            feedback.transport.push(report);
                         }
                     }
                     (206, 1) => {

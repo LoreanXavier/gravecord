@@ -73,6 +73,7 @@ dc-clips = { path = "crates/dc-clips" }
 dc-hotkey = { path = "crates/dc-hotkey" }
 dc-intl = { path = "crates/dc-intl" }
 dc-markdown = { path = "crates/dc-markdown" }
+dc-overlay = { path = "crates/dc-overlay" }
 dc-state = { path = "crates/dc-state" }
 dc-tokens = { path = "crates/dc-tokens" }
 dc-http = { path = "crates/dc-http" }

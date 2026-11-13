@@ -317,7 +317,7 @@ impl Root {
 
     /// Starts the conversion of every picture that has no image yet, each on a worker, and releases the images of
     /// sources that are gone.
-    fn video_convert(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn video_convert(&mut self, cx: &mut Context<Self>) {
         let keep: Vec<Key> = self
             .video
             .frames

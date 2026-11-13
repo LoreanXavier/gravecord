@@ -64,6 +64,8 @@ pub struct VideoHub {
     stream_audio: Arc<Mutex<HashMap<u64, StreamAudio>>>,
     /// Stream attenuation (`setSidechainCompression`): the strength, 1 to 100, or 0 while it is off.
     sidechain: Arc<AtomicU32>,
+    /// Numbers the stream connections that take a queue.
+    stream_connections: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for VideoHub {
@@ -79,6 +81,7 @@ impl VideoHub {
             stream_volumes: Arc::default(),
             stream_audio: Arc::default(),
             sidechain: Arc::default(),
+            stream_connections: Arc::default(),
         }
     }
 
@@ -101,13 +104,36 @@ impl VideoHub {
         }
     }
 
-    pub(crate) fn push_stream_audio(&self, owner: u64, frame: Stereo) {
+    /// A connection that watches `owner`'s stream takes the owner's queue, empty; the number it gets tells it from
+    /// a connection it replaced, whose late frames and cleanup then no longer count.
+    pub(crate) fn begin_stream_audio(&self, owner: u64) -> u64 {
+        let connection = self
+            .stream_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         self.stream_audio
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(owner)
-            .or_default()
-            .push(frame);
+            .insert(
+                owner,
+                StreamAudio {
+                    connection,
+                    ..StreamAudio::default()
+                },
+            );
+        connection
+    }
+
+    pub(crate) fn push_stream_audio(&self, owner: u64, connection: u64, frame: Stereo) {
+        if let Some(audio) = self
+            .stream_audio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&owner)
+            .filter(|audio| audio.connection == connection)
+        {
+            audio.push(frame);
+        }
     }
 
     /// The next frame of watched stream audio: every watched stream at its own level, summed, and, while stream
@@ -143,6 +169,12 @@ impl VideoHub {
                     }
                 }
                 None => out = Some(frame),
+            }
+        }
+        // Two streams at twice their level may add up past full scale.
+        if let Some(out) = out.as_mut() {
+            for sample in out.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0);
             }
         }
         out
@@ -204,11 +236,14 @@ impl VideoHub {
     }
 
     /// `owner`'s stream is no longer watched: its queue and counts go.
-    pub(crate) fn forget_stream_audio(&self, owner: u64) {
-        self.stream_audio
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&owner);
+    pub(crate) fn forget_stream_audio(&self, owner: u64, connection: u64) {
+        let mut all = self.stream_audio.lock().unwrap_or_else(|e| e.into_inner());
+        if all
+            .get(&owner)
+            .is_some_and(|audio| audio.connection == connection)
+        {
+            all.remove(&owner);
+        }
     }
 
     /// Times `owner`'s stream audio ran dry while playing, and frames dropped to keep it from lagging, for the log.
@@ -244,6 +279,8 @@ impl VideoHub {
 /// (`stream_audio_across_two_clocks_neither_drops_out_nor_lags`).
 #[derive(Default)]
 pub(crate) struct StreamAudio {
+    /// The stream connection that fills this queue (`VideoHub::begin_stream_audio`).
+    connection: u64,
     queue: VecDeque<Stereo>,
     playing: bool,
     /// Times the call found no frame while the stream was playing, and frames dropped at the cap.
@@ -306,8 +343,9 @@ mod tests {
         hub.deliver(frame);
         assert_eq!(count.load(Ordering::Relaxed), 1);
         assert_eq!(hub.stream_volume(7), 1.0);
+        let seven = hub.begin_stream_audio(7);
         for i in 0..8 {
-            hub.push_stream_audio(7, [i as f32; 1920]);
+            hub.push_stream_audio(7, seven, [i as f32; 1920]);
         }
         hub.set_stream_volume(7, 0.5);
         assert_eq!(
@@ -327,19 +365,27 @@ mod tests {
         let hub = VideoHub::new();
         hub.set_stream_volume(1, 0.5);
         hub.set_stream_volume(2, 0.0);
-        hub.push_stream_audio(1, [0.4; 1920]);
-        hub.push_stream_audio(2, [0.4; 1920]);
+        let one = hub.begin_stream_audio(1);
+        let two = hub.begin_stream_audio(2);
+        hub.push_stream_audio(1, one, [0.4; 1920]);
+        hub.push_stream_audio(2, two, [0.4; 1920]);
         assert!((hub.pop_stream_audio(None).unwrap()[0] - 0.2).abs() < 1e-6);
         // The muted one unmuted, the other untouched: both are heard, one frame each per step.
         hub.set_stream_volume(2, 1.0);
-        hub.push_stream_audio(1, [0.4; 1920]);
-        hub.push_stream_audio(2, [0.4; 1920]);
+        hub.push_stream_audio(1, one, [0.4; 1920]);
+        hub.push_stream_audio(2, two, [0.4; 1920]);
         assert!((hub.pop_stream_audio(None).unwrap()[0] - 0.6).abs() < 1e-6);
         assert!(hub.pop_stream_audio(None).is_none());
-        hub.push_stream_audio(1, [0.4; 1920]);
+        hub.push_stream_audio(1, one, [0.4; 1920]);
         hub.clear_stream_audio_of(1);
-        hub.forget_stream_audio(2);
+        hub.forget_stream_audio(2, two);
         assert!(hub.pop_stream_audio(None).is_none());
+        // A connection that replaced another keeps its queue when the old one cleans up late.
+        let newer = hub.begin_stream_audio(1);
+        hub.push_stream_audio(1, one, [0.9; 1920]);
+        hub.forget_stream_audio(1, one);
+        hub.push_stream_audio(1, newer, [0.4; 1920]);
+        assert!((hub.pop_stream_audio(None).unwrap()[0] - 0.2).abs() < 1e-6);
     }
 
     #[test]
@@ -347,15 +393,16 @@ mod tests {
         let hub = VideoHub::new();
         let loud: Frame = [0.1; 960];
         let quiet: Frame = [0.0; 960];
-        hub.push_stream_audio(7, [0.5; 1920]);
+        let seven = hub.begin_stream_audio(7);
+        hub.push_stream_audio(7, seven, [0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(Some(&loud)).unwrap()[0], 0.5, "off");
         hub.set_sidechain_strength(40);
         assert_eq!(hub.sidechain_strength(), 40);
-        hub.push_stream_audio(7, [0.5; 1920]);
+        hub.push_stream_audio(7, seven, [0.5; 1920]);
         assert!((hub.pop_stream_audio(Some(&loud)).unwrap()[0] - 0.3).abs() < 1e-6);
-        hub.push_stream_audio(7, [0.5; 1920]);
+        hub.push_stream_audio(7, seven, [0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(Some(&quiet)).unwrap()[0], 0.5);
-        hub.push_stream_audio(7, [0.5; 1920]);
+        hub.push_stream_audio(7, seven, [0.5; 1920]);
         assert_eq!(hub.pop_stream_audio(None).unwrap()[0], 0.5);
     }
 

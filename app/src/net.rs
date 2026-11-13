@@ -19,6 +19,8 @@ pub enum Update {
     Rpc(dc_rpc::Event),
     /// One pass of the game scan (`games`).
     Games(Box<crate::games::GameScan>),
+    /// The foreground window changed (`dc_overlay::platform::watch`): the overlay follows the focused game.
+    OverlayFocus(Option<dc_overlay::decision::Foreground>),
     NotificationClicked(u64),
     Tray(crate::tray::Action),
     /// The updater's state changed (`updater::state`): the title bar button follows it.
@@ -75,7 +77,9 @@ pub enum Update {
     /// PNG images in bulk, such as the cells of the emoji sprite sheet.
     Images(Vec<(String, Vec<u8>)>),
     /// An event of the voice connection.
-    Voice(dc_voice::Event),
+    /// An event of the voice connection with this number (`Request::VoiceConnect`): a connection that was replaced
+    /// still reports its end, and that must not reach the call that replaced it.
+    Voice(u64, dc_voice::Event),
     /// The system-wide push to talk keybind went down or up.
     PushToTalk(bool),
     /// The system-wide `SAVE_CLIP` keybind went down.
@@ -146,6 +150,7 @@ pub enum Request {
     VoiceConnect {
         join: dc_voice::Join,
         controls: dc_voice::Controls,
+        generation: u64,
     },
     /// Capture only (`webhook demo`): makes a webhook in the fixture channel, posts the component messages of
     /// `webhook_demo` through it, deletes it, and answers under `webhook-demo` with the message ids. The address of
@@ -1898,12 +1903,16 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let _ = task.await;
                 });
             }
-            Request::VoiceConnect { join, controls } => {
+            Request::VoiceConnect {
+                join,
+                controls,
+                generation,
+            } => {
                 let (task, mut events) = dc_voice::connect(join, &controls);
                 let updates = updates.clone();
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
-                        if updates.send(Update::Voice(event)).is_err() {
+                        if updates.send(Update::Voice(generation, event)).is_err() {
                             break;
                         }
                     }

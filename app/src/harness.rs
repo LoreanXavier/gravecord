@@ -690,6 +690,24 @@ pub async fn run(
             ["games", "demo"] => {
                 root.update(cx, |root, cx| root.script_games_demo(cx));
             }
+            // Capture only: the game overlay (`ui::overlay`). `overlay shot <png>` renders the overlay window, which
+            // the main capture does not show; the others drive a made-up game in the foreground.
+            ["overlay", "shot", path] => {
+                let path = PathBuf::from(path);
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match handle {
+                    Some(handle) => {
+                        cx.update(|cx| crate::write_capture(cx, handle, &path));
+                        format!("overlay shot: {}", path.display())
+                    }
+                    None => "overlay shot: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
+            ["overlay", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_overlay(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // Opens a settings page by its label in lower case with dashes, as the captures are named.
             ["settings", page] => {
                 let page = (*page).to_owned();

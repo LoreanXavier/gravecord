@@ -47,27 +47,6 @@ pub(super) const LOCAL: &[(&str, bool)] = &[
         false,
     ),
     ("chat_favorites_toggle", false),
-    // Game Overlay: the official overlay keeps these in the desktop client's own settings, so they stay on this
-    // machine. There is no in-game overlay behind them yet; they hold their state across a restart and change nothing
-    // else.
-    ("overlay_oop_setting", false),
-    ("overlay_legacy_setting", false),
-    ("overlay_clickable_regions_setting", false),
-    ("overlay_widgets_voice", false),
-    ("overlay_widgets_quick_actions", false),
-    ("overlay_widgets_notifications", false),
-    ("overlay_widgets_chat", false),
-    ("overlay_widgets_activity", false),
-    ("overlay_widgets_video", false),
-    ("overlay_widgets_streams", false),
-    ("overlay_voice_widget_avatar_size", true),
-    ("overlay_voice_widget_display_names", true),
-    ("overlay_voice_widget_display_users", true),
-    ("overlay_notifications_text_chat", false),
-    ("overlay_notifications_welcome", false),
-    ("overlay_notifications_go_live", false),
-    ("overlay_notifications_game_activity", false),
-    ("overlay_notifications_now_playing", false),
 ];
 
 const STORAGE_KEY: &str = "settings.prefs";
@@ -346,20 +325,11 @@ impl Root {
         true
     }
 
-    /// "Reset Default Layout" (`OVERLAY_WIDGETS_RESET`, module 667419 `eL`: `resetDefaultLayout`): every overlay
-    /// widget switch goes back to off, the value its row starts with here.
-    pub(super) fn overlay_widgets_reset(&mut self) {
-        for (key, _) in LOCAL
-            .iter()
-            .filter(|(key, _)| key.starts_with("overlay_widgets_"))
-        {
-            self.setting_choices.insert(key, Choice::On(false));
-            save_local(key, json!(false));
-        }
-    }
-
     /// A slider was let go (or moved by a key): its value is a device setting.
     pub(super) fn slider_committed(&mut self, key: &'static str, value: f32) {
+        if self.overlay_slider_committed(key, value) {
+            return;
+        }
         self.setting_choices.insert(key, Choice::Number(value));
         save_local(key, json!(value));
     }

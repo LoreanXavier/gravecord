@@ -323,6 +323,8 @@ impl Root {
     pub(super) fn notification_focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
         self.notification_focused = focused;
         if focused {
+            // The own stream's tile held its picture while no window was focused: it takes the newest one now.
+            self.video_convert(cx);
             self.notification_runtime.flash(false);
             if let Some(channel) = self.channel {
                 self.notification_runtime.clear(channel);

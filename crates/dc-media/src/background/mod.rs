@@ -52,7 +52,8 @@ struct Setting {
     background: Mutex<Background>,
     generation: AtomicU64,
     dirs: Mutex<Vec<PathBuf>>,
-    models: Mutex<Option<Arc<Models>>>,
+    /// The outcome of the one load since the folders were set: `Some(None)` is a load that found nothing usable.
+    models: Mutex<Option<Option<Arc<Models>>>>,
 }
 
 fn setting() -> &'static Setting {
@@ -147,11 +148,17 @@ impl Models {
 fn models() -> Option<Arc<Models>> {
     let setting = setting();
     let mut slot = lock(&setting.models);
-    if slot.is_none() {
-        let dirs = lock(&setting.dirs).clone();
-        *slot = Models::load(&dirs).map(Arc::new);
+    if let Some(loaded) = slot.as_ref() {
+        return loaded.clone();
     }
-    slot.clone()
+    let dirs = lock(&setting.dirs).clone();
+    // A file that is not what its name says must not take the application down: a parser fault is a failed load.
+    let loaded = std::panic::catch_unwind(|| Models::load(&dirs))
+        .ok()
+        .flatten()
+        .map(Arc::new);
+    *slot = Some(loaded.clone());
+    loaded
 }
 
 /// Whether the segmentation model is present and loads: the engine's `supports(VIDEO_BACKGROUND_FILTER)`.
@@ -178,6 +185,8 @@ struct Shared {
     wake: Condvar,
     latest: Mutex<Option<Arc<Mask>>>,
     stop: AtomicBool,
+    /// The thread is gone (the model faulted on a frame, or it never started): no mask will come.
+    dead: AtomicBool,
     /// Finished masks, for tests and the debug log.
     finished: AtomicU64,
 }
@@ -218,7 +227,13 @@ impl Worker {
                             pending = worker.wake.wait(pending).unwrap_or_else(|e| e.into_inner());
                         }
                     };
-                    let values = segment(&job.rgb);
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        segment(&job.rgb)
+                    }));
+                    let Ok(values) = ran else {
+                        worker.dead.store(true, Ordering::Release);
+                        return;
+                    };
                     if values.len() != output.0 * output.1 {
                         continue;
                     }
@@ -243,6 +258,9 @@ impl Worker {
                 }
             })
             .ok();
+        if thread.is_none() {
+            shared.dead.store(true, Ordering::Release);
+        }
         Self {
             shared,
             thread,
@@ -373,6 +391,10 @@ impl Processor {
         let Some(worker) = self.worker.as_ref() else {
             return false;
         };
+        if worker.shared.dead.load(Ordering::Acquire) {
+            // Without masks the picture goes out as the camera gave it, not with the person blurred away.
+            return false;
+        }
         let (iw, ih) = worker.input;
         composite::model_input(rgba, width, height, iw, ih, &mut self.input);
         worker.submit(std::mem::take(&mut self.input));

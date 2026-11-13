@@ -31,6 +31,10 @@ const SELECT_OPEN: &str = "keybind_action/open";
 const STORE: &str = "keybinds";
 
 const OVERLAY_CHAT: &str = "OVERLAY_ACTIVATE_REGION_TEXT_WIDGET";
+pub(in crate::ui) const OVERLAY_LOCK: &str = "TOGGLE_OVERLAY_INPUT_LOCK";
+/// `O()` (module 532624): `shift+` and the layout's Backquote key, as Windows codes (shift 160, backquote 192).
+pub(in crate::ui) const OVERLAY_LOCK_DEFAULT: [[u32; 3]; 2] =
+    [[KEYBOARD_KEY, 160, WINDOWS], [KEYBOARD_KEY, 192, WINDOWS]];
 
 /// Module 158935 `l$` `keybindActionTypes` as the captured Windows build lists them (`system.json`), each with its
 /// label (module 994778) and the line under the row (`keybindDescriptions`).
@@ -182,7 +186,33 @@ pub(in crate::ui) fn load() -> Vec<Keybind> {
             managed: true,
         });
     }
+    // `z(TOGGLE_OVERLAY_INPUT_LOCK, O())`: the managed overlay lock keybind, Shift+` until the user changes it.
+    if !list
+        .iter()
+        .any(|keybind| keybind.managed && keybind.action == OVERLAY_LOCK)
+    {
+        let id = next_id(&list);
+        list.push(Keybind {
+            id,
+            action: OVERLAY_LOCK.to_owned(),
+            shortcut: OVERLAY_LOCK_DEFAULT.to_vec(),
+            enabled: true,
+            managed: true,
+        });
+    }
     list
+}
+
+/// The managed overlay lock keybind.
+pub(in crate::ui) fn overlay_lock() -> Option<Keybind> {
+    load()
+        .into_iter()
+        .find(|keybind| keybind.managed && keybind.action == OVERLAY_LOCK)
+}
+
+/// `L` (module 532624): a keybind of only shift is refused (the page then says so and the keybind does nothing).
+pub(in crate::ui) fn overlay_lock_valid(shortcut: &[[u32; 3]]) -> bool {
+    !(shortcut.len() == 1 && shortcut[0][1] == 160)
 }
 
 fn save(list: &[Keybind]) {
@@ -221,6 +251,8 @@ pub(in crate::ui) enum Effect {
     Talk(bool),
     /// `PUSH_TO_MUTE`: the microphone is closed while held.
     PushToMute(bool),
+    /// `TOGGLE_OVERLAY_INPUT_LOCK`: on the key going up (`keyup` of module 596339).
+    ToggleOverlayLock,
 }
 
 /// The decision of `ACTIONS`' callbacks (`U[action]`, module 532624): toggles act on the key going down, holds on
@@ -235,14 +267,17 @@ pub(in crate::ui) fn effect(action: &str, down: bool, push_to_talk: bool) -> Opt
         "TOGGLE_VOICE_CHANNEL_CHAT" => down.then_some(Effect::ToggleVoiceChat),
         "PUSH_TO_TALK" | "PUSH_TO_TALK_PRIORITY" => push_to_talk.then_some(Effect::Talk(down)),
         "PUSH_TO_MUTE" => (!push_to_talk).then_some(Effect::PushToMute(down)),
+        OVERLAY_LOCK => (!down).then_some(Effect::ToggleOverlayLock),
         _ => None,
     }
 }
 
-/// `W` (module 532624): only a bound, enabled keybind with an action is registered.
+/// `W` (module 532624): only a bound, enabled keybind with an action is registered; the overlay lock only with a
+/// valid shortcut (`L`).
 fn registered(keybind: &Keybind) -> bool {
     keybind.enabled
         && !keybind.shortcut.is_empty()
+        && (keybind.action != OVERLAY_LOCK || overlay_lock_valid(&keybind.shortcut))
         && keybind.action != "UNASSIGNED"
         && effect_possible(&keybind.action)
 }
@@ -404,6 +439,7 @@ impl Root {
                         .set_self_mute(held || self.self_mute || self.self_deaf);
                 }
             }
+            Effect::ToggleOverlayLock => self.overlay_toggle_lock(cx),
         }
         cx.notify();
     }
@@ -513,6 +549,25 @@ impl Root {
         }
         self.kb_release(MOUSE_BUTTON, code);
         false
+    }
+
+    /// Whether a keybind's shortcut is being recorded.
+    pub(in crate::ui) fn kb_is_recording(&self, id: &str) -> bool {
+        self.settings_extra.kb.recording.as_deref() == Some(id)
+    }
+
+    /// The recorder's button: starts recording a keybind's shortcut, or stops it.
+    pub(in crate::ui) fn kb_toggle_recording(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.voice_stop_recording();
+        let state = &mut self.settings_extra.kb;
+        state.held.clear();
+        state.recording = if state.recording.as_deref() == Some(id) {
+            None
+        } else {
+            Some(id.to_owned())
+        };
+        self.kb_sync_hooks();
+        cx.notify();
     }
 
     fn kb_stop_recording(&mut self) {
@@ -1177,5 +1232,34 @@ mod tests {
         assert_eq!(labels[0], "Unassigned");
         assert_eq!(labels[7], "Toggle VAD");
         assert_eq!(labels[12], "Activate Overlay Chat");
+    }
+
+    #[test]
+    fn the_overlay_lock_defaults_to_shift_backquote_and_toggles_on_release() {
+        // `O()`: shift and the Backquote key, Windows codes 160 and 192.
+        assert_eq!(shortcut_text(&OVERLAY_LOCK_DEFAULT), "SHIFT + `");
+        assert_eq!(effect(OVERLAY_LOCK, true, false), None);
+        assert_eq!(
+            effect(OVERLAY_LOCK, false, false),
+            Some(Effect::ToggleOverlayLock)
+        );
+        assert_eq!(
+            effect(OVERLAY_LOCK, false, true),
+            Some(Effect::ToggleOverlayLock)
+        );
+        let lock = |shortcut: Vec<[u32; 3]>| Keybind {
+            id: "9".into(),
+            action: OVERLAY_LOCK.into(),
+            shortcut,
+            enabled: true,
+            managed: true,
+        };
+        assert!(registered(&lock(OVERLAY_LOCK_DEFAULT.to_vec())));
+        // `L`: shift alone is refused and never registered.
+        assert!(!overlay_lock_valid(&[[KEYBOARD_KEY, 160, WINDOWS]]));
+        assert!(!registered(&lock(vec![[KEYBOARD_KEY, 160, WINDOWS]])));
+        assert!(overlay_lock_valid(&[[KEYBOARD_KEY, 192, WINDOWS]]));
+        // Managed: kept out of the System page's list.
+        assert!(visible(&[lock(OVERLAY_LOCK_DEFAULT.to_vec())]).is_empty());
     }
 }

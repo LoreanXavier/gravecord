@@ -469,6 +469,9 @@ impl Root {
 
     /// The value of a switch kept in an account route: the consents. `None` for every other row.
     pub(super) fn action_switch_value(&self, key: &str) -> Option<bool> {
+        if let Some(on) = self.overlay_switch_value(key) {
+            return Some(on);
+        }
         if let Some(on) = self.notification_switch_value(key) {
             return Some(on);
         }
