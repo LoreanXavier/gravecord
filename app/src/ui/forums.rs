@@ -1596,7 +1596,8 @@ impl Root {
         let channel = self.forum_channel(forum)?.clone();
         let sidebar = Self::forum_sidebar_width(window);
         // The list is 384px wide inside its 385px column at 1280 (the layout tree of `pt-forum-post-open`).
-        let list_width = f32::from(window.viewport_size().width) - 375. - sidebar - 1.;
+        let list_width =
+            f32::from(window.viewport_size().width) - self.combined_sidebar_width() - sidebar - 1.;
         let list = self.forum_column(channel, Some(list_width), window, cx);
         let panel = self.forum_post_panel(forum, sidebar - 8., cx);
         Some(
@@ -2002,8 +2003,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let show_members = self.show_members && split.is_none();
-        let list_width =
-            split.unwrap_or(self.viewport.0 - 375. - if self.show_members { 265. } else { 0. });
+        let list_width = split.unwrap_or(
+            self.viewport.0 - self.combined_sidebar_width() - if self.show_members { 265. } else { 0. },
+        );
         self.ensure_forum(&channel, cx);
         let id = channel.id;
         let view = &self.forums[&id];

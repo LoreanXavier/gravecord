@@ -42,6 +42,11 @@ pub fn main_window(pid: u32) -> Option<u64> {
     native::main_window(pid)
 }
 
+/// How long ago `pid` started, when readable.
+pub fn process_age(pid: u32) -> Option<std::time::Duration> {
+    native::process_age(pid)
+}
+
 #[cfg(windows)]
 mod native {
     use super::{MAX_PROCESSES, Process};
@@ -188,6 +193,41 @@ mod native {
         }
         pids
     }
+
+    /// How long the process has been running, from `GetProcessTimes` (`None` if access is denied).
+    pub fn process_age(pid: u32) -> Option<std::time::Duration> {
+        use std::mem::zeroed;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::GetProcessTimes;
+
+        // SAFETY: `handle` is checked, used only for `GetProcessTimes`, and closed before return.
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut created: FILETIME = zeroed();
+            let mut exited: FILETIME = zeroed();
+            let mut kernel: FILETIME = zeroed();
+            let mut user: FILETIME = zeroed();
+            let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+            CloseHandle(handle);
+            if ok == 0 {
+                return None;
+            }
+            let created_ticks =
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+            let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+            // Windows FILETIME epoch (1601-01-01) to Unix epoch (1970-01-01) in 100-ns intervals.
+            const UNIX_EPOCH_IN_100NS: u64 = 116_444_736_000_000_000;
+            let now_ticks = UNIX_EPOCH_IN_100NS
+                .saturating_add(now_unix.as_secs().saturating_mul(10_000_000))
+                .saturating_add(u64::from(now_unix.subsec_nanos() / 100));
+            let age_100ns = now_ticks.saturating_sub(created_ticks);
+            Some(Duration::from_nanos(age_100ns.saturating_mul(100)))
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -208,6 +248,10 @@ mod native {
     }
 
     pub fn main_window(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    pub fn process_age(_pid: u32) -> Option<std::time::Duration> {
         None
     }
 }
@@ -232,5 +276,10 @@ mod tests {
                 .ends_with(&exe.file_name().unwrap().to_string_lossy().to_lowercase())
         );
         assert!(list.len() <= MAX_PROCESSES);
+    }
+
+    #[test]
+    fn process_age_reads_current_process() {
+        assert!(super::process_age(std::process::id()).is_some());
     }
 }

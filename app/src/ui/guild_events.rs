@@ -166,7 +166,7 @@ impl Root {
                     .id("guild-events-row")
                     .group("guild-events-row")
                     .h(px(32.))
-                    .w(px(286.))
+                    .w(px(self.sidebar_row_width()))
                     .pl(px(8.))
                     .rounded(px(8.))
                     .flex()

@@ -243,6 +243,12 @@ pub(super) fn composer_returns(before: Seen, now: Seen) -> bool {
             || now.files > before.files)
 }
 
+/// Whether the inline edit box should take focus on this frame: an edit just started, or an active edit moved into
+/// view with a channel switch (module 699344 pairs this with `composer_returns`).
+pub(super) fn edit_starts(before: Seen, now: Seen) -> bool {
+    now.editing && (!before.editing || before.channel != now.channel)
+}
+
 /// Keyboard bookkeeping that lives between frames.
 #[derive(Default)]
 pub(in crate::ui) struct State {
@@ -474,7 +480,7 @@ impl Root {
         let mut target = restore;
         if composer_returns(before, now) && self.composer_reachable() {
             target = Some(Anchor::Composer);
-        } else if before.channel != now.channel && layers == 0 && now.editing {
+        } else if layers == 0 && edit_starts(before, now) {
             target = Some(Anchor::Edit);
         }
         if let Some(anchor) = target {
@@ -1044,5 +1050,30 @@ mod tests {
         state.outside_closed_this_press = true;
         state.pointer_used();
         assert!(!state.outside_closed_this_press);
+    }
+
+    #[test]
+    fn the_edit_box_takes_focus_when_edit_begins_or_channel_switches() {
+        let same_before = Seen {
+            channel: Some(10),
+            modals: 1,
+            ..Seen::default()
+        };
+        let same_now = Seen {
+            channel: Some(10),
+            editing: true,
+            ..Seen::default()
+        };
+        assert!(!composer_returns(same_before, same_now));
+        assert!(edit_starts(same_before, same_now));
+
+        let switched_now = Seen {
+            channel: Some(20),
+            editing: true,
+            ..Seen::default()
+        };
+        assert!(edit_starts(same_now, switched_now));
+
+        assert!(!edit_starts(same_now, same_now));
     }
 }

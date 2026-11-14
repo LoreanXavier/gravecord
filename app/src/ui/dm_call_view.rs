@@ -245,7 +245,7 @@ impl Root {
         let video = people.iter().any(|person| person.video)
             || (in_call && self.call.as_ref().is_some_and(|call| call.camera));
         let size = window.viewport_size();
-        let width = f32::from(size.width) - 375.;
+        let width = f32::from(size.width) - self.combined_sidebar_width();
         // The minimum layout keeps its controls (golden `in-call-alone` without hover shows them); the video
         // layouts hide them after the idle time.
         let shown = !video || self.controls_shown();

@@ -25,6 +25,18 @@ fn profile_key(user: Id) -> String {
     format!("profile:{user}")
 }
 
+/// The circular `--opacity-black-40` darkening overlay shown when hovering a popout avatar.
+pub(super) fn popout_avatar_hover_overlay(group: &'static str) -> gpui::Div {
+    div()
+        .absolute()
+        .inset_0()
+        .size(px(80.))
+        .rounded_full()
+        .opacity(0.)
+        .group_hover(group, |style| style.opacity(1.))
+        .bg(color("--opacity-black-40"))
+}
+
 impl Root {
     /// A clickable avatar or name that opens the popout beside itself.
     pub(super) fn profile_trigger(
@@ -309,19 +321,33 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
+                    .child(self.with_tip(
+                        "self-popout-avatar-tip",
+                        super::tooltip::Tip::text(
+                            dc_intl::t!("+Xp3hq"),
+                            super::tooltip::Side::Top,
+                        ),
                         div()
+                            .id("self-popout-avatar")
+                            .group("self-popout-avatar")
                             .relative()
                             .size(px(80.))
                             .rounded_full()
+                            .cursor_pointer()
                             .children(
                                 avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
                             )
+                            .child(popout_avatar_hover_overlay("self-popout-avatar"))
                             .child(status_dot_large(
                                 &self.stores.status,
                                 "--background-surface-high",
-                            )),
-                    ),
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.profile = None;
+                                this.open_full_profile(user.id, window, cx);
+                            })),
+                        cx,
+                    )),
             )
             .when(own, |this| this.child(status_bubble()));
         // The button on the banner is on the top layer, above the profile effect, so it is drawn after it.
@@ -354,6 +380,13 @@ impl Root {
             .child(
                 div().h(px(24.)).flex().items_center().gap(px(4.)).child(
                     div()
+                        .id("self-popout-display-name")
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.profile = None;
+                            this.open_full_profile(user.id, window, cx);
+                        }))
                         .text_size(px(20.))
                         .line_height(px(24.))
                         .font_weight(FontWeight(600.))
@@ -377,6 +410,13 @@ impl Root {
                     .gap(px(9.33))
                     .child(
                         div()
+                            .id("self-popout-username")
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.profile = None;
+                                this.open_full_profile(user.id, window, cx);
+                            }))
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-strong"))
@@ -420,6 +460,12 @@ impl Root {
         let footer = own.then(|| {
             div().px(px(16.)).pb(px(12.)).child(
                 div()
+                    .id("profile-edit-profile")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.profile = None;
+                        this.open_profile_editor(cx);
+                    }))
                     .h(px(32.))
                     .rounded(px(8.))
                     .border_1()

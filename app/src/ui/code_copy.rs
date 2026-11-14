@@ -5,7 +5,7 @@
 //! 50vw; position: relative }`). A click writes the block's text to the clipboard and the icon becomes the
 //! `CheckmarkLargeIcon` for as long as the block is on screen. Inline code has no button.
 
-use super::{Root, code_lines, color, icon};
+use super::{Root, color, icon};
 use gpui::{
     AnyElement, ClipboardItem, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px,
 };
@@ -79,7 +79,7 @@ impl Root {
             .line_height(px(18.))
             .font_weight(FontWeight(400.))
             .text_color(color("--text-code"))
-            .children(code_lines(language, text))
+            .child(self.selectable_code(language, text, key))
             .child(button)
             .into_any_element()
     }

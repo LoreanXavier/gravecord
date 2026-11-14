@@ -2767,6 +2767,173 @@ index a544f6c..a9ebcee 100644
              "path_rasterization",
              "path_sprite",
              "underline",
+diff --git a/crates/gpui_windows/src/clipboard.rs b/crates/gpui_windows/src/clipboard.rs
+index 11eb2a8..07bcaf3 100644
+--- a/crates/gpui_windows/src/clipboard.rs
++++ b/crates/gpui_windows/src/clipboard.rs
+@@ -4,7 +4,7 @@ use anyhow::Result;
+ use collections::FxHashMap;
+ use itertools::Itertools;
+ use windows::Win32::{
+-    Foundation::{HANDLE, HGLOBAL},
++    Foundation::{HANDLE, HGLOBAL, HWND},
+     System::{
+         DataExchange::{
+             CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
+@@ -14,7 +14,12 @@ use windows::Win32::{
+         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+         Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT},
+     },
+-    UI::Shell::{DragQueryFileW, HDROP},
++    UI::{
++        Shell::{DragQueryFileW, HDROP},
++        WindowsAndMessaging::{
++            CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
++        },
++    },
+ };
+ use windows::core::{Owned, PCWSTR};
+ 
+@@ -68,7 +73,7 @@ fn get_clipboard_data(format: u32) -> Option<LockedGlobal> {
+ }
+ 
+ pub(crate) fn write_to_clipboard(item: ClipboardItem) {
+-    let Some(_clip) = ClipboardGuard::open() else {
++    let Some(_clip) = ClipboardGuard::open_for_write() else {
+         return;
+     };
+ 
+@@ -340,17 +345,77 @@ fn gpui_to_image_format(value: ImageFormat) -> Option<image::ImageFormat> {
+     }
+ }
+ 
++struct ClipboardOwnerWindow(HWND);
++
++impl Drop for ClipboardOwnerWindow {
++    fn drop(&mut self) {
++        unsafe {
++            let _ = DestroyWindow(self.0);
++        }
++    }
++}
++
++thread_local! {
++    static CLIPBOARD_OWNER_WINDOW: std::cell::OnceCell<Option<ClipboardOwnerWindow>> =
++        const { std::cell::OnceCell::new() };
++}
++
++fn clipboard_owner_hwnd() -> Option<HWND> {
++    CLIPBOARD_OWNER_WINDOW.with(|cell| {
++        cell.get_or_init(|| {
++            match unsafe {
++                CreateWindowExW(
++                    WINDOW_EX_STYLE(0),
++                    windows::core::w!("STATIC"),
++                    windows::core::w!(""),
++                    WINDOW_STYLE(0),
++                    0,
++                    0,
++                    0,
++                    0,
++                    Some(HWND_MESSAGE),
++                    None,
++                    None,
++                    None,
++                )
++            } {
++                Ok(hwnd) => Some(ClipboardOwnerWindow(hwnd)),
++                Err(e) => {
++                    log::warn!("Failed to create clipboard owner window: {e}");
++                    None
++                }
++            }
++        })
++        .as_ref()
++        .map(|owner| owner.0)
++    })
++}
++
+ struct ClipboardGuard;
+ 
+ impl ClipboardGuard {
+     fn open() -> Option<Self> {
+-        match unsafe { OpenClipboard(None) } {
+-            Ok(()) => Some(Self),
+-            Err(e) => {
+-                log::error!("Failed to open clipboard: {e}");
+-                None
++        Self::open_with_owner(None)
++    }
++
++    fn open_for_write() -> Option<Self> {
++        Self::open_with_owner(clipboard_owner_hwnd())
++    }
++
++    fn open_with_owner(owner: Option<HWND>) -> Option<Self> {
++        const RETRIES: usize = 10;
++        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
++        for attempt in 0..RETRIES {
++            match unsafe { OpenClipboard(owner) } {
++                Ok(()) => return Some(Self),
++                Err(e) if attempt + 1 == RETRIES => {
++                    log::error!("Failed to open clipboard: {e}");
++                    return None;
++                }
++                Err(_) => std::thread::sleep(RETRY_DELAY),
+             }
+         }
++        None
+     }
+ }
+ 
+diff --git a/crates/gpui_windows/src/direct_write.rs b/crates/gpui_windows/src/direct_write.rs
+index 82ff963..1ba6feb 100644
+--- a/crates/gpui_windows/src/direct_write.rs
++++ b/crates/gpui_windows/src/direct_write.rs
+@@ -1631,23 +1631,28 @@ fn apply_font_features(
+ ) -> Result<()> {
+     let tag_values = features.tag_value_list();
+ 
+-    // All of these features are enabled by default by DirectWrite.
++    // All of these features are enabled by default by DirectWrite / HarfBuzz.
+     // If you want to (and can) peek into the source of DirectWrite
+     let mut feature_liga = make_direct_write_feature("liga", 1);
+     let mut feature_clig = make_direct_write_feature("clig", 1);
+     let mut feature_calt = make_direct_write_feature("calt", 1);
++    let mut feature_kern = make_direct_write_feature("kern", 1);
+ 
+     for (tag, value) in tag_values {
+-        if tag.as_str() == "liga" && *value == 0 {
+-            feature_liga.parameter = 0;
++        if tag.as_str() == "liga" {
++            feature_liga.parameter = *value;
+             continue;
+         }
+-        if tag.as_str() == "clig" && *value == 0 {
+-            feature_clig.parameter = 0;
++        if tag.as_str() == "clig" {
++            feature_clig.parameter = *value;
+             continue;
+         }
+-        if tag.as_str() == "calt" && *value == 0 {
+-            feature_calt.parameter = 0;
++        if tag.as_str() == "calt" {
++            feature_calt.parameter = *value;
++            continue;
++        }
++        if tag.as_str() == "kern" {
++            feature_kern.parameter = *value;
+             continue;
+         }
+ 
+@@ -1659,6 +1664,7 @@ fn apply_font_features(
+         direct_write_features.AddFontFeature(feature_liga)?;
+         direct_write_features.AddFontFeature(feature_clig)?;
+         direct_write_features.AddFontFeature(feature_calt)?;
++        direct_write_features.AddFontFeature(feature_kern)?;
+     }
+ 
+     Ok(())
 diff --git a/crates/gpui_windows/src/directx_atlas.rs b/crates/gpui_windows/src/directx_atlas.rs
 index 622c1cb..8ae6180 100644
 --- a/crates/gpui_windows/src/directx_atlas.rs

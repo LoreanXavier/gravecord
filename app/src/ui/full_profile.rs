@@ -644,6 +644,8 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.status_popout = None;
+        self.profile = None;
         let note_palette = self.profile_palette(user, self.guild, false);
         let note = cx.new(|cx| {
             // `input_CJLDJI`: body-sm on the profile's text colour, the placeholder in italics.

@@ -778,6 +778,10 @@ pub struct Root {
     forums: HashMap<Id, forums::Forum>,
     /// The areas of the window that are views of their own (`regions.rs`).
     regions: regions::Regions,
+    /// Combined rail (72px) + sidebar width in `[264.0, 432.0]` (default `375.0`).
+    sidebar_width_combined: f32,
+    /// Active drag state for the sidebar resize handle: `(start_x, start_combined_width)`.
+    sidebar_resizing: Option<(f32, f32)>,
 }
 
 impl Root {
@@ -1100,7 +1104,100 @@ impl Root {
             splash: splash::Splash::new(),
             forums: HashMap::new(),
             regions: regions::Regions::default(),
+            sidebar_width_combined: if crate::storage::is_capture_run() {
+                375.
+            } else {
+                crate::storage::get("resizable-sidebar-width-2")
+                    .and_then(|v| v.as_f64())
+                    .map(|w| (w as f32).clamp(264., 432.))
+                    .unwrap_or(375.)
+            },
+            sidebar_resizing: None,
         }
+    }
+
+    pub(crate) fn combined_sidebar_width(&self) -> f32 {
+        self.sidebar_width_combined.clamp(264., 432.)
+    }
+
+    pub(crate) fn sidebar_width(&self) -> f32 {
+        self.combined_sidebar_width() - 72.
+    }
+
+    pub(crate) fn sidebar_row_width(&self) -> f32 {
+        self.sidebar_width() - 17.
+    }
+
+    fn sidebar_resize_move(&mut self, event: &gpui::MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some((start_x, start_width)) = self.sidebar_resizing else {
+            return;
+        };
+        let next = (start_width + (f32::from(event.position.x) - start_x)).clamp(264., 432.);
+        if (next - self.sidebar_width_combined).abs() > 0.25 {
+            self.sidebar_width_combined = next;
+            cx.notify();
+        }
+    }
+
+    fn sidebar_resize_end(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_resizing.take().is_some() {
+            if !crate::storage::is_capture_run() {
+                crate::storage::set(
+                    "resizable-sidebar-width-2",
+                    serde_json::Value::from(self.combined_sidebar_width() as f64),
+                );
+            }
+            cx.notify();
+        }
+    }
+
+    fn sidebar_resize_handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dragging = self.sidebar_resizing.is_some();
+        div()
+            .id("sidebar-resize-handle")
+            .occlude()
+            .group("sidebar-resize")
+            .absolute()
+            .left(px(self.combined_sidebar_width() - 4.))
+            .top(px(32.))
+            .bottom(px(0.))
+            .w(px(8.))
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .flex()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    if event.click_count >= 2 {
+                        this.sidebar_resizing = None;
+                        this.sidebar_width_combined = 375.;
+                        if !crate::storage::is_capture_run() {
+                            crate::storage::set(
+                                "resizable-sidebar-width-2",
+                                serde_json::Value::from(375.0_f64),
+                            );
+                        }
+                    } else {
+                        this.sidebar_resizing = Some((
+                            f32::from(event.position.x),
+                            this.combined_sidebar_width(),
+                        ));
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(2.))
+                    .h_full()
+                    .when(dragging, |bar| {
+                        bar.bg(color("--control-primary-background-default"))
+                    })
+                    .when(!dragging, |bar| {
+                        bar.group_hover("sidebar-resize", |s| s.bg(color("--border-strong")))
+                    }),
+            )
     }
 
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
@@ -1120,6 +1217,16 @@ impl Root {
             Update::Games(scan) => {
                 self.detect_scanned(*scan, cx);
                 self.overlay_sync(cx);
+            }
+            Update::DetectablesCdn {
+                key,
+                status,
+                etag,
+                games,
+            } => {
+                if self.detect_cdn_fetched(&key, status, etag, games) {
+                    cx.notify();
+                }
             }
             Update::OverlayFocus(foreground) => self.overlay_focus_changed(foreground, cx),
             Update::Rpc(event) => self.rpc_event(event, cx),
@@ -1925,6 +2032,28 @@ impl Root {
                         .insert(key, Arc::new(Image::from_bytes(ImageFormat::Png, bytes)));
                 }
             }
+            Update::SaveFailed {
+                channel,
+                message,
+                save,
+            } => {
+                if save {
+                    self.stores.saved.remove(&(channel, message));
+                } else {
+                    self.stores.saved.entry((channel, message)).or_insert(None);
+                }
+                self.put_app_toast("Unable to save message.".to_owned(), false, cx);
+            }
+            Update::ReactFailed {
+                channel,
+                message,
+                emoji,
+                add,
+            } => {
+                let (name, emoji_id) = menu::parse_reaction_route(&emoji);
+                self.stores
+                    .apply_own_reaction(channel, message, name, emoji_id, !add);
+            }
         }
         cx.notify();
     }
@@ -1999,6 +2128,7 @@ impl Root {
         self.menu = None;
         self.submenu = None;
         self.confirm_delete = None;
+        self.selection.borrow_mut().clear_all();
         // `CHANNEL_SELECT` is activity to `IdleStore` (module 885576).
         self.note_activity();
         last_channel::remember(guild, channel);
@@ -2830,6 +2960,19 @@ impl Root {
             .find(|known| known.id == channel)
     }
 
+    fn rendered_block_text(&self, block: &Block) -> String {
+        match block {
+            Block::Paragraph(spans)
+            | Block::Quote(spans)
+            | Block::Subtext(spans)
+            | Block::Heading { spans, .. }
+            | Block::ListItem { spans, .. } => {
+                spans.iter().map(|span| self.span_label(span)).collect()
+            }
+            Block::Code { text, .. } => text.lines().collect::<Vec<_>>().join("\n"),
+        }
+    }
+
     /// The selected text across messages, one block per line.
     pub fn selected_text(&self) -> String {
         let selection = self.selection.borrow();
@@ -2841,10 +2984,14 @@ impl Root {
         let mut lines = Vec::new();
         for message in messages {
             for (index, block) in parse(&message.content).iter().enumerate() {
-                let text = block_text(block);
+                let text = self.rendered_block_text(block);
                 if let Some((from, to)) = selection.range_in((message.id, index as u32), text.len())
                 {
-                    lines.push(text[from..to].to_owned());
+                    let from = clamp_char_boundary(&text, from);
+                    let to = clamp_char_boundary(&text, to);
+                    if from < to {
+                        lines.push(text[from..to].to_owned());
+                    }
                 }
             }
         }
@@ -4112,7 +4259,7 @@ impl Root {
                 } else {
                     32. + self.name_line_extra()
                 }))
-                .w(px(286.))
+                .w(px(self.sidebar_row_width()))
                 .pl(px(8.))
                 .pr(px(8.))
                 .rounded(px(8.))
@@ -4268,7 +4415,7 @@ impl Root {
                     .id(group.clone())
                     .group(group.clone())
                     .h(px(32.))
-                    .w(px(286.))
+                    .w(px(self.sidebar_row_width()))
                     .pl(px(8.))
                     .rounded(px(8.))
                     .flex()
@@ -4360,7 +4507,7 @@ impl Root {
             .parity("sidebar")
             .relative()
             .flex_none()
-            .w(px(303.))
+            .w(px(self.sidebar_width()))
             .h_full()
             .flex()
             .flex_col()
@@ -4668,6 +4815,7 @@ impl Root {
             .flex()
             .items_center()
             .pl(px(11.))
+            .pr(px(12.))
             // `.accountPopoutButtonWrapper_g6VwXp:hover`: the avatar and the name tag share one 184x42 hover box with
             // `--background-mod-normal` and 4px corners (718878; the avatar's own `:hover` opacity is cancelled there).
             .child(
@@ -4675,16 +4823,23 @@ impl Root {
                     .id("panel-who-hover")
                     .absolute()
                     .left(px(7.))
+                    .right(px(166.))
                     .top(px(6.))
-                    .w(px(184.))
                     .h(px(42.))
                     .rounded(px(4.))
                     .hover(|style| style.bg(color("--background-mod-normal"))),
             )
-            .child(
+            .child({
+                let in_call = self.call.is_some();
+                let soundboard_ring = in_call && self.soundboard.user_playing(user.id);
+                let voice_ring = in_call
+                    && !self.self_mute
+                    && !self.self_deaf
+                    && self.speaking.contains(&user.id);
                 div()
                     .id("panel-avatar")
                     .relative()
+                    .flex_none()
                     .size(px(32.))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
@@ -4697,19 +4852,51 @@ impl Root {
                                 })
                             }),
                     )
-                    .child(status_dot(&self.stores.status, "--background-base-low")),
-            )
+                    .when(soundboard_ring || voice_ring, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .rounded_full()
+                                        .border(px(3.))
+                                        .border_color(color("--background-base-lower")),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .rounded_full()
+                                        .border(px(2.))
+                                        .border_color(color(if soundboard_ring {
+                                            "--brand-500"
+                                        } else {
+                                            "--status-speaking"
+                                        })),
+                                ),
+                        )
+                    })
+                    .child(status_dot(&self.stores.status, "--background-base-low"))
+            })
             .child(
                 div()
                     .id("panel-names")
                     .ml(px(8.))
-                    .w(px(136.))
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
                     .flex()
                     .flex_col()
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(px(16.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
@@ -4723,6 +4910,9 @@ impl Root {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .mt(px(2.))
                             .text_size(px(12.))
                             .line_height(px(13.))
@@ -4777,6 +4967,7 @@ impl Root {
                     .id("mic-pair")
                     .group("mic-pair")
                     .ml(px(12.))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .child(
@@ -4818,6 +5009,7 @@ impl Root {
                     .id("headphones-pair")
                     .group("headphones-pair")
                     .ml(px(8.))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .child(
@@ -4858,6 +5050,7 @@ impl Root {
                 div()
                     .id("open-settings")
                     .ml(px(8.))
+                    .flex_none()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
                     .child(self.with_tip(
@@ -4898,7 +5091,7 @@ impl Root {
             .occlude()
             .left(px(8.))
             .bottom(px(8.))
-            .w(px(359.))
+            .w(px(self.combined_sidebar_width() - 16.))
             .rounded(px(8.))
             .bg(color("--background-base-low"))
             .border_1()
@@ -5567,7 +5760,7 @@ impl Root {
                     } else {
                         // `.search_bWCaDq`: `clamp(64px, 100cqi - 320px, 244px)`, the container being the header
                         // (chat-150 dump: 134.7px of a 478.7px header with its 24px of padding).
-                        (self.viewport.0 - 375. - 24. - 320.).clamp(64., 244.)
+                        (self.viewport.0 - self.combined_sidebar_width() - 24. - 320.).clamp(64., 244.)
                     }))
                     .min_w(px(64.))
                     .h(px(32.))
@@ -6073,10 +6266,13 @@ impl Root {
             .iter()
             .enumerate()
             .map(|(index, reaction)| {
-                let image = self
-                    .images
-                    .get(&format!("emoji:{}", reaction.name))
-                    .cloned();
+                let image = match reaction.emoji_id {
+                    Some(id) => self.images.get(&format!("emoji-id:{id}")).cloned(),
+                    None => self
+                        .images
+                        .get(&format!("emoji:{}", reaction.name))
+                        .cloned(),
+                };
                 let (channel, id, emoji, add) = (
                     message.channel_id,
                     message.id,
@@ -6145,18 +6341,21 @@ impl Root {
                             });
                         }
                     }))
-                    .on_click(cx.listener(move |this, _, _, _| {
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         if add {
                             this.track_reaction(&emoji);
                         }
-                        let _ = this.requests.send(Request::React {
+                        this.send_and_apply_reaction(
                             channel,
-                            message: id,
-                            emoji: emoji.clone(),
-                            add,
-                            location: "Message",
-                            burst: false,
-                        });
+                            id,
+                            menu::ReactionOp {
+                                emoji: emoji.clone(),
+                                add,
+                                location: "Message",
+                                burst: false,
+                            },
+                            cx,
+                        );
                     }))
                     .child(
                         div()
@@ -6643,11 +6842,14 @@ impl Root {
                                     .rounded(px(4.))
                                     .bg(color("--spine-default")),
                             )
-                            .child(div().pl(px(12.)).pr(px(8.)).child(self.spans(
-                                &spans,
-                                hsla("--text-subtle"),
-                                key,
-                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .pl(px(12.))
+                                    .pr(px(8.))
+                                    .child(self.spans(&spans, hsla("--text-subtle"), key)),
+                            )
                             .into_any_element(),
                         Block::Code { language, text } => {
                             self.code_block(key, gap, language.as_deref(), &text)
@@ -6762,7 +6964,8 @@ impl Root {
                 let menu_open = self.menu.is_some_and(|open| open.message == id);
                 // The bar's reaction picker selects the row too (frame pickers/emoji-reaction: `selected_SY_P2T`).
                 let selected = menu_open || self.reaction_picker_on(message);
-                let pointer = self.hovered == Some(id);
+                let hover_locked = self.message_hover_locked();
+                let pointer = !hover_locked && self.hovered == Some(id);
                 let hovered = pointer || selected;
                 let compact = self.compact_messages();
                 // `.replying` and `.highlighted` (524434): the highlight tint with a 2px brand bar; `.mentioned`: the
@@ -6841,11 +7044,14 @@ impl Root {
                     .pb(px(2.))
                     // `.mouse-mode.full-motion .message_SY_P2T:hover` (stylesheet 524434): no transition, and none with
                     // reduced motion. The hover bar is inside the message, so the pointer on it keeps the tint.
-                    .when(!motion::reduced(), |this| {
+                    .when(!motion::reduced() && !hover_locked, |this| {
                         this.hover(move |style| style.bg(over))
                             .when(pointer, |this| this.bg(over))
                     })
                     .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                        if this.message_hover_locked() {
+                            return;
+                        }
                         this.hovered = hover_bar::hover_after(
                             id,
                             *inside,
@@ -6891,7 +7097,8 @@ impl Root {
                     None => div()
                         .when(
                             !self.hides_inline_media_content(message)
-                                && !self.command_replaces_content(message),
+                                && !self.command_replaces_content(message)
+                                && (!message.content.is_empty() || message.edited),
                             |this| {
                                 // `isFailed` colours the text, the links and the inline code; `isSending` fades the
                                 // content (module 74096).
@@ -7083,7 +7290,8 @@ impl Root {
                 // `messageGroupSpacing` (16px by default) and the 1px of the group's own border.
                 row.pt(px(self.message_group_spacing() + 1.))
                     .child(
-                        body.children(preview)
+                        body.min_h(px(48. + reply_offset))
+                            .children(preview)
                             .children(command_bar)
                             .child(
                                 div()
@@ -7206,7 +7414,8 @@ impl Root {
             .is_some_and(|user| user.id == message.author.id);
         let menu_open = self.menu.is_some_and(|open| open.message == id);
         let selected = menu_open || self.reaction_picker_on(message);
-        let pointer = self.hovered == Some(id);
+        let hover_locked = self.message_hover_locked();
+        let pointer = !hover_locked && self.hovered == Some(id);
         let hovered = pointer || selected;
         let over = color("--message-background-hover");
         div()
@@ -7217,11 +7426,14 @@ impl Root {
                     .id(SharedString::from(format!("system-row-{id}")))
                     .relative()
                     .when(selected, |this| this.bg(over))
-                    .when(!motion::reduced(), |this| {
+                    .when(!motion::reduced() && !hover_locked, |this| {
                         this.hover(move |style| style.bg(over))
                             .when(pointer, |this| this.bg(over))
                     })
                     .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
+                        if this.message_hover_locked() {
+                            return;
+                        }
                         this.hovered = hover_bar::hover_after(
                             id,
                             *inside,
@@ -7406,15 +7618,17 @@ impl Root {
                             if !reacted {
                                 this.track_reaction(emoji.surrogates);
                             }
-                            let _ = this.requests.send(Request::React {
+                            this.send_and_apply_reaction(
                                 channel,
-                                message: id,
-                                emoji: emoji.surrogates.to_owned(),
-                                add: !reacted,
-                                location: "Message Hover Bar",
-                                burst: false,
-                            });
-                            cx.notify();
+                                id,
+                                menu::ReactionOp {
+                                    emoji: emoji.surrogates.to_owned(),
+                                    add: !reacted,
+                                    location: "Message Hover Bar",
+                                    burst: false,
+                                },
+                                cx,
+                            );
                         }))
                     }))
                     .when(!quick.is_empty(), |this| {
@@ -8213,6 +8427,70 @@ fn preview_code_box() -> BoxStyle {
     }
 }
 
+fn clamp_char_boundary(text: &str, index: usize) -> usize {
+    let mut at = index.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+fn plain_code_piece(code_font: &Font, color: Hsla, text: String) -> Piece {
+    Piece {
+        text,
+        font: code_font.clone(),
+        size: px(14.),
+        color,
+        underline: false,
+        strike: false,
+        boxed: None,
+        image: None,
+        hover: None,
+        hover_underline: false,
+        gradient: None,
+    }
+}
+
+impl Root {
+    fn selectable_code(&self, language: Option<&str>, text: &str, key: (u64, u32)) -> Inline {
+        let mut code_font: Font = font(MONO);
+        code_font.features = kerning();
+        let highlighted = highlight(language, text);
+        let mut pieces: Vec<Piece> = Vec::new();
+        for (line_ix, line) in text.lines().enumerate() {
+            if line_ix > 0 {
+                pieces.push(plain_code_piece(
+                    &code_font,
+                    hsla("--text-code"),
+                    "\n".to_owned(),
+                ));
+            }
+            let spans = highlighted.get(line_ix).map(Vec::as_slice).unwrap_or(&[]);
+            let mut pos = 0;
+            for &(len, token) in spans {
+                let end = (pos + len).min(line.len());
+                if end <= pos || !line.is_char_boundary(pos) || !line.is_char_boundary(end) {
+                    continue;
+                }
+                pieces.push(plain_code_piece(
+                    &code_font,
+                    hsla(token.css_name()),
+                    line[pos..end].to_owned(),
+                ));
+                pos = end;
+            }
+            if pos < line.len() {
+                pieces.push(plain_code_piece(
+                    &code_font,
+                    hsla("--text-code"),
+                    line[pos..].to_owned(),
+                ));
+            }
+        }
+        inline(pieces, px(18.)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+    }
+}
+
 /// Each line as styled runs in the code font, colored from the official `--text-code-*` tokens.
 fn code_lines(language: Option<&str>, text: &str) -> Vec<AnyElement> {
     let mut code_font: Font = font(MONO);
@@ -8329,6 +8607,7 @@ impl Render for Root {
             self.pref_on("reduced_motion", false),
             motion::cached_system_preference(),
         ));
+        self.selection.borrow_mut().begin_frame();
         motion::set_window_active(window.is_window_active());
         self.streamer_apply(window);
         motion::begin_view(cx.entity_id());
@@ -8407,18 +8686,23 @@ impl Render for Root {
         // view redraws them on the next frame.
         regions::sync_look(
             motion::key(&(
-                theme() as u8,
-                saturation().to_bits(),
-                self.zoom_factor().to_bits(),
-                motion::reduced(),
-                window.is_window_active(),
-                self.pref_on("high_contrast_mode", false),
-                self.pref_on("display_name_styles", true),
-                settings::client_theme::active().map(|swatch| swatch.name),
-                settings::client_theme::previewing(),
-                settings::client_theme::generation(),
-                self.pref_index(settings::prefs::TIME_FORMAT, 0),
-                dc_intl::generation(),
+                (
+                    theme() as u8,
+                    saturation().to_bits(),
+                    self.zoom_factor().to_bits(),
+                    motion::reduced(),
+                    window.is_window_active(),
+                    self.pref_on("high_contrast_mode", false),
+                ),
+                (
+                    self.pref_on("display_name_styles", true),
+                    settings::client_theme::active().map(|swatch| swatch.name),
+                    settings::client_theme::previewing(),
+                    settings::client_theme::generation(),
+                    self.pref_index(settings::prefs::TIME_FORMAT, 0),
+                    dc_intl::generation(),
+                    self.combined_sidebar_width().to_bits(),
+                ),
             )),
             window,
         );
@@ -8465,7 +8749,10 @@ impl Render for Root {
         } else {
             0.
         };
-        self.content_width = f32::from(window.viewport_size().width) - 375. - members - 112.;
+        self.content_width = f32::from(window.viewport_size().width)
+            - self.combined_sidebar_width()
+            - members
+            - 112.;
         self.viewport = (
             f32::from(window.viewport_size().width),
             f32::from(window.viewport_size().height),
@@ -8909,6 +9196,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if (keys.modifiers.control || keys.modifiers.platform)
+                    && !keys.modifiers.alt
+                    && !keys.modifiers.shift
+                    && keys.key.eq_ignore_ascii_case("c")
+                {
+                    let text = this.selected_text();
+                    if !text.is_empty() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 if this.keyboard_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -9108,7 +9407,10 @@ impl Render for Root {
             .capture_any_mouse_down(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, _| {
                     // A right press keeps the selection: the message menu then offers Copy and Search with Google.
-                    if event.button != MouseButton::Right {
+                    // Shift+left click preserves the anchor so Inline can extend it on bubble.
+                    if event.button != MouseButton::Right
+                        && !(event.button == MouseButton::Left && event.modifiers.shift)
+                    {
                         this.selection.borrow_mut().clear();
                     }
                     this.keys.pointer_used();
@@ -9172,6 +9474,34 @@ impl Render for Root {
                                     if this.active_menu_slider_drag.is_some() {
                                         this.menu_slider_mouse_move(event, window, cx);
                                     }
+                                    if this.sidebar_resizing.is_some() {
+                                        this.sidebar_resize_move(event, cx);
+                                    }
+                                    if this.selection.borrow().is_dragging() {
+                                        let mut changed =
+                                            this.selection.borrow_mut().drag_to_point(event.position);
+                                        let bounds = this.list.viewport_bounds();
+                                        if bounds.size.height > px(0.) {
+                                            let edge = px(28.);
+                                            let delta = if event.position.y < bounds.top() + edge {
+                                                -((bounds.top() + edge - event.position.y)
+                                                    .min(px(24.)))
+                                            } else if event.position.y > bounds.bottom() - edge {
+                                                (event.position.y - (bounds.bottom() - edge))
+                                                    .min(px(24.))
+                                            } else {
+                                                px(0.)
+                                            };
+                                            if delta != px(0.) {
+                                                this.list.scroll_by(delta);
+                                                changed = true;
+                                                cx.notify();
+                                            }
+                                        }
+                                        if changed {
+                                            window.refresh();
+                                        }
+                                    }
                                 });
                             },
                         );
@@ -9183,6 +9513,13 @@ impl Render for Root {
                                 let _ = root_up.update(cx, |this, cx| {
                                     if this.active_menu_slider_drag.is_some() {
                                         this.menu_slider_mouse_up(event, window, cx);
+                                    }
+                                    if this.sidebar_resizing.is_some() {
+                                        this.sidebar_resize_end(cx);
+                                    }
+                                    if this.selection.borrow().is_dragging() {
+                                        this.selection.borrow_mut().end();
+                                        window.refresh();
                                     }
                                 });
                             },
@@ -9283,17 +9620,18 @@ impl Render for Root {
                 let rail = self
                     .regions
                     .place(regions::Kind::Rail, regions::style_of(regions::Kind::Rail));
+                let sidebar_width = self.sidebar_width();
                 let sidebar = if self.guild.is_some() {
                     self.regions.place(
                         regions::Kind::Sidebar,
-                        regions::style_of(regions::Kind::Sidebar),
+                        regions::style_of_sidebar(sidebar_width),
                     )
                 } else if self.discover_active() {
                     self.discover_sidebar(cx).into_any_element()
                 } else {
                     self.regions.place(
                         regions::Kind::Sidebar,
-                        regions::style_of(regions::Kind::Sidebar),
+                        regions::style_of_sidebar(sidebar_width),
                     )
                 };
                 let content = if self.discover_active() {
@@ -9443,6 +9781,7 @@ impl Render for Root {
                 };
                 motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
             })
+            .child(self.sidebar_resize_handle(cx))
             .child(motion::layers::faded(
                 self.user_panel(cx).into_any_element(),
                 base_opacity,

@@ -13,8 +13,17 @@ pub const VIDEO_TIMESCALE: u32 = 90_000;
 pub const AUDIO_TIMESCALE: u32 = 48_000;
 /// Samples in one Opus packet, which is also its duration in `AUDIO_TIMESCALE` ticks.
 pub const AUDIO_PACKET_TICKS: u32 = 960;
-/// The user type of the `uuid` box that holds the metadata JSON. Ours: the official value is native-side.
-pub const METADATA_UUID: [u8; 16] = *b"gravecord/clip06";
+/// Official client clip metadata box UUID (`a1c85299-3346-4db8-88f0-83f57a75a5ef`).
+pub const METADATA_UUID: [u8; 16] = [
+    0xa1, 0xc8, 0x52, 0x99, 0x33, 0x46, 0x4d, 0xb8, 0x88, 0xf0, 0x83, 0xf5, 0x7a, 0x75, 0xa5,
+    0xef,
+];
+/// Legacy clip metadata box UUID written by earlier versions; still accepted on read.
+pub const LEGACY_METADATA_UUID: [u8; 16] = *b"gravecord/clip06";
+
+fn is_metadata_uuid(user: &[u8; 16]) -> bool {
+    *user == METADATA_UUID || *user == LEGACY_METADATA_UUID
+}
 /// Seconds' worth of samples per chunk, so a reader seeking in the file reads one second at a time.
 const CHUNK_TICKS: u64 = VIDEO_TIMESCALE as u64;
 const CHUNK_PACKETS: usize = 50;
@@ -644,7 +653,7 @@ pub fn read_info(file: &mut (impl Read + Seek)) -> io::Result<FileInfo> {
             b"uuid" if body_len >= 16 => {
                 let mut user = [0u8; 16];
                 file.read_exact(&mut user)?;
-                if user == METADATA_UUID {
+                if is_metadata_uuid(&user) {
                     let mut payload = vec![0u8; body_len - 16];
                     file.read_exact(&mut payload)?;
                     info.metadata = Some(payload);
@@ -866,7 +875,8 @@ pub fn read_clip(file: &mut (impl Read + Seek)) -> io::Result<ClipFile> {
             let stbl = children(find(&minf, b"stbl").ok_or_else(|| bad("no stbl"))?)?;
             let stsd = find(&stbl, b"stsd").ok_or_else(|| bad("no stsd"))?;
             let entries = children(stsd.get(8..).ok_or_else(|| bad("short stsd"))?)?;
-            let entry = entries.first().ok_or_else(|| bad("no sample entry"))?.1;
+            let entry_pair = *entries.first().ok_or_else(|| bad("no sample entry"))?;
+            let (entry_type, entry) = entry_pair;
             let places = sample_locations(&stbl)?;
             match handler {
                 b"vide" => {
@@ -910,7 +920,7 @@ pub fn read_clip(file: &mut (impl Read + Seek)) -> io::Result<ClipFile> {
                         samples,
                     });
                 }
-                b"soun" => {
+                b"soun" if &entry_type == b"Opus" => {
                     let channels = entry
                         .get(16..18)
                         .map(|b| u16::from_be_bytes([b[0], b[1]]))
@@ -1042,7 +1052,7 @@ pub fn replace_metadata(path: &std::path::Path, metadata: &[u8]) -> io::Result<(
         if &header[4..8] == b"uuid" && length >= 24 {
             let mut user = [0u8; 16];
             file.read_exact(&mut user)?;
-            if user == METADATA_UUID {
+            if is_metadata_uuid(&user) {
                 cut = at;
             }
         }

@@ -86,6 +86,7 @@ impl Root {
         self.menu = None;
         self.submenu = None;
         self.confirm_delete = None;
+        self.selection.borrow_mut().clear_all();
         self.note_activity();
         self.unread_from = None;
         if let Some(channel) = channel {
@@ -214,7 +215,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("home-link-inner-{id}")))
                     .h(px(38.))
-                    .w(px(286.))
+                    .w(px(self.sidebar_row_width()))
                     .pl(px(8.))
                     .rounded(px(8.))
                     .flex()
@@ -364,7 +365,7 @@ impl Root {
                     div()
                         .id(SharedString::from(format!("dm-inner-{id}")))
                         .h(px(42.))
-                        .w(px(286.))
+                        .w(px(self.sidebar_row_width()))
                         .pl(px(8.))
                         .rounded(px(8.))
                         .flex()
@@ -464,7 +465,7 @@ impl Root {
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
-                        .children(timer.clone().map(|text| {
+                        .children(timer.clone().filter(|_| !hovered).map(|text| {
                             div().flex_none().pl(px(4.)).pr(px(8.)).child(
                                 div()
                                     .parity("dm-call-timer")
@@ -475,7 +476,7 @@ impl Root {
                                     .child(text),
                             )
                         }))
-                        .when(marked, |this| {
+                        .when(marked && !hovered, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.
                             this.child(div().mr(px(8.)).child(icon(
                                 if self.is_blocked(recipient.id) {
@@ -487,8 +488,8 @@ impl Root {
                                 "--text-default",
                             )))
                         })
-                        .when(!marked && timer.is_none(), |this| {
-                            // The close button is not laid out while the call timer shows.
+                        .when(hovered || (!marked && timer.is_none()), |this| {
+                            // `closeButton_zln_tS` replaces the call timer / favorite mark on row hover.
                             this.child(
                                 // `closeButton_zln_tS` "Close DM": 18px, 8px from the right, at 0.7 while the row is
                                 // hovered. `closePrivateChannel`: DELETE /channels/{id}?silent=false, then Friends if it
@@ -595,7 +596,7 @@ impl Root {
             .parity("sidebar")
             .relative()
             .flex_none()
-            .w(px(303.))
+            .w(px(self.sidebar_width()))
             .h_full()
             .flex()
             .flex_col()
@@ -679,7 +680,7 @@ impl Root {
                         row.child(
                             div()
                                 .absolute()
-                                .left(px(236.))
+                                .left(px(self.sidebar_row_width() - 50.))
                                 .top(px(12.))
                                 .h(px(16.))
                                 .px(px(8.))
@@ -709,7 +710,7 @@ impl Root {
                     .flex_none()
                     .mt(px(12.))
                     .ml(px(9.))
-                    .w(px(285.))
+                    .w(px(self.sidebar_row_width() - 1.))
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
             )

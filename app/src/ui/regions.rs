@@ -214,8 +214,8 @@ pub(crate) fn style_of(kind: Kind) -> StyleRefinement {
         Kind::Titlebar => style.flex_none().w_full().h(px(32.)),
         // `wrapper_5dqHTG` of the server rail.
         Kind::Rail => style.flex_none().w(px(72.)).h_full(),
-        // The channel list and the direct message list, both 303 wide.
-        Kind::Sidebar => style.flex_none().w(px(303.)).h_full(),
+        // The channel list and the direct message list, default 303 wide.
+        Kind::Sidebar => style_of_sidebar(303.),
         // `.title_f75fb0`: 48 plus its 1px bottom border.
         Kind::Header => style.flex_none().w_full().h(px(49.)),
         Kind::Messages => style.flex_1().min_h(px(0.)).w_full(),
@@ -224,6 +224,14 @@ pub(crate) fn style_of(kind: Kind) -> StyleRefinement {
         // The height is measured, see `Regions::place_composer`.
         Kind::Composer => style.flex_none().w_full(),
     }
+}
+
+/// Width-aware layout style for the resizable channel / DM sidebar region.
+pub(crate) fn style_of_sidebar(sidebar_width: f32) -> StyleRefinement {
+    StyleRefinement::default()
+        .flex_none()
+        .w(px(sidebar_width))
+        .h_full()
 }
 
 impl Root {

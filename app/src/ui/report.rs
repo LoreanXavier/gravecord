@@ -203,6 +203,7 @@ impl Root {
                     open.menu = Some(body.clone());
                 } else {
                     self.report = None;
+                    self.put_app_toast("Unable to load report menu.".to_owned(), false, cx);
                 }
             }
             cx.notify();

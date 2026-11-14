@@ -497,8 +497,18 @@ fn view(spec: &Spec, geometry: &Geometry) -> Transform {
 fn into_frame(pixmap: Pixmap) -> Frame {
     let (width, height) = (pixmap.width(), pixmap.height());
     let mut bgra = pixmap.take();
+    // `tiny_skia` stores premultiplied RGBA while GPUI's PolychromeSprite shader premultiplies
+    // again, so convert semi-transparent pixels back to straight-alpha BGRA.
     for pixel in bgra.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
+        let [r, g, b, a] = *pixel;
+        *pixel = match a {
+            0 => [0, 0, 0, 0],
+            255 => [b, g, r, 255],
+            _ => {
+                let unmul = |c: u8| ((u16::from(c) * 255 + u16::from(a) / 2) / u16::from(a)).min(255) as u8;
+                [unmul(b), unmul(g), unmul(r), a]
+            }
+        };
     }
     Frame {
         width,
@@ -876,5 +886,21 @@ mod tests {
         });
         // pt-member-game: margins of -2.4px at 20px.
         assert!((toon.left + 2.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn into_frame_unpremultiplies_straight_alpha_bgra() {
+        let mut map = Pixmap::new(3, 1).unwrap();
+        let data = map.data_mut();
+        // Premultiplied (128, 64, 0, 128) -> straight BGRA (~0, ~128, 255, 128).
+        data[0..4].copy_from_slice(&[128, 64, 0, 128]);
+        // Transparent -> [0, 0, 0, 0].
+        data[4..8].copy_from_slice(&[10, 20, 30, 0]);
+        // Opaque (10, 20, 30, 255) -> BGRA (30, 20, 10, 255).
+        data[8..12].copy_from_slice(&[10, 20, 30, 255]);
+        let frame = into_frame(map);
+        assert_eq!(&frame.bgra[0..4], &[0, 128, 255, 128]);
+        assert_eq!(&frame.bgra[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&frame.bgra[8..12], &[30, 20, 10, 255]);
     }
 }

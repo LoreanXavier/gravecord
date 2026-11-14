@@ -1019,7 +1019,7 @@ impl Root {
         if self.vv.fullscreen || self.vv.popout_render {
             (0., 0.)
         } else {
-            (375., 32.)
+            (self.combined_sidebar_width(), 32.)
         }
     }
 
@@ -1098,7 +1098,7 @@ impl Root {
             return div().into_any_element();
         };
         let size = window.viewport_size();
-        let width = f32::from(size.width) - 375.;
+        let width = f32::from(size.width) - self.combined_sidebar_width();
         let height = f32::from(size.height) - 32.;
         let in_call = self
             .call

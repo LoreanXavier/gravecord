@@ -826,14 +826,17 @@ impl Root {
             }
             Target::Reaction { channel, message } => {
                 self.reactions_used.push((usage_key, now_ms()));
-                let _ = self.requests.send(Request::React {
+                self.send_and_apply_reaction(
                     channel,
                     message,
-                    emoji: reaction,
-                    add: true,
-                    location: "Message Reaction Picker",
-                    burst,
-                });
+                    super::menu::ReactionOp {
+                        emoji: reaction,
+                        add: true,
+                        location: "Message Reaction Picker",
+                        burst,
+                    },
+                    cx,
+                );
             }
         }
         if !keep_open {

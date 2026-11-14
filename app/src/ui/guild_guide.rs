@@ -147,7 +147,7 @@ impl Root {
             .get(format!("capture-channel-{id}").as_str())
             .ok_or(None)?;
         let panel_top = viewport.height - self.user_panel_height.unwrap_or(px(58.)) - px(8.);
-        if bounds.left() < px(72.) || bounds.right() > px(375.) {
+        if bounds.left() < px(72.) || bounds.right() > px(self.combined_sidebar_width()) {
             return Err(None);
         }
         if bounds.top() < px(82.) {
@@ -318,7 +318,7 @@ impl Root {
                         .id("guide-progress")
                         .parity("guide-progress")
                         .mx(px(8.))
-                        .w(px(286.))
+                        .w(px(self.sidebar_row_width()))
                         .mt(px(-8.))
                         .p(px(8.))
                         .h(px(46.))
@@ -383,7 +383,7 @@ impl Root {
                         .id("guild-guide-link")
                         .parity("guild-guide-link")
                         .h(px(32.))
-                        .w(px(286.))
+                        .w(px(self.sidebar_row_width()))
                         .px(px(8.))
                         .rounded(px(8.))
                         .when(self.guild_guide_open, |row| {
@@ -427,7 +427,7 @@ impl Root {
             return div().into_any_element();
         };
         let id = guild.id;
-        let width = (self.viewport.0 - 72. - 303. - 16. - 64.).clamp(0., 1128.);
+        let width = (self.viewport.0 - self.combined_sidebar_width() - 16. - 64.).clamp(0., 1128.);
         let column = width.min(704.);
         let art_width = width + 32.;
         let art_height = art_width

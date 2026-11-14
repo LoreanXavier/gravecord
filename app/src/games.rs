@@ -2,17 +2,17 @@
 //! detected game makes.
 //!
 //! The official client does the scanning in a native process observer that reports to `RunningGameStore` (module
-//! 397369); the lists are `GameStore` (module 760751, `GET /games/detectable`, `/games/detectable/exclusions`,
-//! `GET /applications/non-games/detectable`), cached in local storage and refetched once a day
-//! (`detectableGamesTtl`). The presence update is `ConnectionStore`'s `presenceUpdate` (module 225123): status,
-//! idle-since, activities and afk, at most five in twenty seconds.
+//! 397369); the lists are `GameStore` (module 760751, CDN `detectables/games-v1.json` and
+//! `detectables/non-games-v1.json` with ETag revalidation, and `GET /games/detectable/exclusions`), cached on disk
+//! and refetched once a day (`detectableGamesTtl`). The presence update is `ConnectionStore`'s `presenceUpdate`
+//! (module 225123): status, idle-since, activities and afk, at most five in twenty seconds.
 //!
 //! Nothing here runs in a harness run: the scan thread is never started and [`presence_refused`] stops every
 //! presence update, so a capture can neither detect a game nor change the test account's status.
 
 use dc_detect::{Blocklist, Candidate, DetectableGame, Detectables, Detected};
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -27,12 +27,12 @@ const LIST_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const PRESENCE_BURST: usize = 5;
 const PRESENCE_WINDOW_MS: u64 = 20_000;
 
-/// The three lists and their routes, as the `GamesActionCreators` fetchers (module 273626) name them.
+/// The three lists and their endpoints.
 pub const GAMES_KEY: &str = "games-detectable";
 pub const NON_GAMES_KEY: &str = "games-non-games";
 pub const BLOCKLIST_KEY: &str = "games-blocklist";
-pub const GAMES_ROUTE: &str = "/games/detectable";
-pub const NON_GAMES_ROUTE: &str = "/applications/non-games/detectable";
+pub const GAMES_CDN_URL: &str = "https://cdn.discordapp.com/detectables/games-v1.json";
+pub const NON_GAMES_CDN_URL: &str = "https://cdn.discordapp.com/detectables/non-games-v1.json";
 pub const BLOCKLIST_ROUTE: &str = "/games/detectable/exclusions";
 
 /// What one scan found.
@@ -45,41 +45,100 @@ pub struct GameScan {
     pub streamer_tools: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DueFetch {
+    Cdn {
+        key: &'static str,
+        url: &'static str,
+        etag: Option<String>,
+    },
+    Api {
+        key: &'static str,
+        route: &'static str,
+    },
+}
+
 #[derive(Default)]
 struct Shared {
     lists: Detectables,
+    generation: u64,
+    games_from_net: bool,
+    non_games_from_net: bool,
+    blocklist_from_net: bool,
 }
 
-/// The scan thread's handle and the raw lists as they were last read or fetched.
+type WakeSignal = Arc<(Mutex<u64>, Condvar)>;
+
+fn notify_wake(wake: &WakeSignal) {
+    if let Ok(mut seq) = wake.0.lock() {
+        *seq = seq.wrapping_add(1);
+        wake.1.notify_all();
+    }
+}
+
+/// The scan thread's handle and metadata of the cached lists on disk.
 pub struct Runtime {
     shared: Arc<Mutex<Shared>>,
+    wake: WakeSignal,
     updates: UnboundedSender<crate::net::Update>,
     started: bool,
-    cache: Cache,
+    meta: CacheMeta,
     requested: Vec<&'static str>,
 }
 
-/// The lists as stored on disk: each body as the server sent it, with the time it was fetched.
-#[derive(Default, Clone)]
-struct Cache {
-    games: Option<(u64, Value)>,
-    non_games: Option<(u64, Value)>,
-    blocklist: Option<(u64, Value)>,
+/// Small per-list metadata stored alongside `detectables.json` so startup reads timestamps and ETags without
+/// parsing multi-megabyte JSON on the UI thread.
+#[derive(Clone, Default)]
+struct MetaEntry {
+    at: u64,
+    etag: Option<String>,
+    cdn: bool,
 }
+
+#[derive(Clone, Default)]
+struct CacheMeta {
+    games: Option<MetaEntry>,
+    non_games: Option<MetaEntry>,
+    blocklist: Option<MetaEntry>,
+}
+
+static CACHE_IO: Mutex<()> = Mutex::new(());
 
 fn cache_path() -> Option<std::path::PathBuf> {
     crate::storage::data_dir().map(|dir| dir.join("detectables.json"))
 }
 
-impl Cache {
-    fn read() -> Self {
-        let value = cache_path()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or(Value::Null);
-        let part = |name: &str| {
+fn meta_path() -> Option<std::path::PathBuf> {
+    crate::storage::data_dir().map(|dir| dir.join("detectables.meta.json"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+fn atomic_write_json(path: &std::path::Path, value: &Value) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let temporary = path.with_extension("json.tmp");
+    if let Ok(bytes) = serde_json::to_vec(value)
+        && std::fs::write(&temporary, bytes).is_ok()
+    {
+        let _ = std::fs::rename(&temporary, path);
+    }
+}
+
+impl CacheMeta {
+    fn from_value(value: &Value) -> Self {
+        let part = |name: &str| -> Option<MetaEntry> {
             let entry = value.get(name)?;
-            Some((entry["at"].as_u64()?, entry["body"].clone()))
+            Some(MetaEntry {
+                at: entry["at"].as_u64()?,
+                etag: entry["etag"].as_str().map(str::to_owned),
+                cdn: entry["cdn"].as_bool().unwrap_or(false),
+            })
         };
         Self {
             games: part("games"),
@@ -88,55 +147,99 @@ impl Cache {
         }
     }
 
-    /// Writes beside and renames, so a crash mid-write never leaves half a file.
-    fn write(&self) {
-        // Unit tests never touch the owner's files.
-        if cfg!(test) {
-            return;
-        }
-        let Some(path) = cache_path() else { return };
-        let entry = |part: &Option<(u64, Value)>| {
-            part.as_ref()
-                .map_or(Value::Null, |(at, body)| json!({"at": at, "body": body}))
+    fn to_value(&self) -> Value {
+        let entry = |part: &Option<MetaEntry>| {
+            part.as_ref().map_or(Value::Null, |meta| {
+                json!({
+                    "at": meta.at,
+                    "etag": meta.etag,
+                    "cdn": meta.cdn,
+                })
+            })
         };
-        let value = json!({
+        json!({
             "games": entry(&self.games),
             "nonGames": entry(&self.non_games),
             "blocklist": entry(&self.blocklist),
-        });
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let temporary = path.with_extension("json.tmp");
-        if let Ok(bytes) = serde_json::to_vec(&value)
-            && std::fs::write(&temporary, bytes).is_ok()
-        {
-            let _ = std::fs::rename(&temporary, &path);
-        }
+        })
     }
 
-    fn lists(&self) -> Detectables {
-        let games = self
-            .games
-            .as_ref()
-            .map(|(_, body)| DetectableGame::list_from_json(body))
-            .unwrap_or_default();
-        let non_games = self
-            .non_games
-            .as_ref()
-            .map(|(_, body)| DetectableGame::list_from_json(body))
-            .unwrap_or_default();
-        let blocklist = self
-            .blocklist
-            .as_ref()
-            .map(|(_, body)| Blocklist::from_json(body))
-            .unwrap_or_default();
-        Detectables {
-            games,
-            non_games,
-            blocklist,
-            overrides: Vec::new(),
+    fn read_if_cache_exists() -> Self {
+        if cache_path().is_none_or(|path| !path.exists()) {
+            return Self::default();
         }
+        let Some(value) = meta_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            return Self::default();
+        };
+        Self::from_value(&value)
+    }
+
+    fn write(&self) {
+        if cfg!(test) {
+            return;
+        }
+        let _guard = CACHE_IO.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(path) = meta_path() {
+            atomic_write_json(&path, &self.to_value());
+        }
+    }
+}
+
+fn cache_field(key: &str) -> Option<&'static str> {
+    match key {
+        GAMES_KEY => Some("games"),
+        NON_GAMES_KEY => Some("nonGames"),
+        BLOCKLIST_KEY => Some("blocklist"),
+        _ => None,
+    }
+}
+
+/// Writes one updated list (`games`, `nonGames`, or `blocklist`) into `detectables.json` and `detectables.meta.json`.
+/// Intended for background workers (`tokio::task::spawn_blocking`), never the UI thread.
+pub(crate) fn persist_cache_part(
+    key: &str,
+    now_ms: u64,
+    etag: Option<&str>,
+    cdn: bool,
+    body: Option<&Value>,
+) {
+    if cfg!(test) {
+        return;
+    }
+    let Some(field) = cache_field(key) else {
+        return;
+    };
+    let _guard = CACHE_IO.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(path) = cache_path() else {
+        return;
+    };
+    let mut doc = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| json!({}));
+    if let Some(body) = body {
+        doc[field] = json!({
+            "at": now_ms,
+            "etag": etag,
+            "cdn": cdn,
+            "body": body,
+        });
+        atomic_write_json(&path, &doc);
+    } else if let Some(entry) = doc.get_mut(field).and_then(Value::as_object_mut) {
+        entry.insert("at".to_owned(), json!(now_ms));
+        if let Some(etag) = etag {
+            entry.insert("etag".to_owned(), json!(etag));
+        }
+        entry.insert("cdn".to_owned(), json!(cdn));
+        atomic_write_json(&path, &doc);
+    }
+    let meta = CacheMeta::from_value(&doc);
+    if let Some(meta_file) = meta_path() {
+        atomic_write_json(&meta_file, &meta.to_value());
     }
 }
 
@@ -147,50 +250,139 @@ fn stale(at: Option<u64>, now_ms: u64) -> bool {
 
 impl Runtime {
     pub fn new(updates: UnboundedSender<crate::net::Update>) -> Self {
-        let cache = Cache::read();
-        let overrides = Vec::new();
-        let mut lists = cache.lists();
-        lists.overrides = overrides;
+        let meta = if cfg!(test) {
+            CacheMeta::default()
+        } else {
+            CacheMeta::read_if_cache_exists()
+        };
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let wake: WakeSignal = Arc::default();
+        if !cfg!(test) && (!crate::storage::is_capture_run() || live_presence_allowed()) {
+            let shared_load = shared.clone();
+            let wake_load = wake.clone();
+            let _ = std::thread::Builder::new()
+                .name("detectables-load".into())
+                .spawn(move || {
+                    load_disk_cache_into(&shared_load, &wake_load);
+                });
+        }
         Self {
-            shared: Arc::new(Mutex::new(Shared { lists })),
+            shared,
+            wake,
             updates,
             started: false,
-            cache,
+            meta,
             requested: Vec::new(),
         }
     }
 
-    /// The route and key of each list that is missing or stale and not already being fetched.
-    pub fn due_fetches(&mut self, now_ms: u64) -> Vec<(&'static str, &'static str)> {
-        let wanted = [
-            (
-                GAMES_KEY,
-                GAMES_ROUTE,
-                self.cache.games.as_ref().map(|part| part.0),
-            ),
+    /// The target and key of each list that is missing, non-CDN legacy, or stale and not already being fetched.
+    pub fn due_fetches_all(&mut self, now_ms: u64) -> Vec<DueFetch> {
+        let mut due = Vec::new();
+        let cdn_lists = [
+            (GAMES_KEY, GAMES_CDN_URL, self.meta.games.as_ref()),
             (
                 NON_GAMES_KEY,
-                NON_GAMES_ROUTE,
-                self.cache.non_games.as_ref().map(|part| part.0),
-            ),
-            (
-                BLOCKLIST_KEY,
-                BLOCKLIST_ROUTE,
-                self.cache.blocklist.as_ref().map(|part| part.0),
+                NON_GAMES_CDN_URL,
+                self.meta.non_games.as_ref(),
             ),
         ];
-        let mut due = Vec::new();
-        for (key, route, at) in wanted {
+        for (key, url, meta) in cdn_lists {
+            let valid_cdn = meta.filter(|entry| entry.cdn);
+            let at = valid_cdn.map(|entry| entry.at);
+            let etag = valid_cdn.and_then(|entry| entry.etag.clone());
             if stale(at, now_ms) && !self.requested.contains(&key) {
                 self.requested.push(key);
-                due.push((key, route));
+                due.push(DueFetch::Cdn { key, url, etag });
             }
+        }
+        let blocklist_at = self.meta.blocklist.as_ref().map(|entry| entry.at);
+        if stale(blocklist_at, now_ms) && !self.requested.contains(&BLOCKLIST_KEY) {
+            self.requested.push(BLOCKLIST_KEY);
+            due.push(DueFetch::Api {
+                key: BLOCKLIST_KEY,
+                route: BLOCKLIST_ROUTE,
+            });
         }
         due
     }
 
-    /// A list's reply. Returns whether the key was one of the lists. A failed fetch (not an array or object of the
-    /// right shape) keeps what was there and is asked for again at the next connection.
+    /// A CDN list's reply (`200` with parsed `Vec<DetectableGame>`, `304` keeping cache, or `0`/error to retry later).
+    pub fn cdn_fetched(
+        &mut self,
+        key: &str,
+        status: u16,
+        etag: Option<String>,
+        games: Option<Arc<Vec<DetectableGame>>>,
+        now_ms: u64,
+    ) -> bool {
+        let Some(known) = [GAMES_KEY, NON_GAMES_KEY]
+            .into_iter()
+            .find(|known| *known == key)
+        else {
+            return false;
+        };
+        self.requested.retain(|asked| *asked != known);
+        if status == 304 {
+            let next_etag = {
+                let slot = match known {
+                    GAMES_KEY => &mut self.meta.games,
+                    _ => &mut self.meta.non_games,
+                };
+                let next_etag = etag.or_else(|| slot.as_ref().and_then(|entry| entry.etag.clone()));
+                *slot = Some(MetaEntry {
+                    at: now_ms,
+                    etag: next_etag.clone(),
+                    cdn: true,
+                });
+                next_etag
+            };
+            let meta = self.meta.clone();
+            if !cfg!(test) {
+                let key_owned = known.to_owned();
+                let _ = std::thread::Builder::new()
+                    .name("detectables-meta".into())
+                    .spawn(move || {
+                        persist_cache_part(&key_owned, now_ms, next_etag.as_deref(), true, None);
+                        meta.write();
+                    });
+            }
+            return true;
+        }
+        if status != 200 {
+            return true;
+        }
+        let Some(games) = games else {
+            return true;
+        };
+        let entry = Some(MetaEntry {
+            at: now_ms,
+            etag,
+            cdn: true,
+        });
+        match known {
+            GAMES_KEY => self.meta.games = entry,
+            _ => self.meta.non_games = entry,
+        }
+        if let Ok(mut shared) = self.shared.lock() {
+            match known {
+                GAMES_KEY => {
+                    shared.lists.games = (*games).clone();
+                    shared.games_from_net = true;
+                }
+                _ => {
+                    shared.lists.non_games = (*games).clone();
+                    shared.non_games_from_net = true;
+                }
+            }
+            shared.generation = shared.generation.wrapping_add(1);
+        }
+        notify_wake(&self.wake);
+        true
+    }
+
+    /// A list's reply from `Request::Fetch`. Returns whether the key was one of the lists. A failed fetch keeps what
+    /// was there and asks again at the next connection.
     pub fn list_fetched(&mut self, key: &str, body: &Value, now_ms: u64) -> bool {
         let Some(known) = [GAMES_KEY, NON_GAMES_KEY, BLOCKLIST_KEY]
             .into_iter()
@@ -207,17 +399,43 @@ impl Runtime {
         if !good {
             return true;
         }
-        let part = Some((now_ms, body.clone()));
+        let entry = Some(MetaEntry {
+            at: now_ms,
+            etag: None,
+            cdn: known != BLOCKLIST_KEY,
+        });
         match known {
-            GAMES_KEY => self.cache.games = part,
-            NON_GAMES_KEY => self.cache.non_games = part,
-            _ => self.cache.blocklist = part,
+            GAMES_KEY => self.meta.games = entry,
+            NON_GAMES_KEY => self.meta.non_games = entry,
+            _ => self.meta.blocklist = entry,
         }
-        self.cache.write();
-        let mut lists = self.cache.lists();
         if let Ok(mut shared) = self.shared.lock() {
-            lists.overrides = std::mem::take(&mut shared.lists.overrides);
-            shared.lists = lists;
+            match known {
+                GAMES_KEY => {
+                    shared.lists.games = DetectableGame::list_from_json(body);
+                    shared.games_from_net = true;
+                }
+                NON_GAMES_KEY => {
+                    shared.lists.non_games = DetectableGame::list_from_json(body);
+                    shared.non_games_from_net = true;
+                }
+                _ => {
+                    shared.lists.blocklist = Blocklist::from_json(body);
+                    shared.blocklist_from_net = true;
+                }
+            }
+            shared.generation = shared.generation.wrapping_add(1);
+        }
+        notify_wake(&self.wake);
+        if !cfg!(test) {
+            let key_owned = known.to_owned();
+            let body_owned = body.clone();
+            let cdn = known != BLOCKLIST_KEY;
+            let _ = std::thread::Builder::new()
+                .name("detectables-save".into())
+                .spawn(move || {
+                    persist_cache_part(&key_owned, now_ms, None, cdn, Some(&body_owned));
+                });
         }
         true
     }
@@ -226,7 +444,9 @@ impl Runtime {
     pub fn set_overrides(&self, overrides: Vec<(String, String)>) {
         if let Ok(mut shared) = self.shared.lock() {
             shared.lists.overrides = overrides;
+            shared.generation = shared.generation.wrapping_add(1);
         }
+        notify_wake(&self.wake);
     }
 
     /// Starts the scan thread, once. A harness run never scans.
@@ -236,19 +456,37 @@ impl Runtime {
         }
         self.started = true;
         let shared = self.shared.clone();
+        let wake = self.wake.clone();
         let updates = self.updates.clone();
         let spawned = std::thread::Builder::new()
             .name("game-scan".into())
             .spawn(move || {
+                let mut seen_generation = u64::MAX;
+                let mut cached_lists = Detectables::default();
+                let mut cached_index = dc_detect::Index::default();
                 loop {
-                    let scan = scan_once(&shared);
+                    let seq = wake.0.lock().map_or(0, |s| *s);
+                    if let Ok(guard) = shared.lock()
+                        && guard.generation != seen_generation
+                    {
+                        cached_lists = guard.lists.clone();
+                        seen_generation = guard.generation;
+                        drop(guard);
+                        cached_index =
+                            dc_detect::Index::build(&cached_lists, dc_detect::matcher::WINDOWS);
+                    }
+                    let scan = scan_with(&cached_lists, &cached_index);
                     if updates
                         .send(crate::net::Update::Games(Box::new(scan)))
                         .is_err()
                     {
                         return;
                     }
-                    std::thread::sleep(SCAN_INTERVAL);
+                    if let Ok(guard) = wake.0.lock()
+                        && *guard == seq
+                    {
+                        let _ = wake.1.wait_timeout(guard, SCAN_INTERVAL);
+                    }
                 }
             });
         if let Err(error) = spawned {
@@ -257,16 +495,83 @@ impl Runtime {
     }
 }
 
-fn scan_once(shared: &Mutex<Shared>) -> GameScan {
+fn load_disk_cache_into(shared: &Mutex<Shared>, wake: &WakeSignal) {
+    let value = {
+        let _guard = CACHE_IO.lock().unwrap_or_else(|e| e.into_inner());
+        cache_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(Value::Null)
+    };
+    if !value.is_object() {
+        return;
+    }
+    let meta = CacheMeta::from_value(&value);
+    if !meta_path().is_some_and(|p| p.exists()) {
+        meta.write();
+    }
+    let games = value
+        .get("games")
+        .and_then(|e| e.get("body"))
+        .map(DetectableGame::list_from_json);
+    let non_games = value
+        .get("nonGames")
+        .and_then(|e| e.get("body"))
+        .map(DetectableGame::list_from_json);
+    let blocklist = value
+        .get("blocklist")
+        .and_then(|e| e.get("body"))
+        .map(Blocklist::from_json);
+    let mut updated = false;
+    if let Ok(mut guard) = shared.lock() {
+        if !guard.games_from_net
+            && let Some(games) = games
+        {
+            guard.lists.games = games;
+            updated = true;
+        }
+        if !guard.non_games_from_net
+            && let Some(non_games) = non_games
+        {
+            guard.lists.non_games = non_games;
+            updated = true;
+        }
+        if !guard.blocklist_from_net
+            && let Some(blocklist) = blocklist
+        {
+            guard.lists.blocklist = blocklist;
+            updated = true;
+        }
+        if updated {
+            guard.generation = guard.generation.wrapping_add(1);
+        }
+    }
+    if updated {
+        notify_wake(wake);
+    }
+}
+
+/// Converts a CDN detectables JSON response off the UI thread, persists it to disk, and returns the parsed list.
+pub(crate) fn parse_and_cache_cdn(
+    key: &str,
+    etag: Option<&str>,
+    bytes: &[u8],
+) -> Option<Arc<Vec<DetectableGame>>> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if !value.is_array() {
+        return None;
+    }
+    let games = Arc::new(DetectableGame::list_from_json(&value));
+    persist_cache_part(key, now_ms(), etag, true, Some(&value));
+    Some(games)
+}
+
+fn scan_with(lists: &Detectables, index: &dc_detect::Index) -> GameScan {
     let Ok(processes) = dc_detect::running_processes() else {
         return GameScan::default();
     };
     let windows = dc_detect::visible_window_pids();
-    let lists = match shared.lock() {
-        Ok(shared) => shared.lists.clone(),
-        Err(_) => return GameScan::default(),
-    };
-    let scan = lists.scan(&processes, dc_detect::matcher::WINDOWS);
+    let scan = lists.scan_with_index(&processes, dc_detect::matcher::WINDOWS, index);
     let candidates = lists.candidates(&processes, &windows, &scan, dc_detect::matcher::WINDOWS);
     let streamer_tools = scan
         .observed
@@ -614,25 +919,43 @@ mod tests {
     #[test]
     fn lists_are_due_when_missing_and_again_after_a_day() {
         let (updates, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let mut runtime = Runtime {
-            shared: Arc::default(),
-            updates,
-            started: false,
-            cache: Cache::default(),
-            requested: Vec::new(),
-        };
+        let mut runtime = Runtime::new(updates);
         let now = 10 * LIST_TTL_MS;
-        assert_eq!(runtime.due_fetches(now).len(), 3);
+        let first_due = runtime.due_fetches_all(now);
+        assert_eq!(first_due.len(), 3);
+        assert_eq!(
+            first_due[0],
+            DueFetch::Cdn {
+                key: GAMES_KEY,
+                url: GAMES_CDN_URL,
+                etag: None,
+            }
+        );
+        assert_eq!(
+            first_due[1],
+            DueFetch::Cdn {
+                key: NON_GAMES_KEY,
+                url: NON_GAMES_CDN_URL,
+                etag: None,
+            }
+        );
+        assert_eq!(
+            first_due[2],
+            DueFetch::Api {
+                key: BLOCKLIST_KEY,
+                route: BLOCKLIST_ROUTE,
+            }
+        );
         // Asked once; not again while the reply is awaited.
-        assert!(runtime.due_fetches(now).is_empty());
+        assert!(runtime.due_fetches_all(now).is_empty());
         let games =
             json!([{"id": "1", "name": "A", "executables": [{"os": "win32", "name": "a.exe"}]}]);
         assert!(runtime.list_fetched(GAMES_KEY, &games, now));
         assert!(!runtime.list_fetched("other", &games, now));
         // A failed reply keeps the old list and asks again at the next connection.
         assert!(runtime.list_fetched(NON_GAMES_KEY, &json!({"fetch_failed": true}), now));
-        assert!(runtime.cache.non_games.is_none());
-        let due = runtime.due_fetches(now + 1);
+        assert!(runtime.meta.non_games.is_none());
+        let due = runtime.due_fetches_all(now + 1);
         // Only the failed list is asked again; the blocklist reply is still awaited.
         assert_eq!(due.len(), 1);
         assert!(stale(Some(now), now + LIST_TTL_MS));
@@ -640,6 +963,61 @@ mod tests {
         // The stored games reach the scanner's lists.
         let lists = runtime.shared.lock().unwrap().lists.clone();
         assert_eq!(lists.games.len(), 1);
+    }
+
+    #[test]
+    fn cdn_etag_304_refreshes_timestamp_and_non_cdn_legacy_upgrades() {
+        let (updates, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut runtime = Runtime::new(updates);
+        let now = 10 * LIST_TTL_MS;
+        let hytale = DetectableGame::list_from_json(&json!([{
+            "id": "1458530944955973852",
+            "name": "Hytale",
+            "executables": [{"os": "win32", "name": ">hytaleclient.exe"}]
+        }]));
+        assert!(runtime.cdn_fetched(
+            GAMES_KEY,
+            200,
+            Some("\"etag-v1\"".to_owned()),
+            Some(Arc::new(hytale)),
+            now,
+        ));
+        let immediate = runtime.due_fetches_all(now + 1000);
+        assert_eq!(immediate.len(), 2);
+        assert!(
+            !immediate
+                .iter()
+                .any(|d| matches!(d, DueFetch::Cdn { key, .. } if *key == GAMES_KEY))
+        );
+        // After a day, games is due again with its saved ETag.
+        let due_day_later = runtime.due_fetches_all(now + LIST_TTL_MS);
+        assert_eq!(
+            due_day_later.iter().find(|d| matches!(d, DueFetch::Cdn { key, .. } if *key == GAMES_KEY)),
+            Some(&DueFetch::Cdn {
+                key: GAMES_KEY,
+                url: GAMES_CDN_URL,
+                etag: Some("\"etag-v1\"".to_owned()),
+            })
+        );
+        // 304 bumps timestamp without clearing cached games.
+        assert!(runtime.cdn_fetched(GAMES_KEY, 304, None, None, now + LIST_TTL_MS + 5));
+        assert_eq!(runtime.shared.lock().unwrap().lists.games.len(), 1);
+        assert_eq!(
+            runtime.meta.games.as_ref().and_then(|m| m.etag.as_deref()),
+            Some("\"etag-v1\"")
+        );
+        // Legacy non-CDN cache entry is treated as immediately stale with no ETag.
+        runtime.meta.games = Some(MetaEntry {
+            at: now + LIST_TTL_MS + 5,
+            etag: Some("\"old\"".to_owned()),
+            cdn: false,
+        });
+        let due_upgrade = runtime.due_fetches_all(now + LIST_TTL_MS + 6);
+        assert!(due_upgrade.contains(&DueFetch::Cdn {
+            key: GAMES_KEY,
+            url: GAMES_CDN_URL,
+            etag: None,
+        }));
     }
 
     fn rpc_game(app: &str, name: &str) -> Value {

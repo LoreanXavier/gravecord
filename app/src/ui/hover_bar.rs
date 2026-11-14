@@ -259,6 +259,15 @@ impl Root {
         })
     }
 
+    /// True while a message context menu or hover-bar reaction picker locks row hover switching.
+    pub(super) fn message_hover_locked(&self) -> bool {
+        self.menu.is_some()
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|open| matches!(open.target, super::picker::Target::Reaction { .. }))
+    }
+
     /// The hook at the top of `nA` for this message in the channel in view.
     pub(super) fn bar_caps(&self, message: &Message, own: bool) -> Caps {
         let kind = message.kind;

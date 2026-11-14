@@ -106,13 +106,18 @@ impl ReadStates {
         ) else {
             return;
         };
+        let manual = data["manual"].as_bool().unwrap_or_else(|| {
+            self.states
+                .get(&channel)
+                .is_some_and(|prev| prev.manual && message <= prev.acked)
+        });
         self.states.insert(
             channel,
             ReadState {
                 acked: message,
                 mention_count: data["mention_count"].as_u64().unwrap_or(0),
                 low_importance: data["flags"].as_u64().unwrap_or(0) & 4 != 0,
-                manual: data["manual"].as_bool().unwrap_or(false),
+                manual,
             },
         );
     }
@@ -255,5 +260,36 @@ mod tests {
         assert!(states.is_unread(20, snowflake_at(1_900_000_000_000)));
         assert!(!states.is_unread(20, snowflake_at(2_100_000_000_000)));
         assert_eq!(days_since_epoch(1_794_098_294_600), 4329);
+    }
+
+    #[test]
+    fn ack_preserves_manual_unread_when_server_omits_manual_flag() {
+        let mut states = ReadStates::default();
+        states.ack_local(10, 500, true);
+        assert!(states.states[&10].manual);
+
+        // Server echo omitting `manual` for the same or earlier message keeps `manual: true`.
+        states.ack(&serde_json::json!({
+            "channel_id": "10",
+            "message_id": "500",
+            "mention_count": 0
+        }));
+        assert!(states.states[&10].manual);
+
+        // An explicit `manual: false` or a newer message clears it.
+        states.ack(&serde_json::json!({
+            "channel_id": "10",
+            "message_id": "600",
+            "mention_count": 0
+        }));
+        assert!(!states.states[&10].manual);
+
+        states.ack_local(10, 550, true);
+        states.ack(&serde_json::json!({
+            "channel_id": "10",
+            "message_id": "550",
+            "manual": false
+        }));
+        assert!(!states.states[&10].manual);
     }
 }

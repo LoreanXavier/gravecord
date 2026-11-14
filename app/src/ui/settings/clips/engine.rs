@@ -232,7 +232,11 @@ impl Root {
                 self.clips.engine.game_delay = if self.clips.engine.test_game {
                     Duration::ZERO
                 } else {
-                    crate::clips_capture::NEW_GAME_DELAY
+                    let age = game
+                        .as_ref()
+                        .and_then(|game| dc_detect::process_age(game.pid))
+                        .unwrap_or(Duration::ZERO);
+                    crate::clips_capture::NEW_GAME_DELAY.saturating_sub(age)
                 };
             }
             self.clips.engine.note(match &game {
@@ -330,7 +334,15 @@ impl Root {
         if !plan.start {
             return;
         }
-        let Some(game) = game else { return };
+        let Some(mut game) = game else { return };
+        if !engine.test_game
+            && let Some(fresh) = dc_detect::main_window(game.pid)
+        {
+            if let Some(current) = engine.game.as_mut() {
+                current.window = fresh;
+            }
+            game.window = fresh;
+        }
         engine.capture_starting = true;
         let (height, fps, percent) = wanted_quality;
         let started = game.clone();

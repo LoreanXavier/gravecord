@@ -45,7 +45,7 @@ impl DetectableGame {
             .filter_map(|entry| {
                 Some(Executable {
                     os: entry["os"].as_str()?.to_owned(),
-                    name: entry["name"].as_str()?.to_lowercase(),
+                    name: normalize_exe_name(entry["name"].as_str()?),
                     is_launcher: entry["is_launcher"]
                         .as_bool()
                         .or_else(|| entry["isLauncher"].as_bool())
@@ -92,7 +92,11 @@ pub struct Blocklist {
 impl Blocklist {
     pub fn new(executables: &[String], patterns: &[String]) -> Self {
         Self {
-            executables: executables.iter().map(|e| e.to_lowercase()).collect(),
+            executables: executables
+                .iter()
+                .map(|e| normalize_exe_name(e))
+                .filter(|e| !e.is_empty())
+                .collect(),
             patterns: patterns
                 .iter()
                 .filter_map(|source| {
@@ -221,6 +225,11 @@ pub fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
 
+/// Normalizes a detectable list or blocklist executable pattern (`>` flags and `\` separators).
+fn normalize_exe_name(name: &str) -> String {
+    normalize_path(name.trim().trim_start_matches('>'))
+}
+
 /// The last path segment of a normalized path.
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -291,13 +300,13 @@ impl Detectables {
         if exe_path.is_empty() {
             return false;
         }
-        let path = exe_path.to_lowercase();
+        let path = normalize_path(exe_path);
         if let Some(id) = id
             && let Some(game) = self.games.iter().find(|game| game.id == id)
             && game
                 .executables
                 .iter()
-                .any(|executable| executable.os == os && path.ends_with(&executable.name))
+                .any(|executable| executable.os == os && ends_with_name(&path, &executable.name))
         {
             return false;
         }
@@ -314,24 +323,34 @@ impl Detectables {
 
     /// Games whose executables match this path on `os`. Entries that need command-line arguments cannot be told
     /// apart without the command line, so they are skipped. Longest matched name first, then list order.
-    fn find<'a>(&'a self, exe_path: &str, os: &str, index: &Index) -> Option<Match<'a>> {
+    /// When `exe_path` has no path separators (only bare `szExeFile` from toolhelp), falls back to filename match.
+    fn find<'a>(
+        &'a self,
+        exe_path: &str,
+        bare_name: &str,
+        os: &str,
+        index: &Index,
+    ) -> Option<Match<'a>> {
         let mut best: Option<Match<'a>> = None;
-        let file = file_name(exe_path);
-        for number in index.by_file.get(file).into_iter().flatten().chain(
-            // Path-suffix entries (`obs/obs.exe` style) are checked on their own list.
-            index.with_directory.iter(),
-        ) {
-            let (non_game, position) = *number;
+        let file = if exe_path.is_empty() {
+            bare_name
+        } else {
+            file_name(exe_path)
+        };
+        let allow_bare_fallback = !exe_path.contains('/');
+        for &(non_game, position) in index.by_file.get(file).into_iter().flatten() {
             let game = if non_game {
                 &self.non_games[position]
             } else {
                 &self.games[position]
             };
             for executable in &game.executables {
-                if executable.os != os
-                    || executable.arguments.is_some()
-                    || !ends_with_name(exe_path, &executable.name)
-                {
+                if executable.os != os || executable.arguments.is_some() {
+                    continue;
+                }
+                let matched = ends_with_name(exe_path, &executable.name)
+                    || (allow_bare_fallback && file_name(&executable.name) == file);
+                if !matched {
                     continue;
                 }
                 let length = executable.name.len();
@@ -348,22 +367,18 @@ impl Detectables {
         best
     }
 
-    /// Sorts the process list the way the observed-games callback does (module 397369): non-games and launchers
-    /// are flagged, observed apps leave the games, blocklisted paths drop out.
-    pub fn scan(&self, processes: &[Process], os: &str) -> Scan {
-        let index = Index::build(self, os);
-        let launcher_names: HashSet<&str> = self
-            .games
-            .iter()
-            .flat_map(|game| &game.executables)
-            .filter(|executable| executable.is_launcher)
-            .map(|executable| executable.name.as_str())
-            .collect();
+    /// Sorts the process list using a prebuilt [`Index`] (the hot path for repeated scans).
+    pub fn scan_with_index(&self, processes: &[Process], os: &str, index: &Index) -> Scan {
         let mut scan = Scan::default();
         for process in processes {
             let exe_path = normalize_path(&process.path);
-            let exe_name = file_name(&exe_path).to_owned();
-            let found = self.find(&exe_path, os, &index);
+            let bare_name = normalize_path(&process.name);
+            let exe_name = if exe_path.is_empty() {
+                bare_name.clone()
+            } else {
+                file_name(&exe_path).to_owned()
+            };
+            let found = self.find(&exe_path, &bare_name, os, index);
             let id = found.as_ref().map(|found| found.game.id.clone());
             let name = found
                 .as_ref()
@@ -375,7 +390,7 @@ impl Detectables {
                 id,
                 name,
                 is_launcher: found.as_ref().is_some_and(|found| found.launcher)
-                    || launcher_names.contains(exe_name.as_str()),
+                    || index.launchers.contains(exe_name.as_str()),
             };
             if found.as_ref().is_some_and(|found| found.non_game) {
                 scan.observed.push((detected, Kind::NonGame));
@@ -406,6 +421,13 @@ impl Detectables {
             scan.games.push(detected);
         }
         scan
+    }
+
+    /// Sorts the process list the way the observed-games callback does (module 397369): non-games and launchers
+    /// are flagged, observed apps leave the games, blocklisted paths drop out.
+    pub fn scan(&self, processes: &[Process], os: &str) -> Scan {
+        let index = Index::build(self, os);
+        self.scan_with_index(processes, os, &index)
     }
 
     /// Processes with a window that matched nothing and are not blocked: the "Add it!" picker's list. System
@@ -465,33 +487,34 @@ fn is_system_path(path: &str) -> bool {
 }
 
 /// Executable file name to the games listing it, so a scan does not compare every process with every game.
-struct Index {
+#[derive(Clone, Debug, Default)]
+pub struct Index {
     by_file: HashMap<String, Vec<(bool, usize)>>,
-    with_directory: Vec<(bool, usize)>,
+    launchers: HashSet<String>,
 }
 
 impl Index {
-    fn build(lists: &Detectables, os: &str) -> Self {
+    pub fn build(lists: &Detectables, os: &str) -> Self {
         let mut by_file: HashMap<String, Vec<(bool, usize)>> = HashMap::new();
-        let mut with_directory = Vec::new();
+        let mut launchers = HashSet::new();
         for (non_game, games) in [(false, &lists.games), (true, &lists.non_games)] {
             for (position, game) in games.iter().enumerate() {
                 for executable in game.executables.iter().filter(|e| e.os == os) {
-                    if executable.name.contains('/') {
-                        with_directory.push((non_game, position));
-                    } else {
-                        by_file
-                            .entry(executable.name.clone())
-                            .or_default()
-                            .push((non_game, position));
+                    if !non_game && executable.is_launcher {
+                        launchers.insert(executable.name.clone());
+                    }
+                    let file = file_name(&executable.name);
+                    if file.is_empty() {
+                        continue;
+                    }
+                    let bucket = by_file.entry(file.to_owned()).or_default();
+                    if bucket.last() != Some(&(non_game, position)) {
+                        bucket.push((non_game, position));
                     }
                 }
             }
         }
-        Self {
-            by_file,
-            with_directory,
-        }
+        Self { by_file, launchers }
     }
 }
 
@@ -693,5 +716,54 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].name, "mygame");
         assert_eq!(candidates[0].exe_path, "d:/other/mygame.exe");
+    }
+
+    #[test]
+    fn hytale_and_prefixed_or_backslash_patterns_and_bare_fallback_match() {
+        let games = json!([
+            {
+                "id": "1458530944955973852",
+                "name": "Hytale",
+                "executables": [
+                    {"os": "win32", "name": ">HytaleClient.exe", "is_launcher": false},
+                    {"os": "win32", "name": "win64\\HytaleLauncher.exe", "is_launcher": true}
+                ],
+                "aliases": []
+            }
+        ]);
+        let list = Detectables {
+            games: DetectableGame::list_from_json(&games),
+            non_games: Vec::new(),
+            overrides: Vec::new(),
+            blocklist: Blocklist::from_json(&json!({
+                "executables": [">CrashReport\\"],
+                "patterns": []
+            })),
+        };
+        assert_eq!(list.games[0].executables[0].name, "hytaleclient.exe");
+        assert_eq!(list.games[0].executables[1].name, "win64/hytalelauncher.exe");
+
+        // Full path, subdirectory with backslash normalized, and bare szExeFile fallback when OpenProcess failed.
+        let scan = list.scan(
+            &[
+                process(10, r"C:\Program Files\Hypixel Studios\Hytale\Client\HytaleClient.exe"),
+                process(11, r"C:\Program Files\Hypixel Studios\Hytale\win64\HytaleLauncher.exe"),
+                Process {
+                    pid: 12,
+                    name: "HytaleLauncher.exe".to_owned(),
+                    path: "HytaleLauncher.exe".to_owned(),
+                },
+            ],
+            WINDOWS,
+        );
+        assert_eq!(scan.games.len(), 3);
+        assert_eq!(scan.games[0].id.as_deref(), Some("1458530944955973852"));
+        assert_eq!(scan.games[0].name, "Hytale");
+        assert!(!scan.games[0].is_launcher);
+        assert!(scan.games[1].is_launcher);
+        assert_eq!(scan.games[2].id.as_deref(), Some("1458530944955973852"));
+
+        // Blocklist normalization matches forward-slash paths.
+        assert!(list.should_block(None, r"C:\Games\CrashReport\dump.exe", WINDOWS));
     }
 }

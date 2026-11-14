@@ -994,7 +994,7 @@ impl Root {
                     .absolute()
                     .invisible()
                     .group_hover("stage-live", |style| style.visible())
-                    .left(px(375.))
+                    .left(px(self.combined_sidebar_width()))
                     .top(px(612.))
                     .child(
                         icon("popout_caret_down", 22., "--white")
@@ -1844,7 +1844,7 @@ impl Root {
         Some(
             div()
                 .flex_none()
-                .w(px(303.))
+                .w(px(self.sidebar_width()))
                 .h(px(85.))
                 .pl(px(16.))
                 .pr(px(16.))

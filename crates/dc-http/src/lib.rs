@@ -16,6 +16,17 @@ mod webhook;
 
 pub use upload::Progress;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConditionalGet {
+    NotModified {
+        etag: Option<String>,
+    },
+    Ok {
+        etag: Option<String>,
+        bytes: Vec<u8>,
+    },
+}
+
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
 fn diagnostic_route(route: &str) -> &str {
@@ -381,6 +392,34 @@ impl Client {
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
         let response = self.http.get(url).send().await?.error_for_status()?;
         Ok(response.bytes().await?.to_vec())
+    }
+
+    /// Public CDN GET with optional `If-None-Match` validation (no authorization headers sent).
+    pub async fn fetch_public_conditional(
+        &self,
+        url: &str,
+        etag: Option<&str>,
+    ) -> Result<ConditionalGet, Error> {
+        let mut req = self.http.get(url);
+        if let Some(tag) = etag {
+            req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+        }
+        let response = req.send().await?;
+        let next_etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(ConditionalGet::NotModified {
+                etag: next_etag.or_else(|| etag.map(str::to_owned)),
+            });
+        }
+        let response = response.error_for_status()?;
+        Ok(ConditionalGet::Ok {
+            etag: next_etag,
+            bytes: response.bytes().await?.to_vec(),
+        })
     }
 
     /// Puts a file at the signed URL `POST /channels/{id}/attachments` handed out. The URL is the grant, so no

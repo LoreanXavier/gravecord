@@ -58,12 +58,10 @@ pub(super) fn window_allowed_on(capture: bool, desktop: Option<&str>) -> bool {
     !capture || desktop == Some(HIDDEN_DESKTOP)
 }
 
-/// Whether this run does any overlay work at all: a harness run (which never starts the watcher, the follower or the
-/// keybind), or a normal run with `GRAVECORD_OVERLAY=1`. Until the window has been seen over a real game
-/// (click-through, transparency, staying on top), a normal run without it runs nothing of the overlay: no foreground
-/// watcher thread, no hook, no per-frame decision. BLOCKED.md, "Injected overlay anticheat compatibility".
-pub(super) fn gate_on(capture: bool, env: Option<&str>) -> bool {
-    capture || env == Some("1")
+/// Whether this run does any overlay work at all: a harness run, or any normal non-test desktop run unless
+/// disabled with `GRAVECORD_OVERLAY=0`. BLOCKED.md, "Injected overlay anticheat compatibility".
+pub(super) fn gate_on(capture: bool, inert_or_test: bool, env: Option<&str>) -> bool {
+    capture || (!inert_or_test && env != Some("0"))
 }
 
 /// [`gate_on`] for this run, read once.
@@ -71,7 +69,8 @@ pub(super) fn gate() -> bool {
     static GATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *GATE.get_or_init(|| {
         let env = std::env::var("GRAVECORD_OVERLAY").ok();
-        gate_on(crate::storage::is_capture_run(), env.as_deref())
+        let inert_or_test = cfg!(test) || crate::inert::on();
+        gate_on(crate::storage::is_capture_run(), inert_or_test, env.as_deref())
     })
 }
 
@@ -236,6 +235,7 @@ pub(super) struct Overlay {
     pub(super) focused: Option<Foreground>,
     /// `OverlayStore.isLocked(pid)`: locked unless unlocked by the keybind.
     pub(super) locked: bool,
+    pub(super) sync_dirty: bool,
     window: Option<WindowHandle<OverlayView>>,
     hwnd: Option<isize>,
     opening: bool,
@@ -306,6 +306,7 @@ impl Default for Overlay {
             foreground: None,
             focused: None,
             locked: true,
+            sync_dirty: false,
             window: None,
             hwnd: None,
             opening: false,
@@ -796,7 +797,10 @@ impl Root {
         if !gate() {
             return;
         }
-        if self.overlay.focused.is_some() || self.overlay.shown.is_some() {
+        if std::mem::take(&mut self.overlay.sync_dirty)
+            || self.overlay.focused.is_some()
+            || self.overlay.shown.is_some()
+        {
             self.overlay_sync(cx);
         }
         if self.overlay.shown.is_some() {
@@ -2472,15 +2476,15 @@ mod tests {
     }
 
     #[test]
-    fn without_the_variable_a_normal_run_does_no_overlay_work() {
-        assert!(!gate_on(false, None));
-        assert!(!gate_on(false, Some("0")));
-        assert!(!gate_on(false, Some("true")));
-        assert!(gate_on(false, Some("1")));
-        // A harness run always runs the overlay's logic (never its watcher, follower or keybind).
-        assert!(gate_on(true, None));
-        // The unit tests run without the variable: no watcher may start here.
-        if !crate::storage::is_capture_run() && std::env::var("GRAVECORD_OVERLAY").is_err() {
+    fn overlay_gate_runs_capture_and_normal_desktop_unless_disabled() {
+        assert!(gate_on(true, false, None));
+        assert!(gate_on(true, true, None));
+        assert!(gate_on(false, false, None));
+        assert!(gate_on(false, false, Some("1")));
+        assert!(!gate_on(false, false, Some("0")));
+        assert!(!gate_on(false, true, None));
+        // Unit tests run with `inert_or_test = true`, so a non-capture test never starts a watcher.
+        if !crate::storage::is_capture_run() {
             assert!(!gate());
             let mut overlay = Overlay::default();
             assert!(overlay.watcher.is_none());

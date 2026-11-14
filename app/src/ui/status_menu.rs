@@ -392,9 +392,15 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
+                    .child(self.with_tip(
+                        "status-popout-avatar-tip",
+                        super::tooltip::Tip::text(
+                            dc_intl::t!("+Xp3hq"),
+                            super::tooltip::Side::Top,
+                        ),
                         div()
                             .id("status-popout-avatar")
+                            .group("status-popout-avatar")
                             .relative()
                             .size(px(80.))
                             .rounded_full()
@@ -402,12 +408,16 @@ impl Root {
                             .children(
                                 avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
                             )
+                            .child(super::profile::popout_avatar_hover_overlay(
+                                "status-popout-avatar",
+                            ))
                             .child(status_dot_large(&status, "--background-surface-high"))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.status_popout = None;
-                                this.open_settings_page("account", cx);
+                                this.open_full_profile(user.id, window, cx);
                             })),
-                    ),
+                        cx,
+                    )),
             )
             .child(self.status_bubble(custom_text, cx));
 
@@ -418,6 +428,13 @@ impl Root {
             .child(
                 div().h(px(24.)).flex().items_center().gap(px(4.)).child(
                     div()
+                        .id("status-popout-display-name")
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.status_popout = None;
+                            this.open_full_profile(user.id, window, cx);
+                        }))
                         .text_size(px(20.))
                         .line_height(px(24.))
                         .font_weight(FontWeight(600.))
@@ -433,6 +450,13 @@ impl Root {
                     .gap(px(9.33))
                     .child(
                         div()
+                            .id("status-popout-username")
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.status_popout = None;
+                                this.open_full_profile(user.id, window, cx);
+                            }))
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-strong"))
@@ -482,7 +506,7 @@ impl Root {
                 cx,
                 |this, _, cx| {
                     this.status_popout = None;
-                    this.open_settings_page("account", cx);
+                    this.open_profile_editor(cx);
                 },
                 Submenu::None,
             ),
@@ -520,7 +544,7 @@ impl Root {
                 cx,
                 |this, _, cx| {
                     this.status_popout = None;
-                    this.open_settings_page("account", cx);
+                    this.open_profile_editor(cx);
                 },
                 Submenu::None,
             ),

@@ -145,6 +145,7 @@ impl Root {
         }
         // `OVERLAY_SET_ENABLED`; the window follows at the next focus change or frame.
         crate::storage::set(store::ENABLED_STORE, store::enabled_json(global));
+        self.overlay.sync_dirty = true;
     }
 
     /// A generated row of this page changed (its new value is in `setting_choices`): the store takes it. True when
@@ -751,6 +752,7 @@ impl Root {
                             this.detect
                                 .store
                                 .toggle_overlay(&oop_game, legacy, Some(on));
+                            this.persist_detect_store();
                         }
                     },
                     cx,
@@ -772,6 +774,7 @@ impl Root {
                             this.detect
                                 .store
                                 .toggle_overlay(&legacy_game, on, Some(oop));
+                            this.persist_detect_store();
                         }
                     },
                     cx,
@@ -924,6 +927,7 @@ impl Root {
         }
         if scope != SwitchScope::Global {
             self.detect.store.toggle_overlay(game, on, Some(on));
+            self.persist_detect_store();
         }
     }
 }

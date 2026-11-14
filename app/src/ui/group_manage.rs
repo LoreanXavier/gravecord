@@ -291,7 +291,7 @@ impl Root {
                 div()
                     .id(SharedString::from(format!("dm-inner-{id}")))
                     .h(px(42.))
-                    .w(px(286.))
+                    .w(px(self.sidebar_row_width()))
                     .pl(px(8.))
                     .rounded(px(8.))
                     .flex()

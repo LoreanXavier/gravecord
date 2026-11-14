@@ -939,7 +939,9 @@ impl Root {
             return Vec::new();
         }
         let ctx = self.soundboard_ctx();
-        let left = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2. - WIDTH / 2. - 375.;
+        let left = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2.
+            - WIDTH / 2.
+            - self.combined_sidebar_width();
         let top = f32::from(anchor.top()) - 17. - HEIGHT - 32.;
         let rows: Vec<AnyElement> = sounds
             .chunks(3)

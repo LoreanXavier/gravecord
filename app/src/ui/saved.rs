@@ -80,7 +80,7 @@ impl Root {
     pub(super) fn request_saved(&mut self) {
         let _ = self.requests.send(Request::Fetch {
             key: SAVED_KEY.to_owned(),
-            route: "/users/@me/saved-messages".to_owned(),
+            route: "/users/@me/saved-messages?bookmark_ids=true".to_owned(),
         });
     }
 

@@ -294,3 +294,53 @@ fn a_clip_is_read_back_whole_trimmed_and_its_document_replaced() {
     assert_eq!(&before[..kept], &fs::read(&path).unwrap()[..kept]);
     assert!(!path.with_extension("mp4.part").exists());
 }
+
+#[test]
+fn official_and_legacy_uuid_round_trip_and_non_opus_audio_is_skipped() {
+    let recorder = standalone();
+    let end = feed(recorder, 4_000, 3);
+    let snapshot = recorder.snapshot_at(end).unwrap();
+    let dir = scratch("uuid-and-audio");
+    let id = "00000000-0000-4000-8000-000000000009";
+    let path = dir.join(file_name("Uuid Test", id));
+    let mut meta = ClipMetadata::new_manual(id.into(), 1, "Uuid Test".into(), vec![]);
+    snapshot.write(&path, &mut meta).unwrap();
+
+    // Written clip uses the official 16-byte metadata UUID at the final uuid box.
+    let bytes = fs::read(&path).unwrap();
+    let uuid_pos = bytes
+        .windows(4 + 16)
+        .rposition(|w| &w[..4] == b"uuid")
+        .expect("uuid box");
+    assert_eq!(&bytes[uuid_pos + 4..uuid_pos + 20], &mp4::METADATA_UUID);
+
+    // Mutate to legacy UUID: read_info and replace_metadata still accept it and upgrade on replace.
+    let mut legacy_bytes = bytes.clone();
+    legacy_bytes[uuid_pos + 4..uuid_pos + 20].copy_from_slice(&mp4::LEGACY_METADATA_UUID);
+    let legacy_path = dir.join("legacy.mp4");
+    fs::write(&legacy_path, &legacy_bytes).unwrap();
+    let legacy_info = mp4::read_info(&mut fs::File::open(&legacy_path).unwrap()).unwrap();
+    assert!(legacy_info.metadata.is_some());
+    mp4::replace_metadata(&legacy_path, meta.to_json().as_bytes()).unwrap();
+    let upgraded_bytes = fs::read(&legacy_path).unwrap();
+    assert_eq!(
+        &upgraded_bytes[uuid_pos + 4..uuid_pos + 20],
+        &mp4::METADATA_UUID
+    );
+
+    // Mutate all Opus sample-entry fourccs to mp4a: read_clip skips them without failing and keeps video.
+    let mut aac_bytes = bytes;
+    let mut patched = 0;
+    for i in 0..aac_bytes.len().saturating_sub(4) {
+        if &aac_bytes[i..i + 4] == b"Opus" {
+            aac_bytes[i..i + 4].copy_from_slice(b"mp4a");
+            patched += 1;
+        }
+    }
+    assert_eq!(patched, 2);
+    let aac_path = dir.join("aac.mp4");
+    fs::write(&aac_path, &aac_bytes).unwrap();
+    let clip = mp4::read_clip(&mut fs::File::open(&aac_path).unwrap()).unwrap();
+    assert!(clip.audio.is_empty());
+    assert_eq!(clip.video.samples.len(), snapshot.video.samples.len());
+}

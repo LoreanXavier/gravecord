@@ -107,6 +107,26 @@ pub enum Update {
         key: String,
         body: Value,
     },
+    /// The result of a conditional CDN detectable games/non-games fetch.
+    DetectablesCdn {
+        key: String,
+        status: u16,
+        etag: Option<String>,
+        games: Option<std::sync::Arc<Vec<dc_detect::DetectableGame>>>,
+    },
+    /// A `Request::Save` (bookmark or reminder PUT/DELETE) returned an HTTP error: revert the optimistic state.
+    SaveFailed {
+        channel: dc_state::Id,
+        message: dc_state::Id,
+        save: bool,
+    },
+    /// A `Request::React` PUT/DELETE returned an HTTP error: revert the optimistic state.
+    ReactFailed {
+        channel: dc_state::Id,
+        message: dc_state::Id,
+        emoji: String,
+        add: bool,
+    },
     /// The gateway closed with 4004 or a request came back 401: the stored login is dead.
     AuthFailed,
     /// `PATCH /users/@me` answered with a new token (a password change): the shell keeps it where the login is
@@ -190,6 +210,12 @@ pub enum Request {
     Fetch {
         key: String,
         route: String,
+    },
+    /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
+    FetchCdn {
+        key: String,
+        url: String,
+        etag: Option<String>,
     },
     Typing {
         channel: u64,
@@ -570,6 +596,7 @@ impl Request {
             Request::UploadLogs { .. } => "UploadLogs",
             Request::Schedule { .. } => "Schedule",
             Request::Fetch { .. } => "Fetch",
+            Request::FetchCdn { .. } => "FetchCdn",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -603,6 +630,7 @@ impl Request {
     pub(crate) fn inert(&self) -> Inert {
         match self {
             Request::Fetch { .. }
+            | Request::FetchCdn { .. }
             | Request::LoadMessages { .. }
             | Request::FetchMessages { .. }
             | Request::SoundboardSounds { .. }
@@ -1540,6 +1568,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     };
                     if let Err(error) = result {
                         warn!("saving failed: {error}");
+                        let _ = updates.send(Update::SaveFailed {
+                            channel,
+                            message,
+                            save,
+                        });
                     }
                 });
             }
@@ -1808,6 +1841,12 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     };
                     if let Err(error) = client.request(method, &route, None).await {
                         warn!("reaction failed: {error}");
+                        let _ = updates.send(Update::ReactFailed {
+                            channel,
+                            message,
+                            emoji,
+                            add,
+                        });
                     }
                 });
             }
@@ -1853,6 +1892,50 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             let _ = updates.send(Update::Fetched { key, body });
                         }
                     }
+                });
+            }
+            Request::FetchCdn { key, url, etag } => {
+                tokio::spawn(async move {
+                    let update = match client.fetch_public_conditional(&url, etag.as_deref()).await {
+                        Ok(dc_http::ConditionalGet::NotModified { etag }) => {
+                            Update::DetectablesCdn {
+                                key,
+                                status: 304,
+                                etag,
+                                games: None,
+                            }
+                        }
+                        Ok(dc_http::ConditionalGet::Ok { etag, bytes }) => {
+                            let parse_key = key.clone();
+                            let parse_etag = etag.clone();
+                            let games = tokio::task::spawn_blocking(move || {
+                                crate::games::parse_and_cache_cdn(
+                                    &parse_key,
+                                    parse_etag.as_deref(),
+                                    &bytes,
+                                )
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            Update::DetectablesCdn {
+                                key,
+                                status: 200,
+                                etag,
+                                games,
+                            }
+                        }
+                        Err(error) => {
+                            warn!("cdn fetch failed for {key}: {error}");
+                            Update::DetectablesCdn {
+                                key,
+                                status: 0,
+                                etag: None,
+                                games: None,
+                            }
+                        }
+                    };
+                    let _ = updates.send(update);
                 });
             }
             Request::VoiceState {

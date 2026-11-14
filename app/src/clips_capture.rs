@@ -191,15 +191,23 @@ impl GameCapture {
         fps: u32,
         percent: u32,
     ) -> Result<Self, String> {
-        let (window_width, window_height) = if game.window == TEST_WINDOW {
-            TEST_WINDOW_SIZE
+        let (game, (window_width, window_height)) = if game.window == TEST_WINDOW {
+            (game, TEST_WINDOW_SIZE)
         } else {
-            let source = screen::sources()
-                .map_err(|error| error.to_string())?
-                .into_iter()
+            let sources = screen::sources().map_err(|error| error.to_string())?;
+            let mut game = game;
+            let source = sources
+                .iter()
                 .find(|source| source.id == SourceId::Window(game.window))
+                .or_else(|| {
+                    let fresh = dc_detect::main_window(game.pid)?;
+                    game.window = fresh;
+                    sources
+                        .iter()
+                        .find(|source| source.id == SourceId::Window(fresh))
+                })
                 .ok_or_else(|| "the game's window is not capturable".to_owned())?;
-            (source.width, source.height)
+            (game, (source.width, source.height))
         };
         let settings = settings_for(
             game.window,

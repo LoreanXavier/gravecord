@@ -415,7 +415,7 @@ impl Root {
                         .group("channel-browser-link")
                         .parity("browser-link")
                         .h(px(32.))
-                        .w(px(286.))
+                        .w(px(self.sidebar_row_width()))
                         .px(px(8.))
                         .rounded(px(8.))
                         .flex()

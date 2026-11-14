@@ -12,7 +12,9 @@ pub mod matcher;
 pub mod processes;
 
 pub use matcher::{
-    Blocklist, Candidate, DetectableGame, Detectables, Detected, Executable, Kind, Scan,
+    Blocklist, Candidate, DetectableGame, Detectables, Detected, Executable, Index, Kind, Scan,
     normalize_path,
 };
-pub use processes::{Process, foreground_pid, main_window, running_processes, visible_window_pids};
+pub use processes::{
+    Process, foreground_pid, main_window, process_age, running_processes, visible_window_pids,
+};

@@ -3237,11 +3237,30 @@ impl Stores {
         }
     }
 
-    /// `GET /users/@me/saved-messages`: `{results: [{message, save_data}]}`.
+    /// `GET /users/@me/saved-messages?bookmark_ids=true`: `{results: [{message, save_data}], bookmark_ids}`.
     pub fn load_saved(&mut self, body: &Value) {
         self.saved.clear();
         for entry in body["results"].as_array().into_iter().flatten() {
             self.save(&entry["save_data"]);
+        }
+        for entry in body["bookmark_ids"].as_array().into_iter().flatten() {
+            let pair = id(&entry["channel_id"])
+                .zip(id(&entry["message_id"]))
+                .or_else(|| {
+                    entry
+                        .as_array()
+                        .filter(|pair| pair.len() == 2)
+                        .and_then(|pair| id(&pair[0]).zip(id(&pair[1])))
+                })
+                .or_else(|| {
+                    entry.as_str().and_then(|text| {
+                        let (channel, message) = text.split_once('-')?;
+                        Some((channel.parse().ok()?, message.parse().ok()?))
+                    })
+                });
+            if let Some((channel, message)) = pair {
+                self.saved.entry((channel, message)).or_insert(None);
+            }
         }
     }
 
@@ -3418,6 +3437,9 @@ impl Stores {
         match (found, change > 0) {
             (Some(index), _) => {
                 let reaction = &mut message.reactions[index];
+                if mine && reaction.me == (change > 0) {
+                    return;
+                }
                 reaction.count = reaction.count.saturating_add_signed(change);
                 if mine {
                     reaction.me = change > 0;
@@ -3431,6 +3453,54 @@ impl Stores {
                 emoji_id,
                 count: 1,
                 me: mine,
+            }),
+            (None, false) => {}
+        }
+    }
+
+    /// Applies or reverts an optimistic reaction change by the current user before the gateway echo arrives.
+    pub fn apply_own_reaction(
+        &mut self,
+        channel: Id,
+        message_id: Id,
+        name: &str,
+        emoji_id: Option<Id>,
+        add: bool,
+    ) {
+        let Some(message) = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == message_id))
+        else {
+            return;
+        };
+        let found = message
+            .reactions
+            .iter()
+            .position(|reaction| reaction.name == name && reaction.emoji_id == emoji_id);
+        match (found, add) {
+            (Some(index), true) => {
+                let reaction = &mut message.reactions[index];
+                if !reaction.me {
+                    reaction.count += 1;
+                    reaction.me = true;
+                }
+            }
+            (Some(index), false) => {
+                let reaction = &mut message.reactions[index];
+                if reaction.me {
+                    reaction.count = reaction.count.saturating_sub(1);
+                    reaction.me = false;
+                    if reaction.count == 0 {
+                        message.reactions.remove(index);
+                    }
+                }
+            }
+            (None, true) => message.reactions.push(Reaction {
+                name: name.to_owned(),
+                emoji_id,
+                count: 1,
+                me: true,
             }),
             (None, false) => {}
         }
@@ -5590,5 +5660,58 @@ mod tests {
         }))
         .expect("attachment");
         assert_eq!(attachment.content_scan_version(), Some(2));
+    }
+
+    #[test]
+    fn load_saved_merges_results_and_bookmark_ids() {
+        let mut stores = Stores::default();
+        stores.load_saved(&json!({
+            "results": [{
+                "save_data": {
+                    "channel_id": "10",
+                    "message_id": "20",
+                    "due_at": "2026-12-01T00:00:00Z"
+                }
+            }],
+            "bookmark_ids": [
+                {"channel_id": "10", "message_id": "20"},
+                {"channel_id": "10", "message_id": "21"},
+                ["10", "22"],
+                "10-23"
+            ]
+        }));
+        assert_eq!(
+            stores.saved.get(&(10, 20)),
+            Some(&Some("2026-12-01T00:00:00Z".to_owned()))
+        );
+        assert_eq!(stores.saved.get(&(10, 21)), Some(&None));
+        assert_eq!(stores.saved.get(&(10, 22)), Some(&None));
+        assert_eq!(stores.saved.get(&(10, 23)), Some(&None));
+    }
+
+    #[test]
+    fn optimistic_own_reaction_is_idempotent_with_gateway_echo() {
+        let mut stores = Stores {
+            current_user: Some(User {
+                id: 10,
+                ..User::default()
+            }),
+            ..Stores::default()
+        };
+        stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
+
+        // Optimistic add followed by Gateway echo keeps count at 1.
+        stores.apply_own_reaction(23, 5, "\u{1f44d}", None, true);
+        stores.dispatch("MESSAGE_REACTION_ADD", &reaction_event("10"));
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.me), (1, true));
+
+        // Another user reacts; optimistic remove drops count to 1 and me=false; Gateway echo is idempotent.
+        stores.dispatch("MESSAGE_REACTION_ADD", &reaction_event("11"));
+        assert_eq!(stores.messages[&23][0].reactions[0].count, 2);
+        stores.apply_own_reaction(23, 5, "\u{1f44d}", None, false);
+        stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("10"));
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.me), (1, false));
     }
 }

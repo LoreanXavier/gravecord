@@ -1519,7 +1519,7 @@ impl Root {
         // The floating Subscribe / Gift bar shows once the hero's own buttons are out of view.
         let floating = offset > 300.;
         let vw = f32::from(window.viewport_size().width);
-        let bento_w = (vw - 375. - 16. - 80.).clamp(320., 1105.);
+        let bento_w = (vw - self.combined_sidebar_width() - 16. - 80.).clamp(320., 1105.);
         let sections = div()
             .w_full()
             .px(px(40.))

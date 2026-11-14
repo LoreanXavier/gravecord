@@ -19,7 +19,7 @@ use dc_state::display_name_styles::{
     DisplayNameStyles, Effect, Font as NameFont, FontFace, Palette, Rgb, adjusted_colors,
 };
 use gpui::{
-    AnyElement, App, AvailableSpace, Bounds, Corners, Element, ElementId, Font, FontFeatures,
+    AnyElement, App, AvailableSpace, Bounds, Corners, Element, ElementId, Font,
     FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     IntoElement, LayoutId, ParentElement as _, Pixels, RenderImage, ShapedLine, SharedString, Size,
     Style, Styled as _, TextAlign, TextOverflow, TextRun, Window, point, px, size,
@@ -927,14 +927,11 @@ impl Element for NameText {
             Some(loaded) => (
                 Font {
                     family: loaded.family.clone(),
-                    features: FontFeatures::default(),
+                    features: super::kerning(),
                     fallbacks: None,
-                    // A letter the face lacks comes from a fallback face, which the browser draws at the
-                    // requested weight rather than the face's own.
-                    // A face lighter than semibold asked for at semibold or more is emboldened by the browser.
-                    weight: if covers(&self.text, loaded)
-                        && !(inherited.font_weight.0 >= 600. && loaded.face.weight < 600)
-                    {
+                    // `.dnsFont_OAgVZM { font-synthesis: none }`: keep the face's own weight when every character
+                    // is covered so DirectWrite never synthesizes faux-bold.
+                    weight: if covers(&self.text, loaded) {
                         FontWeight(f32::from(loaded.face.weight))
                     } else {
                         inherited.font_weight

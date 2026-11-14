@@ -72,6 +72,7 @@ pub(super) enum Action {
     /// "Resend message" of a message that failed to send (module 761304 `t_`).
     Resend,
     CopyLink,
+    CopyId,
     Speak,
     /// "End Poll Now" (module 761304): the author of a poll that is still open.
     EndPoll,
@@ -133,6 +134,16 @@ pub(super) struct SavedState {
     pub no_thread: bool,
     /// The message failed to send (`state === SEND_FAILED`): no Edit, Reply, Forward or Pin, and Resend message.
     pub failed: bool,
+    /// No Add Reaction or quick-react row ("Show emoji reactions" off, or lacks `ADD_REACTIONS`).
+    pub no_react: bool,
+    /// Reply is unavailable (unreplyable type or lacks `SEND_MESSAGES` / `READ_MESSAGE_HISTORY`).
+    pub no_reply: bool,
+    /// Pin/Unpin is unavailable (non-user message, voice/stage, or lacks `PIN_MESSAGES` / `READ_MESSAGE_HISTORY`).
+    pub no_pin: bool,
+    /// May delete another person's message (`MANAGE_MESSAGES` on a deletable message type).
+    pub delete_other: bool,
+    /// Developer Mode is enabled: append "Copy Message ID" at the bottom.
+    pub developer: bool,
 }
 
 /// How the link group of a message menu reads (module 777933).
@@ -232,6 +243,27 @@ pub(super) fn message_items(own: bool) -> Vec<Item> {
     message_items_saved(own, SavedState::default())
 }
 
+pub(super) fn parse_reaction_route(emoji: &str) -> (&str, Option<Id>) {
+    if let Some((name, id_str)) = emoji.rsplit_once(':')
+        && !name.is_empty()
+        && !id_str.is_empty()
+        && let Ok(id) = id_str.parse::<Id>()
+    {
+        return (name, Some(id));
+    }
+    (emoji, None)
+}
+
+fn push_menu_group(items: &mut Vec<Item>, group: Vec<Item>) {
+    if group.is_empty() {
+        return;
+    }
+    if !items.is_empty() && !matches!(items.last(), Some(Item::Separator)) {
+        items.push(Item::Separator);
+    }
+    items.extend(group);
+}
+
 /// With the saved state: Remove Bookmark when bookmarked, no bookmark entry and Edit Reminder for a reminder.
 pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     let mut items = Vec::new();
@@ -250,36 +282,40 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             Action::SearchGoogle,
             false,
         ));
-        items.push(Item::Separator);
     }
-    items.push(Item::Entry(
-        "Add Reaction",
-        "menu_add_reaction",
-        Action::AddReaction,
-        true,
-    ));
+    let mut reactions = Vec::new();
+    if !saved.no_react {
+        reactions.push(Item::Entry(
+            "Add Reaction",
+            "menu_add_reaction",
+            Action::AddReaction,
+            true,
+        ));
+    }
     if saved.reacted {
-        items.push(Item::Entry(
+        reactions.push(Item::Entry(
             "View Reactions",
             "menu_view_reactions",
             Action::ViewReactions,
             false,
         ));
     }
-    items.push(Item::Separator);
+    push_menu_group(&mut items, reactions);
+
+    let mut compose = Vec::new();
     if own && !saved.poll && !saved.failed {
-        items.push(Item::Entry(
+        compose.push(Item::Entry(
             "Edit Message",
             "menu_edit_message",
             Action::Edit,
             false,
         ));
     }
-    if !saved.failed {
-        items.push(Item::Entry("Reply", "menu_reply", Action::Reply, false));
+    if !saved.failed && !saved.no_reply {
+        compose.push(Item::Entry("Reply", "menu_reply", Action::Reply, false));
     }
     if !saved.poll && !saved.failed {
-        items.push(Item::Entry(
+        compose.push(Item::Entry(
             "Forward",
             "menu_forward",
             Action::Forward,
@@ -287,32 +323,34 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ));
     }
     if !saved.no_thread {
-        items.push(Item::Entry(
+        compose.push(Item::Entry(
             "Create Thread",
             "menu_create_thread",
             Action::Thread,
             false,
         ));
     }
-    items.push(Item::Separator);
+    push_menu_group(&mut items, compose);
+
+    let mut actions = Vec::new();
     // Module 761304 `tf`: the row is left out when the message has no text.
     if !saved.empty {
-        items.push(Item::Entry(
+        actions.push(Item::Entry(
             "Copy Text",
             "menu_copy_text",
             Action::CopyText,
             false,
         ));
     }
-    if !saved.failed {
-        items.push(if saved.pinned {
+    if !saved.failed && !saved.no_pin {
+        actions.push(if saved.pinned {
             Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
         } else {
             Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
         });
     }
     if !saved.reminder {
-        items.push(if saved.bookmarked {
+        actions.push(if saved.bookmarked {
             Item::Entry(
                 "Remove Bookmark",
                 "menu_remove_bookmark",
@@ -328,7 +366,7 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             )
         });
     }
-    items.push(Item::Entry(
+    actions.push(Item::Entry(
         if saved.reminder {
             "Edit Reminder"
         } else {
@@ -338,17 +376,17 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         Action::Reminder,
         true,
     ));
-    items.extend([Item::Entry("Apps", "menu_apps", Action::Apps, true)]);
+    actions.push(Item::Entry("Apps", "menu_apps", Action::Apps, true));
     if saved.failed {
         // `lXHojr`, between Apps and Mark Unread.
-        items.push(Item::Entry(
+        actions.push(Item::Entry(
             "Resend message",
             "system_refresh",
             Action::Resend,
             false,
         ));
     }
-    items.extend([
+    actions.extend([
         Item::Entry("Mark Unread", "menu_mark_unread", Action::MarkUnread, false),
         Item::Entry(
             "Copy Message Link",
@@ -358,7 +396,7 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ),
     ]);
     if !saved.empty {
-        items.push(Item::Entry(
+        actions.push(Item::Entry(
             if saved.speaking {
                 "Stop Speaking Message"
             } else {
@@ -370,13 +408,15 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ));
     }
     if saved.poll_end {
-        items.push(Item::Entry(
+        actions.push(Item::Entry(
             "End Poll Now", // grdwwt
             "menu_end_poll",
             Action::EndPoll,
             false,
         ));
     }
+    push_menu_group(&mut items, actions);
+
     // Module 761304: one group for Remove Reactions, Remove All Reactions, Delete (`tL`) and Report (`tR`).
     let mut danger = Vec::new();
     if saved.manage_reactions {
@@ -394,33 +434,25 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     if !own {
         danger.push(Item::Danger("Report Message", "menu_flag", Action::Report));
     }
-    if own {
+    if own || saved.delete_other {
         danger.push(Item::Danger(
             "Delete Message",
             "menu_delete_message",
             Action::Delete,
         ));
     }
-    if !danger.is_empty() {
-        items.push(Item::Separator);
-        items.extend(danger);
-    }
+    push_menu_group(&mut items, danger);
+
     // Module 761304 puts the picture rows (115184, in `tz`) and the link rows (777933, `tX`) in a group each, after
     // the delete group when the menu is the hover bar's or a right press's (`to`).
     if saved.image {
-        items.push(Item::Separator);
-        items.push(Item::Entry(
-            "Copy Image",
-            "clips_image",
-            Action::CopyImage,
-            false,
-        ));
-        items.push(Item::Entry(
-            "Save Image",
-            "clips_image",
-            Action::SaveImage,
-            false,
-        ));
+        push_menu_group(
+            &mut items,
+            vec![
+                Item::Entry("Copy Image", "clips_image", Action::CopyImage, false),
+                Item::Entry("Save Image", "clips_image", Action::SaveImage, false),
+            ],
+        );
     }
     let mut media = Vec::new();
     let (copy, open) = match saved.link {
@@ -463,9 +495,18 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     if let Some(open) = open {
         media.push(Item::Entry(open, "open_external", Action::OpenUrl, false));
     }
-    if !media.is_empty() {
-        items.push(Item::Separator);
-        items.extend(media);
+    push_menu_group(&mut items, media);
+
+    if saved.developer {
+        push_menu_group(
+            &mut items,
+            vec![Item::Entry(
+                "Copy Message ID",
+                "menu_id",
+                Action::CopyId,
+                false,
+            )],
+        );
     }
     items
 }
@@ -485,6 +526,13 @@ pub(super) struct OpenMenu {
     pub own: bool,
 }
 
+pub(super) struct ReactionOp {
+    pub emoji: String,
+    pub add: bool,
+    pub location: &'static str,
+    pub burst: bool,
+}
+
 impl Root {
     pub(super) fn saved_flags(&self, message: Id) -> SavedState {
         let state = self
@@ -497,6 +545,13 @@ impl Root {
         let empty = found.is_some_and(|known| known.content.is_empty());
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
+        let channel = self.current_channel();
+        let channel_type = channel.map(|channel| match channel.kind {
+            dc_state::ChannelKind::Text => 0,
+            dc_state::ChannelKind::Voice => 2,
+            dc_state::ChannelKind::Category => 4,
+            dc_state::ChannelKind::Other(other) => other,
+        });
         SavedState {
             bookmarked: state.is_some(),
             reminder: state.is_some_and(|due| due.is_some()),
@@ -506,7 +561,7 @@ impl Root {
             reacted,
             manage_reactions: reacted
                 && found.is_some_and(|known| known.extra.poll.is_none())
-                && self.current_channel().is_some_and(|channel| {
+                && channel.is_some_and(|channel| {
                     self.can_in_channel(channel, dc_state::permissions::MANAGE_MESSAGES)
                 }),
             poll_end: found.is_some_and(|known| self.poll_endable(known)),
@@ -519,6 +574,34 @@ impl Root {
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
+            no_react: !self.pref_on("chat_emoji_render_reactions", true)
+                || channel.is_some_and(|channel| {
+                    !self.can_in_channel(channel, dc_state::permissions::ADD_REACTIONS)
+                }),
+            no_reply: found.is_some_and(|known| !super::hover_bar::REPLYABLE.contains(&known.kind))
+                || channel.is_some_and(|channel| {
+                    !self.can_in_channel(
+                        channel,
+                        dc_state::permissions::SEND_MESSAGES
+                            | dc_state::permissions::READ_MESSAGE_HISTORY,
+                    )
+                }),
+            no_pin: found
+                .is_some_and(|known| !super::hover_bar::USER_MESSAGE.contains(&known.kind))
+                || matches!(channel_type, Some(2 | 13))
+                || channel.is_some_and(|channel| {
+                    !self.can_in_channel(
+                        channel,
+                        super::hover_bar::PIN_MESSAGES
+                            | dc_state::permissions::READ_MESSAGE_HISTORY,
+                    )
+                }),
+            delete_other: found
+                .is_some_and(|known| !super::hover_bar::UNDELETABLE.contains(&known.kind))
+                && channel.is_some_and(|channel| {
+                    self.can_in_channel(channel, dc_state::permissions::MANAGE_MESSAGES)
+                }),
+            developer: self.pref_on("developer_mode", false),
         }
     }
 
@@ -552,7 +635,11 @@ impl Root {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
             Action::Reply => self.begin_reply(found, window, cx),
             Action::CopyText => {
-                let text = parse_block_text(&found.content);
+                let text = if found.content.is_empty() {
+                    parse_block_text(&found.content)
+                } else {
+                    found.content.clone()
+                };
                 super::actions::log_effect("Copy Text", "clipboard text", text.len());
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -566,6 +653,16 @@ impl Root {
                 );
                 super::actions::log_effect("Copy Message Link", "clipboard text", link.len());
                 cx.write_to_clipboard(ClipboardItem::new_string(link));
+                self.show_success_toast(dc_intl::tr("Link Copied!").to_owned(), cx);
+            }
+            Action::CopyId => {
+                let id_text = if super::hover_bar::shift_held() {
+                    format!("{}-{message}", found.channel_id)
+                } else {
+                    message.to_string()
+                };
+                super::actions::log_effect("Copy Message ID", "clipboard text", id_text.len());
+                cx.write_to_clipboard(ClipboardItem::new_string(id_text));
             }
             // A failed message is deleted here only and asks nothing; Resend sends it again (module 519222 `RC`, `Io`).
             Action::Delete
@@ -802,18 +899,67 @@ impl Root {
 
     fn react_from_menu(&mut self, message: Id, surrogates: &'static str, cx: &mut Context<Self>) {
         self.menu = None;
-        self.track_reaction(surrogates);
         if let Some(channel) = self.channel {
-            let _ = self.requests.send(Request::React {
+            let already_me = self
+                .stores
+                .messages
+                .get(&channel)
+                .and_then(|list| list.iter().find(|known| known.id == message))
+                .is_some_and(|known| {
+                    known.reactions.iter().any(|reaction| {
+                        reaction.emoji_id.is_none() && reaction.name == surrogates && reaction.me
+                    })
+                });
+            let add = !already_me;
+            if add {
+                self.track_reaction(surrogates);
+            }
+            self.send_and_apply_reaction(
                 channel,
                 message,
-                emoji: surrogates.to_owned(),
-                add: true,
-                location: "Message Context Menu",
-                burst: false,
-            });
+                ReactionOp {
+                    emoji: surrogates.to_owned(),
+                    add,
+                    location: "Message Context Menu",
+                    burst: false,
+                },
+                cx,
+            );
         }
         cx.notify();
+    }
+
+    pub(super) fn send_and_apply_reaction(
+        &mut self,
+        channel: Id,
+        message: Id,
+        op: ReactionOp,
+        cx: &mut Context<Self>,
+    ) {
+        if op.add {
+            let (name, emoji_id) = parse_reaction_route(&op.emoji);
+            match emoji_id {
+                Some(id) => self.request_image(
+                    format!("emoji-id:{id}"),
+                    format!("https://cdn.discordapp.com/emojis/{id}.webp?size=48"),
+                ),
+                None => self.request_emoji_image(name),
+            }
+        }
+        let _ = self.requests.send(Request::React {
+            channel,
+            message,
+            emoji: op.emoji.clone(),
+            add: op.add,
+            location: op.location,
+            burst: op.burst,
+        });
+        if !crate::inert::on() && !crate::storage::is_capture_run() {
+            let (name, emoji_id) = parse_reaction_route(&op.emoji);
+            self.stores
+                .apply_own_reaction(channel, message, name, emoji_id, op.add);
+            cx.notify();
+        }
     }
 
     fn menu_row(&self, index: usize, item: Item, target: Id, cx: &mut Context<Self>) -> AnyElement {
@@ -1015,12 +1161,13 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let open = self.menu?;
+        let saved = self.saved_flags(open.message);
         let mut rows: Vec<AnyElement> = Vec::new();
         // Text selected: the menu opens with Copy instead of the quick reactions (selection-own-dm).
-        if self.menu_extra.selection.is_empty() {
+        if !saved.no_react && self.menu_extra.selection.is_empty() {
             rows.extend(self.quick_row(open.message, cx));
         }
-        for (index, item) in message_items_saved(open.own, self.saved_flags(open.message))
+        for (index, item) in message_items_saved(open.own, saved)
             .into_iter()
             .enumerate()
         {
@@ -1317,13 +1464,17 @@ impl Root {
     /// The menu's height before layout, for placing the hover bar's menu: rows of 36, separators of 17, the quick row
     /// of 60, 16 of padding and 2 of border.
     fn menu_height(&self, own: bool, message: Id) -> f32 {
-        let items = message_items_saved(own, self.saved_flags(message));
+        let saved = self.saved_flags(message);
+        let items = message_items_saved(own, saved);
         let rows = items
             .iter()
             .filter(|item| !matches!(item, Item::Separator))
             .count() as f32;
         let separators = items.len() as f32 - rows;
-        let quick = if self.quick_reactions().is_empty() || !self.menu_extra.selection.is_empty() {
+        let quick = if saved.no_react
+            || self.quick_reactions().is_empty()
+            || !self.menu_extra.selection.is_empty()
+        {
             0.
         } else {
             60.
@@ -1537,6 +1688,7 @@ mod tests {
         }
         states.push(super::SavedState {
             failed: true,
+            developer: true,
             ..Default::default()
         });
         for state in states {
@@ -1606,5 +1758,43 @@ mod tests {
                 "Open Image Link"
             ]
         );
+    }
+
+    #[test]
+    fn permission_restrictions_and_developer_mode_keep_separators_clean() {
+        let saved = super::SavedState {
+            no_react: true,
+            no_reply: true,
+            no_pin: true,
+            no_thread: true,
+            delete_other: true,
+            developer: true,
+            ..Default::default()
+        };
+        let items = super::message_items_saved(false, saved);
+        assert!(!matches!(items.first(), Some(Item::Separator)));
+        assert!(!matches!(items.last(), Some(Item::Separator)));
+        assert!(
+            !items
+                .windows(2)
+                .any(|pair| matches!(pair, [Item::Separator, Item::Separator]))
+        );
+        let text_labels: Vec<&str> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Entry(label, ..) | Item::Danger(label, ..) => Some(*label),
+                Item::Separator => None,
+            })
+            .collect();
+        assert!(!text_labels.contains(&"Add Reaction"));
+        assert!(!text_labels.contains(&"Reply"));
+        assert!(!text_labels.contains(&"Pin Message"));
+        assert!(!text_labels.contains(&"Unpin Message"));
+        assert!(!text_labels.contains(&"Create Thread"));
+        assert!(text_labels.contains(&"Delete Message"));
+        assert_eq!(text_labels.last(), Some(&"Copy Message ID"));
+
+        assert_eq!(super::parse_reaction_route("wave:12345"), ("wave", Some(12345)));
+        assert_eq!(super::parse_reaction_route("\u{1f44d}"), ("\u{1f44d}", None));
     }
 }

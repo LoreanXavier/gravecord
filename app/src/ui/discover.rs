@@ -63,8 +63,6 @@ pub(super) enum SearchMode {
 }
 
 pub(super) const FETCH_PREFIX: &str = "discover:";
-/// The page area starts 375px from the left: the rail and the 303px sidebar.
-const PAGE_LEFT: f32 = 375.;
 /// `scroller_jkJlMe` keeps an 8px gutter for its scrollbar.
 const GUTTER: f32 = 8.;
 const HEADER: f32 = 49.;
@@ -383,7 +381,7 @@ impl Root {
             div()
                 .id(id)
                 .flex_none()
-                .w(px(286.))
+                .w(px(self.sidebar_row_width()))
                 .h(px(48.))
                 .px(px(8.))
                 .rounded(px(8.))
@@ -422,7 +420,7 @@ impl Root {
             .parity("sidebar")
             .relative()
             .flex_none()
-            .w(px(303.))
+            .w(px(self.sidebar_width()))
             .h_full()
             .flex()
             .flex_col()
@@ -499,7 +497,7 @@ impl Root {
             self.select(id, None);
         }
         let place = self.discover.place;
-        let width = (f32::from(window.viewport_size().width) - PAGE_LEFT).max(0.);
+        let width = (f32::from(window.viewport_size().width) - self.combined_sidebar_width()).max(0.);
         let scroll = self.discover.scroll.clone();
         let offset = (-f32::from(scroll.offset().y)).max(0.);
         let results = match place {

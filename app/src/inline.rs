@@ -2,14 +2,15 @@
 //! the composer render through this. `StyledText` cannot draw a box inside a run.
 
 use gpui::{
-    App, Background, BorderStyle, Bounds, Corners, DispatchPhase, Edges, Element, ElementId, Font,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine,
-    SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix, Window, fill, point, px,
-    quad, size,
+    App, Background, BorderStyle, Bounds, Corners, CursorStyle, DispatchPhase, Edges, Element,
+    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix,
+    Window, fill, point, px, quad, size,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::{max, min};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -48,6 +49,17 @@ pub struct Piece {
     pub gradient: Option<dc_state::RoleColors>,
 }
 
+impl Piece {
+    fn is_interactive(&self) -> bool {
+        self.hover.is_some()
+            || self.hover_underline
+            || self.image.is_some()
+            || self.boxed.as_ref().is_some_and(|box_style| {
+                box_style.icon.is_some() || box_style.background == self.color
+            })
+    }
+}
+
 /// A place in the document: a message id, a block inside it, and a byte offset in that block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Position {
@@ -55,16 +67,98 @@ pub struct Position {
     pub offset: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone)]
+struct SelectableBlock {
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    laid: Rc<RefCell<Laid>>,
+    text: Rc<String>,
+    epoch: u64,
+}
+
+#[derive(Default)]
 pub struct Selection {
     anchor: Option<Position>,
     head: Option<Position>,
     dragging: bool,
+    blocks: BTreeMap<(u64, u32), SelectableBlock>,
+    epoch: u64,
+}
+
+impl std::fmt::Debug for Selection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Selection")
+            .field("anchor", &self.anchor)
+            .field("head", &self.head)
+            .field("dragging", &self.dragging)
+            .field("blocks", &self.blocks.len())
+            .finish()
+    }
 }
 
 pub type SharedSelection = Rc<RefCell<Selection>>;
 
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut at = index.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharKind {
+    Word,
+    Space,
+    Punct,
+}
+
+fn char_kind(ch: char) -> CharKind {
+    if ch.is_alphanumeric() || ch == '_' {
+        CharKind::Word
+    } else if ch.is_whitespace() {
+        CharKind::Space
+    } else {
+        CharKind::Punct
+    }
+}
+
 impl Selection {
+    pub fn begin_frame(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+        self.blocks
+            .retain(|_, block| block.epoch.saturating_add(1) >= epoch);
+    }
+
+    fn register_block(
+        &mut self,
+        key: (u64, u32),
+        bounds: Bounds<Pixels>,
+        line_height: Pixels,
+        laid: Rc<RefCell<Laid>>,
+        text: Rc<String>,
+    ) {
+        self.blocks.insert(
+            key,
+            SelectableBlock {
+                bounds,
+                line_height,
+                laid,
+                text,
+                epoch: self.epoch,
+            },
+        );
+    }
+
+    fn block_text(&self, key: (u64, u32)) -> Option<Rc<String>> {
+        self.blocks.get(&key).map(|block| block.text.clone())
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
     pub fn begin(&mut self, at: Position) {
         self.anchor = Some(at);
         self.head = Some(at);
@@ -77,12 +171,118 @@ impl Selection {
         }
     }
 
+    /// Shift+click extends an existing anchor (or starts from `to` if none yet).
+    pub fn extend_click(&mut self, to: Position) {
+        if self.anchor.is_none() {
+            self.anchor = Some(to);
+        }
+        self.dragging = true;
+        self.extend(to);
+    }
+
+    pub fn select_range(&mut self, from: Position, to: Position) {
+        self.anchor = Some(from);
+        self.head = Some(to);
+        self.dragging = false;
+    }
+
     pub fn end(&mut self) {
         self.dragging = false;
     }
 
+    /// Clears only the active selection range (preserving registered selectable blocks across same-frame mouse events).
     pub fn clear(&mut self) {
+        self.anchor = None;
+        self.head = None;
+        self.dragging = false;
+    }
+
+    /// Clears both the active selection and all registered block geometry (e.g. when switching channels).
+    pub fn clear_all(&mut self) {
         *self = Self::default();
+    }
+
+    /// Updates the drag head against currently painted blocks in the chat viewport.
+    pub fn drag_to_point(&mut self, point: Point<Pixels>) -> bool {
+        if !self.dragging || self.blocks.is_empty() {
+            return false;
+        }
+        let has_current = self.blocks.values().any(|block| block.epoch == self.epoch);
+        let mut active: Vec<((u64, u32), &SelectableBlock)> = self
+            .blocks
+            .iter()
+            .filter(|(_, block)| !has_current || block.epoch == self.epoch)
+            .map(|(key, block)| (*key, block))
+            .collect();
+        if active.is_empty() {
+            return false;
+        }
+        active.sort_by(|(ka, a), (kb, b)| {
+            a.bounds
+                .origin
+                .y
+                .partial_cmp(&b.bounds.origin.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ka.cmp(kb))
+        });
+        let target = if let Some((key, block)) = active
+            .iter()
+            .find(|(_, block)| point.y < block.bounds.bottom())
+        {
+            if point.y < block.bounds.top() {
+                Position {
+                    key: *key,
+                    offset: 0,
+                }
+            } else {
+                let offset = block
+                    .laid
+                    .borrow()
+                    .index_at(point - block.bounds.origin, block.line_height)
+                    .min(block.text.len());
+                Position { key: *key, offset }
+            }
+        } else {
+            let (last_key, last_block) = active.last().copied().expect("non-empty active blocks");
+            Position {
+                key: last_key,
+                offset: last_block.text.len(),
+            }
+        };
+        if self.head == Some(target) {
+            false
+        } else {
+            self.head = Some(target);
+            true
+        }
+    }
+
+    pub fn word_range_at(text: &str, offset: usize) -> (usize, usize) {
+        if text.is_empty() {
+            return (0, 0);
+        }
+        let mut cursor = floor_char_boundary(text, offset);
+        if cursor == text.len() {
+            cursor = text
+                .char_indices()
+                .last()
+                .map_or(0, |(idx, _)| idx);
+        }
+        let Some(pivot) = text[cursor..].chars().next() else {
+            return (0, 0);
+        };
+        let kind = char_kind(pivot);
+        let start = text[..cursor]
+            .char_indices()
+            .rev()
+            .take_while(|(_, ch)| char_kind(*ch) == kind)
+            .last()
+            .map_or(cursor, |(idx, _)| idx);
+        let end = text[cursor..]
+            .char_indices()
+            .find(|(_, ch)| char_kind(*ch) != kind)
+            .map_or(text.len(), |(rel, _)| cursor + rel);
+        (start, end)
     }
 
     /// Start and end in document order, or nothing when the selection is empty.
@@ -233,6 +433,141 @@ fn place(
     *x += width;
 }
 
+/// Splits an oversized word into scalar-aligned slices whose measured width stays within `limit`
+/// (taking at least one Unicode scalar per slice so progress is guaranteed).
+fn split_long_word_slices(
+    word: &str,
+    limit: f32,
+    measure: impl Fn(&str) -> f32,
+) -> Vec<(usize, &str)> {
+    if word.is_empty() || limit <= 0. || measure(word) <= limit {
+        return vec![(0, word)];
+    }
+    let mut ends: Vec<usize> = word.char_indices().skip(1).map(|(i, _)| i).collect();
+    ends.push(word.len());
+    let mut slices = Vec::new();
+    let mut start = 0;
+    let mut end_ix = 0;
+    while start < word.len() {
+        if measure(&word[start..]) <= limit {
+            slices.push((start, &word[start..]));
+            break;
+        }
+        let candidates = &ends[end_ix..ends.len() - 1];
+        if candidates.is_empty() {
+            slices.push((start, &word[start..]));
+            break;
+        }
+        let fit = candidates.partition_point(|&end| measure(&word[start..end]) <= limit);
+        let pick = fit.saturating_sub(1);
+        let cut = candidates[pick];
+        slices.push((start, &word[start..cut]));
+        start = cut;
+        end_ix += pick + 1;
+    }
+    slices
+}
+
+struct SegmentBox {
+    max_width: Option<Pixels>,
+    truncate: bool,
+    padding: Pixels,
+    icon: Pixels,
+}
+
+fn lay_out_segment(
+    laid: &mut Laid,
+    x: &mut Pixels,
+    piece: &Piece,
+    index: usize,
+    seg: (usize, &str),
+    cfg: &SegmentBox,
+    window: &Window,
+) -> bool {
+    let (seg_offset, seg_text) = seg;
+    let whole = shape(piece, seg_text, window);
+    let fits = cfg
+        .max_width
+        .is_none_or(|limit| *x + whole.width + cfg.padding * 2. + cfg.icon <= limit);
+    if cfg.truncate && !fits {
+        let limit = cfg.max_width.unwrap_or(px(0.));
+        let shortened = shorten_text(
+            piece,
+            seg_text,
+            &whole,
+            limit - *x - cfg.padding * 2.,
+            window,
+        );
+        place(
+            laid,
+            x,
+            None,
+            (shortened, index, seg_offset),
+            cfg.padding,
+            cfg.icon,
+            false,
+        );
+        return true;
+    }
+    if fits || piece.boxed.is_some() || seg_text.is_empty() {
+        place(
+            laid,
+            x,
+            cfg.max_width,
+            (whole, index, seg_offset),
+            cfg.padding,
+            cfg.icon,
+            piece.boxed.is_none(),
+        );
+        return false;
+    }
+    for (at, word) in words(seg_text) {
+        let shaped = shape(piece, word, window);
+        let trimmed_len = word.trim_end_matches([' ', '\t']).len();
+        let word_visible = shaped.x_for_index(trimmed_len) + cfg.padding * 2. + cfg.icon;
+        if let Some(limit) = cfg.max_width
+            && word_visible > limit
+        {
+            if *x > px(0.) {
+                laid.lines += 1;
+                *x = px(0.);
+            }
+            let inner_limit = f32::from((limit - cfg.padding * 2. - cfg.icon).max(px(1.)));
+            let slices = split_long_word_slices(word, inner_limit, |sub| {
+                let trimmed = sub.trim_end_matches([' ', '\t']);
+                if trimmed.is_empty() {
+                    0.
+                } else {
+                    f32::from(shape(piece, trimmed, window).width)
+                }
+            });
+            for (sub_at, sub) in slices {
+                let sub_shaped = shape(piece, sub, window);
+                place(
+                    laid,
+                    x,
+                    cfg.max_width,
+                    (sub_shaped, index, seg_offset + at + sub_at),
+                    cfg.padding,
+                    cfg.icon,
+                    true,
+                );
+            }
+        } else {
+            place(
+                laid,
+                x,
+                cfg.max_width,
+                (shaped, index, seg_offset + at),
+                cfg.padding,
+                cfg.icon,
+                true,
+            );
+        }
+    }
+    false
+}
+
 fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: &Window) -> Laid {
     let mut laid = Laid {
         lines: 1,
@@ -261,46 +596,44 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
             .as_ref()
             .and_then(|style| style.icon.as_ref())
             .map_or(px(0.), |(_, _, room)| *room);
-        // Shaped whole when it fits, which keeps kerning across spaces. Split only to wrap.
-        let whole = shape(piece, &piece.text, window);
-        let fits = max_width.is_none_or(|limit| x + whole.width + padding * 2. + icon <= limit);
-        if truncate && !fits {
-            let limit = max_width.unwrap_or(px(0.));
-            let shortened = shorten(piece, &whole, limit - x - padding * 2., window);
-            place(
-                &mut laid,
-                &mut x,
-                None,
-                (shortened, index, offset),
-                padding,
-                icon,
-                false,
-            );
-            break;
-        }
-        if fits || piece.boxed.is_some() {
-            place(
-                &mut laid,
-                &mut x,
-                max_width,
-                (whole, index, offset),
-                padding,
-                icon,
-                piece.boxed.is_none(),
-            );
-        } else {
-            for (at, word) in words(&piece.text) {
-                let shaped = shape(piece, word, window);
-                place(
+        let cfg = SegmentBox {
+            max_width,
+            truncate,
+            padding,
+            icon,
+        };
+        if !truncate && piece.text.contains('\n') {
+            let mut seg_offset = offset;
+            let split_cfg = SegmentBox {
+                truncate: false,
+                ..cfg
+            };
+            for (seg_idx, seg) in piece.text.split('\n').enumerate() {
+                if seg_idx > 0 {
+                    laid.lines += 1;
+                    x = px(0.);
+                }
+                let _ = lay_out_segment(
                     &mut laid,
                     &mut x,
-                    max_width,
-                    (shaped, index, offset + at),
-                    padding,
-                    icon,
-                    true,
+                    piece,
+                    index,
+                    (seg_offset, seg),
+                    &split_cfg,
+                    window,
                 );
+                seg_offset += seg.len() + 1;
             }
+        } else if lay_out_segment(
+            &mut laid,
+            &mut x,
+            piece,
+            index,
+            (offset, &piece.text),
+            &cfg,
+            window,
+        ) {
+            break;
         }
         offset += piece.text.len();
     }
@@ -308,15 +641,23 @@ fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: 
 }
 
 /// The longest prefix that fits with an ellipsis after it.
-fn shorten(piece: &Piece, whole: &ShapedLine, width: Pixels, window: &Window) -> ShapedLine {
+fn shorten_text(
+    piece: &Piece,
+    source: &str,
+    whole: &ShapedLine,
+    width: Pixels,
+    window: &Window,
+) -> ShapedLine {
     let ellipsis = shape(piece, "\u{2026}", window).width;
     let room = (width - ellipsis).max(px(0.));
     let cut = caret_positions(whole)
         .into_iter()
         .take_while(|(_, x)| *x <= room)
         .last()
-        .map_or(0, |(at, _)| at);
-    let text = format!("{}\u{2026}", piece.text[..cut].trim_end());
+        .map_or(0, |(at, _)| at)
+        .min(source.len());
+    let cut = floor_char_boundary(source, cut);
+    let text = format!("{}\u{2026}", source[..cut].trim_end());
     shape(piece, &text, window)
 }
 
@@ -337,6 +678,7 @@ pub struct Inline {
     line_height: Pixels,
     laid: Rc<RefCell<Laid>>,
     selectable: Option<Selectable>,
+    fill_width: bool,
     truncate: bool,
     on_piece_click: Option<PieceClick>,
     on_piece_click_at: Option<PieceClickAt>,
@@ -393,6 +735,7 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         line_height,
         laid: Rc::default(),
         selectable: None,
+        fill_width: false,
         truncate: false,
         on_piece_click: None,
         on_piece_click_at: None,
@@ -456,6 +799,7 @@ impl Inline {
             selection,
             highlight,
         });
+        self.fill_width = true;
         self
     }
 
@@ -648,25 +992,70 @@ impl Inline {
         };
         let down = selectable.clone();
         let down_laid = laid.clone();
-        let hitbox = hitbox.clone();
+        let hitbox_down = hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
-                && hitbox.is_hovered(window)
+                && hitbox_down.is_hovered(window)
             {
                 let at = position_at(event.position, &down_laid.borrow(), down.key);
-                down.selection.borrow_mut().begin(at);
+                let mut selection = down.selection.borrow_mut();
+                if event.click_count >= 3 {
+                    let len = selection.block_text(down.key).map_or(0, |text| text.len());
+                    selection.select_range(
+                        Position {
+                            key: down.key,
+                            offset: 0,
+                        },
+                        Position {
+                            key: down.key,
+                            offset: len,
+                        },
+                    );
+                } else if event.click_count == 2 {
+                    let (from, to) = selection
+                        .block_text(down.key)
+                        .map_or((at.offset, at.offset), |text| {
+                            Selection::word_range_at(&text, at.offset)
+                        });
+                    selection.select_range(
+                        Position {
+                            key: down.key,
+                            offset: from,
+                        },
+                        Position {
+                            key: down.key,
+                            offset: to,
+                        },
+                    );
+                } else if event.modifiers.shift {
+                    selection.extend_click(at);
+                } else {
+                    selection.begin(at);
+                }
                 window.refresh();
             }
         });
-        let moved = selectable.clone();
+        let initial_interactive = hitbox.is_hovered(window)
+            && laid
+                .borrow()
+                .piece_at(window.mouse_position() - bounds.origin, line_height)
+                .is_some_and(|ix| self.pieces.get(ix).is_some_and(Piece::is_interactive));
+        let last_interactive = Rc::new(Cell::new(initial_interactive));
+        let cursor_pieces = self.pieces.clone();
+        let cursor_laid = laid.clone();
+        let cursor_hitbox = hitbox.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
-            if phase == DispatchPhase::Bubble
-                && event.pressed_button == Some(MouseButton::Left)
-                && bounds.contains(&event.position)
-            {
-                let at = position_at(event.position, &laid.borrow(), moved.key);
-                moved.selection.borrow_mut().extend(at);
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let interactive = cursor_hitbox.is_hovered(window)
+                && cursor_laid
+                    .borrow()
+                    .piece_at(event.position - bounds.origin, line_height)
+                    .is_some_and(|ix| cursor_pieces.get(ix).is_some_and(Piece::is_interactive));
+            if interactive != last_interactive.get() {
+                last_interactive.set(interactive);
                 window.refresh();
             }
         });
@@ -708,6 +1097,7 @@ impl Element for Inline {
         let pieces = self.pieces.clone();
         let laid = self.laid.clone();
         let line_height = self.line_height;
+        let fill_width = self.fill_width;
         let truncate = self.truncate;
         let id =
             window.request_measured_layout(Style::default(), move |known, available, window, _| {
@@ -716,7 +1106,12 @@ impl Element for Inline {
                     _ => None,
                 });
                 let result = lay_out(&pieces, limit, truncate, window);
-                let measured: Size<Pixels> = size(result.width, line_height * result.lines as f32);
+                let width = if fill_width {
+                    limit.map_or(result.width, |w| result.width.max(w))
+                } else {
+                    result.width
+                };
+                let measured: Size<Pixels> = size(width, line_height * result.lines as f32);
                 *laid.borrow_mut() = result;
                 measured
             });
@@ -746,7 +1141,38 @@ impl Element for Inline {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(selectable) = &self.selectable {
+            let text = Rc::new(
+                self.pieces
+                    .iter()
+                    .map(|piece| piece.text.as_str())
+                    .collect::<String>(),
+            );
+            selectable.selection.borrow_mut().register_block(
+                selectable.key,
+                bounds,
+                self.line_height,
+                self.laid.clone(),
+                text,
+            );
+        }
         if let Some(hitbox) = hitbox.as_ref() {
+            if self.selectable.is_some() {
+                let interactive = hitbox.is_hovered(window)
+                    && self
+                        .laid
+                        .borrow()
+                        .piece_at(window.mouse_position() - bounds.origin, self.line_height)
+                        .is_some_and(|ix| self.pieces.get(ix).is_some_and(Piece::is_interactive));
+                window.set_cursor_style(
+                    if interactive {
+                        CursorStyle::PointingHand
+                    } else {
+                        CursorStyle::IBeam
+                    },
+                    hitbox,
+                );
+            }
             self.listen(bounds, hitbox, window);
         }
         self.paint_selection(bounds, window);
@@ -1266,5 +1692,138 @@ mod tests {
             true
         ));
         ACTIVE_PRESS.set(None);
+    }
+
+    #[test]
+    fn split_long_word_slices_respects_ascii_and_turkish_utf8_boundaries() {
+        let ascii = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let slices = super::split_long_word_slices(ascii, 50., |s| s.chars().count() as f32 * 10.);
+        assert!(slices.len() > 1);
+        assert!(slices.iter().all(|(_, s)| s.chars().count() <= 5));
+        assert_eq!(
+            slices.iter().map(|(_, s)| *s).collect::<String>(),
+            ascii
+        );
+
+        let turkish = "ğüşiöçĞÜŞİÖÇğüşiöç";
+        let slices = super::split_long_word_slices(turkish, 25., |s| s.chars().count() as f32 * 10.);
+        assert!(slices.iter().all(|(_, s)| s.chars().count() <= 2));
+        assert_eq!(
+            slices.iter().map(|(_, s)| *s).collect::<String>(),
+            turkish
+        );
+    }
+
+    #[test]
+    fn word_range_at_handles_ascii_and_multibyte_words() {
+        let text = "merhaba dünya!!";
+        let (a, b) = Selection::word_range_at(text, 2);
+        assert_eq!(&text[a..b], "merhaba");
+        let mid = "merhaba ".len() + 2;
+        let (c, d) = Selection::word_range_at(text, mid);
+        assert_eq!(&text[c..d], "dünya");
+        let (e, f) = Selection::word_range_at(text, text.len());
+        assert_eq!(&text[e..f], "!!");
+    }
+
+    #[test]
+    fn shift_click_extends_selection_and_clear_preserves_registered_blocks() {
+        use super::Laid;
+        use gpui::{Bounds, point, size};
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut selection = Selection::default();
+        selection.begin(at(1, 0, 1));
+        selection.extend_click(at(1, 0, 5));
+        assert_eq!(selection.range(), Some((at(1, 0, 1), at(1, 0, 5))));
+        selection.end();
+        selection.extend_click(at(2, 0, 3));
+        assert_eq!(selection.range(), Some((at(1, 0, 1), at(2, 0, 3))));
+
+        let laid = Rc::new(RefCell::new(Laid::default()));
+        selection.register_block(
+            (1, 0),
+            Bounds::new(point(px(0.), px(0.)), size(px(100.), px(20.))),
+            px(20.),
+            laid,
+            Rc::new("hello".to_owned()),
+        );
+        selection.clear();
+        assert_eq!(selection.range(), None);
+        assert!(selection.block_text((1, 0)).is_some());
+        selection.clear_all();
+        assert!(selection.block_text((1, 0)).is_none());
+    }
+
+    #[test]
+    fn drag_to_point_selects_across_blocks_gaps_and_viewport_edges() {
+        use super::{Fragment, Laid};
+        use gpui::{
+            Bounds, FontId, GlyphId, LineLayout, ShapedGlyph, ShapedLine, ShapedRun, point, size,
+        };
+        use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+        let make_laid = |text: &str| {
+            let mut line = ShapedLine::default();
+            line.text = text.to_owned().into();
+            *line = Arc::new(LineLayout {
+                width: px(text.len() as f32 * 10.),
+                len: text.len(),
+                runs: vec![ShapedRun {
+                    font_id: FontId(0),
+                    glyphs: text
+                        .char_indices()
+                        .enumerate()
+                        .map(|(i, (index, _))| ShapedGlyph {
+                            id: GlyphId(0),
+                            position: point(px(i as f32 * 10.), px(0.)),
+                            index,
+                            is_emoji: false,
+                        })
+                        .collect(),
+                }],
+                ..Default::default()
+            });
+            Rc::new(RefCell::new(Laid {
+                fragments: vec![Fragment {
+                    shaped: line,
+                    x: px(0.),
+                    width: px(text.len() as f32 * 10.),
+                    text_offset: px(0.),
+                    line: 0,
+                    piece: 0,
+                    start: 0,
+                }],
+                lines: 1,
+                width: px(text.len() as f32 * 10.),
+            }))
+        };
+
+        let mut selection = Selection::default();
+        selection.register_block(
+            (10, 0),
+            Bounds::new(point(px(10.), px(100.)), size(px(100.), px(20.))),
+            px(20.),
+            make_laid("first"),
+            Rc::new("first".to_owned()),
+        );
+        selection.register_block(
+            (20, 0),
+            Bounds::new(point(px(10.), px(140.)), size(px(100.), px(20.))),
+            px(20.),
+            make_laid("second"),
+            Rc::new("second".to_owned()),
+        );
+
+        selection.begin(at(10, 0, 2));
+        // Inside gap above second block selects up to start of second block.
+        assert!(selection.drag_to_point(point(px(20.), px(130.))));
+        assert_eq!(selection.range(), Some((at(10, 0, 2), at(20, 0, 0))));
+        // Below all blocks selects through end of last block.
+        assert!(selection.drag_to_point(point(px(20.), px(200.))));
+        assert_eq!(selection.range(), Some((at(10, 0, 2), at(20, 0, 6))));
+        // Backwards above first block clamps to start of first block.
+        assert!(selection.drag_to_point(point(px(20.), px(40.))));
+        assert_eq!(selection.range(), Some((at(10, 0, 0), at(10, 0, 2))));
     }
 }

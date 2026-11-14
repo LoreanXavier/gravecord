@@ -149,11 +149,19 @@ impl Root {
             return;
         }
         if !crate::storage::is_capture_run() || games::live_presence_allowed() {
-            for (key, route) in self.detect.runtime.due_fetches(now_ms()) {
-                let _ = self.requests.send(Request::Fetch {
-                    key: key.to_owned(),
-                    route: route.to_owned(),
-                });
+            for fetch in self.detect.runtime.due_fetches_all(now_ms()) {
+                let request = match fetch {
+                    games::DueFetch::Cdn { key, url, etag } => Request::FetchCdn {
+                        key: key.to_owned(),
+                        url: url.to_owned(),
+                        etag,
+                    },
+                    games::DueFetch::Api { key, route } => Request::Fetch {
+                        key: key.to_owned(),
+                        route: route.to_owned(),
+                    },
+                };
+                let _ = self.requests.send(request);
             }
             self.detect.runtime.start();
         }
@@ -210,7 +218,19 @@ impl Root {
     }
 
     /// Persists the store when it changed, hands the hand-added games to the scanner, and updates the activity.
-    fn detect_changed(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn detect_cdn_fetched(
+        &mut self,
+        key: &str,
+        status: u16,
+        etag: Option<String>,
+        games: Option<std::sync::Arc<Vec<dc_detect::DetectableGame>>>,
+    ) -> bool {
+        self.detect
+            .runtime
+            .cdn_fetched(key, status, etag, games, now_ms())
+    }
+
+    pub(super) fn persist_detect_store(&mut self) {
         let stored = self.detect.store.to_json();
         if stored != self.detect.saved {
             crate::storage::set(STORAGE_KEY, stored.clone());
@@ -219,6 +239,11 @@ impl Root {
                 .runtime
                 .set_overrides(overrides(&self.detect.store));
         }
+        self.overlay.sync_dirty = true;
+    }
+
+    fn detect_changed(&mut self, cx: &mut Context<Self>) {
+        self.persist_detect_store();
         // The clip path records the visible game's window (module 489496: `getVisibleGame()?.windowHandle`).
         #[cfg(windows)]
         if !self.clips.engine.test_game {

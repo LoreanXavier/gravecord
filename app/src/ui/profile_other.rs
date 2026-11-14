@@ -314,12 +314,6 @@ impl Root {
             .child(
                 // `avatar_WRLIGC clickable`: "View Full Profile".
                 div()
-                    .id("popout-avatar")
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.profile = None;
-                        this.open_full_profile(id, window, cx);
-                    }))
                     .absolute()
                     .left(px(8.))
                     .top(px(53.))
@@ -334,7 +328,29 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(self.profile_avatar(&user, &presence, cx)),
+                            .child(self.with_tip(
+                                "popout-avatar-tip",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t!("+Xp3hq"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                div()
+                                    .id("popout-avatar")
+                                    .group("other-popout-avatar")
+                                    .relative()
+                                    .size(px(80.))
+                                    .rounded_full()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.profile = None;
+                                        this.open_full_profile(id, window, cx);
+                                    }))
+                                    .child(self.profile_avatar(&user, &presence, cx))
+                                    .child(super::profile::popout_avatar_hover_overlay(
+                                        "other-popout-avatar",
+                                    )),
+                                cx,
+                            )),
                     ),
             )
             .into_any_element();
@@ -365,6 +381,13 @@ impl Root {
             .flex_col()
             .child(
                 div()
+                    .id("popout-display-name")
+                    .cursor_pointer()
+                    .hover(|style| style.underline())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.profile = None;
+                        this.open_full_profile(id, window, cx);
+                    }))
                     .h(px(24.))
                     .text_size(px(20.))
                     .line_height(px(24.))
@@ -391,7 +414,17 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
-                    .child(user.username.clone())
+                    .child(
+                        div()
+                            .id("popout-username")
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.profile = None;
+                                this.open_full_profile(id, window, cx);
+                            }))
+                            .child(user.username.clone()),
+                    )
                     .when_some(pronouns, |this, pronouns| {
                         this.child(div().size(px(4.)).rounded_full().bg(strong))
                             .child(pronouns)
