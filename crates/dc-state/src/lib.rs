@@ -14,6 +14,7 @@ pub mod content_inventory;
 pub mod content_inventory_manager;
 pub mod deleted_entities;
 pub mod display_name_styles;
+pub mod emoji_packs;
 pub mod entitlements;
 pub mod experiments;
 pub mod folders;
@@ -326,6 +327,25 @@ pub struct Guild {
     pub emojis: Vec<GuildEmoji>,
     /// Active threads this session knows (READY's `threads`, then THREAD_* events).
     pub threads: Vec<Thread>,
+    /// `profile.tag` / `clan.tag`: server tag offered by guilds with `GUILD_TAGS` (module 318785 / 537975).
+    pub tag: Option<String>,
+    /// `profile.badge` / `clan.badge`: clan badge hash for the guild's server tag.
+    pub tag_badge: Option<String>,
+}
+
+fn guild_tag_pair(value: &Value) -> (Option<String>, Option<String>) {
+    let source = if value["profile"].is_object() {
+        &value["profile"]
+    } else if value["clan"].is_object() {
+        &value["clan"]
+    } else {
+        return (None, None);
+    };
+    let tag = text(&source["tag"]).filter(|tag| !tag.is_empty());
+    let badge = tag
+        .as_ref()
+        .and_then(|_| text(&source["badge"]).filter(|badge| !badge.is_empty()));
+    (tag, badge)
 }
 
 /// A thread channel (types 10, 11, 12): `ThreadsStore` keeps the guild's active ones by parent.
@@ -627,6 +647,7 @@ impl Guild {
             value
         };
         let channels = value["channels"].as_array()?;
+        let (tag, tag_badge) = guild_tag_pair(properties);
         Some(Self {
             id: id(&value["id"])?,
             name: text(&properties["name"])?,
@@ -688,6 +709,8 @@ impl Guild {
                 .or(properties["premium_progress_bar_enabled"].as_bool())
                 .unwrap_or(false),
             emojis: GuildEmoji::list(&value["emojis"]),
+            tag,
+            tag_badge,
         })
     }
 
@@ -740,6 +763,11 @@ impl Guild {
         if value["emojis"].is_array() {
             self.emojis = GuildEmoji::list(&value["emojis"]);
         }
+        if value.get("profile").is_some() || value.get("clan").is_some() {
+            let (tag, badge) = guild_tag_pair(value);
+            self.tag = tag;
+            self.tag_badge = badge;
+        }
     }
 
     /// The current user's member object: roles, screening and timeout.
@@ -776,6 +804,18 @@ impl Guild {
 
     fn has_feature(&self, feature: &str) -> bool {
         self.features.iter().any(|known| known == feature)
+    }
+
+    /// Module 318785 (`b`): eligible server tag when `GUILD_TAGS` is present, joined, not pending, and `profile.tag` exists.
+    pub fn selectable_server_tag(&self) -> Option<(&str, Option<&str>)> {
+        let tag = self.tag.as_deref().filter(|tag| !tag.is_empty())?;
+        if !self.has_feature("GUILD_TAGS") || self.joined_at.is_empty() || self.my_pending {
+            return None;
+        }
+        Some((
+            tag,
+            self.tag_badge.as_deref().filter(|badge| !badge.is_empty()),
+        ))
     }
 
     /// `K` in module 426983 over the traits from 176128.
@@ -910,6 +950,34 @@ impl Attachment {
                 .content_type
                 .as_deref()
                 .is_some_and(|kind| kind.starts_with("image/"))
+    }
+
+    /// Modules 949244 (`NI`) and 273185 (`AE`): non-thumbnail attachment with explicit dimensions,
+    /// non-empty proxy/source URL and a playable container extension (`.mp4`/`.webm`/`.mov`/`.qt`).
+    pub fn is_video(&self) -> bool {
+        if self.flags & 2 != 0
+            || self.proxy_url.is_empty()
+            || !self.width.is_some_and(|w| w > 0)
+            || !self.height.is_some_and(|h| h > 0)
+        {
+            return false;
+        }
+        let extension = self.filename.rsplit('.').next().unwrap_or("");
+        extension.eq_ignore_ascii_case("mp4")
+            || extension.eq_ignore_ascii_case("webm")
+            || extension.eq_ignore_ascii_case("mov")
+            || extension.eq_ignore_ascii_case("qt")
+    }
+
+    /// Module 949244 (`NI`): video flagged `IS_CLIP` (`1 << 2`).
+    pub fn is_clip(&self) -> bool {
+        self.is_video() && self.flags & 4 != 0
+    }
+
+    /// Module 548146 (`E`): poster image derived from `proxy_url` with `format=webp`.
+    pub fn video_poster_url(&self) -> Option<String> {
+        self.is_video()
+            .then(|| with_query(&self.proxy_url, "format", "webp"))
     }
 
     /// LazyImage (619517) and attachment flags (652215): GIF, or flagged WebP/AVIF.
@@ -1879,6 +1947,8 @@ pub struct Stores {
     pub pin_states: pins_unread::PinStates,
     /// Guild stickers and the standard packs (`GuildStickersStore`, `StickersPackStore`).
     pub stickers: stickers::StickersStore,
+    /// Nitro emoji packs (`EmojiPackStore`, module 956396).
+    pub emoji_packs: emoji_packs::EmojiPackStore,
     /// Channel or thread id to the guild that holds it. Lookups check the answer against the guild, so a guild
     /// changed directly (not through `dispatch`) still resolves, by the slow way.
     channel_guilds: HashMap<Id, Id>,
@@ -4047,6 +4117,8 @@ mod tests {
             premium_progress_bar_enabled: false,
             emojis: Vec::new(),
             threads: Vec::new(),
+            tag: None,
+            tag_badge: None,
         };
         assert_eq!(guild(&[]).badge(), Badge::None);
         assert_eq!(guild(&["COMMUNITY"]).badge(), Badge::Community);
@@ -4943,5 +5015,144 @@ mod tests {
             stores.status_state().and_then(|state| state.custom),
             Some(custom)
         );
+    }
+
+    #[test]
+    fn video_attachment_classification_and_poster_url() {
+        for ext in ["mp4", "MP4", "webm", "mov", "qt"] {
+            let att = Attachment::from_value(&json!({
+                "id": "10",
+                "filename": format!("clip.{ext}"),
+                "url": format!("https://cdn.discordapp.com/attachments/1/2/clip.{ext}"),
+                "proxy_url": format!("https://media.discordapp.net/attachments/1/2/clip.{ext}?ex=abc"),
+                "width": 1280,
+                "height": 720,
+                "flags": 0
+            }))
+            .unwrap();
+            assert!(att.is_video(), "{ext} should classify as video");
+            assert!(!att.is_clip());
+            assert_eq!(
+                att.video_poster_url().as_deref(),
+                Some(
+                    format!(
+                        "https://media.discordapp.net/attachments/1/2/clip.{ext}?ex=abc&format=webp"
+                    )
+                    .as_str()
+                )
+            );
+        }
+
+        // IS_CLIP (1 << 2 = 4)
+        let clip = Attachment::from_value(&json!({
+            "id": "11",
+            "filename": "moment.mp4",
+            "url": "https://cdn.discordapp.com/attachments/1/2/moment.mp4",
+            "proxy_url": "https://media.discordapp.net/attachments/1/2/moment.mp4",
+            "width": 640,
+            "height": 360,
+            "flags": 4
+        }))
+        .unwrap();
+        assert!(clip.is_video());
+        assert!(clip.is_clip());
+
+        // IS_THUMBNAIL (1 << 1 = 2) and missing dimensions are excluded.
+        let thumb = Attachment::from_value(&json!({
+            "id": "12",
+            "filename": "thumb.mp4",
+            "url": "https://cdn.discordapp.com/attachments/1/2/thumb.mp4",
+            "proxy_url": "https://media.discordapp.net/attachments/1/2/thumb.mp4",
+            "width": 640,
+            "height": 360,
+            "flags": 2
+        }))
+        .unwrap();
+        assert!(!thumb.is_video());
+        assert!(!thumb.is_clip());
+        assert!(thumb.video_poster_url().is_none());
+
+        let no_dims = Attachment::from_value(&json!({
+            "id": "13",
+            "filename": "unsized.mp4",
+            "url": "https://cdn.discordapp.com/attachments/1/2/unsized.mp4",
+            "proxy_url": "https://media.discordapp.net/attachments/1/2/unsized.mp4",
+            "width": 0,
+            "height": 720,
+            "flags": 0
+        }))
+        .unwrap();
+        assert!(!no_dims.is_video());
+
+        let other = Attachment::from_value(&json!({
+            "id": "14",
+            "filename": "archive.mkv",
+            "url": "https://cdn.discordapp.com/attachments/1/2/archive.mkv",
+            "proxy_url": "https://media.discordapp.net/attachments/1/2/archive.mkv",
+            "width": 1280,
+            "height": 720,
+            "flags": 0
+        }))
+        .unwrap();
+        assert!(!other.is_video());
+    }
+
+    #[test]
+    fn guild_server_tag_parsing_and_selectable_filter() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "5", "username": "me"},
+                "guilds": [{
+                    "id": "100",
+                    "joined_at": "2026-10-01T00:00:00Z",
+                    "properties": {
+                        "name": "Tag Guild",
+                        "features": ["GUILD_TAGS"],
+                        "profile": {"tag": "PTPC", "badge": "hash123"}
+                    },
+                    "channels": []
+                }],
+                "merged_members": [[{"user_id": "5", "joined_at": "2026-10-01T00:00:00Z", "pending": false}]]
+            }),
+        );
+        assert_eq!(stores.guilds[0].tag.as_deref(), Some("PTPC"));
+        assert_eq!(stores.guilds[0].tag_badge.as_deref(), Some("hash123"));
+        assert_eq!(
+            stores.guilds[0].selectable_server_tag(),
+            Some(("PTPC", Some("hash123")))
+        );
+
+        // Pending member cannot select server tag.
+        stores.guilds[0].my_pending = true;
+        assert_eq!(stores.guilds[0].selectable_server_tag(), None);
+        stores.guilds[0].my_pending = false;
+
+        // GUILD_UPDATE replaces or clears profile.tag.
+        stores.dispatch(
+            "GUILD_UPDATE",
+            &json!({
+                "id": "100",
+                "name": "Tag Guild",
+                "features": ["GUILD_TAGS"],
+                "profile": {"tag": "NEWT", "badge": null}
+            }),
+        );
+        assert_eq!(
+            stores.guilds[0].selectable_server_tag(),
+            Some(("NEWT", None))
+        );
+
+        stores.dispatch(
+            "GUILD_UPDATE",
+            &json!({
+                "id": "100",
+                "name": "Tag Guild",
+                "features": ["GUILD_TAGS"],
+                "profile": null
+            }),
+        );
+        assert_eq!(stores.guilds[0].selectable_server_tag(), None);
     }
 }

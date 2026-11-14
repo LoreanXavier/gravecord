@@ -855,4 +855,40 @@ mod tests {
         assert!(Layout::default().widget(VOICE).unwrap().pinned);
         assert!(!Layout::default().widget(TEXT_CHAT).unwrap().pinned);
     }
+
+    #[test]
+    fn quick_actions_and_text_chat_do_not_overlap_by_default() {
+        const QUICK_ACTIONS_WRAPPER_HEIGHT: f32 = 84.;
+        const EXTRAS_CLEARANCE: f32 = 10. + 24.;
+        let mut layout = Layout::default();
+        let mut ids = counter();
+        layout.ensure(&mut ids);
+        let quick = layout.widget(QUICK_ACTIONS).unwrap();
+        let chat = layout.widget(TEXT_CHAT).unwrap();
+        assert_eq!(quick.anchor.top, Some(0.02));
+        assert_eq!(chat.anchor.top, Some(0.14));
+
+        // 1280x720: Quick Actions wrapper Y=14..98 clears Text Chat Y=100..472.
+        let q720 = anchor_pixels(quick.anchor, 1280., 720.);
+        let c720 = anchor_pixels(chat.anchor, 1280., 720.);
+        let (_, chat_h) = crate::drag::requested_size(chat.size.pixels(1280., 720.), chat.min_size);
+        let q720_edges =
+            crate::drag::resolve(q720, 1280., 720., 356., QUICK_ACTIONS_WRAPPER_HEIGHT);
+        let c720_edges = crate::drag::resolve(c720, 1280., 720., 500., chat_h.unwrap());
+        assert_eq!(q720_edges.top, 14.);
+        assert_eq!(q720_edges.top + QUICK_ACTIONS_WRAPPER_HEIGHT, 98.);
+        assert_eq!(c720_edges.top, 100.);
+        assert_eq!(c720_edges.top + chat_h.unwrap(), 472.);
+        assert!(q720_edges.top + QUICK_ACTIONS_WRAPPER_HEIGHT < c720_edges.top);
+
+        // 1920x1080: Quick Actions + floating `.extras_yjvjn7` (105..139) fully clears Text Chat (151..523).
+        let q1080 = anchor_pixels(quick.anchor, 1920., 1080.);
+        let c1080 = anchor_pixels(chat.anchor, 1920., 1080.);
+        assert_eq!(q1080.top, Some(21.));
+        assert_eq!(c1080.top, Some(151.));
+        assert!(
+            q1080.top.unwrap() + QUICK_ACTIONS_WRAPPER_HEIGHT + EXTRAS_CLEARANCE
+                < c1080.top.unwrap()
+        );
+    }
 }
